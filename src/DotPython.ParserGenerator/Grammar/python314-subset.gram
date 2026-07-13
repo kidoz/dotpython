@@ -1,0 +1,19 @@
+# DotPython executable PEG subset, version 1.
+# Provenance: https://github.com/python/cpython/blob/3.14/Grammar/python.gram
+# CPython construction actions are intentionally not copied; DotPython constructs its own AST.
+
+file: [statements] ENDMARKER
+statements: statement+
+statement: simple_stmts
+simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
+simple_stmt: assignment | expression
+assignment: NAME '=' expression
+
+expression: sum
+sum: term (('+' | '-') term)*
+term: factor (('*' | '/' | '//' | '%') factor)*
+factor: ('+' | '-' | '~') factor | power
+power: primary ['**' factor]
+primary: atom ('(' [arguments] ')')*
+arguments: ','.expression+ [',']
+atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | '(' expression ')'
