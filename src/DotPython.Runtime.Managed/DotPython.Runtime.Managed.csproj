@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
+        <ProjectReference Include="../DotPython.Compiler/DotPython.Compiler.csproj" />
+        <ProjectReference Include="../DotPython.Language/DotPython.Language.csproj" />
+    </ItemGroup>
+</Project>

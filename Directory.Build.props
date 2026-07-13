@@ -1,0 +1,10 @@
+<Project>
+    <PropertyGroup>
+        <LangVersion>14.0</LangVersion>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+        <Deterministic>true</Deterministic>
+    </PropertyGroup>
+</Project>

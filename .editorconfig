@@ -1,0 +1,5 @@
+root = true
+
+[tests/**/*.cs]
+# DotPython test conventions use behavior-style names such as Method_Result_WhenCondition.
+dotnet_diagnostic.CA1707.severity = none
