@@ -1,0 +1,16 @@
+# .NET build output
+bin/
+obj/
+
+# JetBrains Rider / IntelliJ
+.idea/
+
+# Python caches (from .agents/ tooling)
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor cruft
+.DS_Store
+*~
+*.swp
