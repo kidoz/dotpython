@@ -12,5 +12,6 @@
 
     <ItemGroup>
         <ProjectReference Include="../../src/DotPython.Compiler/DotPython.Compiler.csproj" />
+        <ProjectReference Include="../../src/DotPython.ParserGenerator/DotPython.ParserGenerator.csproj" />
     </ItemGroup>
 </Project>
