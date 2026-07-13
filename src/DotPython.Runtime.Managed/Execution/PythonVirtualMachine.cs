@@ -35,14 +35,12 @@ internal sealed class PythonVirtualMachine
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        for (
-            var instructionPointer = 0;
-            instructionPointer < code.Instructions.Count;
-            instructionPointer++
-        )
+        var instructionPointer = 0;
+        while (instructionPointer < code.Instructions.Count)
         {
             _cancellationToken.ThrowIfCancellationRequested();
             var instruction = code.Instructions[instructionPointer];
+            instructionPointer++;
             if (_instructionsExecuted++ >= _instructionLimit)
             {
                 throw Fault(
@@ -66,9 +64,19 @@ internal sealed class PythonVirtualMachine
                 case PythonOpCode.PopTop:
                     Pop(instruction.Span);
                     break;
+                case PythonOpCode.CopyTop:
+                    _stack.Push(Peek(instruction.Span));
+                    break;
+                case PythonOpCode.RotateTwo:
+                    RotateTwo(instruction.Span);
+                    break;
+                case PythonOpCode.RotateThree:
+                    RotateThree(instruction.Span);
+                    break;
                 case PythonOpCode.UnaryPositive:
                 case PythonOpCode.UnaryNegative:
                 case PythonOpCode.UnaryInvert:
+                case PythonOpCode.UnaryNot:
                     _stack.Push(
                         ApplyUnary(instruction.OpCode, Pop(instruction.Span), instruction.Span)
                     );
@@ -81,6 +89,46 @@ internal sealed class PythonVirtualMachine
                 case PythonOpCode.BinaryModulo:
                 case PythonOpCode.BinaryPower:
                     ApplyBinary(instruction);
+                    break;
+                case PythonOpCode.CompareEqual:
+                case PythonOpCode.CompareNotEqual:
+                case PythonOpCode.CompareLessThan:
+                case PythonOpCode.CompareLessThanOrEqual:
+                case PythonOpCode.CompareGreaterThan:
+                case PythonOpCode.CompareGreaterThanOrEqual:
+                    ApplyComparison(instruction);
+                    break;
+                case PythonOpCode.Jump:
+                    instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
+                    break;
+                case PythonOpCode.JumpIfFalse:
+                    if (!IsTruthy(Pop(instruction.Span)))
+                    {
+                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
+                    }
+
+                    break;
+                case PythonOpCode.JumpIfFalseOrPop:
+                    if (!IsTruthy(Peek(instruction.Span)))
+                    {
+                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
+                    }
+                    else
+                    {
+                        Pop(instruction.Span);
+                    }
+
+                    break;
+                case PythonOpCode.JumpIfTrueOrPop:
+                    if (IsTruthy(Peek(instruction.Span)))
+                    {
+                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
+                    }
+                    else
+                    {
+                        Pop(instruction.Span);
+                    }
+
                     break;
                 case PythonOpCode.Call:
                     ApplyCall(instruction);
@@ -108,6 +156,13 @@ internal sealed class PythonVirtualMachine
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
         _stack.Push(ApplyBinary(instruction.OpCode, left, right, instruction.Span));
+    }
+
+    private void ApplyComparison(PythonInstruction instruction)
+    {
+        var right = Pop(instruction.Span);
+        var left = Pop(instruction.Span);
+        _stack.Push(ApplyComparison(instruction.OpCode, left, right, instruction.Span));
     }
 
     private void ApplyCall(PythonInstruction instruction)
@@ -143,6 +198,34 @@ internal sealed class PythonVirtualMachine
         throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
     }
 
+    private PythonValue Peek(TextSpan span)
+    {
+        if (_stack.TryPeek(out var value))
+        {
+            return value;
+        }
+
+        throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
+    }
+
+    private void RotateTwo(TextSpan span)
+    {
+        var top = Pop(span);
+        var second = Pop(span);
+        _stack.Push(top);
+        _stack.Push(second);
+    }
+
+    private void RotateThree(TextSpan span)
+    {
+        var top = Pop(span);
+        var second = Pop(span);
+        var third = Pop(span);
+        _stack.Push(top);
+        _stack.Push(third);
+        _stack.Push(second);
+    }
+
     private static PythonValue ConvertConstant(PythonConstant constant) =>
         constant.Type switch
         {
@@ -162,6 +245,11 @@ internal sealed class PythonVirtualMachine
 
     private static PythonValue ApplyUnary(PythonOpCode opCode, PythonValue operand, TextSpan span)
     {
+        if (opCode == PythonOpCode.UnaryNot)
+        {
+            return new PythonTruthValue(!IsTruthy(operand));
+        }
+
         operand = PromoteTruthValue(operand);
         return (opCode, operand) switch
         {
@@ -179,6 +267,104 @@ internal sealed class PythonVirtualMachine
                 ~value.Value
             ),
             _ => throw Fault("DPY4005", "Unsupported operand for unary operator.", span),
+        };
+    }
+
+    private static PythonTruthValue ApplyComparison(
+        PythonOpCode opCode,
+        PythonValue left,
+        PythonValue right,
+        TextSpan span
+    )
+    {
+        if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
+        {
+            var equal = AreEqual(left, right);
+            return new PythonTruthValue(opCode == PythonOpCode.CompareEqual ? equal : !equal);
+        }
+
+        var comparison = CompareOrdered(left, right, span);
+        return new PythonTruthValue(
+            opCode switch
+            {
+                PythonOpCode.CompareLessThan => comparison < 0,
+                PythonOpCode.CompareLessThanOrEqual => comparison <= 0,
+                PythonOpCode.CompareGreaterThan => comparison > 0,
+                PythonOpCode.CompareGreaterThanOrEqual => comparison >= 0,
+                _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+            }
+        );
+    }
+
+    private static bool AreEqual(PythonValue left, PythonValue right)
+    {
+        left = PromoteTruthValue(left);
+        right = PromoteTruthValue(right);
+
+        if (IsNumeric(left) && IsNumeric(right))
+        {
+            if (left is PythonComplexValue || right is PythonComplexValue)
+            {
+                return ToComplex(left) == ToComplex(right);
+            }
+
+            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
+            {
+                return ToDouble(left) == ToDouble(right);
+            }
+
+            return ((PythonWholeNumberValue)left).Value == ((PythonWholeNumberValue)right).Value;
+        }
+
+        return (left, right) switch
+        {
+            (PythonNoneValue, PythonNoneValue) => true,
+            (PythonTextValue leftText, PythonTextValue rightText) => string.Equals(
+                leftText.Value,
+                rightText.Value,
+                StringComparison.Ordinal
+            ),
+            (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
+                .Value.AsSpan()
+                .SequenceEqual(rightBytes.Value),
+            (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
+                ReferenceEquals(leftFunction, rightFunction),
+            _ => false,
+        };
+    }
+
+    private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
+    {
+        left = PromoteTruthValue(left);
+        right = PromoteTruthValue(right);
+
+        if (IsNumeric(left) && IsNumeric(right))
+        {
+            if (left is PythonComplexValue || right is PythonComplexValue)
+            {
+                throw Fault("DPY4005", "Complex numbers cannot be ordered.", span);
+            }
+
+            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
+            {
+                return ToDouble(left).CompareTo(ToDouble(right));
+            }
+
+            return ((PythonWholeNumberValue)left).Value.CompareTo(
+                ((PythonWholeNumberValue)right).Value
+            );
+        }
+
+        return (left, right) switch
+        {
+            (PythonTextValue leftText, PythonTextValue rightText) => string.CompareOrdinal(
+                leftText.Value,
+                rightText.Value
+            ),
+            (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
+                .Value.AsSpan()
+                .SequenceCompareTo(rightBytes.Value),
+            _ => throw Fault("DPY4005", "Values of these types cannot be ordered.", span),
         };
     }
 
@@ -385,6 +571,19 @@ internal sealed class PythonVirtualMachine
     private static bool IsNumeric(PythonValue value) =>
         value is PythonWholeNumberValue or PythonFloatingPointValue or PythonComplexValue;
 
+    private static bool IsTruthy(PythonValue value) =>
+        value switch
+        {
+            PythonNoneValue => false,
+            PythonTruthValue truth => truth.Value,
+            PythonWholeNumberValue whole => !whole.Value.IsZero,
+            PythonFloatingPointValue floatingPoint => floatingPoint.Value != 0,
+            PythonComplexValue complex => complex.Value != Complex.Zero,
+            PythonTextValue text => text.Value.Length != 0,
+            PythonByteSequenceValue bytes => bytes.Value.Length != 0,
+            _ => true,
+        };
+
     private static PythonValue PromoteTruthValue(PythonValue value) =>
         value is PythonTruthValue truth
             ? new PythonWholeNumberValue(truth.Value ? BigInteger.One : BigInteger.Zero)
@@ -406,6 +605,16 @@ internal sealed class PythonVirtualMachine
             PythonComplexValue complex => complex.Value,
             _ => throw new ArgumentOutOfRangeException(nameof(value)),
         };
+
+    private static int GetJumpTarget(PythonInstruction instruction, int instructionCount)
+    {
+        if (instruction.Operand >= 0 && instruction.Operand <= instructionCount)
+        {
+            return instruction.Operand;
+        }
+
+        throw Fault("DPY4007", "The DotPython jump target is invalid.", instruction.Span);
+    }
 
     private static PythonRuntimeException Fault(string code, string message, TextSpan span) =>
         new(code, message, span);

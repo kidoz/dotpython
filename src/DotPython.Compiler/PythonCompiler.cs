@@ -56,6 +56,12 @@ public static class PythonCompiler
                     CompileExpression(expressionStatement.Expression);
                     Emit(PythonOpCode.PopTop, 0, expressionStatement.Span);
                     break;
+                case PythonIfStatement ifStatement:
+                    CompileIfStatement(ifStatement);
+                    break;
+                case PythonWhileStatement whileStatement:
+                    CompileWhileStatement(whileStatement);
+                    break;
                 default:
                     Report(
                         "DPY3001",
@@ -88,9 +94,10 @@ public static class PythonCompiler
                     Emit(GetUnaryOpCode(unary.Operator), 0, unary.Span);
                     break;
                 case PythonBinaryExpression binary:
-                    CompileExpression(binary.Left);
-                    CompileExpression(binary.Right);
-                    Emit(GetBinaryOpCode(binary.Operator), 0, binary.Span);
+                    CompileBinaryExpression(binary);
+                    break;
+                case PythonComparisonExpression comparison:
+                    CompileComparisonExpression(comparison);
                     break;
                 case PythonCallExpression call:
                     CompileExpression(call.Target);
@@ -114,6 +121,109 @@ public static class PythonCompiler
                     );
                     break;
             }
+        }
+
+        private void CompileIfStatement(PythonIfStatement statement)
+        {
+            var endJumps = new List<int>();
+            foreach (var clause in statement.Clauses)
+            {
+                CompileExpression(clause.Condition);
+                var nextClauseJump = Emit(PythonOpCode.JumpIfFalse, 0, clause.Condition.Span);
+                CompileStatements(clause.Body);
+                endJumps.Add(Emit(PythonOpCode.Jump, 0, clause.Span));
+                PatchJump(nextClauseJump, _instructions.Count);
+            }
+
+            CompileStatements(statement.ElseBody);
+            foreach (var endJump in endJumps)
+            {
+                PatchJump(endJump, _instructions.Count);
+            }
+        }
+
+        private void CompileWhileStatement(PythonWhileStatement statement)
+        {
+            var loopStart = _instructions.Count;
+            CompileExpression(statement.Condition);
+            var exitJump = Emit(PythonOpCode.JumpIfFalse, 0, statement.Condition.Span);
+            CompileStatements(statement.Body);
+            Emit(PythonOpCode.Jump, loopStart, statement.Span);
+            PatchJump(exitJump, _instructions.Count);
+            CompileStatements(statement.ElseBody);
+        }
+
+        private void CompileStatements(IReadOnlyList<PythonStatement> statements)
+        {
+            foreach (var statement in statements)
+            {
+                CompileStatement(statement);
+            }
+        }
+
+        private void CompileBinaryExpression(PythonBinaryExpression expression)
+        {
+            CompileExpression(expression.Left);
+            if (expression.Operator is PythonBinaryOperator.And or PythonBinaryOperator.Or)
+            {
+                var jump = Emit(
+                    expression.Operator == PythonBinaryOperator.And
+                        ? PythonOpCode.JumpIfFalseOrPop
+                        : PythonOpCode.JumpIfTrueOrPop,
+                    0,
+                    expression.Left.Span
+                );
+                CompileExpression(expression.Right);
+                PatchJump(jump, _instructions.Count);
+                return;
+            }
+
+            CompileExpression(expression.Right);
+            Emit(GetBinaryOpCode(expression.Operator), 0, expression.Span);
+        }
+
+        private void CompileComparisonExpression(PythonComparisonExpression expression)
+        {
+            CompileExpression(expression.Left);
+            if (expression.Comparisons.Count == 1)
+            {
+                var comparison = expression.Comparisons[0];
+                CompileExpression(comparison.Right);
+                Emit(GetComparisonOpCode(comparison.Operator), 0, comparison.Span);
+                return;
+            }
+
+            var failureJumps = new List<int>();
+            for (var index = 0; index < expression.Comparisons.Count; index++)
+            {
+                var comparison = expression.Comparisons[index];
+                CompileExpression(comparison.Right);
+
+                if (index < expression.Comparisons.Count - 1)
+                {
+                    Emit(PythonOpCode.CopyTop, 0, comparison.Span);
+                    Emit(PythonOpCode.RotateThree, 0, comparison.Span);
+                    Emit(GetComparisonOpCode(comparison.Operator), 0, comparison.Span);
+                    failureJumps.Add(Emit(PythonOpCode.JumpIfFalseOrPop, 0, comparison.Span));
+                }
+                else
+                {
+                    Emit(GetComparisonOpCode(comparison.Operator), 0, comparison.Span);
+                }
+            }
+
+            var endJump = Emit(PythonOpCode.Jump, 0, expression.Span);
+            var failureTarget = _instructions.Count;
+            Emit(PythonOpCode.RotateTwo, 0, expression.Span);
+            Emit(PythonOpCode.PopTop, 0, expression.Span);
+            var endTarget = _instructions.Count;
+
+            foreach (var failureJump in failureJumps)
+            {
+                PatchJump(failureJump, failureTarget);
+            }
+
+            PatchJump(endJump, endTarget);
         }
 
         private int AddConstant(PythonConstant constant)
@@ -140,8 +250,17 @@ public static class PythonCompiler
             return _names.Count - 1;
         }
 
-        private void Emit(PythonOpCode opCode, int operand, TextSpan span) =>
+        private int Emit(PythonOpCode opCode, int operand, TextSpan span)
+        {
             _instructions.Add(new PythonInstruction(opCode, operand, span));
+            return _instructions.Count - 1;
+        }
+
+        private void PatchJump(int instructionIndex, int target) =>
+            _instructions[instructionIndex] = _instructions[instructionIndex] with
+            {
+                Operand = target,
+            };
 
         private void Report(string code, string message, TextSpan span) =>
             _diagnostics.Add(new Diagnostic(code, message, DiagnosticSeverity.Error, span));
@@ -152,6 +271,7 @@ public static class PythonCompiler
                 PythonUnaryOperator.Positive => PythonOpCode.UnaryPositive,
                 PythonUnaryOperator.Negative => PythonOpCode.UnaryNegative,
                 PythonUnaryOperator.Invert => PythonOpCode.UnaryInvert,
+                PythonUnaryOperator.Not => PythonOpCode.UnaryNot,
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
             };
 
@@ -165,6 +285,19 @@ public static class PythonCompiler
                 PythonBinaryOperator.FloorDivide => PythonOpCode.BinaryFloorDivide,
                 PythonBinaryOperator.Modulo => PythonOpCode.BinaryModulo,
                 PythonBinaryOperator.Power => PythonOpCode.BinaryPower,
+                _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
+            };
+
+        private static PythonOpCode GetComparisonOpCode(PythonComparisonOperator @operator) =>
+            @operator switch
+            {
+                PythonComparisonOperator.Equal => PythonOpCode.CompareEqual,
+                PythonComparisonOperator.NotEqual => PythonOpCode.CompareNotEqual,
+                PythonComparisonOperator.LessThan => PythonOpCode.CompareLessThan,
+                PythonComparisonOperator.LessThanOrEqual => PythonOpCode.CompareLessThanOrEqual,
+                PythonComparisonOperator.GreaterThan => PythonOpCode.CompareGreaterThan,
+                PythonComparisonOperator.GreaterThanOrEqual =>
+                    PythonOpCode.CompareGreaterThanOrEqual,
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
             };
     }

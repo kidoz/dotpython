@@ -73,4 +73,59 @@ public sealed class PythonCompilerTests
         var diagnostic = Assert.Single(result.Diagnostics);
         Assert.Equal("DPY3003", diagnostic.Code);
     }
+
+    [Fact]
+    public void Compile_EmitsPatchedControlFlowAndShortCircuitJumps()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "while value < 3:\n"
+                    + "    if value != 1 and enabled or fallback:\n"
+                    + "        print(value)\n"
+                    + "    value = value + 1\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.JumpIfFalse
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.JumpIfFalseOrPop
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.JumpIfTrueOrPop
+        );
+        Assert.All(
+            result.Code.Instructions.Where(instruction =>
+                instruction.OpCode
+                    is PythonOpCode.Jump
+                        or PythonOpCode.JumpIfFalse
+                        or PythonOpCode.JumpIfFalseOrPop
+                        or PythonOpCode.JumpIfTrueOrPop
+            ),
+            instruction => Assert.InRange(instruction.Operand, 0, result.Code.Instructions.Count)
+        );
+    }
+
+    [Fact]
+    public void Compile_PreservesOperandsForChainedComparisons()
+    {
+        var parseResult = PythonParser.Parse(new SourceText("print(1 < 2 < 3)"));
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        var opCodes = result.Code.Instructions.Select(instruction => instruction.OpCode);
+        Assert.Contains(PythonOpCode.CopyTop, opCodes);
+        Assert.Contains(PythonOpCode.RotateThree, opCodes);
+        Assert.Contains(PythonOpCode.RotateTwo, opCodes);
+        Assert.Equal(2, opCodes.Count(opCode => opCode == PythonOpCode.CompareLessThan));
+    }
 }

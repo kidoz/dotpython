@@ -53,6 +53,10 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print(True + 1, +True, ~False, None)", "2 1 -1 None")]
     [InlineData("print(2j, 1 + 2j)", "2j (1+2j)")]
     [InlineData("print(123456789012345678901234567890 + 1)", "123456789012345678901234567891")]
+    [InlineData("print(False and missing, True or missing)", "False True")]
+    [InlineData("print('' or 'fallback', 'value' and 42)", "fallback 42")]
+    [InlineData("print(not 0, not 'value', 1 < 2 < 3, 1 < 2 > 3)", "True False True False")]
+    [InlineData("print(1 == True, None != 0, 'a' < 'b', b'a' <= b'ab')", "True True True True")]
     public void Execute_MatchesSupportedPythonNumericAndTextSemantics(string code, string expected)
     {
         using var output = new StringWriter();
@@ -66,6 +70,33 @@ public sealed class ManagedPythonEngineTests
 
         Assert.True(result.Success);
         Assert.Equal(expected + Environment.NewLine, output.ToString());
+    }
+
+    [Fact]
+    public void Execute_RunsNestedIfWhileAndLoopElse()
+    {
+        const string code =
+            "value = 0\n"
+            + "while value < 3:\n"
+            + "    if value != 1:\n"
+            + "        print(value)\n"
+            + "    value = value + 1\n"
+            + "else:\n"
+            + "    print('done')\n";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"0{Environment.NewLine}2{Environment.NewLine}done{Environment.NewLine}",
+            output.ToString()
+        );
     }
 
     [Theory]
@@ -93,6 +124,23 @@ public sealed class ManagedPythonEngineTests
 
         var result = new ManagedPythonEngine().Execute(
             "print(42)",
+            "<test>",
+            TextWriter.Null,
+            options,
+            TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4001", diagnostic.Code);
+    }
+
+    [Fact]
+    public void Execute_StopsAnInfiniteWhileLoopAtTheInstructionLimit()
+    {
+        var options = new ManagedExecutionOptions { InstructionLimit = 20 };
+
+        var result = new ManagedPythonEngine().Execute(
+            "while True:\n    value = 1\n",
             "<test>",
             TextWriter.Null,
             options,

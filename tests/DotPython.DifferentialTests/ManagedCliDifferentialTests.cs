@@ -15,6 +15,13 @@ public sealed class ManagedCliDifferentialTests
     [InlineData("print(2 ** 3 ** 2)")]
     [InlineData("print(True + 1, +True, ~False, None)")]
     [InlineData("print(2j, 1 + 2j)")]
+    [InlineData("print(False and missing, True or missing)")]
+    [InlineData("print('' or 'fallback', 'value' and 42)")]
+    [InlineData("print(not 0, not 'value', 1 < 2 < 3, 1 < 2 > 3)")]
+    [InlineData("print(1 == True, None != 0, 'a' < 'b', b'a' <= b'ab')")]
+    [InlineData(
+        "value = 0\nwhile value < 3:\n    if value != 1:\n        print(value)\n    value = value + 1\nelse:\n    print('done')"
+    )]
     public void CommandExecution_MatchesPython314ForSupportedSubset(string code)
     {
         var python = FindPython314();
