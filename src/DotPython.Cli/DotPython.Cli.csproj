@@ -7,5 +7,6 @@
     <ItemGroup>
         <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
         <ProjectReference Include="../DotPython.Hosting/DotPython.Hosting.csproj" />
+        <ProjectReference Include="../DotPython.Runtime.Managed/DotPython.Runtime.Managed.csproj" />
     </ItemGroup>
 </Project>

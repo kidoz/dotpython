@@ -11,6 +11,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="../../src/DotPython.Cli/DotPython.Cli.csproj" />
         <ProjectReference Include="../../src/DotPython.Hosting/DotPython.Hosting.csproj" />
         <ProjectReference Include="../../src/DotPython.Runtime.Managed/DotPython.Runtime.Managed.csproj" />
     </ItemGroup>

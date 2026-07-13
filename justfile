@@ -16,4 +16,8 @@ lint:
 
 # Run the DotPython CLI. Additional arguments are passed through unchanged.
 run *args:
+    #!/bin/sh
+    if [ "${1-}" = "--" ]; then
+        shift
+    fi
     dotnet run --project src/DotPython.Cli/DotPython.Cli.csproj -- "$@"
