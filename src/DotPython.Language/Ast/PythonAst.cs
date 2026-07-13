@@ -19,6 +19,25 @@ public sealed record PythonAssignmentStatement(
 public sealed record PythonExpressionStatement(PythonExpression Expression, TextSpan Span)
     : PythonStatement(Span);
 
+public sealed record PythonIfStatement(
+    IReadOnlyList<PythonConditionalClause> Clauses,
+    IReadOnlyList<PythonStatement> ElseBody,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonConditionalClause(
+    PythonExpression Condition,
+    IReadOnlyList<PythonStatement> Body,
+    TextSpan Span
+) : PythonNode(Span);
+
+public sealed record PythonWhileStatement(
+    PythonExpression Condition,
+    IReadOnlyList<PythonStatement> Body,
+    IReadOnlyList<PythonStatement> ElseBody,
+    TextSpan Span
+) : PythonStatement(Span);
+
 public abstract record PythonExpression(TextSpan Span) : PythonNode(Span);
 
 public sealed record PythonNameExpression(string Name, TextSpan Span) : PythonExpression(Span);
@@ -41,6 +60,18 @@ public sealed record PythonBinaryExpression(
     PythonExpression Right,
     TextSpan Span
 ) : PythonExpression(Span);
+
+public sealed record PythonComparisonExpression(
+    PythonExpression Left,
+    IReadOnlyList<PythonComparisonPart> Comparisons,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public sealed record PythonComparisonPart(
+    PythonComparisonOperator Operator,
+    PythonExpression Right,
+    TextSpan Span
+) : PythonNode(Span);
 
 public sealed record PythonCallExpression(
     PythonExpression Target,
@@ -69,6 +100,7 @@ public enum PythonUnaryOperator
     Positive,
     Negative,
     Invert,
+    Not,
 }
 
 public enum PythonBinaryOperator
@@ -80,4 +112,16 @@ public enum PythonBinaryOperator
     FloorDivide,
     Modulo,
     Power,
+    And,
+    Or,
+}
+
+public enum PythonComparisonOperator
+{
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
 }

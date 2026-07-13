@@ -4,12 +4,21 @@
 
 file: [statements] ENDMARKER
 statements: statement+
-statement: simple_stmts
+statement: compound_stmt | simple_stmts
+compound_stmt: if_stmt | while_stmt
 simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
 simple_stmt: assignment | expression
 assignment: NAME '=' expression
 
-expression: sum
+if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
+while_stmt: 'while' expression ':' block ['else' ':' block]
+block: NEWLINE INDENT statements DEDENT | simple_stmts
+
+expression: disjunction
+disjunction: conjunction ('or' conjunction)*
+conjunction: inversion ('and' inversion)*
+inversion: 'not' inversion | comparison
+comparison: sum (('==' | '!=' | '<' | '<=' | '>' | '>=') sum)*
 sum: term (('+' | '-') term)*
 term: factor (('*' | '/' | '//' | '%') factor)*
 factor: ('+' | '-' | '~') factor | power

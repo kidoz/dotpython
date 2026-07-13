@@ -57,10 +57,55 @@ public sealed class PythonParserTests
         Assert.Equal(2, result.Module.Statements.Count);
     }
 
+    [Fact]
+    public void Parse_BuildsIfElifElseAndWhileSuites()
+    {
+        var result = Parse(
+            "while value < 3:\n"
+                + "    if value == 1:\n"
+                + "        print(value)\n"
+                + "    elif value == 2: print(value)\n"
+                + "    else:\n"
+                + "        print(0)\n"
+                + "    value = value + 1\n"
+                + "else:\n"
+                + "    print('done')\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var loop = Assert.IsType<PythonWhileStatement>(Assert.Single(result.Module.Statements));
+        Assert.Equal(2, loop.Body.Count);
+        Assert.Single(loop.ElseBody);
+
+        var conditional = Assert.IsType<PythonIfStatement>(loop.Body[0]);
+        Assert.Equal(2, conditional.Clauses.Count);
+        Assert.All(conditional.Clauses, clause => Assert.Single(clause.Body));
+        Assert.Single(conditional.ElseBody);
+    }
+
+    [Fact]
+    public void Parse_AppliesBooleanAndComparisonPrecedence()
+    {
+        var result = Parse("value = not first < middle < last and fallback or final");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var disjunction = Assert.IsType<PythonBinaryExpression>(assignment.Value);
+        Assert.Equal(PythonBinaryOperator.Or, disjunction.Operator);
+        var conjunction = Assert.IsType<PythonBinaryExpression>(disjunction.Left);
+        Assert.Equal(PythonBinaryOperator.And, conjunction.Operator);
+        var inversion = Assert.IsType<PythonUnaryExpression>(conjunction.Left);
+        Assert.Equal(PythonUnaryOperator.Not, inversion.Operator);
+        var comparison = Assert.IsType<PythonComparisonExpression>(inversion.Operand);
+        Assert.Equal(2, comparison.Comparisons.Count);
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
-    [InlineData("if True:\n    print(1)\n", "DPY2004")]
+    [InlineData("for value in values:\n    print(value)\n", "DPY2004")]
     [InlineData("None = 42", "DPY2005")]
     [InlineData("pass", "DPY2004")]
     [InlineData("print($)", "DPY1001")]
