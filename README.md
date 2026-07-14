@@ -132,6 +132,7 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 | `src/DotPython.Cli` | `dotpython` command-line front end. |
 | `src/DotPython.Build.Tasks` | Deterministic out-of-process module compiler and C# facade generator. |
 | `src/DotPython.Sdk` | Additive MSBuild SDK props, targets, and package layout. |
+| `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
 
 ## Development
 
@@ -160,6 +161,20 @@ dotnet test DotPython.sln
 | `tests/DotPython.DifferentialTests` | Behavior compared against the CPython reference. |
 | `tests/DotPython.PackageCompatibilityTests` | Package/language compatibility matrix. |
 | `tests/DotPython.BuildIntegrationTests` | `.dpyproj` SDK packaging, ProjectReference, incremental, and runtime execution. |
+
+## Benchmarking
+
+Run a short managed-runtime sample in Release mode:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*RuntimeBenchmarks*' --job short
+```
+
+The benchmark project reports time and managed allocations separately for tokenization, parsing,
+compilation, precompiled artifact execution, and end-to-end source execution. Treat results as
+machine-specific observations; do not compare results collected on different hardware or runtime
+configurations.
 
 ## License
 
