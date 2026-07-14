@@ -47,6 +47,33 @@ internal static class BenchmarkPrograms
         return new SourceText(source, "runtime-benchmark.py");
     }
 
+    internal static SourceText CreateComparisonSpecializationSource(
+        ComparisonOperandFamily operandFamily
+    )
+    {
+        var operands = operandFamily switch
+        {
+            ComparisonOperandFamily.WholeNumber => (Left: "10000", Right: "11000"),
+            ComparisonOperandFamily.FloatingPoint => (Left: "10000.0", Right: "11000.0"),
+            _ => throw new ArgumentOutOfRangeException(nameof(operandFamily)),
+        };
+        return new SourceText(
+            "def less_than(left, right): return left < right\n"
+                + "def compare_values():\n"
+                + "    current = 0\n"
+                + "    value = False\n"
+                + "    while current != 10000:\n"
+                + "        value = less_than("
+                + operands.Left
+                + ", "
+                + operands.Right
+                + ")\n"
+                + "        current = current + 1\n"
+                + "    return value\n",
+            "comparison-specialization-benchmark.py"
+        );
+    }
+
     internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
         new(
             scenario switch
