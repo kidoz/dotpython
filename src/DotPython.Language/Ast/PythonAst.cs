@@ -11,7 +11,7 @@ public sealed record PythonModule(IReadOnlyList<PythonStatement> Statements, Tex
 public abstract record PythonStatement(TextSpan Span) : PythonNode(Span);
 
 public sealed record PythonAssignmentStatement(
-    PythonNameExpression Target,
+    PythonExpression Target,
     PythonExpression Value,
     TextSpan Span
 ) : PythonStatement(Span);
@@ -45,6 +45,14 @@ public sealed record PythonConditionalClause(
 
 public sealed record PythonWhileStatement(
     PythonExpression Condition,
+    IReadOnlyList<PythonStatement> Body,
+    IReadOnlyList<PythonStatement> ElseBody,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonForStatement(
+    PythonNameExpression Target,
+    PythonExpression Iterable,
     IReadOnlyList<PythonStatement> Body,
     IReadOnlyList<PythonStatement> ElseBody,
     TextSpan Span
@@ -96,6 +104,23 @@ public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elemen
 
 public sealed record PythonTupleExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);
+
+public sealed record PythonDictionaryExpression(
+    IReadOnlyList<PythonDictionaryItem> Items,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public sealed record PythonDictionaryItem(
+    PythonExpression Key,
+    PythonExpression Value,
+    TextSpan Span
+) : PythonNode(Span);
+
+public sealed record PythonSubscriptionExpression(
+    PythonExpression Target,
+    PythonExpression Index,
+    TextSpan Span
+) : PythonExpression(Span);
 
 public sealed record PythonParenthesizedExpression(PythonExpression Expression, TextSpan Span)
     : PythonExpression(Span);

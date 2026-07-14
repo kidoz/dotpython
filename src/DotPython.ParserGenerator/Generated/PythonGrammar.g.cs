@@ -5,20 +5,21 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "925fbab51040e7acb626f7db068bdc6de3db486e64a6fff73ff451b42b4e389b";
-    internal const int RuleCount = 29;
+    internal const string SourceSha256 = "c69eafa63a1b5673b440bea3b21a53f8de776b0540bcf0731fdd4fa6788c8915";
+    internal const int RuleCount = 33;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | function_def
+        compound_stmt: if_stmt | while_stmt | for_stmt | function_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
         simple_stmt: assignment | return_stmt | expression
-        assignment: NAME '=' expression
+        assignment: primary '=' expression
         return_stmt: 'return' [expression]
         if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
         while_stmt: 'while' expression ':' block ['else' ':' block]
+        for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]
         function_def: 'def' NAME '(' [parameters] ')' ':' block
         parameters: ','.NAME+ [',']
         block: NEWLINE INDENT statements DEDENT | simple_stmts
@@ -31,12 +32,15 @@ internal static class GeneratedPythonGrammar
         term: factor (('*' | '/' | '//' | '%') factor)*
         factor: ('+' | '-' | '~') factor | power
         power: primary ['**' factor]
-        primary: atom ('(' [arguments] ')')*
+        primary: atom (('(' [arguments] ')') | ('[' expression ']'))*
         arguments: expression_list
         expression_list: ','.expression+ [',']
-        atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | group
+        atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
         list_display: '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
+        dict_display: '{' [dict_items] '}'
+        dict_items: ','.dict_item+ [',']
+        dict_item: expression ':' expression
         group: '(' expression ')'
         """;
 

@@ -171,7 +171,11 @@ public static class PythonSymbolBinder
             switch (statement)
             {
                 case PythonAssignmentStatement assignment:
-                    AddLocal(assignment.Target.Name, localNames, localNameSet);
+                    if (assignment.Target is PythonNameExpression assignmentTarget)
+                    {
+                        AddLocal(assignmentTarget.Name, localNames, localNameSet);
+                    }
+
                     break;
                 case PythonFunctionDefinitionStatement function:
                     AddLocal(function.Name.Name, localNames, localNameSet);
@@ -185,6 +189,11 @@ public static class PythonSymbolBinder
                     CollectBoundNames(conditional.ElseBody, localNames, localNameSet);
                     break;
                 case PythonWhileStatement loop:
+                    CollectBoundNames(loop.Body, localNames, localNameSet);
+                    CollectBoundNames(loop.ElseBody, localNames, localNameSet);
+                    break;
+                case PythonForStatement loop:
+                    AddLocal(loop.Target.Name, localNames, localNameSet);
                     CollectBoundNames(loop.Body, localNames, localNameSet);
                     CollectBoundNames(loop.ElseBody, localNames, localNameSet);
                     break;
@@ -205,6 +214,12 @@ public static class PythonSymbolBinder
             {
                 case PythonAssignmentStatement assignment:
                     CollectReferences(assignment.Value, references);
+                    if (assignment.Target is PythonSubscriptionExpression subscription)
+                    {
+                        CollectReferences(subscription.Target, references);
+                        CollectReferences(subscription.Index, references);
+                    }
+
                     break;
                 case PythonExpressionStatement expression:
                     CollectReferences(expression.Expression, references);
@@ -237,6 +252,11 @@ public static class PythonSymbolBinder
                     break;
                 case PythonWhileStatement loop:
                     CollectReferences(loop.Condition, references);
+                    CollectReferences(loop.Body, references, diagnostics, scopeKind);
+                    CollectReferences(loop.ElseBody, references, diagnostics, scopeKind);
+                    break;
+                case PythonForStatement loop:
+                    CollectReferences(loop.Iterable, references);
                     CollectReferences(loop.Body, references, diagnostics, scopeKind);
                     CollectReferences(loop.ElseBody, references, diagnostics, scopeKind);
                     break;
@@ -293,6 +313,18 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonDictionaryExpression dictionary:
+                foreach (var item in dictionary.Items)
+                {
+                    CollectReferences(item.Key, references);
+                    CollectReferences(item.Value, references);
+                }
+
+                break;
+            case PythonSubscriptionExpression subscription:
+                CollectReferences(subscription.Target, references);
+                CollectReferences(subscription.Index, references);
+                break;
             case PythonParenthesizedExpression parenthesized:
                 CollectReferences(parenthesized.Expression, references);
                 break;
@@ -326,6 +358,18 @@ public static class PythonSymbolBinder
 
                     break;
                 case PythonWhileStatement loop:
+                    foreach (var nested in EnumerateFunctions(loop.Body))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateFunctions(loop.ElseBody))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonForStatement loop:
                     foreach (var nested in EnumerateFunctions(loop.Body))
                     {
                         yield return nested;

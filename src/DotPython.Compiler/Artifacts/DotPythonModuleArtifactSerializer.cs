@@ -429,6 +429,7 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.JumpIfFalse:
             case PythonOpCode.JumpIfFalseOrPop:
             case PythonOpCode.JumpIfTrueOrPop:
+            case PythonOpCode.ForIter:
                 if (instruction.Operand < 0 || instruction.Operand > code.Instructions.Count)
                 {
                     throw new InvalidDataException(
@@ -438,7 +439,7 @@ public static class DotPythonModuleArtifactSerializer
 
                 break;
             case PythonOpCode.Call:
-                if (instruction.Operand < 0)
+                if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(
                         $"Instruction {instructionIndex} has an invalid argument count."
@@ -448,7 +449,8 @@ public static class DotPythonModuleArtifactSerializer
                 break;
             case PythonOpCode.BuildList:
             case PythonOpCode.BuildTuple:
-                if (instruction.Operand < 0)
+            case PythonOpCode.BuildDictionary:
+                if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(
                         $"Instruction {instructionIndex} has an invalid element count."

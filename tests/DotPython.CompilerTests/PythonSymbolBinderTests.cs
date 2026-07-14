@@ -119,4 +119,25 @@ public sealed class PythonSymbolBinderTests
             Assert.Single(result.ModuleScope.Children).ReferencedNames
         );
     }
+
+    [Fact]
+    public void Bind_ClassifiesForTargetsAndSubscriptionReferences()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def update(values, mapping):\n"
+                    + "    for key in mapping:\n"
+                    + "        values[key] = mapping[key]\n"
+                    + "    return values\n"
+            )
+        );
+
+        var result = PythonSymbolBinder.Bind(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.Single(result.ModuleScope.Children);
+        Assert.Equal(["values", "mapping", "key"], function.LocalNames);
+        Assert.Equal(["mapping", "key", "values"], function.ReferencedNames);
+    }
 }

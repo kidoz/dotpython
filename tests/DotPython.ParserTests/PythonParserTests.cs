@@ -16,7 +16,7 @@ public sealed class PythonParserTests
         Assert.Equal(2, result.Module.Statements.Count);
 
         var assignment = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
-        Assert.Equal("value", assignment.Target.Name);
+        Assert.Equal("value", Assert.IsType<PythonNameExpression>(assignment.Target).Name);
         var addition = Assert.IsType<PythonBinaryExpression>(assignment.Value);
         Assert.Equal(PythonBinaryOperator.Add, addition.Operator);
         var multiplication = Assert.IsType<PythonBinaryExpression>(addition.Right);
@@ -72,6 +72,36 @@ public sealed class PythonParserTests
         Assert.IsType<PythonParenthesizedExpression>(list.Elements[2]);
         Assert.Empty(Assert.IsType<PythonTupleExpression>(list.Elements[3]).Elements);
         Assert.Equal(2, Assert.IsType<PythonListExpression>(list.Elements[4]).Elements.Count);
+    }
+
+    [Fact]
+    public void Parse_BuildsDictionarySubscriptionsAssignmentsAndForElse()
+    {
+        var result = Parse(
+            "mapping = {'first': [1, 2], 'second': []}\n"
+                + "mapping['second'] = mapping['first']\n"
+                + "for key in mapping:\n"
+                + "    print(mapping[key])\n"
+                + "else:\n"
+                + "    print('done')\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(3, result.Module.Statements.Count);
+        var dictionaryAssignment = Assert.IsType<PythonAssignmentStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.Equal(
+            2,
+            Assert.IsType<PythonDictionaryExpression>(dictionaryAssignment.Value).Items.Count
+        );
+        var mutation = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]);
+        Assert.IsType<PythonSubscriptionExpression>(mutation.Target);
+        Assert.IsType<PythonSubscriptionExpression>(mutation.Value);
+        var loop = Assert.IsType<PythonForStatement>(result.Module.Statements[2]);
+        Assert.Equal("key", loop.Target.Name);
+        Assert.Single(loop.Body);
+        Assert.Single(loop.ElseBody);
     }
 
     [Fact]
@@ -157,7 +187,6 @@ public sealed class PythonParserTests
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
-    [InlineData("for value in values:\n    print(value)\n", "DPY2004")]
     [InlineData("None = 42", "DPY2005")]
     [InlineData("pass", "DPY2004")]
     [InlineData("return 42", "DPY2008")]

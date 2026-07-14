@@ -65,7 +65,7 @@ public static class PythonCompiler
             {
                 case PythonAssignmentStatement assignment:
                     CompileExpression(assignment.Value);
-                    EmitStoreName(assignment.Target);
+                    CompileAssignmentTarget(assignment.Target);
                     break;
                 case PythonExpressionStatement expressionStatement:
                     CompileExpression(expressionStatement.Expression);
@@ -76,6 +76,9 @@ public static class PythonCompiler
                     break;
                 case PythonWhileStatement whileStatement:
                     CompileWhileStatement(whileStatement);
+                    break;
+                case PythonForStatement forStatement:
+                    CompileForStatement(forStatement);
                     break;
                 case PythonFunctionDefinitionStatement function:
                     CompileFunctionDefinition(function);
@@ -137,6 +140,20 @@ public static class PythonCompiler
                     CompileElements(tuple.Elements);
                     Emit(PythonOpCode.BuildTuple, tuple.Elements.Count, tuple.Span);
                     break;
+                case PythonDictionaryExpression dictionary:
+                    foreach (var item in dictionary.Items)
+                    {
+                        CompileExpression(item.Key);
+                        CompileExpression(item.Value);
+                    }
+
+                    Emit(PythonOpCode.BuildDictionary, dictionary.Items.Count, dictionary.Span);
+                    break;
+                case PythonSubscriptionExpression subscription:
+                    CompileExpression(subscription.Target);
+                    CompileExpression(subscription.Index);
+                    Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
+                    break;
                 default:
                     Report(
                         "DPY3002",
@@ -157,6 +174,25 @@ public static class PythonCompiler
             foreach (var element in elements)
             {
                 CompileExpression(element);
+            }
+        }
+
+        private void CompileAssignmentTarget(PythonExpression target)
+        {
+            switch (target)
+            {
+                case PythonNameExpression name:
+                    EmitStoreName(name);
+                    break;
+                case PythonSubscriptionExpression subscription:
+                    CompileExpression(subscription.Target);
+                    CompileExpression(subscription.Index);
+                    Emit(PythonOpCode.StoreSubscript, 0, subscription.Span);
+                    break;
+                default:
+                    Report("DPY3003", "This expression cannot be assigned to.", target.Span);
+                    Emit(PythonOpCode.PopTop, 0, target.Span);
+                    break;
             }
         }
 
@@ -226,6 +262,19 @@ public static class PythonCompiler
             var loopStart = _instructions.Count;
             CompileExpression(statement.Condition);
             var exitJump = Emit(PythonOpCode.JumpIfFalse, 0, statement.Condition.Span);
+            CompileStatements(statement.Body);
+            Emit(PythonOpCode.Jump, loopStart, statement.Span);
+            PatchJump(exitJump, _instructions.Count);
+            CompileStatements(statement.ElseBody);
+        }
+
+        private void CompileForStatement(PythonForStatement statement)
+        {
+            CompileExpression(statement.Iterable);
+            Emit(PythonOpCode.GetIterator, 0, statement.Iterable.Span);
+            var loopStart = _instructions.Count;
+            var exitJump = Emit(PythonOpCode.ForIter, 0, statement.Iterable.Span);
+            EmitStoreName(statement.Target);
             CompileStatements(statement.Body);
             Emit(PythonOpCode.Jump, loopStart, statement.Span);
             PatchJump(exitJump, _instructions.Count);

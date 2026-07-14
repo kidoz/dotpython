@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 4.
+# DotPython executable PEG subset, version 5.
 # Upstream tag: CPython v3.14.6.
 # Upstream commit: c63aec69bd59c55314c06c23f4c22c03de76fe45.
 # Provenance: https://github.com/python/cpython/blob/c63aec69bd59c55314c06c23f4c22c03de76fe45/Grammar/python.gram
@@ -8,14 +8,15 @@
 file: [statements] ENDMARKER
 statements: statement+
 statement: compound_stmt | simple_stmts
-compound_stmt: if_stmt | while_stmt | function_def
+compound_stmt: if_stmt | while_stmt | for_stmt | function_def
 simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
 simple_stmt: assignment | return_stmt | expression
-assignment: NAME '=' expression
+assignment: primary '=' expression
 return_stmt: 'return' [expression]
 
 if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
 while_stmt: 'while' expression ':' block ['else' ':' block]
+for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]
 function_def: 'def' NAME '(' [parameters] ')' ':' block
 parameters: ','.NAME+ [',']
 block: NEWLINE INDENT statements DEDENT | simple_stmts
@@ -29,10 +30,13 @@ sum: term (('+' | '-') term)*
 term: factor (('*' | '/' | '//' | '%') factor)*
 factor: ('+' | '-' | '~') factor | power
 power: primary ['**' factor]
-primary: atom ('(' [arguments] ')')*
+primary: atom (('(' [arguments] ')') | ('[' expression ']'))*
 arguments: expression_list
 expression_list: ','.expression+ [',']
-atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | group
+atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
 list_display: '[' [expression_list] ']'
 tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
+dict_display: '{' [dict_items] '}'
+dict_items: ','.dict_item+ [',']
+dict_item: expression ':' expression
 group: '(' expression ')'

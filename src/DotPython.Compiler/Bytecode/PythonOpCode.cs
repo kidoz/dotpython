@@ -40,4 +40,9 @@ public enum PythonOpCode
     StoreCell = 35,
     BuildList = 36,
     BuildTuple = 37,
+    BuildDictionary = 38,
+    LoadSubscript = 39,
+    StoreSubscript = 40,
+    GetIterator = 41,
+    ForIter = 42,
 }

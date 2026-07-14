@@ -77,6 +77,48 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsDictionarySubscriptionMutationAndIterationBytecode()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "values = [1]\n"
+                    + "values[0] = 2\n"
+                    + "mapping = {'value': values[0]}\n"
+                    + "for key in mapping: print(mapping[key])\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction =>
+                instruction.OpCode == PythonOpCode.BuildDictionary && instruction.Operand == 1
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreSubscript
+        );
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.LoadSubscript
+            )
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.GetIterator
+        );
+        var forIter = Assert.Single(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ForIter
+        );
+        Assert.InRange(forIter.Operand, 0, result.Code.Instructions.Count);
+    }
+
+    [Fact]
     public void Compile_RejectsFormattedStringsUntilComponentParsingExists()
     {
         var parseResult = PythonParser.Parse(new SourceText("print(f'{40 + 2}')"));
