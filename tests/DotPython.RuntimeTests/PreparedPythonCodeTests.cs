@@ -96,6 +96,174 @@ public sealed class PreparedPythonCodeTests
     }
 
     [Fact]
+    public void ReturnLocalContinuation_PreservesInstructionAccountingAndFailureCleanup()
+    {
+        var code = Compile(
+            "def identity(value): return value\n"
+                + "def invoke():\n"
+                + "    result = identity(42)\n"
+                + "    return result\n"
+        );
+        var artifact = DotPythonModuleArtifact.Create("return_local_continuation", code);
+        var optimizedEngine = new ManagedPythonEngine();
+        var controlEngine = new ManagedPythonEngine();
+
+        Assert.True(
+            optimizedEngine
+                .Execute(
+                    artifact,
+                    TextWriter.Null,
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+                .Success
+        );
+        Assert.True(
+            controlEngine
+                .Execute(
+                    artifact,
+                    TextWriter.Null,
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+                .Success
+        );
+
+        var limitedOptions = new ManagedExecutionOptions { InstructionLimit = 5 };
+        var optimizedFault = Assert.Throws<PythonRuntimeException>(() =>
+            optimizedEngine.Invoke(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                TextWriter.Null,
+                limitedOptions,
+                TestContext.Current.CancellationToken
+            )
+        );
+        var controlFault = Assert.Throws<PythonRuntimeException>(() =>
+            controlEngine.InvokeWithoutReturnLocalContinuation(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                TextWriter.Null,
+                limitedOptions,
+                TestContext.Current.CancellationToken
+            )
+        );
+
+        Assert.Equal("DPY4001", optimizedFault.Code);
+        Assert.Equal(controlFault.Code, optimizedFault.Code);
+        Assert.Equal(controlFault.Span, optimizedFault.Span);
+        AssertWholeNumber(42, Invoke(optimizedEngine, "invoke", Array.Empty<PythonValue>()));
+        AssertWholeNumber(
+            42,
+            controlEngine.InvokeWithoutReturnLocalContinuation(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                TextWriter.Null,
+                new ManagedExecutionOptions(),
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
+    public void ReturnLocalContinuation_LeavesCapturedStoresOnTheGeneralPath()
+    {
+        var code = Compile(
+            "def identity(value): return value\n"
+                + "def outer():\n"
+                + "    result = 0\n"
+                + "    def capture(): return result\n"
+                + "    result = identity(42)\n"
+                + "    return capture()\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("return_cell_control", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(initialization.Success);
+        AssertWholeNumber(42, Invoke(engine, "outer", Array.Empty<PythonValue>()));
+        AssertWholeNumber(
+            42,
+            engine.InvokeWithoutReturnLocalContinuation(
+                "outer",
+                Array.Empty<PythonValue>(),
+                TextWriter.Null,
+                new ManagedExecutionOptions(),
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
+    public void ReturnLocalContinuation_PreservesCancellationBeforeTheConsumedStore()
+    {
+        var code = Compile(
+            "def callee():\n"
+                + "    print()\n"
+                + "    return 42\n"
+                + "def invoke():\n"
+                + "    result = callee()\n"
+                + "    return result\n"
+        );
+        var artifact = DotPythonModuleArtifact.Create("return_local_cancellation", code);
+        var optimizedEngine = new ManagedPythonEngine();
+        var controlEngine = new ManagedPythonEngine();
+
+        Assert.True(
+            optimizedEngine
+                .Execute(
+                    artifact,
+                    TextWriter.Null,
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+                .Success
+        );
+        Assert.True(
+            controlEngine
+                .Execute(
+                    artifact,
+                    TextWriter.Null,
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+                .Success
+        );
+
+        using var optimizedCancellation = new CancellationTokenSource();
+        using var controlCancellation = new CancellationTokenSource();
+        Assert.Throws<OperationCanceledException>(() =>
+            optimizedEngine.Invoke(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                new CancelOnWriteTextWriter(optimizedCancellation),
+                new ManagedExecutionOptions(),
+                optimizedCancellation.Token
+            )
+        );
+        Assert.Throws<OperationCanceledException>(() =>
+            controlEngine.InvokeWithoutReturnLocalContinuation(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                new CancelOnWriteTextWriter(controlCancellation),
+                new ManagedExecutionOptions(),
+                controlCancellation.Token
+            )
+        );
+
+        AssertWholeNumber(42, Invoke(optimizedEngine, "invoke", Array.Empty<PythonValue>()));
+        AssertWholeNumber(
+            42,
+            controlEngine.InvokeWithoutReturnLocalContinuation(
+                "invoke",
+                Array.Empty<PythonValue>(),
+                TextWriter.Null,
+                new ManagedExecutionOptions(),
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
     public void TruthValues_AreCanonicalSingletons()
     {
         Assert.Same(PythonTruthValue.True, PythonTruthValue.FromBoolean(true));
@@ -716,5 +884,15 @@ public sealed class PreparedPythonCodeTests
         Assert.Empty(parse.Diagnostics);
         Assert.Empty(compilation.Diagnostics);
         return compilation.Code;
+    }
+
+    private sealed class CancelOnWriteTextWriter(CancellationTokenSource cancellation)
+        : StringWriter
+    {
+        public override void WriteLine(string? value)
+        {
+            cancellation.Cancel();
+            base.WriteLine(value);
+        }
     }
 }

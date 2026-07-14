@@ -36,6 +36,39 @@ public sealed class ManagedPythonEngine
         TextWriter output,
         ManagedExecutionOptions options,
         CancellationToken cancellationToken
+    ) =>
+        InvokeCore(
+            functionName,
+            arguments,
+            output,
+            options,
+            enableReturnLocalContinuation: true,
+            cancellationToken
+        );
+
+    internal PythonValue InvokeWithoutReturnLocalContinuation(
+        string functionName,
+        IReadOnlyList<PythonValue> arguments,
+        TextWriter output,
+        ManagedExecutionOptions options,
+        CancellationToken cancellationToken
+    ) =>
+        InvokeCore(
+            functionName,
+            arguments,
+            output,
+            options,
+            enableReturnLocalContinuation: false,
+            cancellationToken
+        );
+
+    private PythonValue InvokeCore(
+        string functionName,
+        IReadOnlyList<PythonValue> arguments,
+        TextWriter output,
+        ManagedExecutionOptions options,
+        bool enableReturnLocalContinuation,
+        CancellationToken cancellationToken
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
@@ -51,6 +84,7 @@ public sealed class ManagedPythonEngine
                 _globals,
                 output,
                 options.InstructionLimit,
+                enableReturnLocalContinuation,
                 cancellationToken
             );
             return virtualMachine.Invoke(functionName, arguments);
@@ -80,6 +114,7 @@ public sealed class ManagedPythonEngine
                 _globals,
                 output,
                 options.InstructionLimit,
+                enableReturnLocalContinuation: false,
                 cancellationToken
             );
             return virtualMachine.InvokeProfiled(functionName, arguments, profile);
@@ -170,6 +205,7 @@ public sealed class ManagedPythonEngine
                 _globals,
                 output,
                 options.InstructionLimit,
+                enableReturnLocalContinuation: true,
                 cancellationToken
             );
             virtualMachine.Execute(PrepareCode(code));

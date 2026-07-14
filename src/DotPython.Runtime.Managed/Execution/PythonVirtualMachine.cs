@@ -10,6 +10,7 @@ internal sealed class PythonVirtualMachine
     private static readonly PythonCell[] NoCells = [];
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
+    private readonly bool _enableReturnLocalContinuation;
     private readonly Stack<PythonValue> _evaluationStack = [];
     private readonly PythonGlobalNamespace _globals;
     private readonly long _instructionLimit;
@@ -27,12 +28,14 @@ internal sealed class PythonVirtualMachine
         PythonGlobalNamespace globals,
         TextWriter output,
         long instructionLimit,
+        bool enableReturnLocalContinuation,
         CancellationToken cancellationToken
     )
     {
         _globals = globals;
         _output = output;
         _instructionLimit = instructionLimit;
+        _enableReturnLocalContinuation = enableReturnLocalContinuation;
         _cancellationToken = cancellationToken;
         _builtins = new Dictionary<string, PythonValue>(StringComparer.Ordinal)
         {
@@ -653,8 +656,16 @@ internal sealed class PythonVirtualMachine
 
     private void PushEmptyFunctionFrame(PythonFunctionValue function, TextSpan span)
     {
+        var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
         Pop(span);
-        PushFrame(function.Code, function.Globals, _localsCount, 0, NoCells);
+        PushFrame(
+            function.Code,
+            function.Globals,
+            _localsCount,
+            0,
+            NoCells,
+            hasReturnLocalContinuation
+        );
     }
 
     private PythonValue[] PopArguments(int argumentCount, TextSpan span)
@@ -680,6 +691,7 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         var cells = CreateCells(function.Code, function.Closure, span);
         for (var index = argumentCount - 1; index >= 0; index--)
@@ -693,7 +705,8 @@ internal sealed class PythonVirtualMachine
             function.Globals,
             localsBase,
             function.Code.Definition.VariableNames.Count,
-            cells
+            cells,
+            hasReturnLocalContinuation
         );
     }
 
@@ -778,7 +791,8 @@ internal sealed class PythonVirtualMachine
         PythonGlobalNamespace globals,
         int localsBase,
         int localsCount,
-        PythonCell[] cells
+        PythonCell[] cells,
+        bool hasReturnLocalContinuation = false
     )
     {
         if (_frameCount == _frames.Length)
@@ -792,8 +806,33 @@ internal sealed class PythonVirtualMachine
             localsBase,
             localsCount,
             cells,
-            _evaluationStack.Count
+            _evaluationStack.Count,
+            hasReturnLocalContinuation
         );
+    }
+
+    private bool CaptureReturnLocalContinuation()
+    {
+        if (!_enableReturnLocalContinuation)
+        {
+            return false;
+        }
+
+        ref var caller = ref CurrentFrame;
+        var instructionIndex = caller.InstructionPointer;
+        if ((uint)instructionIndex >= (uint)caller.Code.Definition.Instructions.Count)
+        {
+            return false;
+        }
+
+        var instruction = caller.Code.Definition.Instructions[instructionIndex];
+        if (instruction.OpCode != PythonOpCode.StoreLocal)
+        {
+            return false;
+        }
+
+        caller.InstructionPointer++;
+        return true;
     }
 
     private void MakeFunction(PythonInstruction instruction)
@@ -868,6 +907,7 @@ internal sealed class PythonVirtualMachine
         var evaluationStackBase = CurrentFrame.EvaluationStackBase;
         var localsBase = CurrentFrame.LocalsBase;
         var localsCount = CurrentFrame.LocalsCount;
+        var hasReturnLocalContinuation = CurrentFrame.HasReturnLocalContinuation;
         while (_evaluationStack.Count > evaluationStackBase)
         {
             _evaluationStack.Pop();
@@ -878,7 +918,36 @@ internal sealed class PythonVirtualMachine
         _frames[--_frameCount] = default;
         if (_frameCount != 0)
         {
-            _evaluationStack.Push(value);
+            if (hasReturnLocalContinuation)
+            {
+                ref var caller = ref CurrentFrame;
+                var instructionIndex = caller.InstructionPointer - 1;
+                var instruction = caller.Code.Definition.Instructions[instructionIndex];
+                if (instruction.OpCode != PythonOpCode.StoreLocal)
+                {
+                    throw Fault(
+                        "DPY4007",
+                        "The managed return continuation is invalid.",
+                        instruction.Span
+                    );
+                }
+
+                _cancellationToken.ThrowIfCancellationRequested();
+                if (_instructionsExecuted++ >= _instructionLimit)
+                {
+                    throw Fault(
+                        "DPY4001",
+                        "The managed instruction limit was exceeded.",
+                        instruction.Span
+                    );
+                }
+
+                StoreLocal(instruction.Operand, value, instruction.Span);
+            }
+            else
+            {
+                _evaluationStack.Push(value);
+            }
         }
         else
         {
@@ -1400,22 +1469,29 @@ internal sealed class PythonVirtualMachine
             int localsBase,
             int localsCount,
             PythonCell[] cells,
-            int evaluationStackBase
+            int evaluationStackBase,
+            bool hasReturnLocalContinuation
         )
         {
             Code = code;
             Cells = cells;
-            EvaluationStackBase = evaluationStackBase;
+            _encodedEvaluationStackBase = hasReturnLocalContinuation
+                ? ~evaluationStackBase
+                : evaluationStackBase;
             Globals = globals;
             LocalsBase = localsBase;
             LocalsCount = localsCount;
         }
 
+        // A complemented base marks a return-local continuation without growing each frame.
+        private readonly int _encodedEvaluationStackBase;
+
         internal PreparedPythonCode Code { get; }
 
         internal PythonCell[] Cells { get; }
 
-        internal int EvaluationStackBase { get; }
+        internal int EvaluationStackBase =>
+            HasReturnLocalContinuation ? ~_encodedEvaluationStackBase : _encodedEvaluationStackBase;
 
         internal PythonGlobalNamespace Globals { get; }
 
@@ -1424,5 +1500,7 @@ internal sealed class PythonVirtualMachine
         internal int LocalsBase { get; }
 
         internal int LocalsCount { get; }
+
+        internal bool HasReturnLocalContinuation => _encodedEvaluationStackBase < 0;
     }
 }

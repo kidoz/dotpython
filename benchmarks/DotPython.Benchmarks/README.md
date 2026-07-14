@@ -75,6 +75,16 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --profile-opcode-pairs
 ```
 
+`ManagedReturnContinuationBenchmarks` is the matched control for consuming `Call -> StoreLocal`
+through a callee-owned return continuation. Both methods execute the same prepared code and
+specialized call site; the baseline disables only the continuation while the candidate skips the
+result-stack round trip and caller-side store dispatch. Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedReturnContinuationBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh
