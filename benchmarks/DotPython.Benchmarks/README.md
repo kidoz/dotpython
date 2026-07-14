@@ -45,6 +45,17 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ManagedCallSpecializationBenchmarks*'
 ```
 
+`ManagedFramePathBenchmarks` bounds the residual cost of an already-specialized managed call. Its
+matched functions receive the same target as a local and execute equivalent 10,000-iteration
+loops, excluding repeated global-target lookup. The measured delta still includes the local target
+load and identity guard as well as argument transfer, explicit frame entry/return, and callee
+execution. Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedFramePathBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh

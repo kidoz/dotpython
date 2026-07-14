@@ -144,6 +144,38 @@ internal static class BenchmarkPrograms
         );
     }
 
+    internal static SourceText CreateManagedFramePathSource(int argumentCount)
+    {
+        var (callee, inlineAssignment, call) = argumentCount switch
+        {
+            0 => ("def callee(): return None\n", "        value = None\n", "target()"),
+            1 => ("def callee(value): return value\n", "        value = value\n", "target(value)"),
+            _ => throw new ArgumentOutOfRangeException(nameof(argumentCount)),
+        };
+        return new SourceText(
+            callee
+                + "def inline_loop(target):\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + inlineAssignment
+                + "        current = current + 1\n"
+                + "    return value\n"
+                + "def call_loop(target):\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + "        value = "
+                + call
+                + "\n"
+                + "        current = current + 1\n"
+                + "    return value\n"
+                + "def run_inline(): return inline_loop(callee)\n"
+                + "def run_calls(): return call_loop(callee)\n",
+            "managed-frame-path-benchmark.py"
+        );
+    }
+
     internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
         new(
             scenario switch
