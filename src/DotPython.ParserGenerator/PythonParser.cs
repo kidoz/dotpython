@@ -3,6 +3,7 @@ using DotPython.Language.Ast;
 using DotPython.Language.Diagnostics;
 using DotPython.Language.Syntax;
 using DotPython.Language.Text;
+using DotPython.ParserGenerator.Generation;
 
 namespace DotPython.ParserGenerator;
 
@@ -13,7 +14,27 @@ public static class PythonParser
         ArgumentNullException.ThrowIfNull(source);
 
         var tokenization = PythonTokenizer.Tokenize(source);
-        return new Parser(tokenization).Parse();
+        var executableTokens = tokenization
+            .Tokens.Where(token => token.Kind != SyntaxTokenKind.NonSignificantNewLine)
+            .ToArray();
+        var grammarMatch = GeneratedPythonGrammar.Grammar.Match(executableTokens);
+        var result = new Parser(tokenization).Parse();
+        if (!result.Success || grammarMatch.Success)
+        {
+            return result;
+        }
+
+        var tokenIndex = Math.Min(grammarMatch.FurthestTokenIndex, executableTokens.Length - 1);
+        var diagnostics = new List<Diagnostic>(result.Diagnostics)
+        {
+            new(
+                "DPY2011",
+                "The generated Python grammar rejected syntax accepted by the AST builder.",
+                DiagnosticSeverity.Error,
+                executableTokens[tokenIndex].Span
+            ),
+        };
+        return new PythonParseResult(source, result.Module, diagnostics);
     }
 
     private sealed class Parser
