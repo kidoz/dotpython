@@ -4,9 +4,10 @@ This project measures the managed language pipeline without using CPython as an 
 backend. The initial suites separate tokenization, parsing, compilation, precompiled bytecode
 execution, and source-to-execution costs.
 
-`RuntimeAllocationBenchmarks` separates fixed VM startup, repeated constant loads, integer-loop
-execution, zero- and one-argument function frames/calls, and global lookup. These workloads
-attribute allocation trends; they are not intended to represent application throughput.
+`RuntimeAllocationBenchmarks` separates fixed VM startup, repeated constant loads, cached-range
+and larger integer-loop execution, zero- and one-argument function frames/calls, and global
+lookup. These workloads attribute allocation trends; they are not intended to represent
+application throughput.
 
 Run a short local runtime sample from the repository root:
 
