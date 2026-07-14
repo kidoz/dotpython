@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DotPython.Compiler;
 using DotPython.Compiler.Artifacts;
 using DotPython.Compiler.Bytecode;
@@ -11,6 +12,8 @@ public sealed class ManagedPythonEngine
 {
     private readonly object _executionGate = new();
     private readonly Dictionary<string, PythonValue> _globals = new(StringComparer.Ordinal);
+    private readonly ConditionalWeakTable<PythonCodeObject, PreparedPythonCode> _preparedCodes =
+        new();
 
     public ManagedExecutionResult Execute(
         string code,
@@ -140,7 +143,7 @@ public sealed class ManagedPythonEngine
                 options.InstructionLimit,
                 cancellationToken
             );
-            virtualMachine.Execute(code);
+            virtualMachine.Execute(PrepareCode(code));
             return new ManagedExecutionResult(source, []);
         }
         catch (PythonRuntimeException fault)
@@ -150,5 +153,11 @@ public sealed class ManagedPythonEngine
                 [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
             );
         }
+    }
+
+    internal PreparedPythonCode PrepareCode(PythonCodeObject code)
+    {
+        ArgumentNullException.ThrowIfNull(code);
+        return _preparedCodes.GetValue(code, PreparedPythonCode.Create);
     }
 }

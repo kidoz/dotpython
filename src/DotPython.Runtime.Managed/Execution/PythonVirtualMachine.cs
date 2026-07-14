@@ -34,7 +34,7 @@ internal sealed class PythonVirtualMachine
         };
     }
 
-    internal PythonValue Execute(PythonCodeObject code)
+    internal PythonValue Execute(PreparedPythonCode code)
     {
         ArgumentNullException.ThrowIfNull(code);
 
@@ -70,13 +70,13 @@ internal sealed class PythonVirtualMachine
             {
                 _cancellationToken.ThrowIfCancellationRequested();
                 var frame = CurrentFrame;
-                if (frame.InstructionPointer >= frame.Code.Instructions.Count)
+                if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
                 {
                     ReturnFromFrame(PythonNoneValue.Instance);
                     continue;
                 }
 
-                var instruction = frame.Code.Instructions[frame.InstructionPointer];
+                var instruction = frame.Code.Definition.Instructions[frame.InstructionPointer];
                 frame.InstructionPointer++;
                 if (_instructionsExecuted++ >= _instructionLimit)
                 {
@@ -103,17 +103,17 @@ internal sealed class PythonVirtualMachine
         switch (instruction.OpCode)
         {
             case PythonOpCode.LoadConstant:
-                frame.EvaluationStack.Push(
-                    ConvertConstant(frame.Code.Constants[instruction.Operand])
-                );
+                frame.EvaluationStack.Push(frame.Code.GetConstant(instruction.Operand));
                 break;
             case PythonOpCode.LoadName:
                 frame.EvaluationStack.Push(
-                    LoadName(frame.Code.Names[instruction.Operand], instruction.Span)
+                    LoadName(frame.Code.Definition.Names[instruction.Operand], instruction.Span)
                 );
                 break;
             case PythonOpCode.StoreName:
-                frame.Globals[frame.Code.Names[instruction.Operand]] = Pop(instruction.Span);
+                frame.Globals[frame.Code.Definition.Names[instruction.Operand]] = Pop(
+                    instruction.Span
+                );
                 break;
             case PythonOpCode.LoadLocal:
                 frame.EvaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
@@ -161,7 +161,7 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.Jump:
                 frame.InstructionPointer = GetJumpTarget(
                     instruction,
-                    frame.Code.Instructions.Count
+                    frame.Code.Definition.Instructions.Count
                 );
                 break;
             case PythonOpCode.JumpIfFalse:
@@ -169,7 +169,7 @@ internal sealed class PythonVirtualMachine
                 {
                     frame.InstructionPointer = GetJumpTarget(
                         instruction,
-                        frame.Code.Instructions.Count
+                        frame.Code.Definition.Instructions.Count
                     );
                 }
 
@@ -179,7 +179,7 @@ internal sealed class PythonVirtualMachine
                 {
                     frame.InstructionPointer = GetJumpTarget(
                         instruction,
-                        frame.Code.Instructions.Count
+                        frame.Code.Definition.Instructions.Count
                     );
                 }
                 else
@@ -193,7 +193,7 @@ internal sealed class PythonVirtualMachine
                 {
                     frame.InstructionPointer = GetJumpTarget(
                         instruction,
-                        frame.Code.Instructions.Count
+                        frame.Code.Definition.Instructions.Count
                     );
                 }
                 else
@@ -245,7 +245,7 @@ internal sealed class PythonVirtualMachine
             return value;
         }
 
-        var name = CurrentFrame.Code.VariableNames[index];
+        var name = CurrentFrame.Code.Definition.VariableNames[index];
         throw Fault("DPY4008", $"Local variable '{name}' was referenced before assignment.", span);
     }
 
@@ -306,17 +306,17 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
-        if (arguments.Count != function.Code.ArgumentCount)
+        if (arguments.Count != function.Code.Definition.ArgumentCount)
         {
             throw Fault(
                 "DPY4009",
-                $"Function '{function.Name}' expected {function.Code.ArgumentCount} positional "
+                $"Function '{function.Name}' expected {function.Code.Definition.ArgumentCount} positional "
                     + $"argument(s), but received {arguments.Count}.",
                 span
             );
         }
 
-        var locals = new PythonValue?[function.Code.VariableNames.Count];
+        var locals = new PythonValue?[function.Code.Definition.VariableNames.Count];
         for (var index = 0; index < arguments.Count; index++)
         {
             locals[index] = arguments[index];
@@ -327,17 +327,18 @@ internal sealed class PythonVirtualMachine
 
     private void MakeFunction(PythonInstruction instruction)
     {
-        var constant = CurrentFrame.Code.Constants[instruction.Operand];
-        if (
-            constant.Type != PythonConstantType.CodeObject
-            || constant.Value is not PythonCodeObject code
-        )
+        PreparedPythonCode code;
+        try
+        {
+            code = CurrentFrame.Code.GetFunctionCode(instruction.Operand);
+        }
+        catch (InvalidOperationException)
         {
             throw Fault("DPY4007", "The function code object is invalid.", instruction.Span);
         }
 
         CurrentFrame.EvaluationStack.Push(
-            new PythonFunctionValue(code.Name, code, CurrentFrame.Globals)
+            new PythonFunctionValue(code.Definition.Name, code, CurrentFrame.Globals)
         );
     }
 
@@ -398,31 +399,11 @@ internal sealed class PythonVirtualMachine
         CurrentFrame.EvaluationStack.Push(second);
     }
 
-    private static PythonValue ConvertConstant(PythonConstant constant) =>
-        constant.Type switch
-        {
-            PythonConstantType.NoneValue => PythonNoneValue.Instance,
-            PythonConstantType.TruthValue => new PythonTruthValue((bool)constant.Value!),
-            PythonConstantType.WholeNumber => new PythonWholeNumberValue(
-                (BigInteger)constant.Value!
-            ),
-            PythonConstantType.FloatingPoint => new PythonFloatingPointValue(
-                (double)constant.Value!
-            ),
-            PythonConstantType.ComplexNumber => new PythonComplexValue((Complex)constant.Value!),
-            PythonConstantType.TextValue => new PythonTextValue((string)constant.Value!),
-            PythonConstantType.ByteSequence => new PythonByteSequenceValue((byte[])constant.Value!),
-            PythonConstantType.CodeObject => throw new InvalidOperationException(
-                "Code-object constants must be loaded with MakeFunction."
-            ),
-            _ => throw new ArgumentOutOfRangeException(nameof(constant)),
-        };
-
     private static PythonValue ApplyUnary(PythonOpCode opCode, PythonValue operand, TextSpan span)
     {
         if (opCode == PythonOpCode.UnaryNot)
         {
-            return new PythonTruthValue(!IsTruthy(operand));
+            return PythonTruthValue.FromBoolean(!IsTruthy(operand));
         }
 
         operand = PromoteTruthValue(operand);
@@ -455,11 +436,13 @@ internal sealed class PythonVirtualMachine
         if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
         {
             var equal = AreEqual(left, right);
-            return new PythonTruthValue(opCode == PythonOpCode.CompareEqual ? equal : !equal);
+            return PythonTruthValue.FromBoolean(
+                opCode == PythonOpCode.CompareEqual ? equal : !equal
+            );
         }
 
         var comparison = CompareOrdered(left, right, span);
-        return new PythonTruthValue(
+        return PythonTruthValue.FromBoolean(
             opCode switch
             {
                 PythonOpCode.CompareLessThan => comparison < 0,
@@ -799,7 +782,7 @@ internal sealed class PythonVirtualMachine
     private sealed class PythonFrame
     {
         internal PythonFrame(
-            PythonCodeObject code,
+            PreparedPythonCode code,
             Dictionary<string, PythonValue> globals,
             PythonValue?[] locals
         )
@@ -809,7 +792,7 @@ internal sealed class PythonVirtualMachine
             Locals = locals;
         }
 
-        internal PythonCodeObject Code { get; }
+        internal PreparedPythonCode Code { get; }
 
         internal Stack<PythonValue> EvaluationStack { get; } = [];
 

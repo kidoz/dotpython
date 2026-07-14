@@ -25,7 +25,7 @@ internal static class PythonValueConverter
 
         return (contract.ClrTypeName, value) switch
         {
-            ("System.Boolean", bool item) => new PythonTruthValue(item),
+            ("System.Boolean", bool item) => PythonTruthValue.FromBoolean(item),
             ("System.Numerics.BigInteger", BigInteger item) => new PythonWholeNumberValue(item),
             ("System.Double", double item) => new PythonFloatingPointValue(item),
             ("System.String", string item) => new PythonTextValue(item),

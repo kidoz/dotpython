@@ -19,8 +19,21 @@ internal sealed record PythonNoneValue : PythonValue
     internal override string ToDisplayString() => "None";
 }
 
-internal sealed record PythonTruthValue(bool Value) : PythonValue
+internal sealed record PythonTruthValue : PythonValue
 {
+    internal static PythonTruthValue False { get; } = new(false);
+
+    internal static PythonTruthValue True { get; } = new(true);
+
+    private PythonTruthValue(bool value)
+    {
+        Value = value;
+    }
+
+    internal bool Value { get; }
+
+    internal static PythonTruthValue FromBoolean(bool value) => value ? True : False;
+
     internal override string ToDisplayString() => Value ? "True" : "False";
 }
 
@@ -139,7 +152,7 @@ internal sealed record PythonBuiltinFunctionValue(
 
 internal sealed record PythonFunctionValue(
     string Name,
-    PythonCodeObject Code,
+    PreparedPythonCode Code,
     Dictionary<string, PythonValue> Globals
 ) : PythonValue
 {
