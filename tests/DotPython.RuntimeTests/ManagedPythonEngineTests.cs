@@ -91,6 +91,12 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print('' or 'fallback', 'value' and 42)", "fallback 42")]
     [InlineData("print(not 0, not 'value', 1 < 2 < 3, 1 < 2 > 3)", "True False True False")]
     [InlineData("print(1 == True, None != 0, 'a' < 'b', b'a' <= b'ab')", "True True True True")]
+    [InlineData(
+        "print([], [1, 'two', (True, None)], (), (1,), (1, 2))",
+        "[] [1, 'two', (True, None)] () (1,) (1, 2)"
+    )]
+    [InlineData("print([\"'\", '\"', '\\x85', '\U0001f40d'])", "[\"'\", '\"', '\\x85', '🐍']")]
+    [InlineData("print(not [], not (), [1, [2]] == [1, [2]], [1] != (1,))", "True True True True")]
     public void Execute_MatchesSupportedPythonNumericAndTextSemantics(string code, string expected)
     {
         using var output = new StringWriter();
@@ -104,6 +110,29 @@ public sealed class ManagedPythonEngineTests
 
         Assert.True(result.Success);
         Assert.Equal(expected + Environment.NewLine, output.ToString());
+    }
+
+    [Fact]
+    public void Execute_EvaluatesCollectionElementsFromLeftToRight()
+    {
+        const string code =
+            "def mark(value): print(value); return value\n"
+            + "print([mark(1), mark(2)], (mark(3),))";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"1{Environment.NewLine}2{Environment.NewLine}3{Environment.NewLine}"
+                + $"[1, 2] (3,){Environment.NewLine}",
+            output.ToString()
+        );
     }
 
     [Fact]

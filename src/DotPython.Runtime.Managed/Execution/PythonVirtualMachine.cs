@@ -298,6 +298,12 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.Call:
                 ApplyCall(frame.Code, instructionIndex, instruction);
                 break;
+            case PythonOpCode.BuildList:
+                BuildCollection(instruction.Operand, buildTuple: false, instruction.Span);
+                break;
+            case PythonOpCode.BuildTuple:
+                BuildCollection(instruction.Operand, buildTuple: true, instruction.Span);
+                break;
             case PythonOpCode.ReturnValue:
                 ReturnFromFrame(Pop(instruction.Span));
                 break;
@@ -307,6 +313,26 @@ internal sealed class PythonVirtualMachine
             default:
                 throw Fault("DPY4007", "Unknown DotPython instruction.", instruction.Span);
         }
+    }
+
+    private void BuildCollection(int elementCount, bool buildTuple, TextSpan span)
+    {
+        if (elementCount < 0)
+        {
+            throw Fault("DPY4007", "Invalid collection element count.", span);
+        }
+
+        var elements = new PythonValue[elementCount];
+        for (var index = elementCount - 1; index >= 0; index--)
+        {
+            elements[index] = Pop(span);
+        }
+
+        _evaluationStack.Push(
+            buildTuple
+                ? new PythonTupleValue(elements)
+                : new PythonListValue(new List<PythonValue>(elements))
+        );
     }
 
     private PythonValue LoadName(
@@ -1039,12 +1065,41 @@ internal sealed class PythonVirtualMachine
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
+            (PythonListValue leftList, PythonListValue rightList) => AreSequencesEqual(
+                leftList.Elements,
+                rightList.Elements
+            ),
+            (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => AreSequencesEqual(
+                leftTuple.Elements,
+                rightTuple.Elements
+            ),
             (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             _ => false,
         };
+    }
+
+    private static bool AreSequencesEqual(
+        IReadOnlyList<PythonValue> left,
+        IReadOnlyList<PythonValue> right
+    )
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!AreEqual(left[index], right[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
@@ -1297,6 +1352,8 @@ internal sealed class PythonVirtualMachine
             PythonComplexValue complex => complex.Value != Complex.Zero,
             PythonTextValue text => text.Value.Length != 0,
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
+            PythonListValue list => list.Elements.Count != 0,
+            PythonTupleValue tuple => tuple.Elements.Length != 0,
             _ => true,
         };
 

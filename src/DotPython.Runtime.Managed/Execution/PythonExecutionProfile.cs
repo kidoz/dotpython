@@ -4,7 +4,7 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed class PythonExecutionProfile
 {
-    private const int OpCodeCount = (int)PythonOpCode.StoreCell + 1;
+    private const int OpCodeCount = (int)PythonOpCode.BuildTuple + 1;
     private readonly long[] _instructionCounts = new long[OpCodeCount];
     private readonly long[] _pairCounts = new long[OpCodeCount * OpCodeCount];
     private ProfilePosition[] _previousPositions = new ProfilePosition[4];

@@ -19,6 +19,11 @@ public sealed class ManagedCliDifferentialTests
     [InlineData("print('' or 'fallback', 'value' and 42)")]
     [InlineData("print(not 0, not 'value', 1 < 2 < 3, 1 < 2 > 3)")]
     [InlineData("print(1 == True, None != 0, 'a' < 'b', b'a' <= b'ab')")]
+    [InlineData("print([], [1, 'two', (True, None)], (), (1,), (1, 2))")]
+    [InlineData("print(not [], not (), [1, [2]] == [1, [2]], [1] != (1,))")]
+    [InlineData(
+        "def mark(value): print(value); return value\nprint([mark(1), mark(2)], (mark(3),))"
+    )]
     [InlineData(
         "value = 0\nwhile value < 3:\n    if value != 1:\n        print(value)\n    value = value + 1\nelse:\n    print('done')"
     )]
