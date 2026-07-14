@@ -102,12 +102,50 @@ public sealed class PythonParserTests
         Assert.Equal(2, comparison.Comparisons.Count);
     }
 
+    [Fact]
+    public void Parse_BuildsFunctionParametersAndReturns()
+    {
+        var result = Parse(
+            "def calculate(left, right):\n"
+                + "    result = left + right\n"
+                + "    if result > 0:\n"
+                + "        return result\n"
+                + "    return\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.Equal("calculate", function.Name.Name);
+        Assert.Equal(["left", "right"], function.Parameters.Select(parameter => parameter.Name));
+        Assert.Equal(3, function.Body.Count);
+        Assert.IsType<PythonReturnStatement>(function.Body[^1]);
+        var conditional = Assert.IsType<PythonIfStatement>(function.Body[1]);
+        Assert.IsType<PythonReturnStatement>(Assert.Single(conditional.Clauses[0].Body));
+    }
+
+    [Fact]
+    public void Parse_AllowsFunctionAndReturnOnOneLogicalLine()
+    {
+        var result = Parse("def identity(value): return value");
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.IsType<PythonReturnStatement>(Assert.Single(function.Body));
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
     [InlineData("for value in values:\n    print(value)\n", "DPY2004")]
     [InlineData("None = 42", "DPY2005")]
     [InlineData("pass", "DPY2004")]
+    [InlineData("return 42", "DPY2008")]
+    [InlineData("def duplicate(value, value): return value", "DPY2009")]
+    [InlineData("def invalid(return): return 42", "DPY2010")]
     [InlineData("print($)", "DPY1001")]
     public void Parse_ReportsStructuredDiagnosticsAndReachesEnd(string code, string expectedCode)
     {

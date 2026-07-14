@@ -19,6 +19,18 @@ public sealed record PythonAssignmentStatement(
 public sealed record PythonExpressionStatement(PythonExpression Expression, TextSpan Span)
     : PythonStatement(Span);
 
+public sealed record PythonFunctionDefinitionStatement(
+    PythonNameExpression Name,
+    IReadOnlyList<PythonParameter> Parameters,
+    IReadOnlyList<PythonStatement> Body,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonParameter(string Name, TextSpan Span) : PythonNode(Span);
+
+public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)
+    : PythonStatement(Span);
+
 public sealed record PythonIfStatement(
     IReadOnlyList<PythonConditionalClause> Clauses,
     IReadOnlyList<PythonStatement> ElseBody,

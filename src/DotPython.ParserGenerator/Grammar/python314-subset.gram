@@ -5,13 +5,16 @@
 file: [statements] ENDMARKER
 statements: statement+
 statement: compound_stmt | simple_stmts
-compound_stmt: if_stmt | while_stmt
+compound_stmt: if_stmt | while_stmt | function_def
 simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-simple_stmt: assignment | expression
+simple_stmt: assignment | return_stmt | expression
 assignment: NAME '=' expression
+return_stmt: 'return' [expression]
 
 if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
 while_stmt: 'while' expression ':' block ['else' ':' block]
+function_def: 'def' NAME '(' [parameters] ')' ':' block
+parameters: ','.NAME+ [',']
 block: NEWLINE INDENT statements DEDENT | simple_stmts
 
 expression: disjunction

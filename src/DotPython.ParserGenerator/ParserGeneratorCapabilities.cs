@@ -7,5 +7,5 @@ public static class ParserGeneratorCapabilities
     public static bool SupportsParsingExpressionGrammars => true;
 
     /// <summary>Gets the version of the executable Python grammar subset.</summary>
-    public const int ExecutableSubsetVersion = 2;
+    public const int ExecutableSubsetVersion = 3;
 }

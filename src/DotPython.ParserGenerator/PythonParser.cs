@@ -21,6 +21,7 @@ public static class PythonParser
         private readonly List<Diagnostic> _diagnostics;
         private readonly SourceText _source;
         private readonly SyntaxToken[] _tokens;
+        private int _functionDepth;
         private int _position;
 
         internal Parser(TokenizationResult tokenization)
@@ -75,6 +76,10 @@ public static class PythonParser
                 else if (IsKeyword("while"))
                 {
                     statements.Add(ParseWhileStatement());
+                }
+                else if (IsKeyword("def"))
+                {
+                    statements.Add(ParseFunctionDefinition());
                 }
                 else
                 {
@@ -155,6 +160,85 @@ public static class PythonParser
                 body,
                 elseBody,
                 TextSpan.FromBounds(start, end)
+            );
+        }
+
+        private PythonFunctionDefinitionStatement ParseFunctionDefinition()
+        {
+            var start = Advance().Span.Start;
+            var nameToken = Expect(SyntaxTokenKind.Identifier, "a function name after 'def'");
+            if (IsReservedKeyword(nameToken.Text))
+            {
+                Report(
+                    "DPY2010",
+                    $"The keyword '{nameToken.Text}' cannot be used as a function name.",
+                    nameToken.Span
+                );
+            }
+
+            var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
+            Expect(SyntaxTokenKind.LeftParenthesis, "'(' after the function name");
+
+            var parameters = new List<PythonParameter>();
+            var parameterNames = new HashSet<string>(StringComparer.Ordinal);
+            if (Current.Kind != SyntaxTokenKind.RightParenthesis)
+            {
+                while (true)
+                {
+                    var parameter = Expect(SyntaxTokenKind.Identifier, "a parameter name");
+                    if (!string.IsNullOrEmpty(parameter.Text))
+                    {
+                        if (IsReservedKeyword(parameter.Text))
+                        {
+                            Report(
+                                "DPY2010",
+                                $"The keyword '{parameter.Text}' cannot be used as a parameter.",
+                                parameter.Span
+                            );
+                        }
+
+                        if (!parameterNames.Add(parameter.Text))
+                        {
+                            Report(
+                                "DPY2009",
+                                $"Duplicate parameter '{parameter.Text}'.",
+                                parameter.Span
+                            );
+                        }
+
+                        parameters.Add(new PythonParameter(parameter.Text, parameter.Span));
+                    }
+
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+
+                    if (Current.Kind == SyntaxTokenKind.RightParenthesis)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            Expect(SyntaxTokenKind.RightParenthesis, "')' after the parameters");
+            var colon = Expect(SyntaxTokenKind.Colon, "':' after the function signature");
+            _functionDepth++;
+            IReadOnlyList<PythonStatement> body;
+            try
+            {
+                body = ParseSuite();
+            }
+            finally
+            {
+                _functionDepth--;
+            }
+
+            return new PythonFunctionDefinitionStatement(
+                name,
+                parameters.AsReadOnly(),
+                body,
+                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
             );
         }
 
@@ -247,6 +331,11 @@ public static class PythonParser
 
         private PythonStatement? ParseSimpleStatement()
         {
+            if (IsKeyword("return"))
+            {
+                return ParseReturnStatement();
+            }
+
             if (
                 Current.Kind == SyntaxTokenKind.Identifier
                 && IsUnsupportedStatementKeyword(Current.Text)
@@ -289,6 +378,38 @@ public static class PythonParser
             return expression is null
                 ? null
                 : new PythonExpressionStatement(expression, expression.Span);
+        }
+
+        private PythonReturnStatement ParseReturnStatement()
+        {
+            var returnToken = Advance();
+            if (_functionDepth == 0)
+            {
+                Report("DPY2008", "'return' outside function.", returnToken.Span);
+            }
+
+            if (
+                Current.Kind
+                is SyntaxTokenKind.Semicolon
+                    or SyntaxTokenKind.NewLine
+                    or SyntaxTokenKind.Dedent
+                    or SyntaxTokenKind.EndOfFile
+            )
+            {
+                return new PythonReturnStatement(null, returnToken.Span);
+            }
+
+            var value = ParseExpression();
+            if (value is null)
+            {
+                ReportExpected("an expression after 'return'", Current.Span);
+                return new PythonReturnStatement(null, returnToken.Span);
+            }
+
+            return new PythonReturnStatement(
+                value,
+                TextSpan.FromBounds(returnToken.Span.Start, value.Span.End)
+            );
         }
 
         private PythonExpression ParseRequiredExpression(string expected)
@@ -816,7 +937,7 @@ public static class PythonParser
             };
 
         private static bool IsExpressionKeyword(string value) =>
-            value is "and" or "or" or "not" or "elif" or "else";
+            value is "and" or "or" or "not" or "elif" or "else" or "def" or "return";
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value
@@ -835,6 +956,44 @@ public static class PythonParser
                     or "if"
                     or "import"
                     or "nonlocal"
+                    or "pass"
+                    or "raise"
+                    or "return"
+                    or "try"
+                    or "while"
+                    or "with"
+                    or "yield";
+
+        private static bool IsReservedKeyword(string value) =>
+            value
+                is "False"
+                    or "None"
+                    or "True"
+                    or "and"
+                    or "as"
+                    or "assert"
+                    or "async"
+                    or "await"
+                    or "break"
+                    or "class"
+                    or "continue"
+                    or "def"
+                    or "del"
+                    or "elif"
+                    or "else"
+                    or "except"
+                    or "finally"
+                    or "for"
+                    or "from"
+                    or "global"
+                    or "if"
+                    or "import"
+                    or "in"
+                    or "is"
+                    or "lambda"
+                    or "nonlocal"
+                    or "not"
+                    or "or"
                     or "pass"
                     or "raise"
                     or "return"
