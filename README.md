@@ -8,13 +8,14 @@ execution pipeline — tokenizer, PEG parser, AST, symbol binder, bytecode compi
 managed stack VM — and runs Python **without loading or hosting CPython**.
 
 DotPython is usable as a command-line application, as an embedded scripting/runtime service
-inside a .NET solution, and (per the roadmap) as an SDK-style `.dpyproj` project language whose
-compiled libraries can be referenced from C# and other managed languages.
+inside a .NET solution, and as an early SDK-style `.dpyproj` project language whose compiled
+libraries can be referenced from C# and other managed languages.
 
 > **Status:** early, active development. Today the CLI executes a growing managed subset of the
 > language (literals, names, assignment, arithmetic, calls, control flow, and functions). The
-> compiler also emits deterministic `.dpyc` module artifacts, and the interop layer statically
-> compiles an initial `.pyi` subset into typed CLR export contracts.
+> compiler also emits deterministic `.dpyc` module artifacts, the interop layer statically
+> compiles an initial `.pyi` subset into typed CLR export contracts, and the prototype
+> `DotPython.Sdk` generates typed C# facades for single-module projects.
 
 ## Compatibility contract
 
@@ -73,8 +74,48 @@ async def validate(order: OrderDto) -> list[str]: ...
 The initial contract mapper supports `None`, `bool`, arbitrary-size `int`, `float`, `str`,
 `bytes`, selected `decimal`/`uuid`/`datetime` types, nullable `T | None`/`Optional[T]`, and
 read-only list/dictionary shapes. Referenced DTO types require an explicit Python-to-CLR mapping;
-DotPython does not load assemblies or evaluate annotations while parsing contracts. Contracts can
-be persisted as deterministic, versioned JSON for the future build SDK and facade generator.
+DotPython does not load assemblies or evaluate annotations while parsing contracts. Contracts are
+persisted as deterministic, versioned JSON for build tooling and generated facades.
+
+## DotPython project references
+
+The prototype `DotPython.Sdk` compiles one `.py` source and matching `.pyi` contract before the
+normal C# `CoreCompile` boundary. It embeds the deterministic artifact and contract JSON, then
+compiles an abstraction-only typed facade into the resulting managed assembly.
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <Sdk Name="DotPython.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PricingRules</RootNamespace>
+    <DotPythonModuleName>pricing</DotPythonModuleName>
+    <DotPythonClrTypeName>PricingModule</DotPythonClrTypeName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PythonCompile Include="pricing.py" />
+    <PythonContract Include="pricing.pyi" />
+  </ItemGroup>
+</Project>
+```
+
+A C# project can use an ordinary project reference and bind the generated facade to an explicitly
+owned runtime:
+
+```xml
+<ProjectReference Include="../PricingRules/PricingRules.dpyproj" />
+```
+
+```csharp
+await using var rules = await PricingModule.LoadAsync(runtime, cancellationToken);
+BigInteger total = await rules.AddAsync(left, right, cancellationToken);
+```
+
+The SDK is not published yet. The build-integration suite packs it into an isolated local feed and
+proves restore, C# `ProjectReference`, embedded-resource execution, incremental reuse, and clean
+rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar-only module.
 
 ## Project layout
 
@@ -89,6 +130,8 @@ be persisted as deterministic, versioned JSON for the future build SDK and facad
 | `src/DotPython.Interop` | Static `.pyi` contracts, value conversion, and the capability-limited .NET bridge. |
 | `src/DotPython.StdLib` | Managed / pure-Python standard-library surface. |
 | `src/DotPython.Cli` | `dotpython` command-line front end. |
+| `src/DotPython.Build.Tasks` | Deterministic out-of-process module compiler and C# facade generator. |
+| `src/DotPython.Sdk` | Additive MSBuild SDK props, targets, and package layout. |
 
 ## Development
 
@@ -116,6 +159,7 @@ dotnet test DotPython.sln
 | `tests/DotPython.InteropTests` | Static export contracts and Python-to-CLR type mapping. |
 | `tests/DotPython.DifferentialTests` | Behavior compared against the CPython reference. |
 | `tests/DotPython.PackageCompatibilityTests` | Package/language compatibility matrix. |
+| `tests/DotPython.BuildIntegrationTests` | `.dpyproj` SDK packaging, ProjectReference, incremental, and runtime execution. |
 
 ## License
 

@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <PackageId>DotPython.Sdk</PackageId>
+        <PackageType>MSBuildSdk</PackageType>
+        <Version>0.1.0</Version>
+        <Description>MSBuild SDK for compiling DotPython modules into managed libraries.</Description>
+        <Authors>DotPython Maintainers</Authors>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <NoWarn>$(NoWarn);NU5128</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference
+            Include="../DotPython.Build.Tasks/DotPython.Build.Tasks.csproj"
+            ReferenceOutputAssembly="false"
+            PrivateAssets="all"
+        />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="Sdk/Sdk.props" Pack="true" PackagePath="Sdk/" />
+        <None Include="Sdk/Sdk.targets" Pack="true" PackagePath="Sdk/" />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Build.Tasks.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Build.Tasks.deps.json"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Build.Tasks.runtimeconfig.json"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Abstractions.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Compiler.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Interop.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.Language.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+        <None
+            Include="../DotPython.Build.Tasks/bin/$(Configuration)/net10.0/DotPython.ParserGenerator.dll"
+            Pack="true"
+            PackagePath="tools/net10.0/any/"
+        />
+    </ItemGroup>
+</Project>

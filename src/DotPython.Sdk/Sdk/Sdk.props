@@ -1,0 +1,13 @@
+<Project>
+    <PropertyGroup>
+        <DotPythonSdkVersion>0.1.0</DotPythonSdkVersion>
+        <LanguageTargets Condition="'$(LanguageTargets)' == ''"
+            >$(MSBuildToolsPath)\Microsoft.CSharp.targets</LanguageTargets>
+        <DotPythonModuleStatePolicy Condition="'$(DotPythonModuleStatePolicy)' == ''"
+            >PerRuntime</DotPythonModuleStatePolicy>
+        <LangVersion Condition="'$(LangVersion)' == ''">14.0</LangVersion>
+        <Nullable Condition="'$(Nullable)' == ''">enable</Nullable>
+        <ImplicitUsings Condition="'$(ImplicitUsings)' == ''">enable</ImplicitUsings>
+        <Deterministic Condition="'$(Deterministic)' == ''">true</Deterministic>
+    </PropertyGroup>
+</Project>

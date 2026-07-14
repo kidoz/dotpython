@@ -1,0 +1,80 @@
+<Project>
+    <PropertyGroup>
+        <DotPythonSdkToolsPath>$(MSBuildThisFileDirectory)..\tools\net10.0\any\</DotPythonSdkToolsPath>
+        <DotPythonBuildToolPath Condition="'$(DotPythonBuildToolPath)' == ''"
+            >$(DotPythonSdkToolsPath)DotPython.Build.Tasks.dll</DotPythonBuildToolPath>
+        <DotPythonDotNetHost Condition="'$(DotNetHostPath)' != ''"
+            >$(DotNetHostPath)</DotPythonDotNetHost>
+        <DotPythonDotNetHost Condition="'$(DotPythonDotNetHost)' == ''">dotnet</DotPythonDotNetHost>
+        <DotPythonModuleName Condition="'$(DotPythonModuleName)' == ''"
+            >@(PythonCompile->'%(Filename)')</DotPythonModuleName>
+        <DotPythonClrNamespace Condition="'$(DotPythonClrNamespace)' == ''"
+            >$(RootNamespace)</DotPythonClrNamespace>
+        <DotPythonClrTypeName Condition="'$(DotPythonClrTypeName)' == ''"
+            >$(MSBuildProjectName)Module</DotPythonClrTypeName>
+        <DotPythonGeneratedDirectory>$(IntermediateOutputPath)dotpython\</DotPythonGeneratedDirectory>
+        <DotPythonArtifactOutputPath>$(DotPythonGeneratedDirectory)$(DotPythonModuleName).dpyc</DotPythonArtifactOutputPath>
+        <DotPythonContractOutputPath>$(DotPythonGeneratedDirectory)$(DotPythonModuleName).contract.json</DotPythonContractOutputPath>
+        <DotPythonFacadeOutputPath>$(DotPythonGeneratedDirectory)$(DotPythonClrTypeName).g.cs</DotPythonFacadeOutputPath>
+        <DotPythonArtifactResourceName>DotPython.Module.$(DotPythonModuleName).dpyc</DotPythonArtifactResourceName>
+        <DotPythonContractResourceName>DotPython.Contract.$(DotPythonModuleName).json</DotPythonContractResourceName>
+        <PrepareResourcesDependsOn>DotPythonCollectGeneratedOutputs;$(PrepareResourcesDependsOn)</PrepareResourcesDependsOn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="DotPython.Abstractions">
+            <HintPath>$(DotPythonSdkToolsPath)DotPython.Abstractions.dll</HintPath>
+            <Private>true</Private>
+        </Reference>
+    </ItemGroup>
+
+    <Target Name="DotPythonValidateProject" BeforeTargets="DotPythonGenerateModule">
+        <Error
+            Condition="'@(PythonCompile)' == ''"
+            Text="DPY7001: A DotPython project must contain one PythonCompile item."
+        />
+        <Error
+            Condition="'@(PythonCompile->Count())' != '1'"
+            Text="DPY7001: The initial DotPython SDK supports exactly one PythonCompile item."
+        />
+        <Error
+            Condition="'@(PythonContract)' == ''"
+            Text="DPY7001: A DotPython project must contain one PythonContract item."
+        />
+        <Error
+            Condition="'@(PythonContract->Count())' != '1'"
+            Text="DPY7001: The initial DotPython SDK supports exactly one PythonContract item."
+        />
+        <Error
+            Condition="!Exists('$(DotPythonBuildToolPath)')"
+            Text="DPY7001: The DotPython build tool could not be found at '$(DotPythonBuildToolPath)'."
+        />
+    </Target>
+
+    <Target
+        Name="DotPythonGenerateModule"
+        DependsOnTargets="DotPythonValidateProject"
+        Inputs="@(PythonCompile);@(PythonContract);$(DotPythonBuildToolPath)"
+        Outputs="$(DotPythonArtifactOutputPath);$(DotPythonContractOutputPath);$(DotPythonFacadeOutputPath)"
+    >
+        <MakeDir Directories="$(DotPythonGeneratedDirectory)" />
+        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --source &quot;@(PythonCompile->'%(FullPath)')&quot; --contract &quot;@(PythonContract->'%(FullPath)')&quot; --module-name &quot;$(DotPythonModuleName)&quot; --clr-namespace &quot;$(DotPythonClrNamespace)&quot; --clr-type-name &quot;$(DotPythonClrTypeName)&quot; --state-policy &quot;$(DotPythonModuleStatePolicy)&quot; --artifact-output &quot;$(DotPythonArtifactOutputPath)&quot; --contract-output &quot;$(DotPythonContractOutputPath)&quot; --facade-output &quot;$(DotPythonFacadeOutputPath)&quot; --artifact-resource-name &quot;$(DotPythonArtifactResourceName)&quot;" />
+    </Target>
+
+    <Target Name="DotPythonCollectGeneratedOutputs" DependsOnTargets="DotPythonGenerateModule">
+        <ItemGroup>
+            <Compile Include="$(DotPythonFacadeOutputPath)" />
+            <EmbeddedResource
+                Include="$(DotPythonArtifactOutputPath)"
+                LogicalName="$(DotPythonArtifactResourceName)"
+            />
+            <EmbeddedResource
+                Include="$(DotPythonContractOutputPath)"
+                LogicalName="$(DotPythonContractResourceName)"
+            />
+            <FileWrites Include="$(DotPythonArtifactOutputPath)" />
+            <FileWrites Include="$(DotPythonContractOutputPath)" />
+            <FileWrites Include="$(DotPythonFacadeOutputPath)" />
+        </ItemGroup>
+    </Target>
+</Project>
