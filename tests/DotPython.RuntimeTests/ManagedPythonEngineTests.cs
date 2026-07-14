@@ -1,3 +1,7 @@
+using DotPython.Compiler;
+using DotPython.Compiler.Artifacts;
+using DotPython.Language.Text;
+using DotPython.ParserGenerator;
 using DotPython.Runtime.Managed.Execution;
 using Xunit;
 
@@ -5,6 +9,32 @@ namespace DotPython.RuntimeTests;
 
 public sealed class ManagedPythonEngineTests
 {
+    [Fact]
+    public void Execute_RunsDeserializedModuleArtifact()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("value = 40 + 2; print(value)", "answer.py")
+        );
+        var compilation = PythonCompiler.Compile(parseResult.Module, "answer.py");
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create("answer", compilation.Code)
+        );
+        var artifact = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            artifact,
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(compilation.Diagnostics);
+        Assert.True(result.Success);
+        Assert.Equal("answer.dpyc", result.Source.FilePath);
+        Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
     [Fact]
     public void Execute_RunsAssignmentArithmeticAndBuiltinCall()
     {

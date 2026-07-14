@@ -1,4 +1,6 @@
 using DotPython.Compiler;
+using DotPython.Compiler.Artifacts;
+using DotPython.Compiler.Bytecode;
 using DotPython.Language.Diagnostics;
 using DotPython.Language.Text;
 using DotPython.ParserGenerator;
@@ -57,31 +59,59 @@ public sealed class ManagedPythonEngine
                 return new ManagedExecutionResult(source, [.. compilation.Diagnostics]);
             }
 
-            try
-            {
-                var virtualMachine = new PythonVirtualMachine(
-                    _globals,
-                    output,
-                    options.InstructionLimit,
-                    cancellationToken
-                );
-                virtualMachine.Execute(compilation.Code);
-                return new ManagedExecutionResult(source, []);
-            }
-            catch (PythonRuntimeException fault)
-            {
-                return new ManagedExecutionResult(
-                    source,
-                    [
-                        new Diagnostic(
-                            fault.Code,
-                            fault.Message,
-                            DiagnosticSeverity.Error,
-                            fault.Span
-                        ),
-                    ]
-                );
-            }
+            return ExecuteCodeObject(source, compilation.Code, output, options, cancellationToken);
+        }
+    }
+
+    public ManagedExecutionResult Execute(
+        DotPythonModuleArtifact artifact,
+        TextWriter output,
+        ManagedExecutionOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(output);
+
+        options ??= new ManagedExecutionOptions();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.InstructionLimit);
+
+        lock (_executionGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = new SourceText(
+                string.Empty,
+                artifact.Manifest.ModuleName + DotPythonModuleArtifactFormat.FileExtension
+            );
+            return ExecuteCodeObject(source, artifact.Code, output, options, cancellationToken);
+        }
+    }
+
+    private ManagedExecutionResult ExecuteCodeObject(
+        SourceText source,
+        PythonCodeObject code,
+        TextWriter output,
+        ManagedExecutionOptions options,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            var virtualMachine = new PythonVirtualMachine(
+                _globals,
+                output,
+                options.InstructionLimit,
+                cancellationToken
+            );
+            virtualMachine.Execute(code);
+            return new ManagedExecutionResult(source, []);
+        }
+        catch (PythonRuntimeException fault)
+        {
+            return new ManagedExecutionResult(
+                source,
+                [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
+            );
         }
     }
 }
