@@ -6,18 +6,20 @@ namespace DotPython.Runtime.Managed.Execution;
 internal sealed class PreparedPythonCode
 {
     private const byte AdaptiveWarmupThreshold = 8;
-    private readonly BinaryAddCache[] _binaryAddCaches;
+    private readonly AdaptiveNumericCache[] _binaryAddCaches;
     private readonly int[] _binaryAddCacheIndexes;
     private readonly PythonValue?[] _constants;
     private readonly PreparedPythonCode?[] _functionCodes;
     private readonly GlobalLoadCache[] _globalLoadCaches;
     private readonly int[] _globalLoadCacheIndexes;
+    private readonly AdaptiveNumericCache[] _lessThanCaches;
+    private readonly int[] _lessThanCacheIndexes;
 
     private PreparedPythonCode(PythonCodeObject definition)
     {
         Definition = definition;
         _binaryAddCacheIndexes = new int[definition.Instructions.Count];
-        _binaryAddCaches = new BinaryAddCache[
+        _binaryAddCaches = new AdaptiveNumericCache[
             definition.Instructions.Count(instruction =>
                 instruction.OpCode == PythonOpCode.BinaryAdd
             )
@@ -30,9 +32,16 @@ internal sealed class PreparedPythonCode
                 instruction.OpCode == PythonOpCode.LoadName
             )
         ];
+        _lessThanCacheIndexes = new int[definition.Instructions.Count];
+        _lessThanCaches = new AdaptiveNumericCache[
+            definition.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.CompareLessThan
+            )
+        ];
 
         var binaryAddCacheIndex = 0;
         var globalLoadCacheIndex = 0;
+        var lessThanCacheIndex = 0;
         for (var index = 0; index < definition.Instructions.Count; index++)
         {
             switch (definition.Instructions[index].OpCode)
@@ -42,6 +51,9 @@ internal sealed class PreparedPythonCode
                     break;
                 case PythonOpCode.LoadName:
                     _globalLoadCacheIndexes[index] = ++globalLoadCacheIndex;
+                    break;
+                case PythonOpCode.CompareLessThan:
+                    _lessThanCacheIndexes[index] = ++lessThanCacheIndex;
                     break;
             }
         }
@@ -91,51 +103,25 @@ internal sealed class PreparedPythonCode
         return code;
     }
 
-    internal BinaryAddCacheState GetBinaryAddCacheState(int instructionIndex)
+    internal AdaptiveNumericCacheState GetBinaryAddCacheState(int instructionIndex)
     {
         return GetBinaryAddCache(instructionIndex).State;
     }
 
-    internal void RecordBinaryAddObservation(int instructionIndex, BinaryAddOperandKind operandKind)
+    internal void RecordBinaryAddObservation(
+        int instructionIndex,
+        AdaptiveNumericOperandKind operandKind
+    ) => RecordNumericObservation(ref GetBinaryAddCache(instructionIndex), operandKind);
+
+    internal AdaptiveNumericCacheState GetLessThanCacheState(int instructionIndex)
     {
-        ref var cache = ref GetBinaryAddCache(instructionIndex);
-        if (cache.State == BinaryAddCacheState.Generic)
-        {
-            return;
-        }
-
-        var targetState = operandKind switch
-        {
-            BinaryAddOperandKind.WholeNumber => BinaryAddCacheState.WholeNumber,
-            BinaryAddOperandKind.FloatingPoint => BinaryAddCacheState.FloatingPoint,
-            _ => BinaryAddCacheState.Generic,
-        };
-
-        if (cache.State != BinaryAddCacheState.Adaptive)
-        {
-            if (cache.State == targetState)
-            {
-                return;
-            }
-
-            cache = default;
-        }
-
-        if (cache.Candidate != targetState)
-        {
-            cache.Candidate = targetState;
-            cache.WarmupCount = 1;
-            return;
-        }
-
-        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
-        {
-            cache.WarmupCount++;
-            return;
-        }
-
-        cache = new BinaryAddCache { State = targetState };
+        return GetLessThanCache(instructionIndex).State;
     }
+
+    internal void RecordLessThanObservation(
+        int instructionIndex,
+        AdaptiveNumericOperandKind operandKind
+    ) => RecordNumericObservation(ref GetLessThanCache(instructionIndex), operandKind);
 
     internal GlobalLoadCacheState GetGlobalLoadCacheState(int instructionIndex)
     {
@@ -245,14 +231,60 @@ internal sealed class PreparedPythonCode
     private ref GlobalLoadCache GetGlobalLoadCache(int instructionIndex) =>
         ref _globalLoadCaches[_globalLoadCacheIndexes[instructionIndex] - 1];
 
-    private ref BinaryAddCache GetBinaryAddCache(int instructionIndex) =>
+    private ref AdaptiveNumericCache GetBinaryAddCache(int instructionIndex) =>
         ref _binaryAddCaches[_binaryAddCacheIndexes[instructionIndex] - 1];
 
-    private struct BinaryAddCache
-    {
-        internal BinaryAddCacheState State { get; init; }
+    private ref AdaptiveNumericCache GetLessThanCache(int instructionIndex) =>
+        ref _lessThanCaches[_lessThanCacheIndexes[instructionIndex] - 1];
 
-        internal BinaryAddCacheState Candidate { get; set; }
+    private static void RecordNumericObservation(
+        ref AdaptiveNumericCache cache,
+        AdaptiveNumericOperandKind operandKind
+    )
+    {
+        if (cache.State == AdaptiveNumericCacheState.Generic)
+        {
+            return;
+        }
+
+        var targetState = operandKind switch
+        {
+            AdaptiveNumericOperandKind.WholeNumber => AdaptiveNumericCacheState.WholeNumber,
+            AdaptiveNumericOperandKind.FloatingPoint => AdaptiveNumericCacheState.FloatingPoint,
+            _ => AdaptiveNumericCacheState.Generic,
+        };
+
+        if (cache.State != AdaptiveNumericCacheState.Adaptive)
+        {
+            if (cache.State == targetState)
+            {
+                return;
+            }
+
+            cache = default;
+        }
+
+        if (cache.Candidate != targetState)
+        {
+            cache.Candidate = targetState;
+            cache.WarmupCount = 1;
+            return;
+        }
+
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
+        {
+            cache.WarmupCount++;
+            return;
+        }
+
+        cache = new AdaptiveNumericCache { State = targetState };
+    }
+
+    private struct AdaptiveNumericCache
+    {
+        internal AdaptiveNumericCacheState State { get; init; }
+
+        internal AdaptiveNumericCacheState Candidate { get; set; }
 
         internal byte WarmupCount { get; set; }
     }
@@ -273,7 +305,7 @@ internal sealed class PreparedPythonCode
     }
 }
 
-internal enum BinaryAddCacheState : byte
+internal enum AdaptiveNumericCacheState : byte
 {
     Adaptive,
     WholeNumber,
@@ -281,7 +313,7 @@ internal enum BinaryAddCacheState : byte
     Generic,
 }
 
-internal enum BinaryAddOperandKind : byte
+internal enum AdaptiveNumericOperandKind : byte
 {
     Other,
     WholeNumber,

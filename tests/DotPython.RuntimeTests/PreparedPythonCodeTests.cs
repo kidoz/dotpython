@@ -154,7 +154,7 @@ public sealed class PreparedPythonCodeTests
         }
 
         Assert.Equal(
-            BinaryAddCacheState.WholeNumber,
+            AdaptiveNumericCacheState.WholeNumber,
             function.GetBinaryAddCacheState(instructionIndex)
         );
 
@@ -174,7 +174,7 @@ public sealed class PreparedPythonCodeTests
             Invoke(engine, "add", PythonTruthValue.True, PythonWholeNumberValue.Create(2))
         );
         Assert.Equal(
-            BinaryAddCacheState.Adaptive,
+            AdaptiveNumericCacheState.Adaptive,
             function.GetBinaryAddCacheState(instructionIndex)
         );
 
@@ -192,7 +192,7 @@ public sealed class PreparedPythonCodeTests
         }
 
         Assert.Equal(
-            BinaryAddCacheState.WholeNumber,
+            AdaptiveNumericCacheState.WholeNumber,
             function.GetBinaryAddCacheState(instructionIndex)
         );
     }
@@ -216,7 +216,7 @@ public sealed class PreparedPythonCodeTests
         }
 
         Assert.Equal(
-            BinaryAddCacheState.FloatingPoint,
+            AdaptiveNumericCacheState.FloatingPoint,
             function.GetBinaryAddCacheState(instructionIndex)
         );
 
@@ -229,8 +229,133 @@ public sealed class PreparedPythonCodeTests
         }
 
         Assert.Equal(
-            BinaryAddCacheState.Generic,
+            AdaptiveNumericCacheState.Generic,
             function.GetBinaryAddCacheState(instructionIndex)
+        );
+    }
+
+    [Fact]
+    public void LessThanCache_SpecializesNumericOperandsAndDeoptimizesForMixedTypes()
+    {
+        var (engine, function, instructionIndex) = PrepareLessThanFunction();
+
+        AssertTruth(
+            false,
+            Invoke(
+                engine,
+                "less_than",
+                new PythonFloatingPointValue(double.NaN),
+                new PythonFloatingPointValue(1)
+            )
+        );
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertTruth(
+                true,
+                Invoke(
+                    engine,
+                    "less_than",
+                    PythonWholeNumberValue.Create(10),
+                    PythonWholeNumberValue.Create(20)
+                )
+            );
+        }
+
+        Assert.Equal(
+            AdaptiveNumericCacheState.WholeNumber,
+            function.GetLessThanCacheState(instructionIndex)
+        );
+
+        var largeValue = BigInteger.One << 200;
+        AssertTruth(
+            true,
+            Invoke(
+                engine,
+                "less_than",
+                PythonWholeNumberValue.Create(largeValue),
+                PythonWholeNumberValue.Create(largeValue + 1)
+            )
+        );
+        AssertTruth(
+            true,
+            Invoke(engine, "less_than", PythonTruthValue.False, PythonTruthValue.True)
+        );
+        Assert.Equal(
+            AdaptiveNumericCacheState.Adaptive,
+            function.GetLessThanCacheState(instructionIndex)
+        );
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertTruth(
+                true,
+                Invoke(
+                    engine,
+                    "less_than",
+                    new PythonFloatingPointValue(1.25),
+                    new PythonFloatingPointValue(2.5)
+                )
+            );
+        }
+
+        Assert.Equal(
+            AdaptiveNumericCacheState.FloatingPoint,
+            function.GetLessThanCacheState(instructionIndex)
+        );
+        AssertTruth(
+            false,
+            Invoke(
+                engine,
+                "less_than",
+                new PythonFloatingPointValue(double.NaN),
+                new PythonFloatingPointValue(1)
+            )
+        );
+        AssertTruth(
+            true,
+            Invoke(
+                engine,
+                "less_than",
+                PythonWholeNumberValue.Create(1),
+                new PythonFloatingPointValue(1.5)
+            )
+        );
+        Assert.Equal(
+            AdaptiveNumericCacheState.Adaptive,
+            function.GetLessThanCacheState(instructionIndex)
+        );
+    }
+
+    [Fact]
+    public void LessThanCache_SaturatesGenericForTextOperands()
+    {
+        var (engine, function, instructionIndex) = PrepareLessThanFunction();
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertTruth(
+                true,
+                Invoke(
+                    engine,
+                    "less_than",
+                    new PythonTextValue("Dot"),
+                    new PythonTextValue("Python")
+                )
+            );
+        }
+
+        Assert.Equal(
+            AdaptiveNumericCacheState.Generic,
+            function.GetLessThanCacheState(instructionIndex)
+        );
+        AssertTruth(
+            false,
+            Invoke(engine, "less_than", new PythonTextValue("Python"), new PythonTextValue("Dot"))
+        );
+        Assert.Equal(
+            AdaptiveNumericCacheState.Generic,
+            function.GetLessThanCacheState(instructionIndex)
         );
     }
 
@@ -261,6 +386,9 @@ public sealed class PreparedPythonCodeTests
     private static void AssertWholeNumber(BigInteger expected, PythonValue value) =>
         Assert.Equal(expected, Assert.IsType<PythonWholeNumberValue>(value).Value);
 
+    private static void AssertTruth(bool expected, PythonValue value) =>
+        Assert.Equal(expected, Assert.IsType<PythonTruthValue>(value).Value);
+
     private static (
         ManagedPythonEngine Engine,
         PreparedPythonCode Function,
@@ -278,6 +406,25 @@ public sealed class PreparedPythonCodeTests
 
         Assert.True(initialization.Success);
         return (engine, function, GetInstructionIndex(function, PythonOpCode.BinaryAdd));
+    }
+
+    private static (
+        ManagedPythonEngine Engine,
+        PreparedPythonCode Function,
+        int InstructionIndex
+    ) PrepareLessThanFunction()
+    {
+        var code = Compile("def less_than(left, right): return left < right\n");
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("less_than_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "less_than");
+
+        Assert.True(initialization.Success);
+        return (engine, function, GetInstructionIndex(function, PythonOpCode.CompareLessThan));
     }
 
     private static PreparedPythonCode GetPreparedFunction(
