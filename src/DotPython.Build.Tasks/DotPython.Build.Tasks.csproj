@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
+        <ProjectReference Include="../DotPython.Compiler/DotPython.Compiler.csproj" />
+        <ProjectReference Include="../DotPython.Interop/DotPython.Interop.csproj" />
+        <ProjectReference Include="../DotPython.Language/DotPython.Language.csproj" />
+        <ProjectReference Include="../DotPython.ParserGenerator/DotPython.ParserGenerator.csproj" />
+    </ItemGroup>
+</Project>
