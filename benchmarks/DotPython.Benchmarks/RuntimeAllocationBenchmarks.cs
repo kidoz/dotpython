@@ -15,6 +15,8 @@ public enum RuntimeAllocationScenario
     FunctionCallsNoArguments,
     FunctionCalls,
     GlobalLookup,
+    MutableGlobalLookup,
+    BuiltinLookup,
 }
 
 [MemoryDiagnoser]

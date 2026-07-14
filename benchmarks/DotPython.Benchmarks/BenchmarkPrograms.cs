@@ -75,6 +75,16 @@ internal static class BenchmarkPrograms
                     + "while current < 1000:\n"
                     + "    value = global_value\n"
                     + "    current = current + 1\n",
+                RuntimeAllocationScenario.MutableGlobalLookup => "global_value = 0\n"
+                    + "current = 0\n"
+                    + "while current < 1000:\n"
+                    + "    value = global_value\n"
+                    + "    global_value = global_value + 1\n"
+                    + "    current = current + 1\n",
+                RuntimeAllocationScenario.BuiltinLookup => "current = 0\n"
+                    + "while current < 1000:\n"
+                    + "    value = print\n"
+                    + "    current = current + 1\n",
                 _ => throw new ArgumentOutOfRangeException(nameof(scenario)),
             },
             "allocation-benchmark.py"
