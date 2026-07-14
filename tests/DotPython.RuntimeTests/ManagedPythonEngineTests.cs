@@ -218,6 +218,26 @@ public sealed class ManagedPythonEngineTests
         Assert.Equal($"42 True False{Environment.NewLine}", output.ToString());
     }
 
+    [Fact]
+    public void Execute_PreservesCallerValuesAcrossNestedFunctionFrames()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def double(value): return value * 2\n"
+            + "def add(left, right): return left + right\n"
+            + "print(1 + double(20) + 1, add(1, add(20, 21)))";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42 42{Environment.NewLine}", output.ToString());
+    }
+
     [Theory]
     [InlineData("print(missing)", "DPY4002")]
     [InlineData("print(1 / 0)", "DPY4004")]

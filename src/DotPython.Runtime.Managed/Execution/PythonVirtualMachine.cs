@@ -8,14 +8,16 @@ internal sealed class PythonVirtualMachine
 {
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
-    private readonly Stack<PythonFrame> _frames = [];
+    private readonly Stack<PythonValue> _evaluationStack = [];
     private readonly Dictionary<string, PythonValue> _globals;
     private readonly long _instructionLimit;
     private readonly TextWriter _output;
+    private PythonFrame[] _frames = new PythonFrame[4];
+    private int _frameCount;
     private long _instructionsExecuted;
     private PythonValue _result = PythonNoneValue.Instance;
 
-    private PythonFrame CurrentFrame => _frames.Peek();
+    private ref PythonFrame CurrentFrame => ref _frames[_frameCount - 1];
 
     internal PythonVirtualMachine(
         Dictionary<string, PythonValue> globals,
@@ -38,7 +40,7 @@ internal sealed class PythonVirtualMachine
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        _frames.Push(new PythonFrame(code, _globals, []));
+        PushFrame(code, _globals, []);
         return Run();
     }
 
@@ -66,10 +68,10 @@ internal sealed class PythonVirtualMachine
         _result = PythonNoneValue.Instance;
         try
         {
-            while (_frames.Count != 0)
+            while (_frameCount != 0)
             {
                 _cancellationToken.ThrowIfCancellationRequested();
-                var frame = CurrentFrame;
+                ref var frame = ref CurrentFrame;
                 if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
                 {
                     ReturnFromFrame(PythonNoneValue.Instance);
@@ -87,26 +89,28 @@ internal sealed class PythonVirtualMachine
                     );
                 }
 
-                ExecuteInstruction(frame, instruction);
+                ExecuteInstruction(ref frame, instruction);
             }
 
             return _result;
         }
         finally
         {
-            _frames.Clear();
+            Array.Clear(_frames, 0, _frameCount);
+            _frameCount = 0;
+            _evaluationStack.Clear();
         }
     }
 
-    private void ExecuteInstruction(PythonFrame frame, PythonInstruction instruction)
+    private void ExecuteInstruction(ref PythonFrame frame, PythonInstruction instruction)
     {
         switch (instruction.OpCode)
         {
             case PythonOpCode.LoadConstant:
-                frame.EvaluationStack.Push(frame.Code.GetConstant(instruction.Operand));
+                _evaluationStack.Push(frame.Code.GetConstant(instruction.Operand));
                 break;
             case PythonOpCode.LoadName:
-                frame.EvaluationStack.Push(
+                _evaluationStack.Push(
                     LoadName(frame.Code.Definition.Names[instruction.Operand], instruction.Span)
                 );
                 break;
@@ -116,7 +120,7 @@ internal sealed class PythonVirtualMachine
                 );
                 break;
             case PythonOpCode.LoadLocal:
-                frame.EvaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
+                _evaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
                 break;
             case PythonOpCode.StoreLocal:
                 StoreLocal(instruction.Operand, Pop(instruction.Span), instruction.Span);
@@ -125,7 +129,7 @@ internal sealed class PythonVirtualMachine
                 Pop(instruction.Span);
                 break;
             case PythonOpCode.CopyTop:
-                frame.EvaluationStack.Push(Peek(instruction.Span));
+                _evaluationStack.Push(Peek(instruction.Span));
                 break;
             case PythonOpCode.RotateTwo:
                 RotateTwo(instruction.Span);
@@ -137,7 +141,7 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.UnaryNegative:
             case PythonOpCode.UnaryInvert:
             case PythonOpCode.UnaryNot:
-                frame.EvaluationStack.Push(
+                _evaluationStack.Push(
                     ApplyUnary(instruction.OpCode, Pop(instruction.Span), instruction.Span)
                 );
                 break;
@@ -263,32 +267,24 @@ internal sealed class PythonVirtualMachine
     {
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
-        CurrentFrame.EvaluationStack.Push(
-            ApplyBinary(instruction.OpCode, left, right, instruction.Span)
-        );
+        _evaluationStack.Push(ApplyBinary(instruction.OpCode, left, right, instruction.Span));
     }
 
     private void ApplyComparison(PythonInstruction instruction)
     {
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
-        CurrentFrame.EvaluationStack.Push(
-            ApplyComparison(instruction.OpCode, left, right, instruction.Span)
-        );
+        _evaluationStack.Push(ApplyComparison(instruction.OpCode, left, right, instruction.Span));
     }
 
     private void ApplyCall(PythonInstruction instruction)
     {
-        var arguments = new PythonValue[instruction.Operand];
-        for (var index = arguments.Length - 1; index >= 0; index--)
-        {
-            arguments[index] = Pop(instruction.Span);
-        }
-
-        var target = Pop(instruction.Span);
+        var target = Peek(instruction.Operand, instruction.Span);
         if (target is PythonBuiltinFunctionValue builtin)
         {
-            CurrentFrame.EvaluationStack.Push(builtin.Invoke(arguments));
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            _evaluationStack.Push(builtin.Invoke(arguments));
             return;
         }
 
@@ -297,7 +293,32 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        PushFunctionFrame(function, arguments, instruction.Span);
+        PushFunctionFrame(function, instruction.Operand, instruction.Span);
+    }
+
+    private PythonValue[] PopArguments(int argumentCount, TextSpan span)
+    {
+        var arguments = new PythonValue[argumentCount];
+        for (var index = arguments.Length - 1; index >= 0; index--)
+        {
+            arguments[index] = Pop(span);
+        }
+
+        return arguments;
+    }
+
+    private void PushFunctionFrame(PythonFunctionValue function, int argumentCount, TextSpan span)
+    {
+        ValidateArgumentCount(function, argumentCount, span);
+
+        var locals = CreateLocals(function.Code);
+        for (var index = argumentCount - 1; index >= 0; index--)
+        {
+            locals[index] = Pop(span);
+        }
+
+        Pop(span);
+        PushFrame(function.Code, function.Globals, locals);
     }
 
     private void PushFunctionFrame(
@@ -306,23 +327,53 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
-        if (arguments.Count != function.Code.Definition.ArgumentCount)
-        {
-            throw Fault(
-                "DPY4009",
-                $"Function '{function.Name}' expected {function.Code.Definition.ArgumentCount} positional "
-                    + $"argument(s), but received {arguments.Count}.",
-                span
-            );
-        }
+        ValidateArgumentCount(function, arguments.Count, span);
 
-        var locals = new PythonValue?[function.Code.Definition.VariableNames.Count];
+        var locals = CreateLocals(function.Code);
         for (var index = 0; index < arguments.Count; index++)
         {
             locals[index] = arguments[index];
         }
 
-        _frames.Push(new PythonFrame(function.Code, function.Globals, locals));
+        PushFrame(function.Code, function.Globals, locals);
+    }
+
+    private static PythonValue?[] CreateLocals(PreparedPythonCode code) =>
+        code.Definition.VariableNames.Count == 0
+            ? Array.Empty<PythonValue?>()
+            : new PythonValue?[code.Definition.VariableNames.Count];
+
+    private static void ValidateArgumentCount(
+        PythonFunctionValue function,
+        int argumentCount,
+        TextSpan span
+    )
+    {
+        if (argumentCount == function.Code.Definition.ArgumentCount)
+        {
+            return;
+        }
+
+        throw Fault(
+            "DPY4009",
+            $"Function '{function.Name}' expected {function.Code.Definition.ArgumentCount} positional "
+                + $"argument(s), but received {argumentCount}.",
+            span
+        );
+    }
+
+    private void PushFrame(
+        PreparedPythonCode code,
+        Dictionary<string, PythonValue> globals,
+        PythonValue?[] locals
+    )
+    {
+        if (_frameCount == _frames.Length)
+        {
+            Array.Resize(ref _frames, checked(_frameCount * 2));
+        }
+
+        _frames[_frameCount++] = new PythonFrame(code, globals, locals, _evaluationStack.Count);
     }
 
     private void MakeFunction(PythonInstruction instruction)
@@ -337,17 +388,23 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4007", "The function code object is invalid.", instruction.Span);
         }
 
-        CurrentFrame.EvaluationStack.Push(
+        _evaluationStack.Push(
             new PythonFunctionValue(code.Definition.Name, code, CurrentFrame.Globals)
         );
     }
 
     private void ReturnFromFrame(PythonValue value)
     {
-        _frames.Pop();
-        if (_frames.TryPeek(out var caller))
+        var evaluationStackBase = CurrentFrame.EvaluationStackBase;
+        while (_evaluationStack.Count > evaluationStackBase)
         {
-            caller.EvaluationStack.Push(value);
+            _evaluationStack.Pop();
+        }
+
+        _frames[--_frameCount] = default;
+        if (_frameCount != 0)
+        {
+            _evaluationStack.Push(value);
         }
         else
         {
@@ -363,9 +420,9 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue Pop(TextSpan span)
     {
-        if (CurrentFrame.EvaluationStack.TryPop(out var value))
+        if (_evaluationStack.Count > CurrentFrame.EvaluationStackBase)
         {
-            return value;
+            return _evaluationStack.Pop();
         }
 
         throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
@@ -373,9 +430,28 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue Peek(TextSpan span)
     {
-        if (CurrentFrame.EvaluationStack.TryPeek(out var value))
+        if (_evaluationStack.Count > CurrentFrame.EvaluationStackBase)
         {
-            return value;
+            return _evaluationStack.Peek();
+        }
+
+        throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
+    }
+
+    private PythonValue Peek(int depth, TextSpan span)
+    {
+        if (depth < 0 || _evaluationStack.Count - depth <= CurrentFrame.EvaluationStackBase)
+        {
+            throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
+        }
+
+        var index = 0;
+        foreach (var value in _evaluationStack)
+        {
+            if (index++ == depth)
+            {
+                return value;
+            }
         }
 
         throw Fault("DPY4007", "The DotPython evaluation stack is empty.", span);
@@ -385,8 +461,8 @@ internal sealed class PythonVirtualMachine
     {
         var top = Pop(span);
         var second = Pop(span);
-        CurrentFrame.EvaluationStack.Push(top);
-        CurrentFrame.EvaluationStack.Push(second);
+        _evaluationStack.Push(top);
+        _evaluationStack.Push(second);
     }
 
     private void RotateThree(TextSpan span)
@@ -394,9 +470,9 @@ internal sealed class PythonVirtualMachine
         var top = Pop(span);
         var second = Pop(span);
         var third = Pop(span);
-        CurrentFrame.EvaluationStack.Push(top);
-        CurrentFrame.EvaluationStack.Push(third);
-        CurrentFrame.EvaluationStack.Push(second);
+        _evaluationStack.Push(top);
+        _evaluationStack.Push(third);
+        _evaluationStack.Push(second);
     }
 
     private static PythonValue ApplyUnary(PythonOpCode opCode, PythonValue operand, TextSpan span)
@@ -779,22 +855,24 @@ internal sealed class PythonVirtualMachine
     private static PythonRuntimeException Fault(string code, string message, TextSpan span) =>
         new(code, message, span);
 
-    private sealed class PythonFrame
+    private struct PythonFrame
     {
         internal PythonFrame(
             PreparedPythonCode code,
             Dictionary<string, PythonValue> globals,
-            PythonValue?[] locals
+            PythonValue?[] locals,
+            int evaluationStackBase
         )
         {
             Code = code;
+            EvaluationStackBase = evaluationStackBase;
             Globals = globals;
             Locals = locals;
         }
 
         internal PreparedPythonCode Code { get; }
 
-        internal Stack<PythonValue> EvaluationStack { get; } = [];
+        internal int EvaluationStackBase { get; }
 
         internal Dictionary<string, PythonValue> Globals { get; }
 
