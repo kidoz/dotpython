@@ -46,4 +46,39 @@ internal static class BenchmarkPrograms
 
         return new SourceText(source, "runtime-benchmark.py");
     }
+
+    internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
+        new(
+            scenario switch
+            {
+                RuntimeAllocationScenario.Empty => string.Empty,
+                RuntimeAllocationScenario.Constants => CreateConstantLoads(),
+                RuntimeAllocationScenario.IntegerLoop => "current = 0\n"
+                    + "while current < 1000:\n"
+                    + "    current = current + 1\n",
+                RuntimeAllocationScenario.FunctionCalls =>
+                    "def increment(value): return value + 1\n"
+                        + "current = 0\n"
+                        + "while current < 1000:\n"
+                        + "    current = increment(current)\n",
+                RuntimeAllocationScenario.GlobalLookup => "global_value = 42\n"
+                    + "current = 0\n"
+                    + "while current < 1000:\n"
+                    + "    value = global_value\n"
+                    + "    current = current + 1\n",
+                _ => throw new ArgumentOutOfRangeException(nameof(scenario)),
+            },
+            "allocation-benchmark.py"
+        );
+
+    private static string CreateConstantLoads()
+    {
+        var source = new StringBuilder(1_100);
+        for (var index = 0; index < 100; index++)
+        {
+            source.Append("value = 42\n");
+        }
+
+        return source.ToString();
+    }
 }
