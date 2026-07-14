@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../PricingRules/PricingRules.dpyproj" />
+        <Reference
+            Include="DotPython.Abstractions"
+            HintPath="../Runtime/DotPython.Abstractions.dll"
+        />
+        <Reference Include="DotPython.Compiler" HintPath="../Runtime/DotPython.Compiler.dll" />
+        <Reference Include="DotPython.Language" HintPath="../Runtime/DotPython.Language.dll" />
+        <Reference
+            Include="DotPython.ParserGenerator"
+            HintPath="../Runtime/DotPython.ParserGenerator.dll"
+        />
+        <Reference
+            Include="DotPython.Runtime.Managed"
+            HintPath="../Runtime/DotPython.Runtime.Managed.dll"
+        />
+    </ItemGroup>
+</Project>
