@@ -9,7 +9,7 @@ internal sealed class PythonVirtualMachine
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
     private readonly Stack<PythonValue> _evaluationStack = [];
-    private readonly Dictionary<string, PythonValue> _globals;
+    private readonly PythonGlobalNamespace _globals;
     private readonly long _instructionLimit;
     private readonly TextWriter _output;
     private PythonFrame[] _frames = new PythonFrame[4];
@@ -22,7 +22,7 @@ internal sealed class PythonVirtualMachine
     private ref PythonFrame CurrentFrame => ref _frames[_frameCount - 1];
 
     internal PythonVirtualMachine(
-        Dictionary<string, PythonValue> globals,
+        PythonGlobalNamespace globals,
         TextWriter output,
         long instructionLimit,
         CancellationToken cancellationToken
@@ -80,7 +80,8 @@ internal sealed class PythonVirtualMachine
                     continue;
                 }
 
-                var instruction = frame.Code.Definition.Instructions[frame.InstructionPointer];
+                var instructionIndex = frame.InstructionPointer;
+                var instruction = frame.Code.Definition.Instructions[instructionIndex];
                 frame.InstructionPointer++;
                 if (_instructionsExecuted++ >= _instructionLimit)
                 {
@@ -91,7 +92,7 @@ internal sealed class PythonVirtualMachine
                     );
                 }
 
-                ExecuteInstruction(ref frame, instruction);
+                ExecuteInstruction(ref frame, instruction, instructionIndex);
             }
 
             return _result;
@@ -106,7 +107,11 @@ internal sealed class PythonVirtualMachine
         }
     }
 
-    private void ExecuteInstruction(ref PythonFrame frame, PythonInstruction instruction)
+    private void ExecuteInstruction(
+        ref PythonFrame frame,
+        PythonInstruction instruction,
+        int instructionIndex
+    )
     {
         switch (instruction.OpCode)
         {
@@ -115,12 +120,18 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.LoadName:
                 _evaluationStack.Push(
-                    LoadName(frame.Code.Definition.Names[instruction.Operand], instruction.Span)
+                    LoadName(
+                        frame.Code,
+                        instructionIndex,
+                        frame.Code.Definition.Names[instruction.Operand],
+                        instruction.Span
+                    )
                 );
                 break;
             case PythonOpCode.StoreName:
-                frame.Globals[frame.Code.Definition.Names[instruction.Operand]] = Pop(
-                    instruction.Span
+                frame.Globals.SetValue(
+                    frame.Code.Definition.Names[instruction.Operand],
+                    Pop(instruction.Span)
                 );
                 break;
             case PythonOpCode.LoadLocal:
@@ -227,13 +238,28 @@ internal sealed class PythonVirtualMachine
         }
     }
 
-    private PythonValue LoadName(string name, TextSpan span)
+    private PythonValue LoadName(
+        PreparedPythonCode code,
+        int instructionIndex,
+        string name,
+        TextSpan span
+    )
     {
-        if (
-            CurrentFrame.Globals.TryGetValue(name, out var value)
-            || _builtins.TryGetValue(name, out value)
-        )
+        var globals = CurrentFrame.Globals;
+        if (code.TryGetCachedName(instructionIndex, globals, out var value))
         {
+            return value;
+        }
+
+        if (globals.TryGetSlot(name, out var slot))
+        {
+            code.RecordGlobalLoad(instructionIndex, globals, slot);
+            return slot.Value;
+        }
+
+        if (_builtins.TryGetValue(name, out value))
+        {
+            code.RecordBuiltinLoad(instructionIndex, globals, value);
             return value;
         }
 
@@ -389,7 +415,7 @@ internal sealed class PythonVirtualMachine
 
     private void PushFrame(
         PreparedPythonCode code,
-        Dictionary<string, PythonValue> globals,
+        PythonGlobalNamespace globals,
         int localsBase,
         int localsCount
     )
@@ -896,7 +922,7 @@ internal sealed class PythonVirtualMachine
     {
         internal PythonFrame(
             PreparedPythonCode code,
-            Dictionary<string, PythonValue> globals,
+            PythonGlobalNamespace globals,
             int localsBase,
             int localsCount,
             int evaluationStackBase
@@ -913,7 +939,7 @@ internal sealed class PythonVirtualMachine
 
         internal int EvaluationStackBase { get; }
 
-        internal Dictionary<string, PythonValue> Globals { get; }
+        internal PythonGlobalNamespace Globals { get; }
 
         internal int InstructionPointer { get; set; }
 

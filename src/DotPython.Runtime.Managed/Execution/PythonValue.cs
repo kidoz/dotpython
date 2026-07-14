@@ -178,7 +178,7 @@ internal sealed record PythonBuiltinFunctionValue(
 internal sealed record PythonFunctionValue(
     string Name,
     PreparedPythonCode Code,
-    Dictionary<string, PythonValue> Globals
+    PythonGlobalNamespace Globals
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<function {Name}>";

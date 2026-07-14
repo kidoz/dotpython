@@ -11,7 +11,7 @@ namespace DotPython.Runtime.Managed.Execution;
 public sealed class ManagedPythonEngine
 {
     private readonly object _executionGate = new();
-    private readonly Dictionary<string, PythonValue> _globals = new(StringComparer.Ordinal);
+    private readonly PythonGlobalNamespace _globals = new();
     private readonly ConditionalWeakTable<PythonCodeObject, PreparedPythonCode> _preparedCodes =
         new();
 
