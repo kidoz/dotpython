@@ -147,6 +147,8 @@ public static class DotPythonModuleArtifactSerializer
         writer.WriteInt32(code.ArgumentCount);
         writer.WriteStrings(code.Names);
         writer.WriteStrings(code.VariableNames);
+        writer.WriteStrings(code.CellVariableNames);
+        writer.WriteStrings(code.FreeVariableNames);
         writer.WriteInt32(code.Constants.Count);
         foreach (var constant in code.Constants)
         {
@@ -180,6 +182,8 @@ public static class DotPythonModuleArtifactSerializer
         var argumentCount = reader.ReadNonNegativeInt32("argument count");
         var names = reader.ReadStrings();
         var variableNames = reader.ReadStrings();
+        var cellVariableNames = reader.ReadStrings();
+        var freeVariableNames = reader.ReadStrings();
         var constantCount = reader.ReadCount("constant");
         var constants = new List<PythonConstant>(constantCount);
         for (var index = 0; index < constantCount; index++)
@@ -215,6 +219,8 @@ public static class DotPythonModuleArtifactSerializer
             constants,
             names,
             variableNames,
+            cellVariableNames,
+            freeVariableNames,
             argumentCount
         );
         ValidateCodeObject(code);
@@ -314,12 +320,16 @@ public static class DotPythonModuleArtifactSerializer
         if (
             code.Names.Count > MaximumCollectionLength
             || code.VariableNames.Count > MaximumCollectionLength
+            || code.CellVariableNames.Count > MaximumCollectionLength
+            || code.FreeVariableNames.Count > MaximumCollectionLength
             || code.Constants.Count > MaximumCollectionLength
             || code.Instructions.Count > MaximumCollectionLength
         )
         {
             throw new InvalidDataException("A code-object collection is too large.");
         }
+
+        ValidateClosureMetadata(code);
 
         for (var index = 0; index < code.Instructions.Count; index++)
         {
@@ -335,6 +345,39 @@ public static class DotPythonModuleArtifactSerializer
             }
 
             ValidateOperand(code, instruction, index);
+        }
+    }
+
+    private static void ValidateClosureMetadata(PythonCodeObject code)
+    {
+        var localNames = new HashSet<string>(code.VariableNames, StringComparer.Ordinal);
+        if (localNames.Count != code.VariableNames.Count)
+        {
+            throw new InvalidDataException("A code object contains duplicate local names.");
+        }
+
+        var closureNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in code.CellVariableNames)
+        {
+            if (!localNames.Contains(name))
+            {
+                throw new InvalidDataException(
+                    $"Cell variable '{name}' is not a local variable of the code object."
+                );
+            }
+
+            if (!closureNames.Add(name))
+            {
+                throw new InvalidDataException("A code object contains duplicate closure names.");
+            }
+        }
+
+        foreach (var name in code.FreeVariableNames)
+        {
+            if (!closureNames.Add(name))
+            {
+                throw new InvalidDataException("A code object contains duplicate closure names.");
+            }
         }
     }
 
@@ -373,6 +416,14 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.LoadLocal:
             case PythonOpCode.StoreLocal:
                 ValidateIndex(instruction.Operand, code.VariableNames.Count, instructionIndex);
+                break;
+            case PythonOpCode.LoadCell:
+            case PythonOpCode.StoreCell:
+                ValidateIndex(
+                    instruction.Operand,
+                    code.CellVariableNames.Count + code.FreeVariableNames.Count,
+                    instructionIndex
+                );
                 break;
             case PythonOpCode.Jump:
             case PythonOpCode.JumpIfFalse:

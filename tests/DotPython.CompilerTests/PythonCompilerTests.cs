@@ -173,7 +173,7 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
-    public void Compile_ReportsUnsupportedClosureCapture()
+    public void Compile_EmitsClosureMetadataAndCellOperations()
     {
         var parseResult = PythonParser.Parse(
             new SourceText(
@@ -186,7 +186,64 @@ public sealed class PythonCompilerTests
 
         var result = PythonCompiler.Compile(parseResult.Module);
 
-        var diagnostic = Assert.Single(result.Diagnostics);
-        Assert.Equal("DPY3101", diagnostic.Code);
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var inner = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(outer.Constants, constant => constant.Type == PythonConstantType.CodeObject)
+                .Value
+        );
+        Assert.Equal(["value"], outer.CellVariableNames);
+        Assert.Empty(outer.FreeVariableNames);
+        Assert.Empty(inner.CellVariableNames);
+        Assert.Equal(["value"], inner.FreeVariableNames);
+        Assert.Contains(
+            inner.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.LoadCell
+        );
+    }
+
+    [Fact]
+    public void Compile_StoresNestedRecursiveFunctionInItsCapturedCell()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def outer():\n"
+                    + "    def inner(value):\n"
+                    + "        if value <= 1: return 1\n"
+                    + "        return value * inner(value - 1)\n"
+                    + "    return inner(5)\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var inner = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(outer.Constants, constant => constant.Type == PythonConstantType.CodeObject)
+                .Value
+        );
+        Assert.Equal(["inner"], outer.CellVariableNames);
+        Assert.Equal(["inner"], inner.FreeVariableNames);
+        Assert.Contains(
+            outer.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreCell
+        );
     }
 }

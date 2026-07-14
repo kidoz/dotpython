@@ -10,6 +10,8 @@ public sealed class PythonCodeObject
         IList<PythonConstant> constants,
         IList<string> names,
         IList<string> variableNames,
+        IList<string> cellVariableNames,
+        IList<string> freeVariableNames,
         int argumentCount
     )
     {
@@ -29,6 +31,8 @@ public sealed class PythonCodeObject
         Constants = new ReadOnlyCollection<PythonConstant>(constants);
         Names = new ReadOnlyCollection<string>(names);
         VariableNames = new ReadOnlyCollection<string>(variableNames);
+        CellVariableNames = new ReadOnlyCollection<string>(cellVariableNames);
+        FreeVariableNames = new ReadOnlyCollection<string>(freeVariableNames);
     }
 
     public int FormatVersion { get; }
@@ -44,4 +48,8 @@ public sealed class PythonCodeObject
     public IReadOnlyList<string> Names { get; }
 
     public IReadOnlyList<string> VariableNames { get; }
+
+    public IReadOnlyList<string> CellVariableNames { get; }
+
+    public IReadOnlyList<string> FreeVariableNames { get; }
 }

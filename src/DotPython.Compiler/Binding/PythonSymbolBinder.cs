@@ -20,6 +20,7 @@ public static class PythonSymbolBinder
             [],
             diagnostics
         );
+        ResolveClosureVariables(moduleScope, []);
         return new PythonBindingResult(moduleScope, diagnostics);
     }
 
@@ -62,32 +63,9 @@ public static class PythonSymbolBinder
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        if (kind == PythonScopeKind.Function)
-        {
-            foreach (var reference in references)
-            {
-                if (localNameSet.Contains(reference.Name))
-                {
-                    continue;
-                }
-
-                var closureOwner = ancestors.LastOrDefault(ancestor =>
-                    ancestor.Kind == PythonScopeKind.Function && ancestor.IsLocal(reference.Name)
-                );
-                if (closureOwner is not null)
-                {
-                    Report(
-                        diagnostics,
-                        "DPY3101",
-                        $"Closure variable '{reference.Name}' from function "
-                            + $"'{closureOwner.Name}' is not supported yet.",
-                        reference.Span
-                    );
-                }
-            }
-        }
-
         var children = new List<PythonBoundScope>();
+        var cellVariableNames = new List<string>();
+        var freeVariableNames = new List<string>();
         var scope = new PythonBoundScope(
             kind,
             name,
@@ -95,6 +73,8 @@ public static class PythonSymbolBinder
             parameterNames,
             localNames,
             referencedNames,
+            cellVariableNames,
+            freeVariableNames,
             children
         );
         var childAncestors = ancestors.Append(scope).ToArray();
@@ -114,6 +94,70 @@ public static class PythonSymbolBinder
         }
 
         return scope;
+    }
+
+    private static void ResolveClosureVariables(
+        PythonBoundScope scope,
+        IReadOnlyList<PythonBoundScope> enclosingFunctions
+    )
+    {
+        if (scope.Kind == PythonScopeKind.Function)
+        {
+            foreach (var name in scope.ReferencedNames)
+            {
+                if (!scope.IsLocal(name) && FindClosureOwner(enclosingFunctions, name) is not null)
+                {
+                    scope.AddFreeVariable(name);
+                }
+            }
+        }
+
+        var childEnclosingFunctions =
+            scope.Kind == PythonScopeKind.Function
+                ? enclosingFunctions.Append(scope).ToArray()
+                : enclosingFunctions;
+        foreach (var child in scope.Children)
+        {
+            ResolveClosureVariables(child, childEnclosingFunctions);
+        }
+
+        if (scope.Kind != PythonScopeKind.Function)
+        {
+            return;
+        }
+
+        foreach (var child in scope.Children)
+        {
+            foreach (var name in child.FreeVariableNames)
+            {
+                if (scope.IsLocal(name))
+                {
+                    scope.AddCellVariable(name);
+                }
+                else if (FindClosureOwner(enclosingFunctions, name) is not null)
+                {
+                    scope.AddFreeVariable(name);
+                }
+            }
+        }
+
+        scope.OrderCellVariablesByLocalDeclaration();
+    }
+
+    private static PythonBoundScope? FindClosureOwner(
+        IReadOnlyList<PythonBoundScope> enclosingFunctions,
+        string name
+    )
+    {
+        for (var index = enclosingFunctions.Count - 1; index >= 0; index--)
+        {
+            if (enclosingFunctions[index].IsLocal(name))
+            {
+                return enclosingFunctions[index];
+            }
+        }
+
+        return null;
     }
 
     private static void CollectBoundNames(

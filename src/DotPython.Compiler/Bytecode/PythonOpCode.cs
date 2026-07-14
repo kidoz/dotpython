@@ -36,4 +36,6 @@ public enum PythonOpCode
     Call = 31,
     ReturnValue = 32,
     ReturnNone = 33,
+    LoadCell = 34,
+    StoreCell = 35,
 }

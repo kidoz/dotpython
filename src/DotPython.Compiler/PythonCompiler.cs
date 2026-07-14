@@ -53,6 +53,8 @@ public static class PythonCompiler
                 _constants,
                 _names,
                 [.. _scope.LocalNames],
+                [.. _scope.CellVariableNames],
+                [.. _scope.FreeVariableNames],
                 _scope.Parameters.Count
             );
         }
@@ -311,11 +313,40 @@ public static class PythonCompiler
             throw new InvalidOperationException($"The local variable '{name}' was not bound.");
         }
 
+        private int GetCellIndex(string name)
+        {
+            if (_scope.IsCellVariable(name))
+            {
+                return _scope.GetCellVariableIndex(name);
+            }
+
+            if (_scope.IsFreeVariable(name))
+            {
+                return _scope.CellVariableNames.Count + _scope.GetFreeVariableIndex(name);
+            }
+
+            throw new InvalidOperationException($"The closure variable '{name}' was not bound.");
+        }
+
         private void EmitLoadName(PythonNameExpression name)
         {
             if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
             {
-                Emit(PythonOpCode.LoadLocal, GetVariableIndex(name.Name), name.Span);
+                Emit(
+                    _scope.IsCellVariable(name.Name)
+                        ? PythonOpCode.LoadCell
+                        : PythonOpCode.LoadLocal,
+                    _scope.IsCellVariable(name.Name)
+                        ? GetCellIndex(name.Name)
+                        : GetVariableIndex(name.Name),
+                    name.Span
+                );
+                return;
+            }
+
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            {
+                Emit(PythonOpCode.LoadCell, GetCellIndex(name.Name), name.Span);
                 return;
             }
 
@@ -326,7 +357,15 @@ public static class PythonCompiler
         {
             if (_scope.Kind == PythonScopeKind.Function)
             {
-                Emit(PythonOpCode.StoreLocal, GetVariableIndex(name.Name), name.Span);
+                Emit(
+                    _scope.IsCellVariable(name.Name)
+                        ? PythonOpCode.StoreCell
+                        : PythonOpCode.StoreLocal,
+                    _scope.IsCellVariable(name.Name)
+                        ? GetCellIndex(name.Name)
+                        : GetVariableIndex(name.Name),
+                    name.Span
+                );
                 return;
             }
 

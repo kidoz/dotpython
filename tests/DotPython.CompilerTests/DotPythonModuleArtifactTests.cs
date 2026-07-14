@@ -57,8 +57,8 @@ public sealed class DotPythonModuleArtifactTests
         var restored = DotPythonModuleManifestJson.Deserialize(json);
 
         Assert.Equal(
-            "{\"formatVersion\":1,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":1,\"exports\":[{\"pythonName\":\"calculate\","
+            "{\"formatVersion\":2,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
+                + "\"bytecodeFormatVersion\":2,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -70,8 +70,9 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string source =
             "def values(argument):\n"
+            + "    def read(): return argument\n"
             + "    print(None, False, 123456789012345678901234567890, 1.25, 3j, 'text', b'bytes')\n"
-            + "    return argument\n";
+            + "    return read\n";
         var bytes = DotPythonModuleArtifactSerializer.Serialize(
             DotPythonModuleArtifact.Create("values", Compile(source))
         );
@@ -89,6 +90,16 @@ public sealed class DotPythonModuleArtifactTests
                 .Value
         );
         Assert.Equal("values", nested.Name);
+        Assert.Equal(["argument"], nested.CellVariableNames);
+        var read = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    nested.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Equal(["argument"], read.FreeVariableNames);
         Assert.Contains(
             nested.Constants,
             constant => constant.Type == PythonConstantType.ByteSequence
@@ -123,8 +134,8 @@ public sealed class DotPythonModuleArtifactTests
     public void ManifestJson_RejectsUnsupportedVersionsAndDuplicateExports()
     {
         const string unsupported =
-            "{\"formatVersion\":2,\"moduleName\":\"sample\",\"languageVersion\":\"3.14\","
-            + "\"bytecodeFormatVersion\":1,\"exports\":[]}";
+            "{\"formatVersion\":3,\"moduleName\":\"sample\",\"languageVersion\":\"3.14\","
+            + "\"bytecodeFormatVersion\":2,\"exports\":[]}";
 
         Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupported)
@@ -144,10 +155,12 @@ public sealed class DotPythonModuleArtifactTests
     [Fact]
     public void WireEnums_HaveStableVersionedValues()
     {
-        Assert.Equal(1, DotPythonModuleArtifactFormat.CurrentVersion);
+        Assert.Equal(2, DotPythonModuleArtifactFormat.CurrentVersion);
         Assert.Equal(0, (int)PythonOpCode.LoadConstant);
         Assert.Equal(30, (int)PythonOpCode.MakeFunction);
         Assert.Equal(33, (int)PythonOpCode.ReturnNone);
+        Assert.Equal(34, (int)PythonOpCode.LoadCell);
+        Assert.Equal(35, (int)PythonOpCode.StoreCell);
         Assert.Equal(0, (int)PythonConstantType.NoneValue);
         Assert.Equal(7, (int)PythonConstantType.CodeObject);
     }

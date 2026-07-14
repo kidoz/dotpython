@@ -29,10 +29,12 @@ public sealed class PythonSymbolBinderTests
         Assert.Equal(["value"], function.Parameters);
         Assert.Equal(["value", "result"], function.LocalNames);
         Assert.Equal(["print", "result", "value", "factor"], function.ReferencedNames);
+        Assert.Empty(function.CellVariableNames);
+        Assert.Empty(function.FreeVariableNames);
     }
 
     [Fact]
-    public void Bind_RejectsClosureVariablesUntilCellsAreImplemented()
+    public void Bind_ClassifiesDirectClosureCellsAndFreeVariables()
     {
         var parseResult = PythonParser.Parse(
             new SourceText(
@@ -45,7 +47,59 @@ public sealed class PythonSymbolBinderTests
 
         var result = PythonSymbolBinder.Bind(parseResult.Module);
 
-        var diagnostic = Assert.Single(result.Diagnostics);
-        Assert.Equal("DPY3101", diagnostic.Code);
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.Single(result.ModuleScope.Children);
+        var inner = Assert.Single(outer.Children);
+        Assert.Equal(["value"], outer.CellVariableNames);
+        Assert.Empty(outer.FreeVariableNames);
+        Assert.Empty(inner.CellVariableNames);
+        Assert.Equal(["value"], inner.FreeVariableNames);
+    }
+
+    [Fact]
+    public void Bind_PropagatesFreeVariablesThroughIntermediateFunctions()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def outer(value):\n"
+                    + "    def middle():\n"
+                    + "        def inner(): return value\n"
+                    + "        return inner\n"
+                    + "    return middle\n"
+            )
+        );
+
+        var result = PythonSymbolBinder.Bind(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.Single(result.ModuleScope.Children);
+        var middle = Assert.Single(outer.Children);
+        var inner = Assert.Single(middle.Children);
+        Assert.Equal(["value"], outer.CellVariableNames);
+        Assert.Equal(["value"], middle.FreeVariableNames);
+        Assert.Equal(["value"], inner.FreeVariableNames);
+    }
+
+    [Fact]
+    public void Bind_LeavesModuleBindingsGlobalAndHonorsLocalShadowing()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "value = 40\n"
+                    + "def outer(value):\n"
+                    + "    def inner(value): return value\n"
+                    + "    return inner(value)\n"
+            )
+        );
+
+        var result = PythonSymbolBinder.Bind(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.Single(result.ModuleScope.Children);
+        var inner = Assert.Single(outer.Children);
+        Assert.Empty(outer.CellVariableNames);
+        Assert.Empty(outer.FreeVariableNames);
+        Assert.Empty(inner.CellVariableNames);
+        Assert.Empty(inner.FreeVariableNames);
     }
 }
