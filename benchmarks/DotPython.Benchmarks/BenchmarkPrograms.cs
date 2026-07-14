@@ -90,6 +90,36 @@ internal static class BenchmarkPrograms
         );
     }
 
+    internal static SourceText CreateManagedCallDispatchSource(int argumentCount)
+    {
+        var (callee, inlineAssignment, call) = argumentCount switch
+        {
+            0 => ("def callee(): return None\n", "        value = None\n", "callee()"),
+            1 => ("def callee(value): return value\n", "        value = value\n", "callee(value)"),
+            _ => throw new ArgumentOutOfRangeException(nameof(argumentCount)),
+        };
+        return new SourceText(
+            callee
+                + "def inline_loop():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + inlineAssignment
+                + "        current = current + 1\n"
+                + "    return value\n"
+                + "def call_loop():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + "        value = "
+                + call
+                + "\n"
+                + "        current = current + 1\n"
+                + "    return value\n",
+            "managed-call-dispatch-benchmark.py"
+        );
+    }
+
     internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
         new(
             scenario switch

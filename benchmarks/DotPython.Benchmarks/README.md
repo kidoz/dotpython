@@ -25,6 +25,16 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ComparisonSpecializationBenchmarks*'
 ```
 
+`ManagedCallDispatchBenchmarks` attributes the marginal cost of the current managed function-call
+and frame path. It compares an inline loop with an otherwise equivalent loop that makes 10,000
+stable managed calls, separately for zero- and one-argument functions. Both paths reuse canonical
+`None`, perform the same loop control, and return the same value. Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedCallDispatchBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh
