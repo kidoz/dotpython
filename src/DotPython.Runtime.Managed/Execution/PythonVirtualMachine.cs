@@ -161,6 +161,8 @@ internal sealed class PythonVirtualMachine
                 );
                 break;
             case PythonOpCode.BinaryAdd:
+                ApplyBinaryAdd(frame.Code, instructionIndex, instruction.Span);
+                break;
             case PythonOpCode.BinarySubtract:
             case PythonOpCode.BinaryMultiply:
             case PythonOpCode.BinaryTrueDivide:
@@ -300,6 +302,56 @@ internal sealed class PythonVirtualMachine
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
         _evaluationStack.Push(ApplyBinary(instruction.OpCode, left, right, instruction.Span));
+    }
+
+    private void ApplyBinaryAdd(PreparedPythonCode code, int instructionIndex, TextSpan span)
+    {
+        var right = Pop(span);
+        var left = Pop(span);
+        var cacheState = code.GetBinaryAddCacheState(instructionIndex);
+        if (
+            cacheState == BinaryAddCacheState.WholeNumber
+            && left is PythonWholeNumberValue leftWholeNumber
+            && right is PythonWholeNumberValue rightWholeNumber
+        )
+        {
+            _evaluationStack.Push(
+                PythonWholeNumberValue.Create(leftWholeNumber.Value + rightWholeNumber.Value)
+            );
+            return;
+        }
+
+        if (
+            cacheState == BinaryAddCacheState.FloatingPoint
+            && left is PythonFloatingPointValue leftFloatingPoint
+            && right is PythonFloatingPointValue rightFloatingPoint
+        )
+        {
+            _evaluationStack.Push(
+                new PythonFloatingPointValue(leftFloatingPoint.Value + rightFloatingPoint.Value)
+            );
+            return;
+        }
+
+        var operandKind = (left, right) switch
+        {
+            (PythonWholeNumberValue, PythonWholeNumberValue) => BinaryAddOperandKind.WholeNumber,
+            (PythonFloatingPointValue, PythonFloatingPointValue) =>
+                BinaryAddOperandKind.FloatingPoint,
+            _ => BinaryAddOperandKind.Other,
+        };
+        if (cacheState is BinaryAddCacheState.WholeNumber or BinaryAddCacheState.FloatingPoint)
+        {
+            code.RecordBinaryAddObservation(instructionIndex, operandKind);
+        }
+
+        var result = ApplyBinary(PythonOpCode.BinaryAdd, left, right, span);
+        if (cacheState == BinaryAddCacheState.Adaptive)
+        {
+            code.RecordBinaryAddObservation(instructionIndex, operandKind);
+        }
+
+        _evaluationStack.Push(result);
     }
 
     private void ApplyComparison(PythonInstruction instruction)

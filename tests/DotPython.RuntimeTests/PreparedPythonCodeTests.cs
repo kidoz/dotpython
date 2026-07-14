@@ -135,6 +135,105 @@ public sealed class PreparedPythonCodeTests
         Assert.Equal(GlobalLoadCacheState.Adaptive, function.GetGlobalLoadCacheState(loadIndex));
     }
 
+    [Fact]
+    public void BinaryAddCache_SpecializesWholeNumbersAndRecoversAfterDeoptimization()
+    {
+        var (engine, function, instructionIndex) = PrepareBinaryAddFunction();
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(
+                3,
+                Invoke(
+                    engine,
+                    "add",
+                    PythonWholeNumberValue.Create(1),
+                    PythonWholeNumberValue.Create(2)
+                )
+            );
+        }
+
+        Assert.Equal(
+            BinaryAddCacheState.WholeNumber,
+            function.GetBinaryAddCacheState(instructionIndex)
+        );
+
+        var largeValue = BigInteger.One << 200;
+        AssertWholeNumber(
+            largeValue + 1,
+            Invoke(
+                engine,
+                "add",
+                PythonWholeNumberValue.Create(largeValue),
+                PythonWholeNumberValue.Create(1)
+            )
+        );
+
+        AssertWholeNumber(
+            3,
+            Invoke(engine, "add", PythonTruthValue.True, PythonWholeNumberValue.Create(2))
+        );
+        Assert.Equal(
+            BinaryAddCacheState.Adaptive,
+            function.GetBinaryAddCacheState(instructionIndex)
+        );
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(
+                5,
+                Invoke(
+                    engine,
+                    "add",
+                    PythonWholeNumberValue.Create(2),
+                    PythonWholeNumberValue.Create(3)
+                )
+            );
+        }
+
+        Assert.Equal(
+            BinaryAddCacheState.WholeNumber,
+            function.GetBinaryAddCacheState(instructionIndex)
+        );
+    }
+
+    [Fact]
+    public void BinaryAddCache_SpecializesFloatingPointAndSaturatesGenericForText()
+    {
+        var (engine, function, instructionIndex) = PrepareBinaryAddFunction();
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            var result = Assert.IsType<PythonFloatingPointValue>(
+                Invoke(
+                    engine,
+                    "add",
+                    new PythonFloatingPointValue(1.25),
+                    new PythonFloatingPointValue(2.5)
+                )
+            );
+            Assert.Equal(3.75, result.Value);
+        }
+
+        Assert.Equal(
+            BinaryAddCacheState.FloatingPoint,
+            function.GetBinaryAddCacheState(instructionIndex)
+        );
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            var text = Assert.IsType<PythonTextValue>(
+                Invoke(engine, "add", new PythonTextValue("Dot"), new PythonTextValue("Python"))
+            );
+            Assert.Equal("DotPython", text.Value);
+        }
+
+        Assert.Equal(
+            BinaryAddCacheState.Generic,
+            function.GetBinaryAddCacheState(instructionIndex)
+        );
+    }
+
     private static PythonWholeNumberValue Invoke(ManagedPythonEngine engine, string functionName) =>
         Assert.IsType<PythonWholeNumberValue>(
             engine.Invoke(
@@ -145,6 +244,41 @@ public sealed class PreparedPythonCodeTests
                 TestContext.Current.CancellationToken
             )
         );
+
+    private static PythonValue Invoke(
+        ManagedPythonEngine engine,
+        string functionName,
+        params PythonValue[] arguments
+    ) =>
+        engine.Invoke(
+            functionName,
+            arguments,
+            TextWriter.Null,
+            new ManagedExecutionOptions(),
+            TestContext.Current.CancellationToken
+        );
+
+    private static void AssertWholeNumber(BigInteger expected, PythonValue value) =>
+        Assert.Equal(expected, Assert.IsType<PythonWholeNumberValue>(value).Value);
+
+    private static (
+        ManagedPythonEngine Engine,
+        PreparedPythonCode Function,
+        int InstructionIndex
+    ) PrepareBinaryAddFunction()
+    {
+        var code = Compile("def add(left, right): return left + right\n");
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("binary_add_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "add");
+
+        Assert.True(initialization.Success);
+        return (engine, function, GetInstructionIndex(function, PythonOpCode.BinaryAdd));
+    }
 
     private static PreparedPythonCode GetPreparedFunction(
         ManagedPythonEngine engine,
@@ -165,10 +299,13 @@ public sealed class PreparedPythonCodeTests
     }
 
     private static int GetLoadNameInstructionIndex(PreparedPythonCode code) =>
+        GetInstructionIndex(code, PythonOpCode.LoadName);
+
+    private static int GetInstructionIndex(PreparedPythonCode code, PythonOpCode opCode) =>
         Assert
             .Single(
                 code.Definition.Instructions.Select((instruction, index) => (instruction, index)),
-                item => item.instruction.OpCode == PythonOpCode.LoadName
+                item => item.instruction.OpCode == opCode
             )
             .index;
 

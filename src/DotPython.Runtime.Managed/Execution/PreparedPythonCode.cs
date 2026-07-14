@@ -5,7 +5,9 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed class PreparedPythonCode
 {
-    private const byte GlobalLoadWarmupThreshold = 8;
+    private const byte AdaptiveWarmupThreshold = 8;
+    private readonly BinaryAddCache[] _binaryAddCaches;
+    private readonly int[] _binaryAddCacheIndexes;
     private readonly PythonValue?[] _constants;
     private readonly PreparedPythonCode?[] _functionCodes;
     private readonly GlobalLoadCache[] _globalLoadCaches;
@@ -14,6 +16,12 @@ internal sealed class PreparedPythonCode
     private PreparedPythonCode(PythonCodeObject definition)
     {
         Definition = definition;
+        _binaryAddCacheIndexes = new int[definition.Instructions.Count];
+        _binaryAddCaches = new BinaryAddCache[
+            definition.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.BinaryAdd
+            )
+        ];
         _constants = new PythonValue?[definition.Constants.Count];
         _functionCodes = new PreparedPythonCode?[definition.Constants.Count];
         _globalLoadCacheIndexes = new int[definition.Instructions.Count];
@@ -23,12 +31,18 @@ internal sealed class PreparedPythonCode
             )
         ];
 
-        var cacheIndex = 0;
+        var binaryAddCacheIndex = 0;
+        var globalLoadCacheIndex = 0;
         for (var index = 0; index < definition.Instructions.Count; index++)
         {
-            if (definition.Instructions[index].OpCode == PythonOpCode.LoadName)
+            switch (definition.Instructions[index].OpCode)
             {
-                _globalLoadCacheIndexes[index] = ++cacheIndex;
+                case PythonOpCode.BinaryAdd:
+                    _binaryAddCacheIndexes[index] = ++binaryAddCacheIndex;
+                    break;
+                case PythonOpCode.LoadName:
+                    _globalLoadCacheIndexes[index] = ++globalLoadCacheIndex;
+                    break;
             }
         }
 
@@ -77,6 +91,52 @@ internal sealed class PreparedPythonCode
         return code;
     }
 
+    internal BinaryAddCacheState GetBinaryAddCacheState(int instructionIndex)
+    {
+        return GetBinaryAddCache(instructionIndex).State;
+    }
+
+    internal void RecordBinaryAddObservation(int instructionIndex, BinaryAddOperandKind operandKind)
+    {
+        ref var cache = ref GetBinaryAddCache(instructionIndex);
+        if (cache.State == BinaryAddCacheState.Generic)
+        {
+            return;
+        }
+
+        var targetState = operandKind switch
+        {
+            BinaryAddOperandKind.WholeNumber => BinaryAddCacheState.WholeNumber,
+            BinaryAddOperandKind.FloatingPoint => BinaryAddCacheState.FloatingPoint,
+            _ => BinaryAddCacheState.Generic,
+        };
+
+        if (cache.State != BinaryAddCacheState.Adaptive)
+        {
+            if (cache.State == targetState)
+            {
+                return;
+            }
+
+            cache = default;
+        }
+
+        if (cache.Candidate != targetState)
+        {
+            cache.Candidate = targetState;
+            cache.WarmupCount = 1;
+            return;
+        }
+
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
+        {
+            cache.WarmupCount++;
+            return;
+        }
+
+        cache = new BinaryAddCache { State = targetState };
+    }
+
     internal GlobalLoadCacheState GetGlobalLoadCacheState(int instructionIndex)
     {
         return GetGlobalLoadCache(instructionIndex).State;
@@ -120,7 +180,7 @@ internal sealed class PreparedPythonCode
             cache = default;
         }
 
-        if (cache.WarmupCount < GlobalLoadWarmupThreshold - 1)
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
         {
             cache.WarmupCount++;
             return;
@@ -147,7 +207,7 @@ internal sealed class PreparedPythonCode
             cache = default;
         }
 
-        if (cache.WarmupCount < GlobalLoadWarmupThreshold - 1)
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
         {
             cache.WarmupCount++;
             return;
@@ -185,6 +245,18 @@ internal sealed class PreparedPythonCode
     private ref GlobalLoadCache GetGlobalLoadCache(int instructionIndex) =>
         ref _globalLoadCaches[_globalLoadCacheIndexes[instructionIndex] - 1];
 
+    private ref BinaryAddCache GetBinaryAddCache(int instructionIndex) =>
+        ref _binaryAddCaches[_binaryAddCacheIndexes[instructionIndex] - 1];
+
+    private struct BinaryAddCache
+    {
+        internal BinaryAddCacheState State { get; init; }
+
+        internal BinaryAddCacheState Candidate { get; set; }
+
+        internal byte WarmupCount { get; set; }
+    }
+
     private struct GlobalLoadCache
     {
         internal PythonGlobalNamespace? Globals { get; init; }
@@ -199,6 +271,21 @@ internal sealed class PreparedPythonCode
 
         internal byte WarmupCount { get; set; }
     }
+}
+
+internal enum BinaryAddCacheState : byte
+{
+    Adaptive,
+    WholeNumber,
+    FloatingPoint,
+    Generic,
+}
+
+internal enum BinaryAddOperandKind : byte
+{
+    Other,
+    WholeNumber,
+    FloatingPoint,
 }
 
 internal enum GlobalLoadCacheState : byte
