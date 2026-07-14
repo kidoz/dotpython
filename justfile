@@ -8,8 +8,16 @@ format:
     dotnet tool restore
     dotnet csharpier format .
 
+# Regenerate the checked-in executable parser from the pinned PEG grammar.
+parser-generate:
+    dotnet run --project src/DotPython.ParserGenerator.Tool -- generate src/DotPython.ParserGenerator/Grammar/python314-subset.gram src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
+
+# Fail when the checked-in parser does not match deterministic regeneration.
+parser-check:
+    dotnet run --project src/DotPython.ParserGenerator.Tool -- check src/DotPython.ParserGenerator/Grammar/python314-subset.gram src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
+
 # Check formatting and compile with all configured analyzers and warnings as errors.
-lint:
+lint: parser-check
     dotnet tool restore
     dotnet csharpier check .
     dotnet build DotPython.sln --configuration Release

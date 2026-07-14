@@ -139,6 +139,8 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 ```sh
 just            # list available tasks
 just format     # format C# and project files with the pinned CSharpier version
+just parser-generate # regenerate the checked-in parser from the pinned PEG subset
+just parser-check    # verify deterministic parser regeneration has no drift
 just lint       # check formatting + build Release with analyzers as errors
 just run -- ... # run the CLI
 ```
