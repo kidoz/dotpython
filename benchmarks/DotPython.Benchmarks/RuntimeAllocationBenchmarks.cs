@@ -11,6 +11,7 @@ public enum RuntimeAllocationScenario
     Empty,
     Constants,
     IntegerLoop,
+    FunctionCallsNoArguments,
     FunctionCalls,
     GlobalLookup,
 }

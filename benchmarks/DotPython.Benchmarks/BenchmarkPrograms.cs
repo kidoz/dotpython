@@ -56,6 +56,12 @@ internal static class BenchmarkPrograms
                 RuntimeAllocationScenario.IntegerLoop => "current = 0\n"
                     + "while current < 1000:\n"
                     + "    current = current + 1\n",
+                RuntimeAllocationScenario.FunctionCallsNoArguments => "global_value = 42\n"
+                    + "def get_value(): return global_value\n"
+                    + "current = 0\n"
+                    + "while current < 1000:\n"
+                    + "    value = get_value()\n"
+                    + "    current = current + 1\n",
                 RuntimeAllocationScenario.FunctionCalls =>
                     "def increment(value): return value + 1\n"
                         + "current = 0\n"

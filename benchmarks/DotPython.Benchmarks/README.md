@@ -5,8 +5,8 @@ backend. The initial suites separate tokenization, parsing, compilation, precomp
 execution, and source-to-execution costs.
 
 `RuntimeAllocationBenchmarks` separates fixed VM startup, repeated constant loads, integer-loop
-execution, function frames/calls, and global lookup. These workloads attribute allocation trends;
-they are not intended to represent application throughput.
+execution, zero- and one-argument function frames/calls, and global lookup. These workloads
+attribute allocation trends; they are not intended to represent application throughput.
 
 Run a short local runtime sample from the repository root:
 
