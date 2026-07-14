@@ -57,6 +57,35 @@ public sealed class ManagedPythonEngine
         }
     }
 
+    internal PythonValue InvokeProfiled(
+        string functionName,
+        IReadOnlyList<PythonValue> arguments,
+        TextWriter output,
+        ManagedExecutionOptions options,
+        PythonExecutionProfile profile,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.InstructionLimit);
+
+        lock (_executionGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var virtualMachine = new PythonVirtualMachine(
+                _globals,
+                output,
+                options.InstructionLimit,
+                cancellationToken
+            );
+            return virtualMachine.InvokeProfiled(functionName, arguments, profile);
+        }
+    }
+
     internal bool HasFunction(string functionName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(functionName);

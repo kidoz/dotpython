@@ -50,21 +50,19 @@ internal sealed class PythonVirtualMachine
 
     internal PythonValue Invoke(string functionName, IReadOnlyList<PythonValue> arguments)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
-        ArgumentNullException.ThrowIfNull(arguments);
-
-        if (!_globals.TryGetValue(functionName, out var value))
-        {
-            throw Fault("DPY4002", $"Name '{functionName}' is not defined.", new TextSpan(0, 0));
-        }
-
-        if (value is not PythonFunctionValue function)
-        {
-            throw Fault("DPY4003", $"Export '{functionName}' is not callable.", new TextSpan(0, 0));
-        }
-
-        PushFunctionFrame(function, arguments, new TextSpan(0, 0));
+        PushNamedFunctionFrame(functionName, arguments);
         return Run();
+    }
+
+    internal PythonValue InvokeProfiled(
+        string functionName,
+        IReadOnlyList<PythonValue> arguments,
+        PythonExecutionProfile profile
+    )
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        PushNamedFunctionFrame(functionName, arguments);
+        return RunProfiled(profile);
     }
 
     private PythonValue Run()
@@ -107,6 +105,67 @@ internal sealed class PythonVirtualMachine
             Array.Clear(_locals, 0, _localsCount);
             _localsCount = 0;
         }
+    }
+
+    private PythonValue RunProfiled(PythonExecutionProfile profile)
+    {
+        _result = PythonNoneValue.Instance;
+        try
+        {
+            while (_frameCount != 0)
+            {
+                _cancellationToken.ThrowIfCancellationRequested();
+                ref var frame = ref CurrentFrame;
+                if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
+                {
+                    ReturnFromFrame(PythonNoneValue.Instance);
+                    continue;
+                }
+
+                var instructionIndex = frame.InstructionPointer;
+                var instruction = frame.Code.Definition.Instructions[instructionIndex];
+                frame.InstructionPointer++;
+                if (_instructionsExecuted++ >= _instructionLimit)
+                {
+                    throw Fault(
+                        "DPY4001",
+                        "The managed instruction limit was exceeded.",
+                        instruction.Span
+                    );
+                }
+
+                profile.Record(_frameCount - 1, frame.Code, instructionIndex, instruction.OpCode);
+                ExecuteInstruction(ref frame, instruction, instructionIndex);
+            }
+
+            return _result;
+        }
+        finally
+        {
+            Array.Clear(_frames, 0, _frameCount);
+            _frameCount = 0;
+            _evaluationStack.Clear();
+            Array.Clear(_locals, 0, _localsCount);
+            _localsCount = 0;
+        }
+    }
+
+    private void PushNamedFunctionFrame(string functionName, IReadOnlyList<PythonValue> arguments)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        if (!_globals.TryGetValue(functionName, out var value))
+        {
+            throw Fault("DPY4002", $"Name '{functionName}' is not defined.", new TextSpan(0, 0));
+        }
+
+        if (value is not PythonFunctionValue function)
+        {
+            throw Fault("DPY4003", $"Export '{functionName}' is not callable.", new TextSpan(0, 0));
+        }
+
+        PushFunctionFrame(function, arguments, new TextSpan(0, 0));
     }
 
     private void ExecuteInstruction(

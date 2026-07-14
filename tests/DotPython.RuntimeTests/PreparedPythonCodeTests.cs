@@ -53,6 +53,48 @@ public sealed class PreparedPythonCodeTests
     }
 
     [Fact]
+    public void ExecutionProfile_CountsSequentialPairsWithinEachLogicalFrame()
+    {
+        var code = Compile(
+            "def callee(): return None\n"
+                + "def invoke():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10:\n"
+                + "        value = callee()\n"
+                + "        current = current + 1\n"
+                + "    return value\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("execution_profile", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var profile = new PythonExecutionProfile();
+
+        var result = engine.InvokeProfiled(
+            "invoke",
+            Array.Empty<PythonValue>(),
+            TextWriter.Null,
+            new ManagedExecutionOptions(),
+            profile,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.True(initialization.Success);
+        Assert.IsType<PythonNoneValue>(result);
+        Assert.Equal(10, profile.GetInstructionCount(PythonOpCode.Call));
+        Assert.Equal(10, profile.GetPairCount(PythonOpCode.LoadName, PythonOpCode.Call));
+        Assert.Equal(10, profile.GetPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal));
+        Assert.Equal(10, profile.GetPairCount(PythonOpCode.LoadConstant, PythonOpCode.ReturnValue));
+        Assert.Contains(
+            new PythonInstructionPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal, 10),
+            profile.GetPairs()
+        );
+    }
+
+    [Fact]
     public void TruthValues_AreCanonicalSingletons()
     {
         Assert.Same(PythonTruthValue.True, PythonTruthValue.FromBoolean(true));

@@ -56,6 +56,25 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ManagedFramePathBenchmarks*'
 ```
 
+`ManagedReturnPathBenchmarks` compares 10,000 calls to a bare `return` with the semantically
+equivalent explicit `return None` path. It attributes redundant constant-load/return dispatch
+without changing frame or call behavior. Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedReturnPathBenchmarks*'
+```
+
+The opt-in opcode-pair profiler records dynamically executed, statically adjacent instructions
+within each logical frame. It uses a separate profiled VM loop, so ordinary execution does not pay
+an instrumentation branch. Print the twelve most frequent pairs for the managed-frame workloads
+with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --profile-opcode-pairs
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh

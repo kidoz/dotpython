@@ -176,6 +176,27 @@ internal static class BenchmarkPrograms
         );
     }
 
+    internal static SourceText CreateManagedReturnPathSource() =>
+        new(
+            "def bare_return(): return\n"
+                + "def explicit_none(): return None\n"
+                + "def call_bare_return():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + "        value = bare_return()\n"
+                + "        current = current + 1\n"
+                + "    return value\n"
+                + "def call_explicit_none():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + "        value = explicit_none()\n"
+                + "        current = current + 1\n"
+                + "    return value\n",
+            "managed-return-path-benchmark.py"
+        );
+
     internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
         new(
             scenario switch
