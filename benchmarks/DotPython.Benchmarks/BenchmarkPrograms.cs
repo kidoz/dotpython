@@ -48,22 +48,38 @@ internal static class BenchmarkPrograms
     }
 
     internal static SourceText CreateComparisonSpecializationSource(
-        ComparisonOperandFamily operandFamily
+        ComparisonOperandFamily operandFamily,
+        OrderedComparisonOperation operation
     )
     {
-        var operands = operandFamily switch
+        var ascendingOperands = operandFamily switch
         {
             ComparisonOperandFamily.WholeNumber => (Left: "10000", Right: "11000"),
             ComparisonOperandFamily.FloatingPoint => (Left: "10000.0", Right: "11000.0"),
             _ => throw new ArgumentOutOfRangeException(nameof(operandFamily)),
         };
+        var operands = operation
+            is OrderedComparisonOperation.LessThan
+                or OrderedComparisonOperation.LessThanOrEqual
+            ? ascendingOperands
+            : (Left: ascendingOperands.Right, Right: ascendingOperands.Left);
+        var sourceOperator = operation switch
+        {
+            OrderedComparisonOperation.LessThan => "<",
+            OrderedComparisonOperation.LessThanOrEqual => "<=",
+            OrderedComparisonOperation.GreaterThan => ">",
+            OrderedComparisonOperation.GreaterThanOrEqual => ">=",
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        };
         return new SourceText(
-            "def less_than(left, right): return left < right\n"
+            "def compare(left, right): return left "
+                + sourceOperator
+                + " right\n"
                 + "def compare_values():\n"
                 + "    current = 0\n"
                 + "    value = False\n"
                 + "    while current != 10000:\n"
-                + "        value = less_than("
+                + "        value = compare("
                 + operands.Left
                 + ", "
                 + operands.Right

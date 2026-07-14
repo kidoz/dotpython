@@ -12,8 +12,8 @@ internal sealed class PreparedPythonCode
     private readonly PreparedPythonCode?[] _functionCodes;
     private readonly GlobalLoadCache[] _globalLoadCaches;
     private readonly int[] _globalLoadCacheIndexes;
-    private readonly AdaptiveNumericCache[] _lessThanCaches;
-    private readonly int[] _lessThanCacheIndexes;
+    private readonly AdaptiveNumericCache[] _orderedComparisonCaches;
+    private readonly int[] _orderedComparisonCacheIndexes;
 
     private PreparedPythonCode(PythonCodeObject definition)
     {
@@ -32,16 +32,14 @@ internal sealed class PreparedPythonCode
                 instruction.OpCode == PythonOpCode.LoadName
             )
         ];
-        _lessThanCacheIndexes = new int[definition.Instructions.Count];
-        _lessThanCaches = new AdaptiveNumericCache[
-            definition.Instructions.Count(instruction =>
-                instruction.OpCode == PythonOpCode.CompareLessThan
-            )
+        _orderedComparisonCacheIndexes = new int[definition.Instructions.Count];
+        _orderedComparisonCaches = new AdaptiveNumericCache[
+            definition.Instructions.Count(instruction => IsOrderedComparison(instruction.OpCode))
         ];
 
         var binaryAddCacheIndex = 0;
         var globalLoadCacheIndex = 0;
-        var lessThanCacheIndex = 0;
+        var orderedComparisonCacheIndex = 0;
         for (var index = 0; index < definition.Instructions.Count; index++)
         {
             switch (definition.Instructions[index].OpCode)
@@ -53,7 +51,10 @@ internal sealed class PreparedPythonCode
                     _globalLoadCacheIndexes[index] = ++globalLoadCacheIndex;
                     break;
                 case PythonOpCode.CompareLessThan:
-                    _lessThanCacheIndexes[index] = ++lessThanCacheIndex;
+                case PythonOpCode.CompareLessThanOrEqual:
+                case PythonOpCode.CompareGreaterThan:
+                case PythonOpCode.CompareGreaterThanOrEqual:
+                    _orderedComparisonCacheIndexes[index] = ++orderedComparisonCacheIndex;
                     break;
             }
         }
@@ -113,15 +114,15 @@ internal sealed class PreparedPythonCode
         AdaptiveNumericOperandKind operandKind
     ) => RecordNumericObservation(ref GetBinaryAddCache(instructionIndex), operandKind);
 
-    internal AdaptiveNumericCacheState GetLessThanCacheState(int instructionIndex)
+    internal AdaptiveNumericCacheState GetOrderedComparisonCacheState(int instructionIndex)
     {
-        return GetLessThanCache(instructionIndex).State;
+        return GetOrderedComparisonCache(instructionIndex).State;
     }
 
-    internal void RecordLessThanObservation(
+    internal void RecordOrderedComparisonObservation(
         int instructionIndex,
         AdaptiveNumericOperandKind operandKind
-    ) => RecordNumericObservation(ref GetLessThanCache(instructionIndex), operandKind);
+    ) => RecordNumericObservation(ref GetOrderedComparisonCache(instructionIndex), operandKind);
 
     internal GlobalLoadCacheState GetGlobalLoadCacheState(int instructionIndex)
     {
@@ -234,8 +235,15 @@ internal sealed class PreparedPythonCode
     private ref AdaptiveNumericCache GetBinaryAddCache(int instructionIndex) =>
         ref _binaryAddCaches[_binaryAddCacheIndexes[instructionIndex] - 1];
 
-    private ref AdaptiveNumericCache GetLessThanCache(int instructionIndex) =>
-        ref _lessThanCaches[_lessThanCacheIndexes[instructionIndex] - 1];
+    private ref AdaptiveNumericCache GetOrderedComparisonCache(int instructionIndex) =>
+        ref _orderedComparisonCaches[_orderedComparisonCacheIndexes[instructionIndex] - 1];
+
+    private static bool IsOrderedComparison(PythonOpCode opCode) =>
+        opCode
+            is PythonOpCode.CompareLessThan
+                or PythonOpCode.CompareLessThanOrEqual
+                or PythonOpCode.CompareGreaterThan
+                or PythonOpCode.CompareGreaterThanOrEqual;
 
     private static void RecordNumericObservation(
         ref AdaptiveNumericCache cache,

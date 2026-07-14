@@ -13,6 +13,14 @@ public enum ComparisonOperandFamily
     FloatingPoint,
 }
 
+public enum OrderedComparisonOperation
+{
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+}
+
 [MemoryDiagnoser]
 public class ComparisonSpecializationBenchmarks
 {
@@ -24,10 +32,16 @@ public class ComparisonSpecializationBenchmarks
     [ParamsAllValues]
     public ComparisonOperandFamily OperandFamily { get; set; }
 
+    [ParamsAllValues]
+    public OrderedComparisonOperation Operation { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
-        var source = BenchmarkPrograms.CreateComparisonSpecializationSource(OperandFamily);
+        var source = BenchmarkPrograms.CreateComparisonSpecializationSource(
+            OperandFamily,
+            Operation
+        );
         var parseResult = PythonParser.Parse(source);
         if (!parseResult.Success)
         {
@@ -49,12 +63,12 @@ public class ComparisonSpecializationBenchmarks
 
         for (var observation = 0; observation < 8; observation++)
         {
-            InvokeLessThan(
+            InvokeComparison(
                 _genericEngine,
                 new PythonTextValue("Dot"),
                 new PythonTextValue("Python")
             );
-            InvokeLessThan(_specializedEngine, CreateLeftOperand(), CreateRightOperand());
+            InvokeComparison(_specializedEngine, CreateLeftOperand(), CreateRightOperand());
         }
 
         VerifyCacheState(_genericEngine, compilation.Code, AdaptiveNumericCacheState.Generic);
@@ -98,34 +112,41 @@ public class ComparisonSpecializationBenchmarks
             CancellationToken.None
         );
 
-    private static void InvokeLessThan(
+    private static void InvokeComparison(
         ManagedPythonEngine engine,
         PythonValue left,
         PythonValue right
     ) =>
         engine.Invoke(
-            "less_than",
+            "compare",
             [left, right],
             TextWriter.Null,
             ExecutionOptions,
             CancellationToken.None
         );
 
-    private PythonValue CreateLeftOperand() =>
-        OperandFamily switch
-        {
-            ComparisonOperandFamily.WholeNumber => PythonWholeNumberValue.Create(10000),
-            ComparisonOperandFamily.FloatingPoint => new PythonFloatingPointValue(10000),
-            _ => throw new ArgumentOutOfRangeException(nameof(OperandFamily)),
-        };
+    private PythonValue CreateLeftOperand() => CreateOperand(useAscendingLeft: true);
 
-    private PythonValue CreateRightOperand() =>
-        OperandFamily switch
+    private PythonValue CreateRightOperand() => CreateOperand(useAscendingLeft: false);
+
+    private PythonValue CreateOperand(bool useAscendingLeft)
+    {
+        var useSmallerValue = Operation
+            is OrderedComparisonOperation.LessThan
+                or OrderedComparisonOperation.LessThanOrEqual
+            ? useAscendingLeft
+            : !useAscendingLeft;
+        return OperandFamily switch
         {
-            ComparisonOperandFamily.WholeNumber => PythonWholeNumberValue.Create(11000),
-            ComparisonOperandFamily.FloatingPoint => new PythonFloatingPointValue(11000),
-            _ => throw new ArgumentOutOfRangeException(nameof(OperandFamily)),
+            ComparisonOperandFamily.WholeNumber => PythonWholeNumberValue.Create(
+                useSmallerValue ? 10000 : 11000
+            ),
+            ComparisonOperandFamily.FloatingPoint => new PythonFloatingPointValue(
+                useSmallerValue ? 10000 : 11000
+            ),
+            _ => throw new InvalidOperationException("The operand family is unsupported."),
         };
+    }
 
     private static void VerifyResult(PythonValue result)
     {
@@ -137,7 +158,7 @@ public class ComparisonSpecializationBenchmarks
         }
     }
 
-    private static void VerifyCacheState(
+    private void VerifyCacheState(
         ManagedPythonEngine engine,
         PythonCodeObject code,
         AdaptiveNumericCacheState expectedState
@@ -148,19 +169,29 @@ public class ComparisonSpecializationBenchmarks
             .Single(item =>
                 item.constant.Type == PythonConstantType.CodeObject
                 && item.constant.Value is PythonCodeObject function
-                && function.Name == "less_than"
+                && function.Name == "compare"
             )
             .index;
         var function = engine.PrepareCode(code).GetFunctionCode(functionCodeIndex);
         var instructionIndex = function
             .Definition.Instructions.Select((instruction, index) => (instruction, index))
-            .Single(item => item.instruction.OpCode == PythonOpCode.CompareLessThan)
+            .Single(item => item.instruction.OpCode == GetOpCode())
             .index;
-        if (function.GetLessThanCacheState(instructionIndex) != expectedState)
+        if (function.GetOrderedComparisonCacheState(instructionIndex) != expectedState)
         {
             throw new InvalidOperationException(
                 "The comparison benchmark cache did not reach its expected state."
             );
         }
     }
+
+    private PythonOpCode GetOpCode() =>
+        Operation switch
+        {
+            OrderedComparisonOperation.LessThan => PythonOpCode.CompareLessThan,
+            OrderedComparisonOperation.LessThanOrEqual => PythonOpCode.CompareLessThanOrEqual,
+            OrderedComparisonOperation.GreaterThan => PythonOpCode.CompareGreaterThan,
+            OrderedComparisonOperation.GreaterThanOrEqual => PythonOpCode.CompareGreaterThanOrEqual,
+            _ => throw new InvalidOperationException("The comparison operation is unsupported."),
+        };
 }

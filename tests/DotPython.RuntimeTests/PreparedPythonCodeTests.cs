@@ -11,6 +11,15 @@ namespace DotPython.RuntimeTests;
 
 public sealed class PreparedPythonCodeTests
 {
+    public static TheoryData<string, int> OrderedComparisonCases =>
+        new()
+        {
+            { "<", (int)PythonOpCode.CompareLessThan },
+            { "<=", (int)PythonOpCode.CompareLessThanOrEqual },
+            { ">", (int)PythonOpCode.CompareGreaterThan },
+            { ">=", (int)PythonOpCode.CompareGreaterThanOrEqual },
+        };
+
     [Fact]
     public void PrepareCode_ReusesPreparedCodeAndImmutableConstants()
     {
@@ -234,16 +243,25 @@ public sealed class PreparedPythonCodeTests
         );
     }
 
-    [Fact]
-    public void LessThanCache_SpecializesNumericOperandsAndDeoptimizesForMixedTypes()
+    [Theory]
+    [MemberData(nameof(OrderedComparisonCases))]
+    public void OrderedComparisonCache_SpecializesNumericOperandsAndDeoptimizesForMixedTypes(
+        string sourceOperator,
+        int opCodeValue
+    )
     {
-        var (engine, function, instructionIndex) = PrepareLessThanFunction();
+        var opCode = (PythonOpCode)opCodeValue;
+        var expectedAscending = EvaluateOrderedComparison(opCode, -1);
+        var (engine, function, instructionIndex) = PrepareOrderedComparisonFunction(
+            sourceOperator,
+            opCode
+        );
 
         AssertTruth(
             false,
             Invoke(
                 engine,
-                "less_than",
+                "compare",
                 new PythonFloatingPointValue(double.NaN),
                 new PythonFloatingPointValue(1)
             )
@@ -252,10 +270,10 @@ public sealed class PreparedPythonCodeTests
         for (var invocation = 0; invocation < 8; invocation++)
         {
             AssertTruth(
-                true,
+                expectedAscending,
                 Invoke(
                     engine,
-                    "less_than",
+                    "compare",
                     PythonWholeNumberValue.Create(10),
                     PythonWholeNumberValue.Create(20)
                 )
@@ -264,35 +282,44 @@ public sealed class PreparedPythonCodeTests
 
         Assert.Equal(
             AdaptiveNumericCacheState.WholeNumber,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
+        );
+        AssertTruth(
+            EvaluateOrderedComparison(opCode, 0),
+            Invoke(
+                engine,
+                "compare",
+                PythonWholeNumberValue.Create(10),
+                PythonWholeNumberValue.Create(10)
+            )
         );
 
         var largeValue = BigInteger.One << 200;
         AssertTruth(
-            true,
+            expectedAscending,
             Invoke(
                 engine,
-                "less_than",
+                "compare",
                 PythonWholeNumberValue.Create(largeValue),
                 PythonWholeNumberValue.Create(largeValue + 1)
             )
         );
         AssertTruth(
-            true,
-            Invoke(engine, "less_than", PythonTruthValue.False, PythonTruthValue.True)
+            expectedAscending,
+            Invoke(engine, "compare", PythonTruthValue.False, PythonTruthValue.True)
         );
         Assert.Equal(
             AdaptiveNumericCacheState.Adaptive,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
         );
 
         for (var invocation = 0; invocation < 8; invocation++)
         {
             AssertTruth(
-                true,
+                expectedAscending,
                 Invoke(
                     engine,
-                    "less_than",
+                    "compare",
                     new PythonFloatingPointValue(1.25),
                     new PythonFloatingPointValue(2.5)
                 )
@@ -301,61 +328,73 @@ public sealed class PreparedPythonCodeTests
 
         Assert.Equal(
             AdaptiveNumericCacheState.FloatingPoint,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
+        );
+        AssertTruth(
+            EvaluateOrderedComparison(opCode, 0),
+            Invoke(
+                engine,
+                "compare",
+                new PythonFloatingPointValue(2.5),
+                new PythonFloatingPointValue(2.5)
+            )
         );
         AssertTruth(
             false,
             Invoke(
                 engine,
-                "less_than",
+                "compare",
                 new PythonFloatingPointValue(double.NaN),
                 new PythonFloatingPointValue(1)
             )
         );
         AssertTruth(
-            true,
+            expectedAscending,
             Invoke(
                 engine,
-                "less_than",
+                "compare",
                 PythonWholeNumberValue.Create(1),
                 new PythonFloatingPointValue(1.5)
             )
         );
         Assert.Equal(
             AdaptiveNumericCacheState.Adaptive,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
         );
     }
 
-    [Fact]
-    public void LessThanCache_SaturatesGenericForTextOperands()
+    [Theory]
+    [MemberData(nameof(OrderedComparisonCases))]
+    public void OrderedComparisonCache_SaturatesGenericForTextOperands(
+        string sourceOperator,
+        int opCodeValue
+    )
     {
-        var (engine, function, instructionIndex) = PrepareLessThanFunction();
+        var opCode = (PythonOpCode)opCodeValue;
+        var (engine, function, instructionIndex) = PrepareOrderedComparisonFunction(
+            sourceOperator,
+            opCode
+        );
 
         for (var invocation = 0; invocation < 8; invocation++)
         {
             AssertTruth(
-                true,
-                Invoke(
-                    engine,
-                    "less_than",
-                    new PythonTextValue("Dot"),
-                    new PythonTextValue("Python")
-                )
+                EvaluateOrderedComparison(opCode, -1),
+                Invoke(engine, "compare", new PythonTextValue("Dot"), new PythonTextValue("Python"))
             );
         }
 
         Assert.Equal(
             AdaptiveNumericCacheState.Generic,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
         );
         AssertTruth(
-            false,
-            Invoke(engine, "less_than", new PythonTextValue("Python"), new PythonTextValue("Dot"))
+            EvaluateOrderedComparison(opCode, 1),
+            Invoke(engine, "compare", new PythonTextValue("Python"), new PythonTextValue("Dot"))
         );
         Assert.Equal(
             AdaptiveNumericCacheState.Generic,
-            function.GetLessThanCacheState(instructionIndex)
+            function.GetOrderedComparisonCacheState(instructionIndex)
         );
     }
 
@@ -412,20 +451,30 @@ public sealed class PreparedPythonCodeTests
         ManagedPythonEngine Engine,
         PreparedPythonCode Function,
         int InstructionIndex
-    ) PrepareLessThanFunction()
+    ) PrepareOrderedComparisonFunction(string sourceOperator, PythonOpCode opCode)
     {
-        var code = Compile("def less_than(left, right): return left < right\n");
+        var code = Compile($"def compare(left, right): return left {sourceOperator} right\n");
         var engine = new ManagedPythonEngine();
         var initialization = engine.Execute(
-            DotPythonModuleArtifact.Create("less_than_cache", code),
+            DotPythonModuleArtifact.Create("ordered_comparison_cache", code),
             TextWriter.Null,
             cancellationToken: TestContext.Current.CancellationToken
         );
-        var function = GetPreparedFunction(engine, code, "less_than");
+        var function = GetPreparedFunction(engine, code, "compare");
 
         Assert.True(initialization.Success);
-        return (engine, function, GetInstructionIndex(function, PythonOpCode.CompareLessThan));
+        return (engine, function, GetInstructionIndex(function, opCode));
     }
+
+    private static bool EvaluateOrderedComparison(PythonOpCode opCode, int comparison) =>
+        opCode switch
+        {
+            PythonOpCode.CompareLessThan => comparison < 0,
+            PythonOpCode.CompareLessThanOrEqual => comparison <= 0,
+            PythonOpCode.CompareGreaterThan => comparison > 0,
+            PythonOpCode.CompareGreaterThanOrEqual => comparison >= 0,
+            _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+        };
 
     private static PreparedPythonCode GetPreparedFunction(
         ManagedPythonEngine engine,

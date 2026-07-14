@@ -13,11 +13,12 @@ text comparison retains the generic-path control; their driver loop uses `!=` to
 less-than site. These workloads attribute allocation trends; they are not intended to represent
 application throughput.
 
-`ComparisonSpecializationBenchmarks` is the matched throughput experiment for adaptive less-than
-dispatch. Its generic and specialized methods execute identical 10,000-call numeric loops under
-the same BenchmarkDotNet job invocation. Setup warms one comparison site with its numeric family
-and saturates the other with text observations, so BenchmarkDotNet can report a direct baseline
-ratio from adjacent, equivalent benchmark cases. Run it with:
+`ComparisonSpecializationBenchmarks` is the matched throughput experiment for adaptive ordered
+comparison dispatch. Its generic and specialized methods execute identical 10,000-call numeric
+loops for `<`, `<=`, `>`, and `>=` under the same BenchmarkDotNet job invocation. Setup warms one
+comparison site with its numeric family and saturates the other with text observations, so
+BenchmarkDotNet can report a direct baseline ratio from adjacent, equivalent benchmark cases. Run
+it with:
 
 ```sh
 dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \

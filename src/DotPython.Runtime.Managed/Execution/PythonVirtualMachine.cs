@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using DotPython.Compiler.Bytecode;
 using DotPython.Language.Text;
 
@@ -176,12 +177,10 @@ internal sealed class PythonVirtualMachine
                 ApplyComparison(instruction);
                 break;
             case PythonOpCode.CompareLessThan:
-                ApplyLessThan(frame.Code, instructionIndex, instruction.Span);
-                break;
             case PythonOpCode.CompareLessThanOrEqual:
             case PythonOpCode.CompareGreaterThan:
             case PythonOpCode.CompareGreaterThanOrEqual:
-                ApplyComparison(instruction);
+                ApplyOrderedComparison(frame.Code, instructionIndex, instruction);
                 break;
             case PythonOpCode.Jump:
                 frame.InstructionPointer = GetJumpTarget(
@@ -356,11 +355,15 @@ internal sealed class PythonVirtualMachine
         _evaluationStack.Push(result);
     }
 
-    private void ApplyLessThan(PreparedPythonCode code, int instructionIndex, TextSpan span)
+    private void ApplyOrderedComparison(
+        PreparedPythonCode code,
+        int instructionIndex,
+        PythonInstruction instruction
+    )
     {
-        var right = Pop(span);
-        var left = Pop(span);
-        var cacheState = code.GetLessThanCacheState(instructionIndex);
+        var right = Pop(instruction.Span);
+        var left = Pop(instruction.Span);
+        var cacheState = code.GetOrderedComparisonCacheState(instructionIndex);
         if (
             cacheState == AdaptiveNumericCacheState.WholeNumber
             && left is PythonWholeNumberValue leftWholeNumber
@@ -368,7 +371,13 @@ internal sealed class PythonVirtualMachine
         )
         {
             _evaluationStack.Push(
-                PythonTruthValue.FromBoolean(leftWholeNumber.Value < rightWholeNumber.Value)
+                PythonTruthValue.FromBoolean(
+                    ApplyWholeNumberComparison(
+                        instruction.OpCode,
+                        leftWholeNumber.Value,
+                        rightWholeNumber.Value
+                    )
+                )
             );
             return;
         }
@@ -380,7 +389,13 @@ internal sealed class PythonVirtualMachine
         )
         {
             _evaluationStack.Push(
-                PythonTruthValue.FromBoolean(leftFloatingPoint.Value < rightFloatingPoint.Value)
+                PythonTruthValue.FromBoolean(
+                    ApplyFloatingPointComparison(
+                        instruction.OpCode,
+                        leftFloatingPoint.Value,
+                        rightFloatingPoint.Value
+                    )
+                )
             );
             return;
         }
@@ -392,17 +407,47 @@ internal sealed class PythonVirtualMachine
                 or AdaptiveNumericCacheState.FloatingPoint
         )
         {
-            code.RecordLessThanObservation(instructionIndex, operandKind);
+            code.RecordOrderedComparisonObservation(instructionIndex, operandKind);
         }
 
-        var result = ApplyComparison(PythonOpCode.CompareLessThan, left, right, span);
+        var result = ApplyComparison(instruction.OpCode, left, right, instruction.Span);
         if (cacheState == AdaptiveNumericCacheState.Adaptive)
         {
-            code.RecordLessThanObservation(instructionIndex, operandKind);
+            code.RecordOrderedComparisonObservation(instructionIndex, operandKind);
         }
 
         _evaluationStack.Push(result);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ApplyWholeNumberComparison(
+        PythonOpCode opCode,
+        BigInteger left,
+        BigInteger right
+    ) =>
+        opCode switch
+        {
+            PythonOpCode.CompareLessThan => left < right,
+            PythonOpCode.CompareLessThanOrEqual => left <= right,
+            PythonOpCode.CompareGreaterThan => left > right,
+            PythonOpCode.CompareGreaterThanOrEqual => left >= right,
+            _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+        };
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ApplyFloatingPointComparison(
+        PythonOpCode opCode,
+        double left,
+        double right
+    ) =>
+        opCode switch
+        {
+            PythonOpCode.CompareLessThan => left < right,
+            PythonOpCode.CompareLessThanOrEqual => left <= right,
+            PythonOpCode.CompareGreaterThan => left > right,
+            PythonOpCode.CompareGreaterThanOrEqual => left >= right,
+            _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+        };
 
     private static AdaptiveNumericOperandKind GetAdaptiveNumericOperandKind(
         PythonValue left,
