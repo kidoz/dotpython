@@ -8,6 +8,8 @@ internal sealed class PreparedPythonCode
     private const byte AdaptiveWarmupThreshold = 8;
     private readonly AdaptiveNumericCache[] _binaryAddCaches;
     private readonly int[] _binaryAddCacheIndexes;
+    private readonly AdaptiveCallCache[] _callCaches;
+    private readonly int[] _callCacheIndexes;
     private readonly PythonValue?[] _constants;
     private readonly PreparedPythonCode?[] _functionCodes;
     private readonly GlobalLoadCache[] _globalLoadCaches;
@@ -24,6 +26,10 @@ internal sealed class PreparedPythonCode
                 instruction.OpCode == PythonOpCode.BinaryAdd
             )
         ];
+        _callCacheIndexes = new int[definition.Instructions.Count];
+        _callCaches = new AdaptiveCallCache[
+            definition.Instructions.Count(instruction => instruction.OpCode == PythonOpCode.Call)
+        ];
         _constants = new PythonValue?[definition.Constants.Count];
         _functionCodes = new PreparedPythonCode?[definition.Constants.Count];
         _globalLoadCacheIndexes = new int[definition.Instructions.Count];
@@ -38,6 +44,7 @@ internal sealed class PreparedPythonCode
         ];
 
         var binaryAddCacheIndex = 0;
+        var callCacheIndex = 0;
         var globalLoadCacheIndex = 0;
         var orderedComparisonCacheIndex = 0;
         for (var index = 0; index < definition.Instructions.Count; index++)
@@ -46,6 +53,9 @@ internal sealed class PreparedPythonCode
             {
                 case PythonOpCode.BinaryAdd:
                     _binaryAddCacheIndexes[index] = ++binaryAddCacheIndex;
+                    break;
+                case PythonOpCode.Call:
+                    _callCacheIndexes[index] = ++callCacheIndex;
                     break;
                 case PythonOpCode.LoadName:
                     _globalLoadCacheIndexes[index] = ++globalLoadCacheIndex;
@@ -113,6 +123,93 @@ internal sealed class PreparedPythonCode
         int instructionIndex,
         AdaptiveNumericOperandKind operandKind
     ) => RecordNumericObservation(ref GetBinaryAddCache(instructionIndex), operandKind);
+
+    internal AdaptiveCallCacheState GetCallCacheState(int instructionIndex)
+    {
+        return GetCallCache(instructionIndex).State;
+    }
+
+    internal bool TryGetCachedManagedCall(
+        int instructionIndex,
+        PythonValue target,
+        out PythonFunctionValue function
+    )
+    {
+        ref var cache = ref GetCallCache(instructionIndex);
+        if (cache.State == AdaptiveCallCacheState.ManagedFunction)
+        {
+            if (ReferenceEquals(cache.Target, target))
+            {
+                function = cache.Target!;
+                return true;
+            }
+
+            cache = default;
+        }
+
+        function = null!;
+        return false;
+    }
+
+    internal void RecordManagedCall(int instructionIndex, PythonFunctionValue function)
+    {
+        ref var cache = ref GetCallCache(instructionIndex);
+        if (cache.State == AdaptiveCallCacheState.Generic)
+        {
+            return;
+        }
+
+        if (cache.State == AdaptiveCallCacheState.ManagedFunction)
+        {
+            if (ReferenceEquals(cache.Target, function))
+            {
+                return;
+            }
+
+            cache = default;
+        }
+
+        if (!ReferenceEquals(cache.Candidate, function))
+        {
+            cache.Candidate = function;
+            cache.WarmupCount = 1;
+            return;
+        }
+
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
+        {
+            cache.WarmupCount++;
+            return;
+        }
+
+        cache = new AdaptiveCallCache
+        {
+            State = AdaptiveCallCacheState.ManagedFunction,
+            Target = function,
+        };
+    }
+
+    internal void RecordBuiltinCall(int instructionIndex)
+    {
+        ref var cache = ref GetCallCache(instructionIndex);
+        if (cache.State == AdaptiveCallCacheState.Generic)
+        {
+            return;
+        }
+
+        if (cache.State != AdaptiveCallCacheState.Adaptive || cache.Candidate is not null)
+        {
+            cache = default;
+        }
+
+        if (cache.WarmupCount < AdaptiveWarmupThreshold - 1)
+        {
+            cache.WarmupCount++;
+            return;
+        }
+
+        cache = new AdaptiveCallCache { State = AdaptiveCallCacheState.Generic };
+    }
 
     internal AdaptiveNumericCacheState GetOrderedComparisonCacheState(int instructionIndex)
     {
@@ -232,6 +329,9 @@ internal sealed class PreparedPythonCode
     private ref GlobalLoadCache GetGlobalLoadCache(int instructionIndex) =>
         ref _globalLoadCaches[_globalLoadCacheIndexes[instructionIndex] - 1];
 
+    private ref AdaptiveCallCache GetCallCache(int instructionIndex) =>
+        ref _callCaches[_callCacheIndexes[instructionIndex] - 1];
+
     private ref AdaptiveNumericCache GetBinaryAddCache(int instructionIndex) =>
         ref _binaryAddCaches[_binaryAddCacheIndexes[instructionIndex] - 1];
 
@@ -297,6 +397,17 @@ internal sealed class PreparedPythonCode
         internal byte WarmupCount { get; set; }
     }
 
+    private struct AdaptiveCallCache
+    {
+        internal AdaptiveCallCacheState State { get; init; }
+
+        internal PythonFunctionValue? Candidate { get; set; }
+
+        internal PythonFunctionValue? Target { get; init; }
+
+        internal byte WarmupCount { get; set; }
+    }
+
     private struct GlobalLoadCache
     {
         internal PythonGlobalNamespace? Globals { get; init; }
@@ -311,6 +422,13 @@ internal sealed class PreparedPythonCode
 
         internal byte WarmupCount { get; set; }
     }
+}
+
+internal enum AdaptiveCallCacheState : byte
+{
+    Adaptive,
+    ManagedFunction,
+    Generic,
 }
 
 internal enum AdaptiveNumericCacheState : byte

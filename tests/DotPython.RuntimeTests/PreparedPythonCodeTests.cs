@@ -145,6 +145,98 @@ public sealed class PreparedPythonCodeTests
     }
 
     [Fact]
+    public void ManagedCallCache_SpecializesStableTargetsAndDeoptimizesBeforeReplacementCalls()
+    {
+        var code = Compile(
+            "def identity(value): return value\n"
+                + "def replacement(value): return value + 1\n"
+                + "def no_arguments(): return 7\n"
+                + "def invoke(value): return identity(value)\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("managed_call_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "invoke");
+        var callIndex = GetInstructionIndex(function, PythonOpCode.Call);
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(41, Invoke(engine, "invoke", PythonWholeNumberValue.Create(41)));
+        }
+
+        Assert.True(initialization.Success);
+        Assert.Equal(AdaptiveCallCacheState.ManagedFunction, function.GetCallCacheState(callIndex));
+
+        var replace = engine.Execute(
+            "identity = replacement",
+            "replace-call-target.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(replace.Success);
+        AssertWholeNumber(42, Invoke(engine, "invoke", PythonWholeNumberValue.Create(41)));
+        Assert.Equal(AdaptiveCallCacheState.Adaptive, function.GetCallCacheState(callIndex));
+
+        for (var invocation = 1; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(42, Invoke(engine, "invoke", PythonWholeNumberValue.Create(41)));
+        }
+
+        Assert.Equal(AdaptiveCallCacheState.ManagedFunction, function.GetCallCacheState(callIndex));
+
+        var changeArity = engine.Execute(
+            "identity = no_arguments",
+            "change-call-arity.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(changeArity.Success);
+        var exception = Assert.Throws<PythonRuntimeException>(() =>
+            Invoke(engine, "invoke", PythonWholeNumberValue.Create(41))
+        );
+        Assert.Equal("DPY4009", exception.Code);
+        Assert.Equal(AdaptiveCallCacheState.Adaptive, function.GetCallCacheState(callIndex));
+    }
+
+    [Fact]
+    public void ManagedCallCache_SaturatesGenericForBuiltinTargetsWithoutChangingSemantics()
+    {
+        var code = Compile("def invoke(): return print()\n");
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("builtin_call_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "invoke");
+        var callIndex = GetInstructionIndex(function, PythonOpCode.Call);
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            Assert.IsType<PythonNoneValue>(Invoke(engine, "invoke", Array.Empty<PythonValue>()));
+        }
+
+        Assert.True(initialization.Success);
+        Assert.Equal(AdaptiveCallCacheState.Generic, function.GetCallCacheState(callIndex));
+
+        var shadow = engine.Execute(
+            "def managed(): return 42\nprint = managed",
+            "shadow-call-target.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(shadow.Success);
+        AssertWholeNumber(42, Invoke(engine, "invoke", Array.Empty<PythonValue>()));
+        Assert.Equal(AdaptiveCallCacheState.Generic, function.GetCallCacheState(callIndex));
+    }
+
+    [Fact]
     public void BinaryAddCache_SpecializesWholeNumbersAndRecoversAfterDeoptimization()
     {
         var (engine, function, instructionIndex) = PrepareBinaryAddFunction();

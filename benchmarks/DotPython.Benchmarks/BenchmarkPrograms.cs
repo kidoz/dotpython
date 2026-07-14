@@ -120,6 +120,30 @@ internal static class BenchmarkPrograms
         );
     }
 
+    internal static SourceText CreateManagedCallSpecializationSource(int argumentCount)
+    {
+        var (callee, call) = argumentCount switch
+        {
+            0 => ("def callee(): return None\n", "target()"),
+            1 => ("def callee(value): return value\n", "target(value)"),
+            _ => throw new ArgumentOutOfRangeException(nameof(argumentCount)),
+        };
+        return new SourceText(
+            callee
+                + "target = print\n"
+                + "def call_loop():\n"
+                + "    current = 0\n"
+                + "    value = None\n"
+                + "    while current != 10000:\n"
+                + "        value = "
+                + call
+                + "\n"
+                + "        current = current + 1\n"
+                + "    return value\n",
+            "managed-call-specialization-benchmark.py"
+        );
+    }
+
     internal static SourceText CreateAllocationSource(RuntimeAllocationScenario scenario) =>
         new(
             scenario switch

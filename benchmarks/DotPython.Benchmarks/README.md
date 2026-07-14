@@ -35,6 +35,16 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ManagedCallDispatchBenchmarks*'
 ```
 
+`ManagedCallSpecializationBenchmarks` is the matched throughput experiment for guarded managed
+call dispatch. Both methods execute the same 10,000-call loop after setup deliberately saturates
+one call site as generic and specializes the other for its stable managed-function identity. Run
+it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedCallSpecializationBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh

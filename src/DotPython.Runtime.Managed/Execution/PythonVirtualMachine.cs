@@ -230,7 +230,7 @@ internal sealed class PythonVirtualMachine
                 MakeFunction(instruction);
                 break;
             case PythonOpCode.Call:
-                ApplyCall(instruction);
+                ApplyCall(frame.Code, instructionIndex, instruction);
                 break;
             case PythonOpCode.ReturnValue:
                 ReturnFromFrame(Pop(instruction.Span));
@@ -469,14 +469,25 @@ internal sealed class PythonVirtualMachine
         _evaluationStack.Push(ApplyComparison(instruction.OpCode, left, right, instruction.Span));
     }
 
-    private void ApplyCall(PythonInstruction instruction)
+    private void ApplyCall(
+        PreparedPythonCode code,
+        int instructionIndex,
+        PythonInstruction instruction
+    )
     {
         var target = Peek(instruction.Operand, instruction.Span);
+        if (code.TryGetCachedManagedCall(instructionIndex, target, out var cachedFunction))
+        {
+            PushFunctionFrameUnchecked(cachedFunction, instruction.Operand, instruction.Span);
+            return;
+        }
+
         if (target is PythonBuiltinFunctionValue builtin)
         {
             var arguments = PopArguments(instruction.Operand, instruction.Span);
             Pop(instruction.Span);
             _evaluationStack.Push(builtin.Invoke(arguments));
+            code.RecordBuiltinCall(instructionIndex);
             return;
         }
 
@@ -485,7 +496,9 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        PushFunctionFrame(function, instruction.Operand, instruction.Span);
+        ValidateArgumentCount(function, instruction.Operand, instruction.Span);
+        code.RecordManagedCall(instructionIndex, function);
+        PushFunctionFrameUnchecked(function, instruction.Operand, instruction.Span);
     }
 
     private PythonValue[] PopArguments(int argumentCount, TextSpan span)
@@ -502,7 +515,15 @@ internal sealed class PythonVirtualMachine
     private void PushFunctionFrame(PythonFunctionValue function, int argumentCount, TextSpan span)
     {
         ValidateArgumentCount(function, argumentCount, span);
+        PushFunctionFrameUnchecked(function, argumentCount, span);
+    }
 
+    private void PushFunctionFrameUnchecked(
+        PythonFunctionValue function,
+        int argumentCount,
+        TextSpan span
+    )
+    {
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         for (var index = argumentCount - 1; index >= 0; index--)
         {
