@@ -7,8 +7,9 @@ execution, and source-to-execution costs.
 `RuntimeAllocationBenchmarks` separates fixed VM startup, repeated constant loads, cached-range
 and larger integer-loop execution, zero- and one-argument function frames/calls, and global
 lookup. Global-lookup controls separate stable globals, reassigned globals, and builtin fallback.
-These workloads attribute allocation trends; they are not intended to represent application
-throughput.
+Function-local whole-number and floating-point addition loops isolate adaptive arithmetic from
+global lookup and retain a generic-path control. These workloads attribute allocation trends; they
+are not intended to represent application throughput.
 
 Run a short local runtime sample from the repository root:
 

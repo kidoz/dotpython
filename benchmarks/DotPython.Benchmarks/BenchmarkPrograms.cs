@@ -59,6 +59,18 @@ internal static class BenchmarkPrograms
                 RuntimeAllocationScenario.LargeIntegerLoop => "current = 10000\n"
                     + "while current < 11000:\n"
                     + "    current = current + 1\n",
+                RuntimeAllocationScenario.LocalIntegerAddition => "def add_integers():\n"
+                    + "    current = 10000\n"
+                    + "    while current < 11000:\n"
+                    + "        current = current + 1\n"
+                    + "    return current\n"
+                    + "add_integers()\n",
+                RuntimeAllocationScenario.LocalFloatingPointAddition => "def add_floats():\n"
+                    + "    current = 10000.0\n"
+                    + "    while current < 11000.0:\n"
+                    + "        current = current + 1.0\n"
+                    + "    return current\n"
+                    + "add_floats()\n",
                 RuntimeAllocationScenario.FunctionCallsNoArguments => "global_value = 42\n"
                     + "def get_value(): return global_value\n"
                     + "current = 0\n"

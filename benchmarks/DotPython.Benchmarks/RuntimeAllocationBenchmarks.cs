@@ -12,6 +12,8 @@ public enum RuntimeAllocationScenario
     Constants,
     IntegerLoop,
     LargeIntegerLoop,
+    LocalIntegerAddition,
+    LocalFloatingPointAddition,
     FunctionCallsNoArguments,
     FunctionCalls,
     GlobalLookup,
