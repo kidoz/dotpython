@@ -13,6 +13,7 @@ internal sealed class PythonVirtualMachine
     private readonly long _instructionLimit;
     private readonly TextWriter _output;
     private long _instructionsExecuted;
+    private PythonValue _result = PythonNoneValue.Instance;
 
     private PythonFrame CurrentFrame => _frames.Peek();
 
@@ -33,11 +34,36 @@ internal sealed class PythonVirtualMachine
         };
     }
 
-    internal void Execute(PythonCodeObject code)
+    internal PythonValue Execute(PythonCodeObject code)
     {
         ArgumentNullException.ThrowIfNull(code);
 
         _frames.Push(new PythonFrame(code, _globals, []));
+        return Run();
+    }
+
+    internal PythonValue Invoke(string functionName, IReadOnlyList<PythonValue> arguments)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        if (!_globals.TryGetValue(functionName, out var value))
+        {
+            throw Fault("DPY4002", $"Name '{functionName}' is not defined.", new TextSpan(0, 0));
+        }
+
+        if (value is not PythonFunctionValue function)
+        {
+            throw Fault("DPY4003", $"Export '{functionName}' is not callable.", new TextSpan(0, 0));
+        }
+
+        PushFunctionFrame(function, arguments, new TextSpan(0, 0));
+        return Run();
+    }
+
+    private PythonValue Run()
+    {
+        _result = PythonNoneValue.Instance;
         try
         {
             while (_frames.Count != 0)
@@ -63,6 +89,8 @@ internal sealed class PythonVirtualMachine
 
                 ExecuteInstruction(frame, instruction);
             }
+
+            return _result;
         }
         finally
         {
@@ -269,18 +297,27 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        if (arguments.Length != function.Code.ArgumentCount)
+        PushFunctionFrame(function, arguments, instruction.Span);
+    }
+
+    private void PushFunctionFrame(
+        PythonFunctionValue function,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != function.Code.ArgumentCount)
         {
             throw Fault(
                 "DPY4009",
                 $"Function '{function.Name}' expected {function.Code.ArgumentCount} positional "
-                    + $"argument(s), but received {arguments.Length}.",
-                instruction.Span
+                    + $"argument(s), but received {arguments.Count}.",
+                span
             );
         }
 
         var locals = new PythonValue?[function.Code.VariableNames.Count];
-        for (var index = 0; index < arguments.Length; index++)
+        for (var index = 0; index < arguments.Count; index++)
         {
             locals[index] = arguments[index];
         }
@@ -310,6 +347,10 @@ internal sealed class PythonVirtualMachine
         if (_frames.TryPeek(out var caller))
         {
             caller.EvaluationStack.Push(value);
+        }
+        else
+        {
+            _result = value;
         }
     }
 

@@ -27,6 +27,43 @@ public sealed class ManagedPythonEngine
         return Execute(new SourceText(code, fileName), output, options, cancellationToken);
     }
 
+    internal PythonValue Invoke(
+        string functionName,
+        IReadOnlyList<PythonValue> arguments,
+        TextWriter output,
+        ManagedExecutionOptions options,
+        CancellationToken cancellationToken
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.InstructionLimit);
+
+        lock (_executionGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var virtualMachine = new PythonVirtualMachine(
+                _globals,
+                output,
+                options.InstructionLimit,
+                cancellationToken
+            );
+            return virtualMachine.Invoke(functionName, arguments);
+        }
+    }
+
+    internal bool HasFunction(string functionName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(functionName);
+        lock (_executionGate)
+        {
+            return _globals.TryGetValue(functionName, out var value)
+                && value is PythonFunctionValue;
+        }
+    }
+
     public ManagedExecutionResult Execute(
         SourceText source,
         TextWriter output,
