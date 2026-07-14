@@ -7,6 +7,9 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed class PythonVirtualMachine
 {
+    [ThreadStatic]
+    private static HashSet<PythonValuePair>? _activeEqualityPairs;
+
     private static readonly PythonCell[] NoCells = [];
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
@@ -307,6 +310,21 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.BuildTuple:
                 BuildCollection(instruction.Operand, buildTuple: true, instruction.Span);
                 break;
+            case PythonOpCode.BuildDictionary:
+                BuildDictionary(instruction.Operand, instruction.Span);
+                break;
+            case PythonOpCode.LoadSubscript:
+                LoadSubscript(instruction.Span);
+                break;
+            case PythonOpCode.StoreSubscript:
+                StoreSubscript(instruction.Span);
+                break;
+            case PythonOpCode.GetIterator:
+                GetIterator(instruction.Span);
+                break;
+            case PythonOpCode.ForIter:
+                ForIter(ref frame, instruction);
+                break;
             case PythonOpCode.ReturnValue:
                 ReturnFromFrame(Pop(instruction.Span));
                 break;
@@ -320,7 +338,10 @@ internal sealed class PythonVirtualMachine
 
     private void BuildCollection(int elementCount, bool buildTuple, TextSpan span)
     {
-        if (elementCount < 0)
+        if (
+            elementCount < 0
+            || elementCount > _evaluationStack.Count - CurrentFrame.EvaluationStackBase
+        )
         {
             throw Fault("DPY4007", "Invalid collection element count.", span);
         }
@@ -337,6 +358,257 @@ internal sealed class PythonVirtualMachine
                 : new PythonListValue(new List<PythonValue>(elements))
         );
     }
+
+    private void BuildDictionary(int itemCount, TextSpan span)
+    {
+        if (
+            itemCount < 0
+            || itemCount > (_evaluationStack.Count - CurrentFrame.EvaluationStackBase) / 2
+        )
+        {
+            throw Fault("DPY4007", "Invalid dictionary item count.", span);
+        }
+
+        var keys = new PythonValue[itemCount];
+        var values = new PythonValue[itemCount];
+        for (var index = itemCount - 1; index >= 0; index--)
+        {
+            values[index] = Pop(span);
+            keys[index] = Pop(span);
+        }
+
+        var dictionary = new PythonDictionaryValue([]);
+        for (var index = 0; index < itemCount; index++)
+        {
+            SetDictionaryItem(dictionary, keys[index], values[index], span);
+        }
+
+        _evaluationStack.Push(dictionary);
+    }
+
+    private void LoadSubscript(TextSpan span)
+    {
+        var index = Pop(span);
+        var target = Pop(span);
+        _evaluationStack.Push(GetSubscript(target, index, span));
+    }
+
+    private void StoreSubscript(TextSpan span)
+    {
+        var index = Pop(span);
+        var target = Pop(span);
+        var value = Pop(span);
+
+        switch (target)
+        {
+            case PythonListValue list:
+                list.Elements[GetSequenceIndex(index, list.Elements.Count, span)] = value;
+                break;
+            case PythonDictionaryValue dictionary:
+                SetDictionaryItem(dictionary, index, value, span);
+                break;
+            default:
+                throw Fault("DPY4011", "This value does not support item assignment.", span);
+        }
+    }
+
+    private void GetIterator(TextSpan span)
+    {
+        var iterable = Pop(span);
+        if (iterable is PythonIteratorValue iterator)
+        {
+            _evaluationStack.Push(iterator);
+            return;
+        }
+
+        if (
+            iterable
+            is not (
+                PythonListValue
+                or PythonTupleValue
+                or PythonDictionaryValue
+                or PythonTextValue
+                or PythonByteSequenceValue
+            )
+        )
+        {
+            throw Fault("DPY4015", "This value is not iterable.", span);
+        }
+
+        var dictionaryVersion = iterable is PythonDictionaryValue dictionary
+            ? dictionary.SizeVersion
+            : -1;
+        _evaluationStack.Push(new PythonIteratorValue(iterable, dictionaryVersion));
+    }
+
+    private void ForIter(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        if (Peek(instruction.Span) is not PythonIteratorValue iterator)
+        {
+            throw Fault("DPY4007", "The for-loop iterator is invalid.", instruction.Span);
+        }
+
+        if (TryGetNext(iterator, instruction.Span, out var value))
+        {
+            _evaluationStack.Push(value);
+            return;
+        }
+
+        Pop(instruction.Span);
+        frame.InstructionPointer = GetJumpTarget(
+            instruction,
+            frame.Code.Definition.Instructions.Count
+        );
+    }
+
+    private static bool TryGetNext(
+        PythonIteratorValue iterator,
+        TextSpan span,
+        out PythonValue value
+    )
+    {
+        switch (iterator.Iterable)
+        {
+            case PythonListValue list when iterator.Index < list.Elements.Count:
+                value = list.Elements[iterator.Index++];
+                return true;
+            case PythonTupleValue tuple when iterator.Index < tuple.Elements.Length:
+                value = tuple.Elements[iterator.Index++];
+                return true;
+            case PythonDictionaryValue dictionary:
+                if (dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
+                {
+                    throw Fault("DPY4016", "Dictionary size changed during iteration.", span);
+                }
+
+                if (iterator.Index < dictionary.Items.Count)
+                {
+                    value = dictionary.Items[iterator.Index++].Key;
+                    return true;
+                }
+
+                break;
+            case PythonTextValue text:
+            {
+                var runes = text.Value.EnumerateRunes().ToArray();
+                if (iterator.Index < runes.Length)
+                {
+                    value = new PythonTextValue(runes[iterator.Index++].ToString());
+                    return true;
+                }
+
+                break;
+            }
+            case PythonByteSequenceValue bytes when iterator.Index < bytes.Value.Length:
+                value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
+                return true;
+        }
+
+        value = PythonNoneValue.Instance;
+        return false;
+    }
+
+    private static PythonValue GetSubscript(PythonValue target, PythonValue index, TextSpan span)
+    {
+        switch (target)
+        {
+            case PythonListValue list:
+                return list.Elements[GetSequenceIndex(index, list.Elements.Count, span)];
+            case PythonTupleValue tuple:
+                return tuple.Elements[GetSequenceIndex(index, tuple.Elements.Length, span)];
+            case PythonTextValue text:
+            {
+                var runes = text.Value.EnumerateRunes().ToArray();
+                return new PythonTextValue(
+                    runes[GetSequenceIndex(index, runes.Length, span)].ToString()
+                );
+            }
+            case PythonByteSequenceValue bytes:
+                return PythonWholeNumberValue.Create(
+                    bytes.Value[GetSequenceIndex(index, bytes.Value.Length, span)]
+                );
+            case PythonDictionaryValue dictionary:
+                if (TryFindDictionaryItem(dictionary, index, out var item))
+                {
+                    return item.Value;
+                }
+
+                throw Fault("DPY4013", "The dictionary key was not found.", span);
+            default:
+                throw Fault("DPY4011", "This value is not subscriptable.", span);
+        }
+    }
+
+    private static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
+    {
+        index = PromoteTruthValue(index);
+        if (index is not PythonWholeNumberValue wholeNumber)
+        {
+            throw Fault("DPY4011", "Sequence indices must be integers.", span);
+        }
+
+        var value = wholeNumber.Value;
+        if (value < 0)
+        {
+            value += count;
+        }
+
+        if (value < 0 || value >= count)
+        {
+            throw Fault("DPY4012", "The sequence index is out of range.", span);
+        }
+
+        return (int)value;
+    }
+
+    private static void SetDictionaryItem(
+        PythonDictionaryValue dictionary,
+        PythonValue key,
+        PythonValue value,
+        TextSpan span
+    )
+    {
+        if (!IsHashable(key))
+        {
+            throw Fault("DPY4014", "The dictionary key is not hashable.", span);
+        }
+
+        if (TryFindDictionaryItem(dictionary, key, out var item))
+        {
+            item.Value = value;
+            return;
+        }
+
+        dictionary.Items.Add(new PythonDictionaryItemValue(key, value));
+        dictionary.SizeVersion++;
+    }
+
+    private static bool TryFindDictionaryItem(
+        PythonDictionaryValue dictionary,
+        PythonValue key,
+        out PythonDictionaryItemValue item
+    )
+    {
+        foreach (var candidate in dictionary.Items)
+        {
+            if (ReferenceEquals(candidate.Key, key) || AreEqual(candidate.Key, key))
+            {
+                item = candidate;
+                return true;
+            }
+        }
+
+        item = null!;
+        return false;
+    }
+
+    private static bool IsHashable(PythonValue value) =>
+        value switch
+        {
+            PythonListValue or PythonDictionaryValue => false,
+            PythonTupleValue tuple => tuple.Elements.All(IsHashable),
+            _ => true,
+        };
 
     private PythonValue LoadName(
         PreparedPythonCode code,
@@ -1108,6 +1380,42 @@ internal sealed class PythonVirtualMachine
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 
+        var tracksRecursion =
+            left is PythonListValue or PythonTupleValue or PythonDictionaryValue
+            && right is PythonListValue or PythonTupleValue or PythonDictionaryValue;
+        if (tracksRecursion)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            _activeEqualityPairs ??= new HashSet<PythonValuePair>(PythonValuePairComparer.Instance);
+            var pair = new PythonValuePair(left, right);
+            if (!_activeEqualityPairs.Add(pair))
+            {
+                return true;
+            }
+
+            try
+            {
+                return AreEqualCore(left, right);
+            }
+            finally
+            {
+                _activeEqualityPairs.Remove(pair);
+                if (_activeEqualityPairs.Count == 0)
+                {
+                    _activeEqualityPairs = null;
+                }
+            }
+        }
+
+        return AreEqualCore(left, right);
+    }
+
+    private static bool AreEqualCore(PythonValue left, PythonValue right)
+    {
         if (IsNumeric(left) && IsNumeric(right))
         {
             if (left is PythonComplexValue || right is PythonComplexValue)
@@ -1142,6 +1450,8 @@ internal sealed class PythonVirtualMachine
                 leftTuple.Elements,
                 rightTuple.Elements
             ),
+            (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
+                AreDictionariesEqual(leftDictionary, rightDictionary),
             (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>
@@ -1163,6 +1473,30 @@ internal sealed class PythonVirtualMachine
         for (var index = 0; index < left.Count; index++)
         {
             if (!AreEqual(left[index], right[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreDictionariesEqual(
+        PythonDictionaryValue left,
+        PythonDictionaryValue right
+    )
+    {
+        if (left.Items.Count != right.Items.Count)
+        {
+            return false;
+        }
+
+        foreach (var item in left.Items)
+        {
+            if (
+                !TryFindDictionaryItem(right, item.Key, out var rightItem)
+                || !AreEqual(item.Value, rightItem.Value)
+            )
             {
                 return false;
             }
@@ -1423,6 +1757,7 @@ internal sealed class PythonVirtualMachine
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
+            PythonDictionaryValue dictionary => dictionary.Items.Count != 0,
             _ => true,
         };
 
@@ -1456,6 +1791,22 @@ internal sealed class PythonVirtualMachine
         }
 
         throw Fault("DPY4007", "The DotPython jump target is invalid.", instruction.Span);
+    }
+
+    private readonly record struct PythonValuePair(PythonValue Left, PythonValue Right);
+
+    private sealed class PythonValuePairComparer : IEqualityComparer<PythonValuePair>
+    {
+        internal static PythonValuePairComparer Instance { get; } = new();
+
+        public bool Equals(PythonValuePair left, PythonValuePair right) =>
+            ReferenceEquals(left.Left, right.Left) && ReferenceEquals(left.Right, right.Right);
+
+        public int GetHashCode(PythonValuePair pair) =>
+            HashCode.Combine(
+                RuntimeHelpers.GetHashCode(pair.Left),
+                RuntimeHelpers.GetHashCode(pair.Right)
+            );
     }
 
     private static PythonRuntimeException Fault(string code, string message, TextSpan span) =>

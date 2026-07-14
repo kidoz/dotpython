@@ -254,13 +254,44 @@ internal sealed record PythonFunctionValue(
 
 internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
 {
-    internal override string ToDisplayString() =>
-        $"[{string.Join(", ", Elements.Select(element => element.ToRepresentationString()))}]";
+    internal override string ToDisplayString()
+    {
+        if (!PythonRepresentationGuard.TryEnter(this))
+        {
+            return "[...]";
+        }
+
+        try
+        {
+            return $"[{string.Join(", ", Elements.Select(element => element.ToRepresentationString()))}]";
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
 }
 
 internal sealed record PythonTupleValue(PythonValue[] Elements) : PythonValue
 {
     internal override string ToDisplayString()
+    {
+        if (!PythonRepresentationGuard.TryEnter(this))
+        {
+            return "(...)";
+        }
+
+        try
+        {
+            return FormatTuple();
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
+
+    private string FormatTuple()
     {
         if (Elements.Length == 0)
         {
@@ -272,5 +303,69 @@ internal sealed record PythonTupleValue(PythonValue[] Elements) : PythonValue
             Elements.Select(element => element.ToRepresentationString())
         );
         return Elements.Length == 1 ? $"({contents},)" : $"({contents})";
+    }
+}
+
+internal sealed class PythonDictionaryItemValue
+{
+    internal PythonDictionaryItemValue(PythonValue key, PythonValue value)
+    {
+        Key = key;
+        Value = value;
+    }
+
+    internal PythonValue Key { get; }
+
+    internal PythonValue Value { get; set; }
+}
+
+internal sealed record PythonDictionaryValue(List<PythonDictionaryItemValue> Items) : PythonValue
+{
+    internal int SizeVersion { get; set; }
+
+    internal override string ToDisplayString()
+    {
+        if (!PythonRepresentationGuard.TryEnter(this))
+        {
+            return "{...}";
+        }
+
+        try
+        {
+            return $"{{{string.Join(", ", Items.Select(item => $"{item.Key.ToRepresentationString()}: {item.Value.ToRepresentationString()}"))}}}";
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
+}
+
+internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDictionarySizeVersion)
+    : PythonValue
+{
+    internal int Index { get; set; }
+
+    internal override string ToDisplayString() => "<collection_iterator>";
+}
+
+internal static class PythonRepresentationGuard
+{
+    [ThreadStatic]
+    private static HashSet<PythonValue>? _activeValues;
+
+    internal static bool TryEnter(PythonValue value)
+    {
+        _activeValues ??= new HashSet<PythonValue>(ReferenceEqualityComparer.Instance);
+        return _activeValues.Add(value);
+    }
+
+    internal static void Exit(PythonValue value)
+    {
+        _activeValues?.Remove(value);
+        if (_activeValues?.Count == 0)
+        {
+            _activeValues = null;
+        }
     }
 }

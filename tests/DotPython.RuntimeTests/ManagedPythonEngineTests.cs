@@ -97,6 +97,14 @@ public sealed class ManagedPythonEngineTests
     )]
     [InlineData("print([\"'\", '\"', '\\x85', '\U0001f40d'])", "[\"'\", '\"', '\\x85', '🐍']")]
     [InlineData("print(not [], not (), [1, [2]] == [1, [2]], [1] != (1,))", "True True True True")]
+    [InlineData(
+        "print({'a': 1, 'a': 2}, not {}, {'a': [1]} == {'a': [1]}, {1: 'int', True: 'bool'})",
+        "{'a': 2} True True {1: 'bool'}"
+    )]
+    [InlineData(
+        "values = [10, 20]; values[-1] = 42; mapping = {'value': values[0]}; print(values, mapping['value'], '🐍x'[0], b'ab'[1])",
+        "[10, 42] 10 🐍 98"
+    )]
     public void Execute_MatchesSupportedPythonNumericAndTextSemantics(string code, string expected)
     {
         using var output = new StringWriter();
@@ -133,6 +141,83 @@ public sealed class ManagedPythonEngineTests
                 + $"[1, 2] (3,){Environment.NewLine}",
             output.ToString()
         );
+    }
+
+    [Fact]
+    public void Execute_EvaluatesDictionaryAndSubscriptAssignmentInPythonOrder()
+    {
+        const string code =
+            "def mark(value): print(value); return value\n"
+            + "values = [0]\n"
+            + "values[mark(2) - 2] = mark(1)\n"
+            + "mapping = {mark(3): mark(4)}\n"
+            + "print(values, mapping)";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"1{Environment.NewLine}2{Environment.NewLine}3{Environment.NewLine}"
+                + $"4{Environment.NewLine}[1] {{3: 4}}{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_IteratesManagedCollectionsAndRunsForElse()
+    {
+        const string code =
+            "for item in [1, 2]: print(item)\n"
+            + "else: print('done')\n"
+            + "for item in (3,): print(item)\n"
+            + "for item in '🐍a': print(item)\n"
+            + "for item in b'BC': print(item)\n"
+            + "for key in {'x': 1, 'y': 2}: print(key)";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            string.Join(Environment.NewLine, "1", "2", "done", "3", "🐍", "a", "66", "67", "x", "y")
+                + Environment.NewLine,
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_FormatsAndComparesRecursiveCollectionsSafely()
+    {
+        const string code =
+            "first = {}\n"
+            + "first['self'] = first\n"
+            + "second = {}\n"
+            + "second['self'] = second\n"
+            + "items = [None]\n"
+            + "items[0] = items\n"
+            + "print(first, items, first == second)";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"{{'self': {{...}}}} [[...]] True{Environment.NewLine}", output.ToString());
     }
 
     [Fact]
@@ -378,6 +463,12 @@ public sealed class ManagedPythonEngineTests
         "def outer():\n    def inner(): return value\n    print(inner())\n    value = 42\nouter()",
         "DPY4010"
     )]
+    [InlineData("values = (1,); values[0] = 2", "DPY4011")]
+    [InlineData("print([1][2])", "DPY4012")]
+    [InlineData("print({}['missing'])", "DPY4013")]
+    [InlineData("print({[]: 1})", "DPY4014")]
+    [InlineData("for item in 1: print(item)", "DPY4015")]
+    [InlineData("mapping = {'a': 1}\nfor key in mapping: mapping['b'] = 2", "DPY4016")]
     public void Execute_ReturnsRuntimeDiagnostics(string code, string expectedCode)
     {
         var result = new ManagedPythonEngine().Execute(
