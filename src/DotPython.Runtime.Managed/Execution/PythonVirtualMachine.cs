@@ -525,15 +525,14 @@ internal sealed class PythonVirtualMachine
             (PythonOpCode.UnaryPositive, PythonFloatingPointValue value) => value,
             (PythonOpCode.UnaryPositive, PythonComplexValue value) => value,
             (PythonOpCode.UnaryNegative, PythonWholeNumberValue value) =>
-                new PythonWholeNumberValue(-value.Value),
+                PythonWholeNumberValue.Create(-value.Value),
             (PythonOpCode.UnaryNegative, PythonFloatingPointValue value) =>
                 new PythonFloatingPointValue(-value.Value),
             (PythonOpCode.UnaryNegative, PythonComplexValue value) => new PythonComplexValue(
                 -value.Value
             ),
-            (PythonOpCode.UnaryInvert, PythonWholeNumberValue value) => new PythonWholeNumberValue(
-                ~value.Value
-            ),
+            (PythonOpCode.UnaryInvert, PythonWholeNumberValue value) =>
+                PythonWholeNumberValue.Create(~value.Value),
             _ => throw Fault("DPY4005", "Unsupported operand for unary operator.", span),
         };
     }
@@ -724,18 +723,20 @@ internal sealed class PythonVirtualMachine
 
         return opCode switch
         {
-            PythonOpCode.BinaryAdd => new PythonWholeNumberValue(left + right),
-            PythonOpCode.BinarySubtract => new PythonWholeNumberValue(left - right),
-            PythonOpCode.BinaryMultiply => new PythonWholeNumberValue(left * right),
+            PythonOpCode.BinaryAdd => PythonWholeNumberValue.Create(left + right),
+            PythonOpCode.BinarySubtract => PythonWholeNumberValue.Create(left - right),
+            PythonOpCode.BinaryMultiply => PythonWholeNumberValue.Create(left * right),
             PythonOpCode.BinaryTrueDivide => new PythonFloatingPointValue(
                 (double)left / (double)right
             ),
-            PythonOpCode.BinaryFloorDivide => new PythonWholeNumberValue(FloorDivide(left, right)),
-            PythonOpCode.BinaryModulo => new PythonWholeNumberValue(
+            PythonOpCode.BinaryFloorDivide => PythonWholeNumberValue.Create(
+                FloorDivide(left, right)
+            ),
+            PythonOpCode.BinaryModulo => PythonWholeNumberValue.Create(
                 left - FloorDivide(left, right) * right
             ),
             PythonOpCode.BinaryPower when right >= 0 && right <= int.MaxValue =>
-                new PythonWholeNumberValue(BigInteger.Pow(left, (int)right)),
+                PythonWholeNumberValue.Create(BigInteger.Pow(left, (int)right)),
             PythonOpCode.BinaryPower when left.IsZero => throw Fault(
                 "DPY4004",
                 "Zero cannot be raised to a negative power.",
@@ -858,7 +859,7 @@ internal sealed class PythonVirtualMachine
 
     private static PythonValue PromoteTruthValue(PythonValue value) =>
         value is PythonTruthValue truth
-            ? new PythonWholeNumberValue(truth.Value ? BigInteger.One : BigInteger.Zero)
+            ? PythonWholeNumberValue.Create(truth.Value ? BigInteger.One : BigInteger.Zero)
             : value;
 
     private static double ToDouble(PythonValue value) =>

@@ -39,7 +39,32 @@ internal sealed record PythonTruthValue : PythonValue
 
 internal sealed record PythonWholeNumberValue(BigInteger Value) : PythonValue
 {
+    private const int LargestCachedValue = 256;
+    private const int SmallestCachedValue = -5;
+    private static readonly PythonWholeNumberValue[] CachedValues = CreateCachedValues();
+
+    internal static PythonWholeNumberValue Create(BigInteger value)
+    {
+        if (value >= SmallestCachedValue && value <= LargestCachedValue)
+        {
+            return CachedValues[(int)value - SmallestCachedValue];
+        }
+
+        return new PythonWholeNumberValue(value);
+    }
+
     internal override string ToDisplayString() => Value.ToString(CultureInfo.InvariantCulture);
+
+    private static PythonWholeNumberValue[] CreateCachedValues()
+    {
+        var values = new PythonWholeNumberValue[LargestCachedValue - SmallestCachedValue + 1];
+        for (var value = SmallestCachedValue; value <= LargestCachedValue; value++)
+        {
+            values[value - SmallestCachedValue] = new PythonWholeNumberValue(value);
+        }
+
+        return values;
+    }
 }
 
 internal sealed record PythonFloatingPointValue(double Value) : PythonValue

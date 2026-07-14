@@ -83,6 +83,10 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print(True + 1, +True, ~False, None)", "2 1 -1 None")]
     [InlineData("print(2j, 1 + 2j)", "2j (1+2j)")]
     [InlineData("print(123456789012345678901234567890 + 1)", "123456789012345678901234567891")]
+    [InlineData(
+        "print(-4 - 1, -5 - 1, 255 + 1, 256 + 1, 10 ** 40)",
+        "-5 -6 256 257 10000000000000000000000000000000000000000"
+    )]
     [InlineData("print(False and missing, True or missing)", "False True")]
     [InlineData("print('' or 'fallback', 'value' and 42)", "fallback 42")]
     [InlineData("print(not 0, not 'value', 1 < 2 < 3, 1 < 2 > 3)", "True False True False")]

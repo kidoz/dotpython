@@ -64,7 +64,7 @@ internal sealed class PreparedPythonCode
         {
             PythonConstantType.NoneValue => PythonNoneValue.Instance,
             PythonConstantType.TruthValue => PythonTruthValue.FromBoolean((bool)constant.Value!),
-            PythonConstantType.WholeNumber => new PythonWholeNumberValue(
+            PythonConstantType.WholeNumber => PythonWholeNumberValue.Create(
                 (BigInteger)constant.Value!
             ),
             PythonConstantType.FloatingPoint => new PythonFloatingPointValue(
