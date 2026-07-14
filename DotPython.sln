@@ -32,6 +32,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.DifferentialTests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.PackageCompatibilityTests", "tests\DotPython.PackageCompatibilityTests\DotPython.PackageCompatibilityTests.csproj", "{A207E715-E56A-4BE6-B442-6B26219A2285}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.InteropTests", "tests\DotPython.InteropTests\DotPython.InteropTests.csproj", "{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -210,6 +212,18 @@ Global
 		{A207E715-E56A-4BE6-B442-6B26219A2285}.Release|x64.Build.0 = Release|Any CPU
 		{A207E715-E56A-4BE6-B442-6B26219A2285}.Release|x86.ActiveCfg = Release|Any CPU
 		{A207E715-E56A-4BE6-B442-6B26219A2285}.Release|x86.Build.0 = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|x64.Build.0 = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Debug|x86.Build.0 = Debug|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|x64.ActiveCfg = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|x64.Build.0 = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|x86.ActiveCfg = Release|Any CPU
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -229,5 +243,6 @@ Global
 		{EA3250F2-7A1A-4916-93E0-2A28954DD058} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{833A1A57-C681-4B0A-9C1F-13735AE1A9EA} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{A207E715-E56A-4BE6-B442-6B26219A2285} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{B3D1C50D-0369-4F19-B93F-C22FC72C6AB1} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

@@ -5,6 +5,6 @@
 
     <ItemGroup>
         <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
-        <ProjectReference Include="../DotPython.Runtime.Managed/DotPython.Runtime.Managed.csproj" />
+        <ProjectReference Include="../DotPython.Language/DotPython.Language.csproj" />
     </ItemGroup>
 </Project>

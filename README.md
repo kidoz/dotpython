@@ -12,7 +12,9 @@ inside a .NET solution, and (per the roadmap) as an SDK-style `.dpyproj` project
 compiled libraries can be referenced from C# and other managed languages.
 
 > **Status:** early, active development. Today the CLI executes a growing managed subset of the
-> language (literals, names, assignment, arithmetic, calls, control flow, and functions).
+> language (literals, names, assignment, arithmetic, calls, control flow, and functions). The
+> compiler also emits deterministic `.dpyc` module artifacts, and the interop layer statically
+> compiles an initial `.pyi` subset into typed CLR export contracts.
 
 ## Compatibility contract
 
@@ -56,6 +58,24 @@ dotpython -h | --help      # print usage
 Exit codes follow familiar conventions: `0` success, `1` execution/diagnostic error,
 `2` usage error, `130` cancelled. Interactive (REPL) mode is not yet implemented.
 
+## Typed module contracts
+
+DotPython can parse typed module stubs without importing or executing Python:
+
+```python
+from decimal import Decimal
+from contracts import OrderDto
+
+def calculate(order: OrderDto, discount: Decimal | None = ...) -> Decimal: ...
+async def validate(order: OrderDto) -> list[str]: ...
+```
+
+The initial contract mapper supports `None`, `bool`, arbitrary-size `int`, `float`, `str`,
+`bytes`, selected `decimal`/`uuid`/`datetime` types, nullable `T | None`/`Optional[T]`, and
+read-only list/dictionary shapes. Referenced DTO types require an explicit Python-to-CLR mapping;
+DotPython does not load assemblies or evaluate annotations while parsing contracts. Contracts can
+be persisted as deterministic, versioned JSON for the future build SDK and facade generator.
+
 ## Project layout
 
 | Project | Purpose |
@@ -66,7 +86,7 @@ Exit codes follow familiar conventions: `0` success, `1` execution/diagnostic er
 | `src/DotPython.Runtime.Managed` | Managed stack VM, object model, and execution engine. |
 | `src/DotPython.Abstractions` | Backend-independent public API surface. |
 | `src/DotPython.Hosting` | Embedded hosting, runtime/session lifecycle, and DI. |
-| `src/DotPython.Interop` | Value conversion and the capability-limited .NET bridge. |
+| `src/DotPython.Interop` | Static `.pyi` contracts, value conversion, and the capability-limited .NET bridge. |
 | `src/DotPython.StdLib` | Managed / pure-Python standard-library surface. |
 | `src/DotPython.Cli` | `dotpython` command-line front end. |
 
@@ -93,6 +113,7 @@ dotnet test DotPython.sln
 | `tests/DotPython.ParserTests` | Tokenizer and parser behavior. |
 | `tests/DotPython.CompilerTests` | Binding and bytecode compilation. |
 | `tests/DotPython.RuntimeTests` | Managed VM execution. |
+| `tests/DotPython.InteropTests` | Static export contracts and Python-to-CLR type mapping. |
 | `tests/DotPython.DifferentialTests` | Behavior compared against the CPython reference. |
 | `tests/DotPython.PackageCompatibilityTests` | Package/language compatibility matrix. |
 
