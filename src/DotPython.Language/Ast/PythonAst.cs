@@ -91,6 +91,12 @@ public sealed record PythonCallExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
+    : PythonExpression(Span);
+
+public sealed record PythonTupleExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
+    : PythonExpression(Span);
+
 public sealed record PythonParenthesizedExpression(PythonExpression Expression, TextSpan Span)
     : PythonExpression(Span);
 

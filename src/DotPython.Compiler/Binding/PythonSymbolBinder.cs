@@ -279,6 +279,20 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonListExpression list:
+                foreach (var element in list.Elements)
+                {
+                    CollectReferences(element, references);
+                }
+
+                break;
+            case PythonTupleExpression tuple:
+                foreach (var element in tuple.Elements)
+                {
+                    CollectReferences(element, references);
+                }
+
+                break;
             case PythonParenthesizedExpression parenthesized:
                 CollectReferences(parenthesized.Expression, references);
                 break;

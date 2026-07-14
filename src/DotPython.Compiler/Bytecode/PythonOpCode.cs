@@ -38,4 +38,6 @@ public enum PythonOpCode
     ReturnNone = 33,
     LoadCell = 34,
     StoreCell = 35,
+    BuildList = 36,
+    BuildTuple = 37,
 }

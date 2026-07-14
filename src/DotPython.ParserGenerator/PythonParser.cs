@@ -739,27 +739,12 @@ public static class PythonParser
         {
             if (Match(SyntaxTokenKind.LeftParenthesis, out var leftParenthesis))
             {
-                var expression = ParseExpression();
-                if (expression is null)
-                {
-                    ReportExpected("an expression", Current.Span);
-                    return null;
-                }
+                return ParseParenthesizedOrTuple(leftParenthesis);
+            }
 
-                var end = expression.Span.End;
-                if (!Match(SyntaxTokenKind.RightParenthesis, out var rightParenthesis))
-                {
-                    ReportExpected("')'", Current.Span);
-                }
-                else
-                {
-                    end = rightParenthesis.Span.End;
-                }
-
-                return new PythonParenthesizedExpression(
-                    expression,
-                    TextSpan.FromBounds(leftParenthesis.Span.Start, end)
-                );
+            if (Match(SyntaxTokenKind.LeftBracket, out var leftBracket))
+            {
+                return ParseListDisplay(leftBracket);
             }
 
             if (Current.Kind == SyntaxTokenKind.Identifier)
@@ -791,6 +776,106 @@ public static class PythonParser
             };
 
             return constantKind is null ? null : Constant(Advance(), constantKind.Value);
+        }
+
+        private PythonExpression? ParseParenthesizedOrTuple(SyntaxToken leftParenthesis)
+        {
+            if (Match(SyntaxTokenKind.RightParenthesis, out var emptyRightParenthesis))
+            {
+                return new PythonTupleExpression(
+                    Array.Empty<PythonExpression>(),
+                    TextSpan.FromBounds(leftParenthesis.Span.Start, emptyRightParenthesis.Span.End)
+                );
+            }
+
+            var first = ParseExpression();
+            if (first is null)
+            {
+                ReportExpected("an expression", Current.Span);
+                return null;
+            }
+
+            if (!Match(SyntaxTokenKind.Comma))
+            {
+                var groupEnd = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightParenthesis,
+                    "')'",
+                    first.Span.End
+                );
+                return new PythonParenthesizedExpression(
+                    first,
+                    TextSpan.FromBounds(leftParenthesis.Span.Start, groupEnd)
+                );
+            }
+
+            var elements = new List<PythonExpression> { first };
+            while (Current.Kind != SyntaxTokenKind.RightParenthesis)
+            {
+                var element = ParseExpression();
+                if (element is null)
+                {
+                    ReportExpected("a tuple element", Current.Span);
+                    break;
+                }
+
+                elements.Add(element);
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+            }
+
+            var tupleEnd = ExpectClosingDelimiter(
+                SyntaxTokenKind.RightParenthesis,
+                "')'",
+                elements[^1].Span.End
+            );
+            return new PythonTupleExpression(
+                elements.AsReadOnly(),
+                TextSpan.FromBounds(leftParenthesis.Span.Start, tupleEnd)
+            );
+        }
+
+        private PythonListExpression ParseListDisplay(SyntaxToken leftBracket)
+        {
+            var elements = new List<PythonExpression>();
+            while (Current.Kind != SyntaxTokenKind.RightBracket)
+            {
+                var element = ParseExpression();
+                if (element is null)
+                {
+                    ReportExpected("a list element", Current.Span);
+                    break;
+                }
+
+                elements.Add(element);
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+            }
+
+            var fallbackEnd = elements.Count == 0 ? leftBracket.Span.End : elements[^1].Span.End;
+            var end = ExpectClosingDelimiter(SyntaxTokenKind.RightBracket, "']'", fallbackEnd);
+            return new PythonListExpression(
+                elements.AsReadOnly(),
+                TextSpan.FromBounds(leftBracket.Span.Start, end)
+            );
+        }
+
+        private int ExpectClosingDelimiter(
+            SyntaxTokenKind kind,
+            string expectation,
+            int fallbackEnd
+        )
+        {
+            if (Match(kind, out var delimiter))
+            {
+                return delimiter.Span.End;
+            }
+
+            ReportExpected(expectation, Current.Span);
+            return fallbackEnd;
         }
 
         private bool TryReadComparisonOperator(

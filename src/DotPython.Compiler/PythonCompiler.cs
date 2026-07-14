@@ -129,6 +129,14 @@ public static class PythonCompiler
 
                     Emit(PythonOpCode.Call, call.Arguments.Count, call.Span);
                     break;
+                case PythonListExpression list:
+                    CompileElements(list.Elements);
+                    Emit(PythonOpCode.BuildList, list.Elements.Count, list.Span);
+                    break;
+                case PythonTupleExpression tuple:
+                    CompileElements(tuple.Elements);
+                    Emit(PythonOpCode.BuildTuple, tuple.Elements.Count, tuple.Span);
+                    break;
                 default:
                     Report(
                         "DPY3002",
@@ -141,6 +149,14 @@ public static class PythonCompiler
                         expression.Span
                     );
                     break;
+            }
+        }
+
+        private void CompileElements(IReadOnlyList<PythonExpression> elements)
+        {
+            foreach (var element in elements)
+            {
+                CompileExpression(element);
             }
         }
 

@@ -58,6 +58,23 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_DistinguishesListTupleAndParenthesizedDisplays()
+    {
+        var result = Parse("values = [1, (2,), (3), (), [4, 5,],]");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var list = Assert.IsType<PythonListExpression>(assignment.Value);
+        Assert.Equal(5, list.Elements.Count);
+        Assert.Single(Assert.IsType<PythonTupleExpression>(list.Elements[1]).Elements);
+        Assert.IsType<PythonParenthesizedExpression>(list.Elements[2]);
+        Assert.Empty(Assert.IsType<PythonTupleExpression>(list.Elements[3]).Elements);
+        Assert.Equal(2, Assert.IsType<PythonListExpression>(list.Elements[4]).Elements.Count);
+    }
+
+    [Fact]
     public void Parse_BuildsIfElifElseAndWhileSuites()
     {
         var result = Parse(

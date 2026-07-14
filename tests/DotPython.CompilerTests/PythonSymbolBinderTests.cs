@@ -102,4 +102,21 @@ public sealed class PythonSymbolBinderTests
         Assert.Empty(inner.CellVariableNames);
         Assert.Empty(inner.FreeVariableNames);
     }
+
+    [Fact]
+    public void Bind_CollectsReferencesNestedInsideCollectionDisplays()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("def collect(first, second): return [first, (second,)]")
+        );
+
+        var result = PythonSymbolBinder.Bind(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(
+            ["first", "second"],
+            Assert.Single(result.ModuleScope.Children).ReferencedNames
+        );
+    }
 }

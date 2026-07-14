@@ -446,6 +446,16 @@ public static class DotPythonModuleArtifactSerializer
                 }
 
                 break;
+            case PythonOpCode.BuildList:
+            case PythonOpCode.BuildTuple:
+                if (instruction.Operand < 0)
+                {
+                    throw new InvalidDataException(
+                        $"Instruction {instructionIndex} has an invalid element count."
+                    );
+                }
+
+                break;
             default:
                 if (instruction.Operand != 0)
                 {

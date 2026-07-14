@@ -53,6 +53,30 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsCollectionElementsInSourceOrder()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("values = [1, 2]; empty = (); single = (3,)")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var collectionInstructions = result.Code.Instructions.Where(instruction =>
+            instruction.OpCode is PythonOpCode.BuildList or PythonOpCode.BuildTuple
+        );
+        Assert.Equal(
+            [
+                (PythonOpCode.BuildList, 2),
+                (PythonOpCode.BuildTuple, 0),
+                (PythonOpCode.BuildTuple, 1),
+            ],
+            collectionInstructions.Select(instruction => (instruction.OpCode, instruction.Operand))
+        );
+    }
+
+    [Fact]
     public void Compile_RejectsFormattedStringsUntilComponentParsingExists()
     {
         var parseResult = PythonParser.Parse(new SourceText("print(f'{40 + 2}')"));
