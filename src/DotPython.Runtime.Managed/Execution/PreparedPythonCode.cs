@@ -178,15 +178,17 @@ internal sealed class PreparedPythonCode
     internal bool TryGetCachedManagedCall(
         int instructionIndex,
         PythonValue target,
-        out PythonFunctionValue function
+        out PythonFunctionValue function,
+        out bool useEmptyFrame
     )
     {
         ref var cache = ref GetCallCache(instructionIndex);
-        if (cache.State == AdaptiveCallCacheState.ManagedFunction)
+        if (IsManagedCallCacheState(cache.State))
         {
             if (ReferenceEquals(cache.Target, target))
             {
                 function = cache.Target!;
+                useEmptyFrame = cache.State == AdaptiveCallCacheState.ManagedFunctionEmptyFrame;
                 return true;
             }
 
@@ -194,6 +196,7 @@ internal sealed class PreparedPythonCode
         }
 
         function = null!;
+        useEmptyFrame = false;
         return false;
     }
 
@@ -205,7 +208,7 @@ internal sealed class PreparedPythonCode
             return;
         }
 
-        if (cache.State == AdaptiveCallCacheState.ManagedFunction)
+        if (IsManagedCallCacheState(cache.State))
         {
             if (ReferenceEquals(cache.Target, function))
             {
@@ -230,7 +233,9 @@ internal sealed class PreparedPythonCode
 
         cache = new AdaptiveCallCache
         {
-            State = AdaptiveCallCacheState.ManagedFunction,
+            State = CanUseEmptyFrame(function)
+                ? AdaptiveCallCacheState.ManagedFunctionEmptyFrame
+                : AdaptiveCallCacheState.ManagedFunction,
             Target = function,
         };
     }
@@ -391,6 +396,21 @@ internal sealed class PreparedPythonCode
                 or PythonOpCode.CompareGreaterThan
                 or PythonOpCode.CompareGreaterThanOrEqual;
 
+    private static bool IsManagedCallCacheState(AdaptiveCallCacheState state) =>
+        state
+            is AdaptiveCallCacheState.ManagedFunction
+                or AdaptiveCallCacheState.ManagedFunctionEmptyFrame;
+
+    private static bool CanUseEmptyFrame(PythonFunctionValue function)
+    {
+        var definition = function.Code.Definition;
+        return definition.ArgumentCount == 0
+            && definition.VariableNames.Count == 0
+            && definition.CellVariableNames.Count == 0
+            && definition.FreeVariableNames.Count == 0
+            && function.Closure.Length == 0;
+    }
+
     private static int FindNameIndex(IReadOnlyList<string> names, string name)
     {
         for (var index = 0; index < names.Count; index++)
@@ -487,6 +507,7 @@ internal enum AdaptiveCallCacheState : byte
 {
     Adaptive,
     ManagedFunction,
+    ManagedFunctionEmptyFrame,
     Generic,
 }
 

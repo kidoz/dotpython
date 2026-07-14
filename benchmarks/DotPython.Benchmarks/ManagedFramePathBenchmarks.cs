@@ -84,7 +84,11 @@ public class ManagedFramePathBenchmarks
             .Definition.Instructions.Select((instruction, index) => (instruction, index))
             .Single(item => item.instruction.OpCode == PythonOpCode.Call)
             .index;
-        if (function.GetCallCacheState(instructionIndex) != AdaptiveCallCacheState.ManagedFunction)
+        var expectedState =
+            ArgumentCount == 0
+                ? AdaptiveCallCacheState.ManagedFunctionEmptyFrame
+                : AdaptiveCallCacheState.ManagedFunction;
+        if (function.GetCallCacheState(instructionIndex) != expectedState)
         {
             throw new InvalidOperationException(
                 "The managed-frame benchmark call site was not specialized."

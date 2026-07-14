@@ -53,7 +53,9 @@ public class ManagedCallSpecializationBenchmarks
         VerifyCacheState(
             _specializedEngine,
             compilation.Code,
-            AdaptiveCallCacheState.ManagedFunction
+            ArgumentCount == 0
+                ? AdaptiveCallCacheState.ManagedFunctionEmptyFrame
+                : AdaptiveCallCacheState.ManagedFunction
         );
     }
 

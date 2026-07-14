@@ -237,6 +237,73 @@ public sealed class PreparedPythonCodeTests
     }
 
     [Fact]
+    public void ManagedCallCache_UsesEmptyFramesOnlyForEligibleZeroArgumentFunctions()
+    {
+        var code = Compile(
+            "def answer(): return 42\n"
+                + "def with_local():\n"
+                + "    value = 42\n"
+                + "    return value\n"
+                + "def invoke_answer(): return answer()\n"
+                + "def invoke_local(): return with_local()\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("empty_frame_call_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var answerInvoker = GetPreparedFunction(engine, code, "invoke_answer");
+        var localInvoker = GetPreparedFunction(engine, code, "invoke_local");
+        var answerCallIndex = GetInstructionIndex(answerInvoker, PythonOpCode.Call);
+        var localCallIndex = GetInstructionIndex(localInvoker, PythonOpCode.Call);
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(42, Invoke(engine, "invoke_answer", Array.Empty<PythonValue>()));
+            AssertWholeNumber(42, Invoke(engine, "invoke_local", Array.Empty<PythonValue>()));
+        }
+
+        Assert.True(initialization.Success);
+        Assert.Equal(
+            AdaptiveCallCacheState.ManagedFunctionEmptyFrame,
+            answerInvoker.GetCallCacheState(answerCallIndex)
+        );
+        Assert.Equal(
+            AdaptiveCallCacheState.ManagedFunction,
+            localInvoker.GetCallCacheState(localCallIndex)
+        );
+    }
+
+    [Fact]
+    public void ManagedCallCache_KeepsClosureFunctionsOnTheGeneralFramePath()
+    {
+        var code = Compile(
+            "def outer(value):\n"
+                + "    def inner(): return value\n"
+                + "    return inner\n"
+                + "target = outer(42)\n"
+                + "def invoke(): return target()\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("closure_call_cache", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "invoke");
+        var callIndex = GetInstructionIndex(function, PythonOpCode.Call);
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(42, Invoke(engine, "invoke", Array.Empty<PythonValue>()));
+        }
+
+        Assert.True(initialization.Success);
+        Assert.Equal(AdaptiveCallCacheState.ManagedFunction, function.GetCallCacheState(callIndex));
+    }
+
+    [Fact]
     public void BinaryAddCache_SpecializesWholeNumbersAndRecoversAfterDeoptimization()
     {
         var (engine, function, instructionIndex) = PrepareBinaryAddFunction();

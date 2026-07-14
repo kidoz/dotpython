@@ -7,6 +7,7 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed class PythonVirtualMachine
 {
+    private static readonly PythonCell[] NoCells = [];
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
     private readonly Stack<PythonValue> _evaluationStack = [];
@@ -525,9 +526,24 @@ internal sealed class PythonVirtualMachine
     )
     {
         var target = Peek(instruction.Operand, instruction.Span);
-        if (code.TryGetCachedManagedCall(instructionIndex, target, out var cachedFunction))
+        if (
+            code.TryGetCachedManagedCall(
+                instructionIndex,
+                target,
+                out var cachedFunction,
+                out var useEmptyFrame
+            )
+        )
         {
-            PushFunctionFrameUnchecked(cachedFunction, instruction.Operand, instruction.Span);
+            if (useEmptyFrame)
+            {
+                PushEmptyFunctionFrame(cachedFunction, instruction.Span);
+            }
+            else
+            {
+                PushFunctionFrameUnchecked(cachedFunction, instruction.Operand, instruction.Span);
+            }
+
             return;
         }
 
@@ -548,6 +564,12 @@ internal sealed class PythonVirtualMachine
         ValidateArgumentCount(function, instruction.Operand, instruction.Span);
         code.RecordManagedCall(instructionIndex, function);
         PushFunctionFrameUnchecked(function, instruction.Operand, instruction.Span);
+    }
+
+    private void PushEmptyFunctionFrame(PythonFunctionValue function, TextSpan span)
+    {
+        Pop(span);
+        PushFrame(function.Code, function.Globals, _localsCount, 0, NoCells);
     }
 
     private PythonValue[] PopArguments(int argumentCount, TextSpan span)
@@ -733,6 +755,11 @@ internal sealed class PythonVirtualMachine
         if (closure.Length != definition.FreeVariableNames.Count)
         {
             throw Fault("DPY4007", "The function closure does not match its code object.", span);
+        }
+
+        if (definition.CellVariableNames.Count == 0 && closure.Length == 0)
+        {
+            return NoCells;
         }
 
         var cells = new PythonCell[
