@@ -71,6 +71,12 @@ internal static class BenchmarkPrograms
                     + "        current = current + 1.0\n"
                     + "    return current\n"
                     + "add_floats()\n",
+                RuntimeAllocationScenario.IntegerLessThan => CreateLessThanCalls("10000", "11000"),
+                RuntimeAllocationScenario.FloatingPointLessThan => CreateLessThanCalls(
+                    "10000.0",
+                    "11000.0"
+                ),
+                RuntimeAllocationScenario.TextLessThan => CreateLessThanCalls("'Dot'", "'Python'"),
                 RuntimeAllocationScenario.FunctionCallsNoArguments => "global_value = 42\n"
                     + "def get_value(): return global_value\n"
                     + "current = 0\n"
@@ -114,4 +120,17 @@ internal static class BenchmarkPrograms
 
         return source.ToString();
     }
+
+    private static string CreateLessThanCalls(string left, string right) =>
+        "def less_than(left, right): return left < right\n"
+        + "def compare_values():\n"
+        + "    current = 0\n"
+        + "    while current != 1000:\n"
+        + "        value = less_than("
+        + left
+        + ", "
+        + right
+        + ")\n"
+        + "        current = current + 1\n"
+        + "compare_values()\n";
 }
