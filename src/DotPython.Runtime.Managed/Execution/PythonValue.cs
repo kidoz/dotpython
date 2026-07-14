@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text;
+using DotPython.Compiler.Bytecode;
 
 namespace DotPython.Runtime.Managed.Execution;
 
@@ -134,4 +135,13 @@ internal sealed record PythonBuiltinFunctionValue(
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<built-in function {Name}>";
+}
+
+internal sealed record PythonFunctionValue(
+    string Name,
+    PythonCodeObject Code,
+    Dictionary<string, PythonValue> Globals
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<function {Name}>";
 }

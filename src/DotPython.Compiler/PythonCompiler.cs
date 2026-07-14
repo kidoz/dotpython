@@ -1,3 +1,4 @@
+using DotPython.Compiler.Binding;
 using DotPython.Compiler.Bytecode;
 using DotPython.Language.Ast;
 using DotPython.Language.Diagnostics;
@@ -12,32 +13,48 @@ public static class PythonCompiler
         ArgumentNullException.ThrowIfNull(module);
         ArgumentException.ThrowIfNullOrWhiteSpace(codeName);
 
-        return new Compiler(codeName).Compile(module);
+        var binding = PythonSymbolBinder.Bind(module);
+        var diagnostics = new List<Diagnostic>(binding.Diagnostics);
+        return new Compiler(codeName, binding.ModuleScope, diagnostics).Compile(module);
     }
 
     private sealed class Compiler
     {
         private readonly string _codeName;
         private readonly List<PythonConstant> _constants = [];
-        private readonly List<Diagnostic> _diagnostics = [];
+        private readonly List<Diagnostic> _diagnostics;
         private readonly List<PythonInstruction> _instructions = [];
         private readonly List<string> _names = [];
+        private readonly PythonBoundScope _scope;
 
-        internal Compiler(string codeName)
+        internal Compiler(string codeName, PythonBoundScope scope, List<Diagnostic> diagnostics)
         {
             _codeName = codeName;
+            _scope = scope;
+            _diagnostics = diagnostics;
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
         {
-            foreach (var statement in module.Statements)
-            {
-                CompileStatement(statement);
-            }
-
-            Emit(PythonOpCode.ReturnNone, 0, new TextSpan(module.Span.End, 0));
-            var code = new PythonCodeObject(_codeName, _instructions, _constants, _names);
+            var code = CompileCode(module.Statements, module.Span.End);
             return new PythonCompilationResult(code, _diagnostics);
+        }
+
+        private PythonCodeObject CompileCode(
+            IReadOnlyList<PythonStatement> statements,
+            int endPosition
+        )
+        {
+            CompileStatements(statements);
+            Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
+            return new PythonCodeObject(
+                _codeName,
+                _instructions,
+                _constants,
+                _names,
+                [.. _scope.LocalNames],
+                _scope.Parameters.Count
+            );
         }
 
         private void CompileStatement(PythonStatement statement)
@@ -46,11 +63,7 @@ public static class PythonCompiler
             {
                 case PythonAssignmentStatement assignment:
                     CompileExpression(assignment.Value);
-                    Emit(
-                        PythonOpCode.StoreName,
-                        GetNameIndex(assignment.Target.Name),
-                        assignment.Target.Span
-                    );
+                    EmitStoreName(assignment.Target);
                     break;
                 case PythonExpressionStatement expressionStatement:
                     CompileExpression(expressionStatement.Expression);
@@ -61,6 +74,12 @@ public static class PythonCompiler
                     break;
                 case PythonWhileStatement whileStatement:
                     CompileWhileStatement(whileStatement);
+                    break;
+                case PythonFunctionDefinitionStatement function:
+                    CompileFunctionDefinition(function);
+                    break;
+                case PythonReturnStatement returnStatement:
+                    CompileReturnStatement(returnStatement);
                     break;
                 default:
                     Report(
@@ -84,7 +103,7 @@ public static class PythonCompiler
                     );
                     break;
                 case PythonNameExpression name:
-                    Emit(PythonOpCode.LoadName, GetNameIndex(name.Name), name.Span);
+                    EmitLoadName(name);
                     break;
                 case PythonParenthesizedExpression parenthesized:
                     CompileExpression(parenthesized.Expression);
@@ -140,6 +159,38 @@ public static class PythonCompiler
             {
                 PatchJump(endJump, _instructions.Count);
             }
+        }
+
+        private void CompileFunctionDefinition(PythonFunctionDefinitionStatement function)
+        {
+            var childScope = _scope.Children.Single(scope =>
+                ReferenceEquals(scope.Definition, function)
+            );
+            var childCompiler = new Compiler(function.Name.Name, childScope, _diagnostics);
+            var childCode = childCompiler.CompileCode(function.Body, function.Span.End);
+            var constantIndex = AddConstant(
+                new PythonConstant(PythonConstantType.CodeObject, childCode)
+            );
+            Emit(PythonOpCode.MakeFunction, constantIndex, function.Span);
+            EmitStoreName(function.Name);
+        }
+
+        private void CompileReturnStatement(PythonReturnStatement statement)
+        {
+            if (_scope.Kind != PythonScopeKind.Function)
+            {
+                Report("DPY3103", "'return' outside function.", statement.Span);
+                return;
+            }
+
+            if (statement.Value is null)
+            {
+                Emit(PythonOpCode.ReturnNone, 0, statement.Span);
+                return;
+            }
+
+            CompileExpression(statement.Value);
+            Emit(PythonOpCode.ReturnValue, 0, statement.Span);
         }
 
         private void CompileWhileStatement(PythonWhileStatement statement)
@@ -248,6 +299,38 @@ public static class PythonCompiler
 
             _names.Add(name);
             return _names.Count - 1;
+        }
+
+        private int GetVariableIndex(string name)
+        {
+            if (_scope.IsLocal(name))
+            {
+                return _scope.GetLocalIndex(name);
+            }
+
+            throw new InvalidOperationException($"The local variable '{name}' was not bound.");
+        }
+
+        private void EmitLoadName(PythonNameExpression name)
+        {
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
+            {
+                Emit(PythonOpCode.LoadLocal, GetVariableIndex(name.Name), name.Span);
+                return;
+            }
+
+            Emit(PythonOpCode.LoadName, GetNameIndex(name.Name), name.Span);
+        }
+
+        private void EmitStoreName(PythonNameExpression name)
+        {
+            if (_scope.Kind == PythonScopeKind.Function)
+            {
+                Emit(PythonOpCode.StoreLocal, GetVariableIndex(name.Name), name.Span);
+                return;
+            }
+
+            Emit(PythonOpCode.StoreName, GetNameIndex(name.Name), name.Span);
         }
 
         private int Emit(PythonOpCode opCode, int operand, TextSpan span)

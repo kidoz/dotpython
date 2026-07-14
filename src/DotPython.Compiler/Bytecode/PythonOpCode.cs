@@ -5,6 +5,8 @@ public enum PythonOpCode
     LoadConstant,
     LoadName,
     StoreName,
+    LoadLocal,
+    StoreLocal,
     PopTop,
     UnaryPositive,
     UnaryNegative,
@@ -30,6 +32,8 @@ public enum PythonOpCode
     JumpIfFalse,
     JumpIfFalseOrPop,
     JumpIfTrueOrPop,
+    MakeFunction,
     Call,
+    ReturnValue,
     ReturnNone,
 }

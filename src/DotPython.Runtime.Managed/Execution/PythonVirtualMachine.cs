@@ -8,11 +8,13 @@ internal sealed class PythonVirtualMachine
 {
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
+    private readonly Stack<PythonFrame> _frames = [];
     private readonly Dictionary<string, PythonValue> _globals;
     private readonly long _instructionLimit;
     private readonly TextWriter _output;
-    private readonly Stack<PythonValue> _stack = [];
     private long _instructionsExecuted;
+
+    private PythonFrame CurrentFrame => _frames.Peek();
 
     internal PythonVirtualMachine(
         Dictionary<string, PythonValue> globals,
@@ -35,115 +37,166 @@ internal sealed class PythonVirtualMachine
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        var instructionPointer = 0;
-        while (instructionPointer < code.Instructions.Count)
+        _frames.Push(new PythonFrame(code, _globals, []));
+        try
         {
-            _cancellationToken.ThrowIfCancellationRequested();
-            var instruction = code.Instructions[instructionPointer];
-            instructionPointer++;
-            if (_instructionsExecuted++ >= _instructionLimit)
+            while (_frames.Count != 0)
             {
-                throw Fault(
-                    "DPY4001",
-                    "The managed instruction limit was exceeded.",
-                    instruction.Span
-                );
-            }
+                _cancellationToken.ThrowIfCancellationRequested();
+                var frame = CurrentFrame;
+                if (frame.InstructionPointer >= frame.Code.Instructions.Count)
+                {
+                    ReturnFromFrame(PythonNoneValue.Instance);
+                    continue;
+                }
 
-            switch (instruction.OpCode)
-            {
-                case PythonOpCode.LoadConstant:
-                    _stack.Push(ConvertConstant(code.Constants[instruction.Operand]));
-                    break;
-                case PythonOpCode.LoadName:
-                    _stack.Push(LoadName(code.Names[instruction.Operand], instruction.Span));
-                    break;
-                case PythonOpCode.StoreName:
-                    _globals[code.Names[instruction.Operand]] = Pop(instruction.Span);
-                    break;
-                case PythonOpCode.PopTop:
-                    Pop(instruction.Span);
-                    break;
-                case PythonOpCode.CopyTop:
-                    _stack.Push(Peek(instruction.Span));
-                    break;
-                case PythonOpCode.RotateTwo:
-                    RotateTwo(instruction.Span);
-                    break;
-                case PythonOpCode.RotateThree:
-                    RotateThree(instruction.Span);
-                    break;
-                case PythonOpCode.UnaryPositive:
-                case PythonOpCode.UnaryNegative:
-                case PythonOpCode.UnaryInvert:
-                case PythonOpCode.UnaryNot:
-                    _stack.Push(
-                        ApplyUnary(instruction.OpCode, Pop(instruction.Span), instruction.Span)
+                var instruction = frame.Code.Instructions[frame.InstructionPointer];
+                frame.InstructionPointer++;
+                if (_instructionsExecuted++ >= _instructionLimit)
+                {
+                    throw Fault(
+                        "DPY4001",
+                        "The managed instruction limit was exceeded.",
+                        instruction.Span
                     );
-                    break;
-                case PythonOpCode.BinaryAdd:
-                case PythonOpCode.BinarySubtract:
-                case PythonOpCode.BinaryMultiply:
-                case PythonOpCode.BinaryTrueDivide:
-                case PythonOpCode.BinaryFloorDivide:
-                case PythonOpCode.BinaryModulo:
-                case PythonOpCode.BinaryPower:
-                    ApplyBinary(instruction);
-                    break;
-                case PythonOpCode.CompareEqual:
-                case PythonOpCode.CompareNotEqual:
-                case PythonOpCode.CompareLessThan:
-                case PythonOpCode.CompareLessThanOrEqual:
-                case PythonOpCode.CompareGreaterThan:
-                case PythonOpCode.CompareGreaterThanOrEqual:
-                    ApplyComparison(instruction);
-                    break;
-                case PythonOpCode.Jump:
-                    instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
-                    break;
-                case PythonOpCode.JumpIfFalse:
-                    if (!IsTruthy(Pop(instruction.Span)))
-                    {
-                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
-                    }
+                }
 
-                    break;
-                case PythonOpCode.JumpIfFalseOrPop:
-                    if (!IsTruthy(Peek(instruction.Span)))
-                    {
-                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
-                    }
-                    else
-                    {
-                        Pop(instruction.Span);
-                    }
-
-                    break;
-                case PythonOpCode.JumpIfTrueOrPop:
-                    if (IsTruthy(Peek(instruction.Span)))
-                    {
-                        instructionPointer = GetJumpTarget(instruction, code.Instructions.Count);
-                    }
-                    else
-                    {
-                        Pop(instruction.Span);
-                    }
-
-                    break;
-                case PythonOpCode.Call:
-                    ApplyCall(instruction);
-                    break;
-                case PythonOpCode.ReturnNone:
-                    return;
-                default:
-                    throw Fault("DPY4007", "Unknown DotPython instruction.", instruction.Span);
+                ExecuteInstruction(frame, instruction);
             }
+        }
+        finally
+        {
+            _frames.Clear();
+        }
+    }
+
+    private void ExecuteInstruction(PythonFrame frame, PythonInstruction instruction)
+    {
+        switch (instruction.OpCode)
+        {
+            case PythonOpCode.LoadConstant:
+                frame.EvaluationStack.Push(
+                    ConvertConstant(frame.Code.Constants[instruction.Operand])
+                );
+                break;
+            case PythonOpCode.LoadName:
+                frame.EvaluationStack.Push(
+                    LoadName(frame.Code.Names[instruction.Operand], instruction.Span)
+                );
+                break;
+            case PythonOpCode.StoreName:
+                frame.Globals[frame.Code.Names[instruction.Operand]] = Pop(instruction.Span);
+                break;
+            case PythonOpCode.LoadLocal:
+                frame.EvaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
+                break;
+            case PythonOpCode.StoreLocal:
+                StoreLocal(instruction.Operand, Pop(instruction.Span), instruction.Span);
+                break;
+            case PythonOpCode.PopTop:
+                Pop(instruction.Span);
+                break;
+            case PythonOpCode.CopyTop:
+                frame.EvaluationStack.Push(Peek(instruction.Span));
+                break;
+            case PythonOpCode.RotateTwo:
+                RotateTwo(instruction.Span);
+                break;
+            case PythonOpCode.RotateThree:
+                RotateThree(instruction.Span);
+                break;
+            case PythonOpCode.UnaryPositive:
+            case PythonOpCode.UnaryNegative:
+            case PythonOpCode.UnaryInvert:
+            case PythonOpCode.UnaryNot:
+                frame.EvaluationStack.Push(
+                    ApplyUnary(instruction.OpCode, Pop(instruction.Span), instruction.Span)
+                );
+                break;
+            case PythonOpCode.BinaryAdd:
+            case PythonOpCode.BinarySubtract:
+            case PythonOpCode.BinaryMultiply:
+            case PythonOpCode.BinaryTrueDivide:
+            case PythonOpCode.BinaryFloorDivide:
+            case PythonOpCode.BinaryModulo:
+            case PythonOpCode.BinaryPower:
+                ApplyBinary(instruction);
+                break;
+            case PythonOpCode.CompareEqual:
+            case PythonOpCode.CompareNotEqual:
+            case PythonOpCode.CompareLessThan:
+            case PythonOpCode.CompareLessThanOrEqual:
+            case PythonOpCode.CompareGreaterThan:
+            case PythonOpCode.CompareGreaterThanOrEqual:
+                ApplyComparison(instruction);
+                break;
+            case PythonOpCode.Jump:
+                frame.InstructionPointer = GetJumpTarget(
+                    instruction,
+                    frame.Code.Instructions.Count
+                );
+                break;
+            case PythonOpCode.JumpIfFalse:
+                if (!IsTruthy(Pop(instruction.Span)))
+                {
+                    frame.InstructionPointer = GetJumpTarget(
+                        instruction,
+                        frame.Code.Instructions.Count
+                    );
+                }
+
+                break;
+            case PythonOpCode.JumpIfFalseOrPop:
+                if (!IsTruthy(Peek(instruction.Span)))
+                {
+                    frame.InstructionPointer = GetJumpTarget(
+                        instruction,
+                        frame.Code.Instructions.Count
+                    );
+                }
+                else
+                {
+                    Pop(instruction.Span);
+                }
+
+                break;
+            case PythonOpCode.JumpIfTrueOrPop:
+                if (IsTruthy(Peek(instruction.Span)))
+                {
+                    frame.InstructionPointer = GetJumpTarget(
+                        instruction,
+                        frame.Code.Instructions.Count
+                    );
+                }
+                else
+                {
+                    Pop(instruction.Span);
+                }
+
+                break;
+            case PythonOpCode.MakeFunction:
+                MakeFunction(instruction);
+                break;
+            case PythonOpCode.Call:
+                ApplyCall(instruction);
+                break;
+            case PythonOpCode.ReturnValue:
+                ReturnFromFrame(Pop(instruction.Span));
+                break;
+            case PythonOpCode.ReturnNone:
+                ReturnFromFrame(PythonNoneValue.Instance);
+                break;
+            default:
+                throw Fault("DPY4007", "Unknown DotPython instruction.", instruction.Span);
         }
     }
 
     private PythonValue LoadName(string name, TextSpan span)
     {
-        if (_globals.TryGetValue(name, out var value) || _builtins.TryGetValue(name, out value))
+        if (
+            CurrentFrame.Globals.TryGetValue(name, out var value)
+            || _builtins.TryGetValue(name, out value)
+        )
         {
             return value;
         }
@@ -151,18 +204,49 @@ internal sealed class PythonVirtualMachine
         throw Fault("DPY4002", $"Name '{name}' is not defined.", span);
     }
 
+    private PythonValue LoadLocal(int index, TextSpan span)
+    {
+        if ((uint)index >= (uint)CurrentFrame.Locals.Length)
+        {
+            throw Fault("DPY4007", "The DotPython local index is invalid.", span);
+        }
+
+        var value = CurrentFrame.Locals[index];
+        if (value is not null)
+        {
+            return value;
+        }
+
+        var name = CurrentFrame.Code.VariableNames[index];
+        throw Fault("DPY4008", $"Local variable '{name}' was referenced before assignment.", span);
+    }
+
+    private void StoreLocal(int index, PythonValue value, TextSpan span)
+    {
+        if ((uint)index >= (uint)CurrentFrame.Locals.Length)
+        {
+            throw Fault("DPY4007", "The DotPython local index is invalid.", span);
+        }
+
+        CurrentFrame.Locals[index] = value;
+    }
+
     private void ApplyBinary(PythonInstruction instruction)
     {
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
-        _stack.Push(ApplyBinary(instruction.OpCode, left, right, instruction.Span));
+        CurrentFrame.EvaluationStack.Push(
+            ApplyBinary(instruction.OpCode, left, right, instruction.Span)
+        );
     }
 
     private void ApplyComparison(PythonInstruction instruction)
     {
         var right = Pop(instruction.Span);
         var left = Pop(instruction.Span);
-        _stack.Push(ApplyComparison(instruction.OpCode, left, right, instruction.Span));
+        CurrentFrame.EvaluationStack.Push(
+            ApplyComparison(instruction.OpCode, left, right, instruction.Span)
+        );
     }
 
     private void ApplyCall(PythonInstruction instruction)
@@ -174,12 +258,59 @@ internal sealed class PythonVirtualMachine
         }
 
         var target = Pop(instruction.Span);
-        if (target is not PythonBuiltinFunctionValue function)
+        if (target is PythonBuiltinFunctionValue builtin)
+        {
+            CurrentFrame.EvaluationStack.Push(builtin.Invoke(arguments));
+            return;
+        }
+
+        if (target is not PythonFunctionValue function)
         {
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        _stack.Push(function.Invoke(arguments));
+        if (arguments.Length != function.Code.ArgumentCount)
+        {
+            throw Fault(
+                "DPY4009",
+                $"Function '{function.Name}' expected {function.Code.ArgumentCount} positional "
+                    + $"argument(s), but received {arguments.Length}.",
+                instruction.Span
+            );
+        }
+
+        var locals = new PythonValue?[function.Code.VariableNames.Count];
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            locals[index] = arguments[index];
+        }
+
+        _frames.Push(new PythonFrame(function.Code, function.Globals, locals));
+    }
+
+    private void MakeFunction(PythonInstruction instruction)
+    {
+        var constant = CurrentFrame.Code.Constants[instruction.Operand];
+        if (
+            constant.Type != PythonConstantType.CodeObject
+            || constant.Value is not PythonCodeObject code
+        )
+        {
+            throw Fault("DPY4007", "The function code object is invalid.", instruction.Span);
+        }
+
+        CurrentFrame.EvaluationStack.Push(
+            new PythonFunctionValue(code.Name, code, CurrentFrame.Globals)
+        );
+    }
+
+    private void ReturnFromFrame(PythonValue value)
+    {
+        _frames.Pop();
+        if (_frames.TryPeek(out var caller))
+        {
+            caller.EvaluationStack.Push(value);
+        }
     }
 
     private PythonNoneValue Print(IReadOnlyList<PythonValue> arguments)
@@ -190,7 +321,7 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue Pop(TextSpan span)
     {
-        if (_stack.TryPop(out var value))
+        if (CurrentFrame.EvaluationStack.TryPop(out var value))
         {
             return value;
         }
@@ -200,7 +331,7 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue Peek(TextSpan span)
     {
-        if (_stack.TryPeek(out var value))
+        if (CurrentFrame.EvaluationStack.TryPeek(out var value))
         {
             return value;
         }
@@ -212,8 +343,8 @@ internal sealed class PythonVirtualMachine
     {
         var top = Pop(span);
         var second = Pop(span);
-        _stack.Push(top);
-        _stack.Push(second);
+        CurrentFrame.EvaluationStack.Push(top);
+        CurrentFrame.EvaluationStack.Push(second);
     }
 
     private void RotateThree(TextSpan span)
@@ -221,9 +352,9 @@ internal sealed class PythonVirtualMachine
         var top = Pop(span);
         var second = Pop(span);
         var third = Pop(span);
-        _stack.Push(top);
-        _stack.Push(third);
-        _stack.Push(second);
+        CurrentFrame.EvaluationStack.Push(top);
+        CurrentFrame.EvaluationStack.Push(third);
+        CurrentFrame.EvaluationStack.Push(second);
     }
 
     private static PythonValue ConvertConstant(PythonConstant constant) =>
@@ -240,6 +371,9 @@ internal sealed class PythonVirtualMachine
             PythonConstantType.ComplexNumber => new PythonComplexValue((Complex)constant.Value!),
             PythonConstantType.TextValue => new PythonTextValue((string)constant.Value!),
             PythonConstantType.ByteSequence => new PythonByteSequenceValue((byte[])constant.Value!),
+            PythonConstantType.CodeObject => throw new InvalidOperationException(
+                "Code-object constants must be loaded with MakeFunction."
+            ),
             _ => throw new ArgumentOutOfRangeException(nameof(constant)),
         };
 
@@ -328,6 +462,8 @@ internal sealed class PythonVirtualMachine
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
             (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
+                ReferenceEquals(leftFunction, rightFunction),
+            (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             _ => false,
         };
@@ -618,4 +754,28 @@ internal sealed class PythonVirtualMachine
 
     private static PythonRuntimeException Fault(string code, string message, TextSpan span) =>
         new(code, message, span);
+
+    private sealed class PythonFrame
+    {
+        internal PythonFrame(
+            PythonCodeObject code,
+            Dictionary<string, PythonValue> globals,
+            PythonValue?[] locals
+        )
+        {
+            Code = code;
+            Globals = globals;
+            Locals = locals;
+        }
+
+        internal PythonCodeObject Code { get; }
+
+        internal Stack<PythonValue> EvaluationStack { get; } = [];
+
+        internal Dictionary<string, PythonValue> Globals { get; }
+
+        internal int InstructionPointer { get; set; }
+
+        internal PythonValue?[] Locals { get; }
+    }
 }

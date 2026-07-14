@@ -128,4 +128,65 @@ public sealed class PythonCompilerTests
         Assert.Contains(PythonOpCode.RotateTwo, opCodes);
         Assert.Equal(2, opCodes.Count(opCode => opCode == PythonOpCode.CompareLessThan));
     }
+
+    [Fact]
+    public void Compile_EmitsNestedFunctionCodeWithBoundLocalsAndGlobals()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "factor = 2\n"
+                    + "def calculate(value):\n"
+                    + "    result = value * factor\n"
+                    + "    return result\n"
+                    + "print(calculate(21))\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeFunction
+        );
+        var functionConstant = Assert.Single(
+            result.Code.Constants,
+            constant => constant.Type == PythonConstantType.CodeObject
+        );
+        var functionCode = Assert.IsType<PythonCodeObject>(functionConstant.Value);
+        Assert.Equal("calculate", functionCode.Name);
+        Assert.Equal(1, functionCode.ArgumentCount);
+        Assert.Equal(["value", "result"], functionCode.VariableNames);
+        Assert.Equal(["factor"], functionCode.Names);
+        Assert.Contains(
+            functionCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.LoadLocal
+        );
+        Assert.Contains(
+            functionCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreLocal
+        );
+        Assert.Contains(
+            functionCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnValue
+        );
+    }
+
+    [Fact]
+    public void Compile_ReportsUnsupportedClosureCapture()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def outer(value):\n"
+                    + "    def inner():\n"
+                    + "        return value\n"
+                    + "    return inner()\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY3101", diagnostic.Code);
+    }
 }

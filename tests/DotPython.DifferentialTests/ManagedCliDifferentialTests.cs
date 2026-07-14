@@ -22,6 +22,16 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "value = 0\nwhile value < 3:\n    if value != 1:\n        print(value)\n    value = value + 1\nelse:\n    print('done')"
     )]
+    [InlineData(
+        "factor = 2\ndef calculate(value):\n    local = value * factor\n    if local > 10:\n        return local\n    return 0\nprint(calculate(21), calculate(2))"
+    )]
+    [InlineData(
+        "def factorial(value):\n    if value <= 1:\n        return 1\n    return value * factorial(value - 1)\nprint(factorial(6))"
+    )]
+    [InlineData("def procedure(value):\n    value = value + 1\nprint(procedure(4))")]
+    [InlineData(
+        "def double(value): return value * 2\ndef apply(function, value): return function(value)\nalias = double\nprint(apply(alias, 21), alias == double, alias != double)"
+    )]
     public void CommandExecution_MatchesPython314ForSupportedSubset(string code)
     {
         var python = FindPython314();

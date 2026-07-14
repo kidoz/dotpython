@@ -11,4 +11,5 @@ public enum PythonConstantType
     ComplexNumber,
     TextValue,
     ByteSequence,
+    CodeObject,
 }

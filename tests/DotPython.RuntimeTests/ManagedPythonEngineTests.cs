@@ -99,11 +99,103 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_RunsFunctionsWithLocalsGlobalsEarlyReturnsAndRecursion()
+    {
+        const string code =
+            "factor = 2\n"
+            + "def calculate(value):\n"
+            + "    local = value * factor\n"
+            + "    if local > 10:\n"
+            + "        return local\n"
+            + "    return 0\n"
+            + "def factorial(value):\n"
+            + "    if value <= 1:\n"
+            + "        return 1\n"
+            + "    return value * factorial(value - 1)\n"
+            + "print(calculate(21), calculate(2), factorial(6))\n";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42 0 720{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_PreservesDefinedFunctionsAcrossEngineCalls()
+    {
+        var engine = new ManagedPythonEngine();
+        using var output = new StringWriter();
+
+        var definition = engine.Execute(
+            "def double(value): return value * 2",
+            "definition.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var call = engine.Execute(
+            "print(double(21))",
+            "call.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(definition.Success);
+        Assert.True(call.Success);
+        Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_ReturnsNoneWhenFunctionFallsThrough()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def procedure(value):\n    value = value + 1\nprint(procedure(4))",
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"None{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_TreatsFunctionsAsFirstClassIdentityValues()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def double(value): return value * 2\n"
+            + "def apply(function, value): return function(value)\n"
+            + "alias = double\n"
+            + "print(apply(alias, 21), alias == double, alias != double)";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42 True False{Environment.NewLine}", output.ToString());
+    }
+
     [Theory]
     [InlineData("print(missing)", "DPY4002")]
     [InlineData("print(1 / 0)", "DPY4004")]
     [InlineData("print(0 ** -1)", "DPY4004")]
     [InlineData("print('a' - 'b')", "DPY4005")]
+    [InlineData("value = 1\ndef invalid():\n    print(value)\n    value = 2\ninvalid()", "DPY4008")]
+    [InlineData("def add(left, right): return left + right\nadd(1)", "DPY4009")]
+    [InlineData("def outer(value):\n    def inner(): return value\n    return inner()", "DPY3101")]
     public void Execute_ReturnsRuntimeDiagnostics(string code, string expectedCode)
     {
         var result = new ManagedPythonEngine().Execute(
@@ -141,6 +233,23 @@ public sealed class ManagedPythonEngineTests
 
         var result = new ManagedPythonEngine().Execute(
             "while True:\n    value = 1\n",
+            "<test>",
+            TextWriter.Null,
+            options,
+            TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4001", diagnostic.Code);
+    }
+
+    [Fact]
+    public void Execute_StopsUnboundedRecursionAtTheInstructionLimit()
+    {
+        var options = new ManagedExecutionOptions { InstructionLimit = 40 };
+
+        var result = new ManagedPythonEngine().Execute(
+            "def recurse(): return recurse()\nrecurse()",
             "<test>",
             TextWriter.Null,
             options,
