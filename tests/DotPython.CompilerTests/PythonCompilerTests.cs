@@ -172,6 +172,37 @@ public sealed class PythonCompilerTests
         );
     }
 
+    [Theory]
+    [InlineData("return")]
+    [InlineData("return None")]
+    [InlineData("return (None)")]
+    public void Compile_UsesReturnNoneForEquivalentNoneReturns(string returnStatement)
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText($"def return_none(): {returnStatement}\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Equal(PythonOpCode.ReturnNone, function.Instructions[0].OpCode);
+        Assert.DoesNotContain(
+            function.Instructions,
+            instruction =>
+                instruction.OpCode is PythonOpCode.LoadConstant or PythonOpCode.ReturnValue
+        );
+        Assert.Empty(function.Constants);
+    }
+
     [Fact]
     public void Compile_EmitsClosureMetadataAndCellOperations()
     {

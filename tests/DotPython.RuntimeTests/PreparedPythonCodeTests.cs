@@ -87,7 +87,8 @@ public sealed class PreparedPythonCodeTests
         Assert.Equal(10, profile.GetInstructionCount(PythonOpCode.Call));
         Assert.Equal(10, profile.GetPairCount(PythonOpCode.LoadName, PythonOpCode.Call));
         Assert.Equal(10, profile.GetPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal));
-        Assert.Equal(10, profile.GetPairCount(PythonOpCode.LoadConstant, PythonOpCode.ReturnValue));
+        Assert.Equal(10, profile.GetInstructionCount(PythonOpCode.ReturnNone));
+        Assert.Equal(0, profile.GetPairCount(PythonOpCode.LoadConstant, PythonOpCode.ReturnValue));
         Assert.Contains(
             new PythonInstructionPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal, 10),
             profile.GetPairs()

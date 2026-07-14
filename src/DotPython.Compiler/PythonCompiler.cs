@@ -185,7 +185,7 @@ public static class PythonCompiler
                 return;
             }
 
-            if (statement.Value is null)
+            if (statement.Value is null || IsNoneLiteral(statement.Value))
             {
                 Emit(PythonOpCode.ReturnNone, 0, statement.Span);
                 return;
@@ -194,6 +194,16 @@ public static class PythonCompiler
             CompileExpression(statement.Value);
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
         }
+
+        private static bool IsNoneLiteral(PythonExpression expression) =>
+            expression switch
+            {
+                PythonConstantExpression { ConstantKind: PythonConstantKind.NoneLiteral } => true,
+                PythonParenthesizedExpression parenthesized => IsNoneLiteral(
+                    parenthesized.Expression
+                ),
+                _ => false,
+            };
 
         private void CompileWhileStatement(PythonWhileStatement statement)
         {
