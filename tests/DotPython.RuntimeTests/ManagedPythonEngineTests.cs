@@ -158,6 +158,30 @@ public sealed class ManagedPythonEngineTests
     }
 
     [Fact]
+    public void Execute_PreservesEachRecursiveFramesLocalSlots()
+    {
+        const string code =
+            "def preserve(value):\n"
+            + "    first = value\n"
+            + "    second = value + 100\n"
+            + "    if value > 0:\n"
+            + "        preserve(value - 1)\n"
+            + "    return first + second\n"
+            + "print(preserve(6))\n";
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"112{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
     public void Execute_PreservesDefinedFunctionsAcrossEngineCalls()
     {
         var engine = new ManagedPythonEngine();

@@ -15,6 +15,8 @@ internal sealed class PythonVirtualMachine
     private PythonFrame[] _frames = new PythonFrame[4];
     private int _frameCount;
     private long _instructionsExecuted;
+    private PythonValue?[] _locals = [];
+    private int _localsCount;
     private PythonValue _result = PythonNoneValue.Instance;
 
     private ref PythonFrame CurrentFrame => ref _frames[_frameCount - 1];
@@ -40,7 +42,7 @@ internal sealed class PythonVirtualMachine
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        PushFrame(code, _globals, []);
+        PushFrame(code, _globals, 0, 0);
         return Run();
     }
 
@@ -99,6 +101,8 @@ internal sealed class PythonVirtualMachine
             Array.Clear(_frames, 0, _frameCount);
             _frameCount = 0;
             _evaluationStack.Clear();
+            Array.Clear(_locals, 0, _localsCount);
+            _localsCount = 0;
         }
     }
 
@@ -238,29 +242,31 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue LoadLocal(int index, TextSpan span)
     {
-        if ((uint)index >= (uint)CurrentFrame.Locals.Length)
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.LocalsCount)
         {
             throw Fault("DPY4007", "The DotPython local index is invalid.", span);
         }
 
-        var value = CurrentFrame.Locals[index];
+        var value = _locals[frame.LocalsBase + index];
         if (value is not null)
         {
             return value;
         }
 
-        var name = CurrentFrame.Code.Definition.VariableNames[index];
+        var name = frame.Code.Definition.VariableNames[index];
         throw Fault("DPY4008", $"Local variable '{name}' was referenced before assignment.", span);
     }
 
     private void StoreLocal(int index, PythonValue value, TextSpan span)
     {
-        if ((uint)index >= (uint)CurrentFrame.Locals.Length)
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.LocalsCount)
         {
             throw Fault("DPY4007", "The DotPython local index is invalid.", span);
         }
 
-        CurrentFrame.Locals[index] = value;
+        _locals[frame.LocalsBase + index] = value;
     }
 
     private void ApplyBinary(PythonInstruction instruction)
@@ -311,14 +317,19 @@ internal sealed class PythonVirtualMachine
     {
         ValidateArgumentCount(function, argumentCount, span);
 
-        var locals = CreateLocals(function.Code);
+        var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         for (var index = argumentCount - 1; index >= 0; index--)
         {
-            locals[index] = Pop(span);
+            _locals[localsBase + index] = Pop(span);
         }
 
         Pop(span);
-        PushFrame(function.Code, function.Globals, locals);
+        PushFrame(
+            function.Code,
+            function.Globals,
+            localsBase,
+            function.Code.Definition.VariableNames.Count
+        );
     }
 
     private void PushFunctionFrame(
@@ -329,19 +340,33 @@ internal sealed class PythonVirtualMachine
     {
         ValidateArgumentCount(function, arguments.Count, span);
 
-        var locals = CreateLocals(function.Code);
+        var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         for (var index = 0; index < arguments.Count; index++)
         {
-            locals[index] = arguments[index];
+            _locals[localsBase + index] = arguments[index];
         }
 
-        PushFrame(function.Code, function.Globals, locals);
+        PushFrame(
+            function.Code,
+            function.Globals,
+            localsBase,
+            function.Code.Definition.VariableNames.Count
+        );
     }
 
-    private static PythonValue?[] CreateLocals(PreparedPythonCode code) =>
-        code.Definition.VariableNames.Count == 0
-            ? Array.Empty<PythonValue?>()
-            : new PythonValue?[code.Definition.VariableNames.Count];
+    private int ReserveLocals(int count)
+    {
+        var localsBase = _localsCount;
+        var requiredCapacity = checked(localsBase + count);
+        if (requiredCapacity > _locals.Length)
+        {
+            var doubledCapacity = _locals.Length == 0 ? 4 : checked(_locals.Length * 2);
+            Array.Resize(ref _locals, Math.Max(requiredCapacity, doubledCapacity));
+        }
+
+        _localsCount = requiredCapacity;
+        return localsBase;
+    }
 
     private static void ValidateArgumentCount(
         PythonFunctionValue function,
@@ -365,7 +390,8 @@ internal sealed class PythonVirtualMachine
     private void PushFrame(
         PreparedPythonCode code,
         Dictionary<string, PythonValue> globals,
-        PythonValue?[] locals
+        int localsBase,
+        int localsCount
     )
     {
         if (_frameCount == _frames.Length)
@@ -373,7 +399,13 @@ internal sealed class PythonVirtualMachine
             Array.Resize(ref _frames, checked(_frameCount * 2));
         }
 
-        _frames[_frameCount++] = new PythonFrame(code, globals, locals, _evaluationStack.Count);
+        _frames[_frameCount++] = new PythonFrame(
+            code,
+            globals,
+            localsBase,
+            localsCount,
+            _evaluationStack.Count
+        );
     }
 
     private void MakeFunction(PythonInstruction instruction)
@@ -396,11 +428,15 @@ internal sealed class PythonVirtualMachine
     private void ReturnFromFrame(PythonValue value)
     {
         var evaluationStackBase = CurrentFrame.EvaluationStackBase;
+        var localsBase = CurrentFrame.LocalsBase;
+        var localsCount = CurrentFrame.LocalsCount;
         while (_evaluationStack.Count > evaluationStackBase)
         {
             _evaluationStack.Pop();
         }
 
+        Array.Clear(_locals, localsBase, localsCount);
+        _localsCount = localsBase;
         _frames[--_frameCount] = default;
         if (_frameCount != 0)
         {
@@ -860,14 +896,16 @@ internal sealed class PythonVirtualMachine
         internal PythonFrame(
             PreparedPythonCode code,
             Dictionary<string, PythonValue> globals,
-            PythonValue?[] locals,
+            int localsBase,
+            int localsCount,
             int evaluationStackBase
         )
         {
             Code = code;
             EvaluationStackBase = evaluationStackBase;
             Globals = globals;
-            Locals = locals;
+            LocalsBase = localsBase;
+            LocalsCount = localsCount;
         }
 
         internal PreparedPythonCode Code { get; }
@@ -878,6 +916,8 @@ internal sealed class PythonVirtualMachine
 
         internal int InstructionPointer { get; set; }
 
-        internal PythonValue?[] Locals { get; }
+        internal int LocalsBase { get; }
+
+        internal int LocalsCount { get; }
     }
 }
