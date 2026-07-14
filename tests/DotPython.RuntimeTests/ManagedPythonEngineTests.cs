@@ -266,6 +266,78 @@ public sealed class ManagedPythonEngineTests
         Assert.Equal($"42 42{Environment.NewLine}", output.ToString());
     }
 
+    [Fact]
+    public void Execute_ReturnsIndependentClosuresThatRetainTheirFrames()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def make(value):\n"
+            + "    def add(other): return value + other\n"
+            + "    return add\n"
+            + "first = make(40)\n"
+            + "second = make(10)\n"
+            + "print(first(2), second(5))";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42 15{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_SharesMutatedCellsAcrossMultipleClosureLevels()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def outer(seed):\n"
+            + "    value = seed\n"
+            + "    def middle():\n"
+            + "        def inner(): return value\n"
+            + "        return inner\n"
+            + "    value = value + 2\n"
+            + "    return middle()\n"
+            + "read = outer(40)\n"
+            + "print(read())";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_SupportsRecursionThroughANestedFunctionCell()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def outer():\n"
+            + "    def factorial(value):\n"
+            + "        if value <= 1: return 1\n"
+            + "        return value * factorial(value - 1)\n"
+            + "    return factorial(6)\n"
+            + "print(outer())";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "<test>",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"720{Environment.NewLine}", output.ToString());
+    }
+
     [Theory]
     [InlineData("print(missing)", "DPY4002")]
     [InlineData("print(1 / 0)", "DPY4004")]
@@ -273,7 +345,10 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print('a' - 'b')", "DPY4005")]
     [InlineData("value = 1\ndef invalid():\n    print(value)\n    value = 2\ninvalid()", "DPY4008")]
     [InlineData("def add(left, right): return left + right\nadd(1)", "DPY4009")]
-    [InlineData("def outer(value):\n    def inner(): return value\n    return inner()", "DPY3101")]
+    [InlineData(
+        "def outer():\n    def inner(): return value\n    print(inner())\n    value = 42\nouter()",
+        "DPY4010"
+    )]
     public void Execute_ReturnsRuntimeDiagnostics(string code, string expectedCode)
     {
         var result = new ManagedPythonEngine().Execute(

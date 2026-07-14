@@ -10,10 +10,12 @@ internal sealed class PreparedPythonCode
     private readonly int[] _binaryAddCacheIndexes;
     private readonly AdaptiveCallCache[] _callCaches;
     private readonly int[] _callCacheIndexes;
+    private readonly Dictionary<string, int> _closureCellIndexes;
     private readonly PythonValue?[] _constants;
     private readonly PreparedPythonCode?[] _functionCodes;
     private readonly GlobalLoadCache[] _globalLoadCaches;
     private readonly int[] _globalLoadCacheIndexes;
+    private readonly int[] _localCellIndexes;
     private readonly AdaptiveNumericCache[] _orderedComparisonCaches;
     private readonly int[] _orderedComparisonCacheIndexes;
 
@@ -30,6 +32,20 @@ internal sealed class PreparedPythonCode
         _callCaches = new AdaptiveCallCache[
             definition.Instructions.Count(instruction => instruction.OpCode == PythonOpCode.Call)
         ];
+        _closureCellIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var index = 0; index < definition.CellVariableNames.Count; index++)
+        {
+            _closureCellIndexes.Add(definition.CellVariableNames[index], index);
+        }
+
+        for (var index = 0; index < definition.FreeVariableNames.Count; index++)
+        {
+            _closureCellIndexes.Add(
+                definition.FreeVariableNames[index],
+                definition.CellVariableNames.Count + index
+            );
+        }
+
         _constants = new PythonValue?[definition.Constants.Count];
         _functionCodes = new PreparedPythonCode?[definition.Constants.Count];
         _globalLoadCacheIndexes = new int[definition.Instructions.Count];
@@ -38,6 +54,23 @@ internal sealed class PreparedPythonCode
                 instruction.OpCode == PythonOpCode.LoadName
             )
         ];
+        _localCellIndexes = new int[definition.VariableNames.Count];
+        Array.Fill(_localCellIndexes, -1);
+        for (var index = 0; index < definition.CellVariableNames.Count; index++)
+        {
+            var localIndex = FindNameIndex(
+                definition.VariableNames,
+                definition.CellVariableNames[index]
+            );
+            if (localIndex < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Cell variable '{definition.CellVariableNames[index]}' is not local."
+                );
+            }
+
+            _localCellIndexes[localIndex] = index;
+        }
         _orderedComparisonCacheIndexes = new int[definition.Instructions.Count];
         _orderedComparisonCaches = new AdaptiveNumericCache[
             definition.Instructions.Count(instruction => IsOrderedComparison(instruction.OpCode))
@@ -113,6 +146,19 @@ internal sealed class PreparedPythonCode
 
         return code;
     }
+
+    internal int GetLocalCellIndex(int localIndex)
+    {
+        if ((uint)localIndex >= (uint)_localCellIndexes.Length)
+        {
+            throw new InvalidOperationException("The prepared local index is invalid.");
+        }
+
+        return _localCellIndexes[localIndex];
+    }
+
+    internal int GetClosureCellIndex(string name) =>
+        _closureCellIndexes.TryGetValue(name, out var index) ? index : -1;
 
     internal AdaptiveNumericCacheState GetBinaryAddCacheState(int instructionIndex)
     {
@@ -344,6 +390,19 @@ internal sealed class PreparedPythonCode
                 or PythonOpCode.CompareLessThanOrEqual
                 or PythonOpCode.CompareGreaterThan
                 or PythonOpCode.CompareGreaterThanOrEqual;
+
+    private static int FindNameIndex(IReadOnlyList<string> names, string name)
+    {
+        for (var index = 0; index < names.Count; index++)
+        {
+            if (string.Equals(names[index], name, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
 
     private static void RecordNumericObservation(
         ref AdaptiveNumericCache cache,

@@ -43,7 +43,7 @@ internal sealed class PythonVirtualMachine
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        PushFrame(code, _globals, 0, 0);
+        PushFrame(code, _globals, 0, 0, CreateCells(code, [], new TextSpan(0, 0)));
         return Run();
     }
 
@@ -140,6 +140,12 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.StoreLocal:
                 StoreLocal(instruction.Operand, Pop(instruction.Span), instruction.Span);
+                break;
+            case PythonOpCode.LoadCell:
+                _evaluationStack.Push(LoadCell(instruction.Operand, instruction.Span));
+                break;
+            case PythonOpCode.StoreCell:
+                StoreCell(instruction.Operand, Pop(instruction.Span), instruction.Span);
                 break;
             case PythonOpCode.PopTop:
                 Pop(instruction.Span);
@@ -298,6 +304,49 @@ internal sealed class PythonVirtualMachine
         }
 
         _locals[frame.LocalsBase + index] = value;
+    }
+
+    private PythonValue LoadCell(int index, TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.Cells.Length)
+        {
+            throw Fault("DPY4007", "The DotPython closure-cell index is invalid.", span);
+        }
+
+        var value = frame.Cells[index].Value;
+        if (value is not null)
+        {
+            return value;
+        }
+
+        var definition = frame.Code.Definition;
+        if (index < definition.CellVariableNames.Count)
+        {
+            throw Fault(
+                "DPY4008",
+                $"Local variable '{definition.CellVariableNames[index]}' was referenced before assignment.",
+                span
+            );
+        }
+
+        var freeVariableIndex = index - definition.CellVariableNames.Count;
+        throw Fault(
+            "DPY4010",
+            $"Free variable '{definition.FreeVariableNames[freeVariableIndex]}' was referenced before assignment in an enclosing scope.",
+            span
+        );
+    }
+
+    private void StoreCell(int index, PythonValue value, TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.Cells.Length)
+        {
+            throw Fault("DPY4007", "The DotPython closure-cell index is invalid.", span);
+        }
+
+        frame.Cells[index].Value = value;
     }
 
     private void ApplyBinary(PythonInstruction instruction)
@@ -525,9 +574,10 @@ internal sealed class PythonVirtualMachine
     )
     {
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
+        var cells = CreateCells(function.Code, function.Closure, span);
         for (var index = argumentCount - 1; index >= 0; index--)
         {
-            _locals[localsBase + index] = Pop(span);
+            StoreArgument(function.Code, cells, localsBase, index, Pop(span));
         }
 
         Pop(span);
@@ -535,7 +585,8 @@ internal sealed class PythonVirtualMachine
             function.Code,
             function.Globals,
             localsBase,
-            function.Code.Definition.VariableNames.Count
+            function.Code.Definition.VariableNames.Count,
+            cells
         );
     }
 
@@ -548,17 +599,38 @@ internal sealed class PythonVirtualMachine
         ValidateArgumentCount(function, arguments.Count, span);
 
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
+        var cells = CreateCells(function.Code, function.Closure, span);
         for (var index = 0; index < arguments.Count; index++)
         {
-            _locals[localsBase + index] = arguments[index];
+            StoreArgument(function.Code, cells, localsBase, index, arguments[index]);
         }
 
         PushFrame(
             function.Code,
             function.Globals,
             localsBase,
-            function.Code.Definition.VariableNames.Count
+            function.Code.Definition.VariableNames.Count,
+            cells
         );
+    }
+
+    private void StoreArgument(
+        PreparedPythonCode code,
+        PythonCell[] cells,
+        int localsBase,
+        int argumentIndex,
+        PythonValue value
+    )
+    {
+        var cellIndex = code.GetLocalCellIndex(argumentIndex);
+        if (cellIndex >= 0)
+        {
+            cells[cellIndex].Value = value;
+        }
+        else
+        {
+            _locals[localsBase + argumentIndex] = value;
+        }
     }
 
     private int ReserveLocals(int count)
@@ -598,7 +670,8 @@ internal sealed class PythonVirtualMachine
         PreparedPythonCode code,
         PythonGlobalNamespace globals,
         int localsBase,
-        int localsCount
+        int localsCount,
+        PythonCell[] cells
     )
     {
         if (_frameCount == _frames.Length)
@@ -611,6 +684,7 @@ internal sealed class PythonVirtualMachine
             globals,
             localsBase,
             localsCount,
+            cells,
             _evaluationStack.Count
         );
     }
@@ -627,9 +701,54 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4007", "The function code object is invalid.", instruction.Span);
         }
 
+        var closure = new PythonCell[code.Definition.FreeVariableNames.Count];
+        for (var index = 0; index < closure.Length; index++)
+        {
+            var name = code.Definition.FreeVariableNames[index];
+            var cellIndex = CurrentFrame.Code.GetClosureCellIndex(name);
+            if ((uint)cellIndex >= (uint)CurrentFrame.Cells.Length)
+            {
+                throw Fault(
+                    "DPY4007",
+                    $"Closure variable '{name}' cannot be resolved in the enclosing frame.",
+                    instruction.Span
+                );
+            }
+
+            closure[index] = CurrentFrame.Cells[cellIndex];
+        }
+
         _evaluationStack.Push(
-            new PythonFunctionValue(code.Definition.Name, code, CurrentFrame.Globals)
+            new PythonFunctionValue(code.Definition.Name, code, CurrentFrame.Globals, closure)
         );
+    }
+
+    private static PythonCell[] CreateCells(
+        PreparedPythonCode code,
+        PythonCell[] closure,
+        TextSpan span
+    )
+    {
+        var definition = code.Definition;
+        if (closure.Length != definition.FreeVariableNames.Count)
+        {
+            throw Fault("DPY4007", "The function closure does not match its code object.", span);
+        }
+
+        var cells = new PythonCell[
+            definition.CellVariableNames.Count + definition.FreeVariableNames.Count
+        ];
+        for (var index = 0; index < definition.CellVariableNames.Count; index++)
+        {
+            cells[index] = new PythonCell();
+        }
+
+        for (var index = 0; index < closure.Length; index++)
+        {
+            cells[definition.CellVariableNames.Count + index] = closure[index];
+        }
+
+        return cells;
     }
 
     private void ReturnFromFrame(PythonValue value)
@@ -1137,10 +1256,12 @@ internal sealed class PythonVirtualMachine
             PythonGlobalNamespace globals,
             int localsBase,
             int localsCount,
+            PythonCell[] cells,
             int evaluationStackBase
         )
         {
             Code = code;
+            Cells = cells;
             EvaluationStackBase = evaluationStackBase;
             Globals = globals;
             LocalsBase = localsBase;
@@ -1148,6 +1269,8 @@ internal sealed class PythonVirtualMachine
         }
 
         internal PreparedPythonCode Code { get; }
+
+        internal PythonCell[] Cells { get; }
 
         internal int EvaluationStackBase { get; }
 

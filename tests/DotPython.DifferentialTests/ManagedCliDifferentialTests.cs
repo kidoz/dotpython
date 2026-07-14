@@ -32,6 +32,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def double(value): return value * 2\ndef apply(function, value): return function(value)\nalias = double\nprint(apply(alias, 21), alias == double, alias != double)"
     )]
+    [InlineData(
+        "def make(value):\n    def add(other): return value + other\n    return add\nfirst = make(40)\nsecond = make(10)\nprint(first(2), second(5))"
+    )]
+    [InlineData(
+        "def outer(seed):\n    value = seed\n    def middle():\n        def inner(): return value\n        return inner\n    value = value + 2\n    return middle()\nread = outer(40)\nprint(read())"
+    )]
+    [InlineData(
+        "def outer():\n    def factorial(value):\n        if value <= 1: return 1\n        return value * factorial(value - 1)\n    return factorial(6)\nprint(outer())"
+    )]
     public void CommandExecution_MatchesPython314ForSupportedSubset(string code)
     {
         var python = FindPython314();

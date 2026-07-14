@@ -53,6 +53,35 @@ public sealed class ManagedPythonModuleRuntimeTests
     }
 
     [Fact]
+    public async Task Invocation_ExecutesClosuresFromSerializedModuleArtifacts()
+    {
+        var definition = CreateDefinition(
+            "closure",
+            "def calculate(value):\n"
+                + "    def add(other): return value + other\n"
+                + "    return add(2)",
+            Function(
+                "calculate",
+                "CalculateAsync",
+                [Parameter("value", BigIntegerType())],
+                BigIntegerType()
+            )
+        );
+        await using IDotPythonModuleRuntime runtime = new ManagedPythonModuleRuntime();
+        await using var module = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+
+        var result = await module.InvokeAsync<BigInteger>(
+            new PythonFunctionInvocation("calculate", [new BigInteger(40)]),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(new BigInteger(42), result);
+    }
+
+    [Fact]
     public async Task LoadModuleAsync_ReusesPerRuntimeStateOnlyForIdenticalDefinition()
     {
         var definition = CreateDefinition(
