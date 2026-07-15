@@ -77,13 +77,14 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
-    public void Compile_EmitsImportAndAttributeBytecode()
+    public void Compile_EmitsPackageImportAndAttributeBytecode()
     {
         var parseResult = PythonParser.Parse(
             new SourceText(
-                "import helper as module\n"
-                    + "from helper import answer as result\n"
-                    + "print(module.answer(), result)"
+                "import package.helper\n"
+                    + "import package.values as values\n"
+                    + "from package import answer as result\n"
+                    + "print(package.helper.answer(), values, result)"
             )
         );
 
@@ -91,12 +92,17 @@ public sealed class PythonCompilerTests
 
         Assert.Empty(parseResult.Diagnostics);
         Assert.Empty(result.Diagnostics);
-        Assert.Equal(["helper", "module", "answer", "result", "print"], result.Code.Names);
+        Assert.Contains("package.helper", result.Code.Names);
+        Assert.Contains("package.values", result.Code.Names);
         Assert.Equal(
-            2,
+            6,
             result.Code.Instructions.Count(instruction =>
                 instruction.OpCode == PythonOpCode.ImportName
             )
+        );
+        Assert.Single(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ImportFrom
         );
         Assert.Equal(
             2,

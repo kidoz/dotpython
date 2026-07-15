@@ -32,6 +32,18 @@ internal sealed class PythonGlobalNamespace
         value = null!;
         return false;
     }
+
+    internal bool RemoveValue(string name, PythonValue expectedValue)
+    {
+        if (!_slots.TryGetValue(name, out var slot) || !ReferenceEquals(slot.Value, expectedValue))
+        {
+            return false;
+        }
+
+        _slots.Remove(name);
+        KeysVersion = unchecked(KeysVersion + 1);
+        return true;
+    }
 }
 
 internal sealed class PythonGlobalSlot(PythonValue value)

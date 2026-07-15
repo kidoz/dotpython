@@ -68,22 +68,26 @@ never loads or executes a library and does not change the managed runtime's CPyt
 
 ## Managed source modules
 
-Embedded callers can provide an immutable catalog of top-level source modules. Each engine owns
-its module objects and initialization cache; imports execute in the calling VM and therefore share
-its cancellation token, output, and instruction limit.
+Embedded callers can provide an immutable catalog of source modules and packages. A package is a
+catalog entry that has registered dot-separated child modules. Each engine owns its module objects
+and initialization cache; imports execute in the calling VM and therefore share its cancellation
+token, output, and instruction limit.
 
 ```csharp
 var modules = new Dictionary<string, SourceText>
 {
-    ["helper"] = new("answer = 42", "helper.py"),
+    ["helpers"] = new("from . import values", "helpers/__init__.py"),
+    ["helpers.values"] = new("answer = 42", "helpers/values.py"),
 };
 var engine = new ManagedPythonEngine(modules);
-engine.Execute("import helper; print(helper.answer)", "main.py", output);
+engine.Execute("import helpers.values; print(helpers.values.answer)", "main.py", output);
 ```
 
-The current slice supports top-level `import`, `from … import`, aliases, and module attribute reads.
-Filesystem discovery, packages, dotted and relative imports, wildcard imports, reload, and native
-extensions are not implemented.
+The current slice supports dotted absolute imports, explicit packages, relative `from` imports,
+aliases, parenthesized import lists, submodule fallback, and module attribute reads. Catalog size,
+source size, module-name length, and active import depth are bounded. Every dotted child requires an
+explicit parent-package source entry. Filesystem and artifact discovery, namespace packages,
+wildcard imports, reload, import hooks, and native extensions are not implemented.
 
 ## Typed module contracts
 

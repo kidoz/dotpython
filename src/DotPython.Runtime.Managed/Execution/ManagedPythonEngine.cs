@@ -22,8 +22,8 @@ public sealed class ManagedPythonEngine
 
     /// <summary>Creates an engine with an immutable catalog of importable managed source modules.</summary>
     /// <param name="moduleSources">
-    /// Top-level module names and decoded sources. The catalog is copied and module state remains
-    /// private to this engine.
+    /// Dot-separated module names and decoded sources. Packages are entries with registered child
+    /// modules. The bounded catalog is copied and module state remains private to this engine.
     /// </param>
     public ManagedPythonEngine(IReadOnlyDictionary<string, SourceText>? moduleSources)
     {

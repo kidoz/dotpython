@@ -198,6 +198,28 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsDottedRelativeAndParenthesizedImports()
+    {
+        var result = Parse(
+            "import package.tools as tools, package.values\n"
+                + "from . import local\n"
+                + "from ...shared.values import (answer as result, identity,)\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var import = Assert.IsType<PythonImportStatement>(result.Module.Statements[0]);
+        Assert.Equal(["package.tools", "package.values"], import.Imports.Select(item => item.Name));
+        Assert.Equal("tools", import.Imports[0].Alias);
+        var currentPackage = Assert.IsType<PythonFromImportStatement>(result.Module.Statements[1]);
+        Assert.Equal(".", currentPackage.ModuleName);
+        Assert.Equal("local", Assert.Single(currentPackage.Imports).Name);
+        var parentPackage = Assert.IsType<PythonFromImportStatement>(result.Module.Statements[2]);
+        Assert.Equal("...shared.values", parentPackage.ModuleName);
+        Assert.Equal(["answer", "identity"], parentPackage.Imports.Select(item => item.Name));
+        Assert.Equal("result", parentPackage.Imports[0].Alias);
+    }
+
+    [Fact]
     public void Parse_AllowsFunctionAndReturnOnOneLogicalLine()
     {
         var result = Parse("def identity(value): return value");

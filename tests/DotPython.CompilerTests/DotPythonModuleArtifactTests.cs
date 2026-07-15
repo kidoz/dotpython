@@ -58,7 +58,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":7,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":8,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -185,7 +185,7 @@ public sealed class DotPythonModuleArtifactTests
         var bytes = DotPythonModuleArtifactSerializer.Serialize(
             DotPythonModuleArtifact.Create(
                 "consumer",
-                Compile("import helper\nprint(helper.answer)")
+                Compile("from package import helper\nprint(helper.answer)")
             )
         );
 
@@ -197,7 +197,7 @@ public sealed class DotPythonModuleArtifactTests
         );
         Assert.Contains(
             restored.Code.Instructions,
-            instruction => instruction.OpCode == PythonOpCode.LoadAttribute
+            instruction => instruction.OpCode == PythonOpCode.ImportFrom
         );
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
     }
@@ -258,10 +258,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":7,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":8,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":7,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":8,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)

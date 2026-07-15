@@ -221,6 +221,9 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.ImportName:
                 ImportModule(ref frame, instruction);
                 break;
+            case PythonOpCode.ImportFrom:
+                ImportFrom(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
+                break;
             case PythonOpCode.LoadAttribute:
                 LoadAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
                 break;
@@ -384,14 +387,47 @@ internal sealed class PythonVirtualMachine
     private void ImportModule(ref PythonFrame frame, PythonInstruction instruction)
     {
         var name = frame.Code.Definition.Names[instruction.Operand];
-        var import = _modules.Resolve(name, instruction.Span);
+        var currentPackage =
+            frame.Globals.TryGetValue("__package__", out var packageValue)
+            && packageValue is PythonTextValue packageText
+                ? packageText.Value
+                : string.Empty;
+        var import = _modules.Resolve(name, currentPackage, instruction.Span);
+        PushModuleImport(import, instruction.Span);
+    }
+
+    private void ImportFrom(string name, TextSpan span)
+    {
+        var target = Pop(span);
+        if (target is not PythonModuleValue module)
+        {
+            throw Fault("DPY4023", "This value does not expose managed attributes.", span);
+        }
+
+        if (module.Globals.TryGetValue(name, out var value))
+        {
+            _evaluationStack.Push(value);
+            return;
+        }
+
+        var childName = module.Name + "." + name;
+        if (!_modules.ContainsAbsolute(childName))
+        {
+            throw Fault("DPY4022", $"Module '{module.Name}' has no attribute '{name}'.", span);
+        }
+
+        PushModuleImport(_modules.ResolveAbsolute(childName, span), span);
+    }
+
+    private void PushModuleImport(PythonModuleImport import, TextSpan span)
+    {
         _evaluationStack.Push(import.Module);
         if (import.InitializationCode is null)
         {
             return;
         }
 
-        var cells = CreateCells(import.InitializationCode, [], instruction.Span);
+        var cells = CreateCells(import.InitializationCode, [], span);
         PushFrame(
             import.InitializationCode,
             import.Module.Globals,

@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "530d4d56d9b17ced45521af2d11d326e332d28948f1b984d2c711a4fdb3776e2";
-    internal const int RuleCount = 36;
+    internal const string SourceSha256 = "47594b621d2e7eac8ba46c94edb7169ad39e984b46ac682d8598a41219825744";
+    internal const int RuleCount = 41;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -17,9 +17,14 @@ internal static class GeneratedPythonGrammar
         simple_stmt: assignment | return_stmt | import_stmt | from_import_stmt | expression
         assignment: primary '=' expression
         return_stmt: 'return' [expression]
-        import_stmt: 'import' ','.import_alias+
-        from_import_stmt: 'from' NAME 'import' ','.import_alias+
+        import_stmt: 'import' ','.dotted_import_alias+
+        from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)
+        dotted_import_alias: dotted_name ['as' NAME]
         import_alias: NAME ['as' NAME]
+        import_group: '(' ','.import_alias+ [','] ')'
+        dotted_name: NAME ('.' NAME)*
+        relative_module: dotted_name | relative_dots [dotted_name]
+        relative_dots: ('.' | '...')+
         if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
         while_stmt: 'while' expression ':' block ['else' ':' block]
         for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]

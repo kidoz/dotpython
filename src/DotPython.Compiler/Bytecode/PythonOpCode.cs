@@ -49,4 +49,5 @@ public enum PythonOpCode
     CallLocal = 44,
     ImportName = 45,
     LoadAttribute = 46,
+    ImportFrom = 47,
 }

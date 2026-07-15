@@ -155,6 +155,61 @@ public sealed class ManagedCliDifferentialTests
         }
     }
 
+    [Fact]
+    public void ManagedPackageImports_MatchReferenceForDottedAndRelativeImports()
+    {
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        const string packageSource = "print('package')\nfrom . import tools\n";
+        const string toolsSource = "print('tools')\nfrom .values import answer\n";
+        const string valuesSource = "answer = 42\n";
+        const string code =
+            "import package.tools\n"
+            + "from package import (tools as imported_tools,)\n"
+            + "print(package.tools.answer, imported_tools.answer, package.tools == imported_tools)";
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-package-import-differential-{Guid.NewGuid():N}"
+        );
+        var packageDirectory = Path.Combine(directory, "package");
+        Directory.CreateDirectory(packageDirectory);
+        try
+        {
+            File.WriteAllText(Path.Combine(packageDirectory, "__init__.py"), packageSource);
+            File.WriteAllText(Path.Combine(packageDirectory, "tools.py"), toolsSource);
+            File.WriteAllText(Path.Combine(packageDirectory, "values.py"), valuesSource);
+            var reference = RunReference(python, code, directory);
+            var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+            {
+                ["package"] = new(packageSource, "package/__init__.py"),
+                ["package.tools"] = new(toolsSource, "package/tools.py"),
+                ["package.values"] = new(valuesSource, "package/values.py"),
+            };
+            using var output = new StringWriter();
+
+            var result = new ManagedPythonEngine(modules).Execute(
+                code,
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(0, reference.ExitCode);
+            Assert.Equal(reference.StandardOutput, output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static ReferenceResult RunReference(
         string executable,
         string code,

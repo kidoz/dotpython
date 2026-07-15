@@ -183,7 +183,11 @@ public static class PythonSymbolBinder
                 case PythonImportStatement importStatement:
                     foreach (var import in importStatement.Imports)
                     {
-                        AddLocal(import.Alias ?? import.Name, localNames, localNameSet);
+                        AddLocal(
+                            import.Alias ?? GetTopLevelModuleName(import.Name),
+                            localNames,
+                            localNameSet
+                        );
                     }
 
                     break;
@@ -213,6 +217,12 @@ public static class PythonSymbolBinder
                     break;
             }
         }
+    }
+
+    private static string GetTopLevelModuleName(string name)
+    {
+        var separator = name.IndexOf('.', StringComparison.Ordinal);
+        return separator < 0 ? name : name[..separator];
     }
 
     private static void CollectReferences(

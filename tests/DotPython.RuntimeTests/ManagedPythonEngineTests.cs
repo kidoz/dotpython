@@ -10,11 +10,22 @@ namespace DotPython.RuntimeTests;
 public sealed class ManagedPythonEngineTests
 {
     [Fact]
-    public void Constructor_RejectsModuleCatalogNamesOutsideTheImplementedSubset()
+    public void Constructor_RejectsSubmodulesWithoutRegisteredParentPackages()
     {
         var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
         {
             ["package.module"] = new("answer = 42"),
+        };
+
+        Assert.Throws<ArgumentException>(() => new ManagedPythonEngine(modules));
+    }
+
+    [Fact]
+    public void Constructor_RejectsModuleCatalogNamesBeyondTheBoundedLimit()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            [new string('a', 513)] = new("answer = 42"),
         };
 
         Assert.Throws<ArgumentException>(() => new ManagedPythonEngine(modules));
@@ -124,6 +135,173 @@ public sealed class ManagedPythonEngineTests
                 + $"42{Environment.NewLine}",
             output.ToString()
         );
+    }
+
+    [Fact]
+    public void Execute_ImportsPackagesRelativeModulesAndSubmoduleFallbacks()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["package"] = new(
+                "print('package')\nfrom . import tools\nanswer = tools.answer",
+                "package/__init__.py"
+            ),
+            ["package.tools"] = new(
+                "print('tools')\nfrom .values import answer",
+                "package/tools.py"
+            ),
+            ["package.values"] = new("answer = 42", "package/values.py"),
+        };
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "def read_answer():\n    import package.tools\n    return package.tools.answer\n"
+                + "import package.tools\n"
+                + "import package.values as values\n"
+                + "from package import (tools as imported_tools,)\n"
+                + "print(package.answer, package.tools.answer, values.answer, imported_tools.answer, read_answer())",
+            "main.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"package{Environment.NewLine}tools{Environment.NewLine}42 42 42 42 42{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_ResolvesRelativeImportsAcrossPackageLevels()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["package"] = new("marker = 1", "package/__init__.py"),
+            ["package.values"] = new("answer = 42", "package/values.py"),
+            ["package.inner"] = new("marker = 2", "package/inner/__init__.py"),
+            ["package.inner.consumer"] = new(
+                "from ..values import answer",
+                "package/inner/consumer.py"
+            ),
+        };
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "from package.inner import consumer\nprint(consumer.answer)",
+            "main.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_RemovesFailedSubmodulesFromTheirParentBeforeRetry()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["package"] = new("marker = 1", "package/__init__.py"),
+            ["package.broken"] = new("print('attempt')\nprint(1 / 0)", "package/broken.py"),
+        };
+        var engine = new ManagedPythonEngine(modules);
+        using var output = new StringWriter();
+
+        var first = engine.Execute(
+            "import package.broken",
+            "first.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var second = engine.Execute(
+            "from package import broken",
+            "second.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4004", Assert.Single(first.Diagnostics).Code);
+        Assert.Equal("DPY4004", Assert.Single(second.Diagnostics).Code);
+        Assert.Equal(
+            $"attempt{Environment.NewLine}attempt{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_KeepsSuccessfulChildModulesWhenParentInitializationFails()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["package"] = new(
+                "from . import child\nprint('parent')\nprint(1 / 0)",
+                "package/__init__.py"
+            ),
+            ["package.child"] = new("print('child')\nanswer = 42", "package/child.py"),
+        };
+        var engine = new ManagedPythonEngine(modules);
+        using var output = new StringWriter();
+
+        var first = engine.Execute(
+            "import package",
+            "first.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var second = engine.Execute(
+            "import package",
+            "second.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4004", Assert.Single(first.Diagnostics).Code);
+        Assert.Equal("DPY4004", Assert.Single(second.Diagnostics).Code);
+        Assert.Equal(
+            $"child{Environment.NewLine}parent{Environment.NewLine}parent{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RejectsRelativeImportsWithoutAPackageContext()
+    {
+        var result = new ManagedPythonEngine().Execute(
+            "from . import missing",
+            "main.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4025", Assert.Single(result.Diagnostics).Code);
+    }
+
+    [Fact]
+    public void Execute_BoundsRecursivePackageInitializationDepth()
+    {
+        const int moduleCount = 101;
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal);
+        var names = Enumerable.Range(0, moduleCount).Select(index => $"p{index}").ToArray();
+        for (var index = 0; index < moduleCount; index++)
+        {
+            var name = string.Join('.', names.AsSpan(0, index + 1).ToArray());
+            var source =
+                index + 1 == moduleCount
+                    ? "answer = 42"
+                    : "import " + string.Join('.', names.AsSpan(0, index + 2).ToArray());
+            modules.Add(name, new SourceText(source, name.Replace('.', '/') + ".py"));
+        }
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "import p0",
+            "main.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4024", Assert.Single(result.Diagnostics).Code);
     }
 
     [Fact]

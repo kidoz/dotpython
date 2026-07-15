@@ -343,8 +343,21 @@ public static class PythonCompiler
         {
             foreach (var import in statement.Imports)
             {
-                Emit(PythonOpCode.ImportName, GetNameIndex(import.Name), import.Span);
-                EmitStoreName(new PythonNameExpression(import.Alias ?? import.Name, import.Span));
+                EmitImportChain(import.Name, import.Span);
+                if (import.Alias is not null)
+                {
+                    EmitStoreName(new PythonNameExpression(import.Alias, import.Span));
+                    continue;
+                }
+
+                var topLevelName = GetTopLevelModuleName(import.Name);
+                if (!string.Equals(topLevelName, import.Name, StringComparison.Ordinal))
+                {
+                    Emit(PythonOpCode.PopTop, 0, import.Span);
+                    Emit(PythonOpCode.ImportName, GetNameIndex(topLevelName), import.Span);
+                }
+
+                EmitStoreName(new PythonNameExpression(topLevelName, import.Span));
             }
         }
 
@@ -352,10 +365,50 @@ public static class PythonCompiler
         {
             foreach (var import in statement.Imports)
             {
-                Emit(PythonOpCode.ImportName, GetNameIndex(statement.ModuleName), statement.Span);
-                Emit(PythonOpCode.LoadAttribute, GetNameIndex(import.Name), import.Span);
+                EmitImportChain(statement.ModuleName, statement.Span);
+                Emit(PythonOpCode.ImportFrom, GetNameIndex(import.Name), import.Span);
                 EmitStoreName(new PythonNameExpression(import.Alias ?? import.Name, import.Span));
             }
+        }
+
+        private void EmitImportChain(string name, TextSpan span)
+        {
+            var leadingDots = 0;
+            while (leadingDots < name.Length && name[leadingDots] == '.')
+            {
+                leadingDots++;
+            }
+
+            var prefix = name[..leadingDots];
+            var suffix = name[leadingDots..];
+            var parts = suffix.Length == 0 ? [] : suffix.Split('.');
+            if (leadingDots != 0)
+            {
+                Emit(PythonOpCode.ImportName, GetNameIndex(prefix), span);
+                if (parts.Length != 0)
+                {
+                    Emit(PythonOpCode.PopTop, 0, span);
+                }
+            }
+
+            for (var index = 0; index < parts.Length; index++)
+            {
+                prefix =
+                    prefix.Length == leadingDots
+                        ? prefix + parts[index]
+                        : prefix + "." + parts[index];
+                Emit(PythonOpCode.ImportName, GetNameIndex(prefix), span);
+                if (index != parts.Length - 1)
+                {
+                    Emit(PythonOpCode.PopTop, 0, span);
+                }
+            }
+        }
+
+        private static string GetTopLevelModuleName(string name)
+        {
+            var separator = name.IndexOf('.', StringComparison.Ordinal);
+            return separator < 0 ? name : name[..separator];
         }
 
         private static PythonNameExpression? GetNameExpression(PythonExpression expression) =>

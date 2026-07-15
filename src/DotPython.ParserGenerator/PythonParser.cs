@@ -458,7 +458,7 @@ public static class PythonParser
         private PythonImportStatement ParseImportStatement()
         {
             var start = Advance().Span.Start;
-            var imports = ParseImportAliases("a module name after 'import'");
+            var imports = ParseImportAliases("a module name after 'import'", allowDotted: true);
             var end = imports.Count == 0 ? start : imports[^1].Span.End;
             return new PythonImportStatement(imports, TextSpan.FromBounds(start, end));
         }
@@ -466,41 +466,57 @@ public static class PythonParser
         private PythonFromImportStatement ParseFromImportStatement()
         {
             var start = Advance().Span.Start;
-            var module = ExpectImportName("a module name after 'from'");
+            var (moduleName, moduleSpan) = ParseRelativeModuleName();
             if (!MatchKeyword("import", out _))
             {
                 ReportExpected("'import' after the module name", Current.Span);
             }
 
-            var imports = ParseImportAliases("a name after 'import'");
-            var end = imports.Count == 0 ? module.Span.End : imports[^1].Span.End;
+            var parenthesized = Match(SyntaxTokenKind.LeftParenthesis, out _);
+            var imports = ParseImportAliases(
+                "a name after 'import'",
+                allowDotted: false,
+                allowTrailingComma: parenthesized
+            );
+            var end = imports.Count == 0 ? moduleSpan.End : imports[^1].Span.End;
+            if (parenthesized)
+            {
+                end = ExpectClosingDelimiter(SyntaxTokenKind.RightParenthesis, "')'", end);
+            }
+
             return new PythonFromImportStatement(
-                module.Text,
+                moduleName,
                 imports,
                 TextSpan.FromBounds(start, end)
             );
         }
 
-        private ReadOnlyCollection<PythonImportAlias> ParseImportAliases(string expected)
+        private ReadOnlyCollection<PythonImportAlias> ParseImportAliases(
+            string expected,
+            bool allowDotted,
+            bool allowTrailingComma = false
+        )
         {
             var imports = new List<PythonImportAlias>();
             while (true)
             {
-                var name = ExpectImportName(expected);
+                var (name, nameSpan) = allowDotted
+                    ? ParseDottedImportName(expected)
+                    : ReadSimpleImportName(expected);
                 SyntaxToken? alias = null;
                 if (MatchKeyword("as", out _))
                 {
                     alias = ExpectImportName("an alias after 'as'");
                 }
 
-                var end = alias?.Span.End ?? name.Span.End;
-                if (name.Text.Length != 0)
+                var end = alias?.Span.End ?? nameSpan.End;
+                if (name.Length != 0)
                 {
                     imports.Add(
                         new PythonImportAlias(
-                            name.Text,
+                            name,
                             alias is { Text.Length: > 0 } ? alias.Text : null,
-                            TextSpan.FromBounds(name.Span.Start, end)
+                            TextSpan.FromBounds(nameSpan.Start, end)
                         )
                     );
                 }
@@ -509,9 +525,72 @@ public static class PythonParser
                 {
                     break;
                 }
+
+                if (allowTrailingComma && Current.Kind == SyntaxTokenKind.RightParenthesis)
+                {
+                    break;
+                }
             }
 
             return imports.AsReadOnly();
+        }
+
+        private (string Name, TextSpan Span) ParseRelativeModuleName()
+        {
+            if (Current.Kind is not (SyntaxTokenKind.Dot or SyntaxTokenKind.Ellipsis))
+            {
+                return ParseDottedImportName("a module name after 'from'");
+            }
+
+            var start = Current.Span.Start;
+            var dotCount = 0;
+            var end = start;
+            while (Current.Kind is SyntaxTokenKind.Dot or SyntaxTokenKind.Ellipsis)
+            {
+                var token = Advance();
+                dotCount += token.Kind == SyntaxTokenKind.Ellipsis ? 3 : 1;
+                end = token.Span.End;
+            }
+
+            var suffix = string.Empty;
+            if (Current.Kind == SyntaxTokenKind.Identifier && !IsKeyword("import"))
+            {
+                (suffix, var suffixSpan) = ParseDottedImportName("a module name after the dots");
+                end = suffixSpan.End;
+            }
+
+            return (new string('.', dotCount) + suffix, TextSpan.FromBounds(start, end));
+        }
+
+        private (string Name, TextSpan Span) ParseDottedImportName(string expected)
+        {
+            var first = ExpectImportName(expected);
+            if (first.Text.Length == 0)
+            {
+                return (string.Empty, first.Span);
+            }
+
+            var parts = new List<string> { first.Text };
+            var end = first.Span.End;
+            while (Match(SyntaxTokenKind.Dot))
+            {
+                var part = ExpectImportName("a module name after '.'");
+                if (part.Text.Length == 0)
+                {
+                    break;
+                }
+
+                parts.Add(part.Text);
+                end = part.Span.End;
+            }
+
+            return (string.Join('.', parts), TextSpan.FromBounds(first.Span.Start, end));
+        }
+
+        private (string Name, TextSpan Span) ReadSimpleImportName(string expected)
+        {
+            var token = ExpectImportName(expected);
+            return (token.Text, token.Span);
         }
 
         private SyntaxToken ExpectImportName(string expected)
