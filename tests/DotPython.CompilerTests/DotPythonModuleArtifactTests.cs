@@ -204,6 +204,54 @@ public sealed class DotPythonModuleArtifactTests
     }
 
     [Fact]
+    public void ManifestJson_RejectsLanguageVersionsOutsideTheSupportedArtifactSet()
+    {
+        const string unsupportedLanguage =
+            "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
+            + "\"bytecodeFormatVersion\":5,\"exports\":[]}";
+        const string nonCanonicalLanguage =
+            "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
+            + "\"bytecodeFormatVersion\":5,\"exports\":[]}";
+
+        var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
+            DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
+        );
+        Assert.Contains(
+            "Supported artifact versions: 3.14",
+            unsupportedFailure.Message,
+            StringComparison.Ordinal
+        );
+        Assert.Throws<InvalidDataException>(() =>
+            DotPythonModuleManifestJson.Deserialize(nonCanonicalLanguage)
+        );
+        Assert.Throws<ArgumentException>(() =>
+            DotPythonModuleArtifact.Create(
+                "sample",
+                Compile("print(42)"),
+                exports: null,
+                languageVersion: new Version(3, 15)
+            )
+        );
+    }
+
+    [Fact]
+    public void Create_StampsExplicitSupportedLanguageVersion()
+    {
+        var artifact = DotPythonModuleArtifact.Create(
+            "sample",
+            Compile("print(42)"),
+            exports: null,
+            languageVersion: new Version(3, 14)
+        );
+
+        Assert.Equal("3.14", artifact.Manifest.LanguageVersion);
+        var restored = DotPythonModuleManifestJson.Deserialize(
+            DotPythonModuleManifestJson.Serialize(artifact.Manifest)
+        );
+        Assert.Equal("3.14", restored.LanguageVersion);
+    }
+
+    [Fact]
     public void WireEnums_HaveStableVersionedValues()
     {
         Assert.Equal(4, DotPythonModuleArtifactFormat.CurrentVersion);

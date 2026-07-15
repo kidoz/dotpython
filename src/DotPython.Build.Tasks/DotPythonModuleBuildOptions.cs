@@ -12,5 +12,6 @@ internal sealed record DotPythonModuleBuildOptions(
     string ArtifactOutputPath,
     string ContractOutputPath,
     string FacadeOutputPath,
-    string ArtifactResourceName
+    string ArtifactResourceName,
+    Version LanguageVersion
 );

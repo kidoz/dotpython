@@ -58,7 +58,7 @@
         Outputs="$(DotPythonArtifactOutputPath);$(DotPythonContractOutputPath);$(DotPythonFacadeOutputPath)"
     >
         <MakeDir Directories="$(DotPythonGeneratedDirectory)" />
-        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --source &quot;@(PythonCompile->'%(FullPath)')&quot; --contract &quot;@(PythonContract->'%(FullPath)')&quot; --module-name &quot;$(DotPythonModuleName)&quot; --clr-namespace &quot;$(DotPythonClrNamespace)&quot; --clr-type-name &quot;$(DotPythonClrTypeName)&quot; --state-policy &quot;$(DotPythonModuleStatePolicy)&quot; --artifact-output &quot;$(DotPythonArtifactOutputPath)&quot; --contract-output &quot;$(DotPythonContractOutputPath)&quot; --facade-output &quot;$(DotPythonFacadeOutputPath)&quot; --artifact-resource-name &quot;$(DotPythonArtifactResourceName)&quot;" />
+        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --source &quot;@(PythonCompile->'%(FullPath)')&quot; --contract &quot;@(PythonContract->'%(FullPath)')&quot; --module-name &quot;$(DotPythonModuleName)&quot; --clr-namespace &quot;$(DotPythonClrNamespace)&quot; --clr-type-name &quot;$(DotPythonClrTypeName)&quot; --state-policy &quot;$(DotPythonModuleStatePolicy)&quot; --language-version &quot;$(DotPythonLanguageVersion)&quot; --artifact-output &quot;$(DotPythonArtifactOutputPath)&quot; --contract-output &quot;$(DotPythonContractOutputPath)&quot; --facade-output &quot;$(DotPythonFacadeOutputPath)&quot; --artifact-resource-name &quot;$(DotPythonArtifactResourceName)&quot;" />
     </Target>
 
     <Target Name="DotPythonCollectGeneratedOutputs" DependsOnTargets="DotPythonGenerateModule">

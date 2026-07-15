@@ -35,12 +35,18 @@ public sealed class DotPythonModuleArtifact
     public static DotPythonModuleArtifact Create(
         string moduleName,
         PythonCodeObject code,
-        IEnumerable<DotPythonModuleExport>? exports = null
+        IEnumerable<DotPythonModuleExport>? exports = null,
+        Version? languageVersion = null
     )
     {
         ArgumentNullException.ThrowIfNull(code);
         return new DotPythonModuleArtifact(
-            DotPythonModuleManifest.Create(moduleName, code.FormatVersion, exports),
+            DotPythonModuleManifest.Create(
+                moduleName,
+                code.FormatVersion,
+                exports,
+                languageVersion
+            ),
             code
         );
     }

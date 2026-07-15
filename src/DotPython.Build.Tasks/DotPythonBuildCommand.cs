@@ -1,4 +1,5 @@
 using DotPython.Contracts;
+using DotPython.Language;
 
 namespace DotPython.Build.Tasks;
 
@@ -69,6 +70,7 @@ internal static class DotPythonBuildCommand
             throw new BuildUsageException($"Unknown module state policy '{statePolicy}'.");
         }
 
+        var languageVersion = ParseLanguageVersion(GetOptional(values, "--language-version"));
         return new DotPythonModuleBuildOptions(
             GetRequired(values, "--source"),
             GetRequired(values, "--contract"),
@@ -79,8 +81,38 @@ internal static class DotPythonBuildCommand
             GetRequired(values, "--artifact-output"),
             GetRequired(values, "--contract-output"),
             GetRequired(values, "--facade-output"),
-            GetRequired(values, "--artifact-resource-name")
+            GetRequired(values, "--artifact-resource-name"),
+            languageVersion
         );
+    }
+
+    private static Version ParseLanguageVersion(string? value)
+    {
+        if (value is null)
+        {
+            return PythonLanguageVersion.Current;
+        }
+
+        if (!Version.TryParse(value, out var parsed))
+        {
+            throw new BuildUsageException($"Invalid Python language version '{value}'.");
+        }
+
+        if (!PythonLanguageVersion.IsSupportedArtifactVersion(parsed))
+        {
+            var supportedVersions = string.Join(
+                ", ",
+                PythonLanguageVersion.SupportedArtifactVersions.Select(version =>
+                    version.ToString(2)
+                )
+            );
+            throw new BuildUsageException(
+                $"Python language version '{value}' is not supported. "
+                    + $"Supported artifact versions: {supportedVersions}."
+            );
+        }
+
+        return new Version(parsed.Major, parsed.Minor);
     }
 
     private static string GetRequired(IReadOnlyDictionary<string, string> values, string name) =>

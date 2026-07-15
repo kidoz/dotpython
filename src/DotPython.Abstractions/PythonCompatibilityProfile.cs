@@ -6,6 +6,11 @@ public sealed record PythonCompatibilityProfile
     /// <summary>Gets the Python language version targeted by the runtime.</summary>
     public required Version LanguageVersion { get; init; }
 
+    /// <summary>
+    /// Gets the Python language versions whose compiled module artifacts the runtime accepts.
+    /// </summary>
+    public required IReadOnlyList<Version> SupportedArtifactLanguageVersions { get; init; }
+
     /// <summary>Gets the stable implementation identifier.</summary>
     public required string Implementation { get; init; }
 

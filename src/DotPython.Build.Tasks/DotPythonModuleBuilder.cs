@@ -57,7 +57,8 @@ internal static class DotPythonModuleBuilder
         var artifact = DotPythonModuleArtifact.Create(
             options.ModuleName,
             compilation.Code,
-            exports
+            exports,
+            options.LanguageVersion
         );
         DeterministicFileWriter.Write(
             options.ArtifactOutputPath,

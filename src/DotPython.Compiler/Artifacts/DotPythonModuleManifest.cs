@@ -37,9 +37,19 @@ public sealed class DotPythonModuleManifest
     internal static DotPythonModuleManifest Create(
         string moduleName,
         int bytecodeFormatVersion,
-        IEnumerable<DotPythonModuleExport>? exports
+        IEnumerable<DotPythonModuleExport>? exports,
+        Version? languageVersion = null
     )
     {
+        var stampedLanguageVersion = languageVersion ?? PythonLanguageVersion.Current;
+        if (!PythonLanguageVersion.IsSupportedArtifactVersion(stampedLanguageVersion))
+        {
+            throw new ArgumentException(
+                $"Python language version '{stampedLanguageVersion.ToString(2)}' is not supported.",
+                nameof(languageVersion)
+            );
+        }
+
         var orderedExports = (exports ?? [])
             .OrderBy(export => export.PythonName, StringComparer.Ordinal)
             .ThenBy(export => export.ContractName, StringComparer.Ordinal)
@@ -48,7 +58,7 @@ public sealed class DotPythonModuleManifest
         return new DotPythonModuleManifest(
             DotPythonModuleArtifactFormat.CurrentVersion,
             moduleName,
-            PythonLanguageVersion.Current.ToString(2),
+            stampedLanguageVersion.ToString(2),
             bytecodeFormatVersion,
             orderedExports
         );

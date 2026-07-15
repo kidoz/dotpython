@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using DotPython.Cli;
+using DotPython.Language;
 using Xunit;
 
 namespace DotPython.DifferentialTests;
@@ -56,12 +57,14 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def outer():\n    def factorial(value):\n        if value <= 1: return 1\n        return value * factorial(value - 1)\n    return factorial(6)\nprint(outer())"
     )]
-    public void CommandExecution_MatchesPython314ForSupportedSubset(string code)
+    public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
-        var python = FindPython314();
+        var python = FindReferencePython();
         if (python is null)
         {
-            Assert.Skip("A Python 3.14 executable is required for this differential test.");
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
         }
 
         var reference = RunReference(python, code);
@@ -118,17 +121,19 @@ public sealed class ManagedCliDifferentialTests
         return new ReferenceResult(process.ExitCode, standardOutput);
     }
 
-    private static string? FindPython314()
+    private static string ReferenceVersion => PythonLanguageVersion.Current.ToString(2);
+
+    private static string? FindReferencePython()
     {
         var configured = Environment.GetEnvironmentVariable("DOTPYTHON_REFERENCE_PYTHON");
-        if (!string.IsNullOrWhiteSpace(configured) && IsPython314(configured))
+        if (!string.IsNullOrWhiteSpace(configured) && IsReferencePython(configured))
         {
             return configured;
         }
 
-        foreach (var candidate in new[] { "python3.14", "python3" })
+        foreach (var candidate in new[] { $"python{ReferenceVersion}", "python3" })
         {
-            if (IsPython314(candidate))
+            if (IsReferencePython(candidate))
             {
                 return candidate;
             }
@@ -137,7 +142,7 @@ public sealed class ManagedCliDifferentialTests
         return null;
     }
 
-    private static bool IsPython314(string executable)
+    private static bool IsReferencePython(string executable)
     {
         try
         {
@@ -158,7 +163,7 @@ public sealed class ManagedCliDifferentialTests
             var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
             process.WaitForExit();
             return process.ExitCode == 0
-                && output.StartsWith("Python 3.14.", StringComparison.Ordinal);
+                && output.StartsWith($"Python {ReferenceVersion}.", StringComparison.Ordinal);
         }
         catch (Win32Exception)
         {

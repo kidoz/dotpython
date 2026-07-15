@@ -8,13 +8,17 @@ format:
     dotnet tool restore
     dotnet csharpier format .
 
+# Pinned PEG grammar for the current Python language target (see ADR-015 for the re-pin procedure).
+python_grammar := "src/DotPython.ParserGenerator/Grammar/python314-subset.gram"
+generated_parser := "src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs"
+
 # Regenerate the checked-in executable parser from the pinned PEG grammar.
 parser-generate:
-    dotnet run --project src/DotPython.ParserGenerator.Tool -- generate src/DotPython.ParserGenerator/Grammar/python314-subset.gram src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
+    dotnet run --project src/DotPython.ParserGenerator.Tool -- generate {{python_grammar}} {{generated_parser}}
 
 # Fail when the checked-in parser does not match deterministic regeneration.
 parser-check:
-    dotnet run --project src/DotPython.ParserGenerator.Tool -- check src/DotPython.ParserGenerator/Grammar/python314-subset.gram src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
+    dotnet run --project src/DotPython.ParserGenerator.Tool -- check {{python_grammar}} {{generated_parser}}
 
 # Check formatting and compile with all configured analyzers and warnings as errors.
 lint: parser-check

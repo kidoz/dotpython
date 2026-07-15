@@ -64,11 +64,25 @@ public static class DotPythonModuleManifestJson
 
             var moduleName = ReadString(root, "moduleName");
             var languageVersion = ReadString(root, "languageVersion");
-            var expectedLanguageVersion = PythonLanguageVersion.Current.ToString(2);
-            if (!string.Equals(languageVersion, expectedLanguageVersion, StringComparison.Ordinal))
+            if (
+                !Version.TryParse(languageVersion, out var parsedLanguageVersion)
+                || !string.Equals(
+                    languageVersion,
+                    parsedLanguageVersion.ToString(2),
+                    StringComparison.Ordinal
+                )
+                || !PythonLanguageVersion.IsSupportedArtifactVersion(parsedLanguageVersion)
+            )
             {
+                var supportedVersions = string.Join(
+                    ", ",
+                    PythonLanguageVersion.SupportedArtifactVersions.Select(version =>
+                        version.ToString(2)
+                    )
+                );
                 throw new InvalidDataException(
-                    $"Python language version '{languageVersion}' is not supported."
+                    $"Python language version '{languageVersion}' is not supported. "
+                        + $"Supported artifact versions: {supportedVersions}."
                 );
             }
 

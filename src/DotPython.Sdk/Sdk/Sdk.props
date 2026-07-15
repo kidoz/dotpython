@@ -5,6 +5,8 @@
             >$(MSBuildToolsPath)\Microsoft.CSharp.targets</LanguageTargets>
         <DotPythonModuleStatePolicy Condition="'$(DotPythonModuleStatePolicy)' == ''"
             >PerRuntime</DotPythonModuleStatePolicy>
+        <DotPythonLanguageVersion Condition="'$(DotPythonLanguageVersion)' == ''"
+            >3.14</DotPythonLanguageVersion>
         <LangVersion Condition="'$(LangVersion)' == ''">14.0</LangVersion>
         <Nullable Condition="'$(Nullable)' == ''">enable</Nullable>
         <ImplicitUsings Condition="'$(ImplicitUsings)' == ''">enable</ImplicitUsings>

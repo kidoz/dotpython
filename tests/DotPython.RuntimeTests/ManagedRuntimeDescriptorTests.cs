@@ -1,3 +1,4 @@
+using DotPython.Language;
 using DotPython.Runtime.Managed;
 using Xunit;
 
@@ -12,5 +13,20 @@ public sealed class ManagedRuntimeDescriptorTests
 
         Assert.Equal("dotpython-managed", compatibility.Implementation);
         Assert.False(compatibility.SupportsCpythonAbi);
+    }
+
+    [Fact]
+    public void Compatibility_ReportsSupportedArtifactLanguageVersions()
+    {
+        var compatibility = ManagedRuntimeDescriptor.Compatibility;
+
+        Assert.Contains(
+            compatibility.LanguageVersion,
+            compatibility.SupportedArtifactLanguageVersions
+        );
+        Assert.Equal(
+            PythonLanguageVersion.SupportedArtifactVersions,
+            compatibility.SupportedArtifactLanguageVersions
+        );
     }
 }

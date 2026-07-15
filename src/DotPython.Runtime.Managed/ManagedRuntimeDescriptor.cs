@@ -10,6 +10,7 @@ public static class ManagedRuntimeDescriptor
         new()
         {
             LanguageVersion = PythonLanguageVersion.Current,
+            SupportedArtifactLanguageVersions = PythonLanguageVersion.SupportedArtifactVersions,
             Implementation = "dotpython-managed",
             SupportsCpythonAbi = false,
         };
