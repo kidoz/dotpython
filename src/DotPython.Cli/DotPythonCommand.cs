@@ -1,3 +1,4 @@
+using DotPython.Hosting.Packaging;
 using DotPython.Language.Diagnostics;
 using DotPython.Language.Text;
 using DotPython.Runtime.Managed;
@@ -43,6 +44,11 @@ internal static class DotPythonCommand
             return 0;
         }
 
+        if (arguments[0] == "wheel")
+        {
+            return RunWheelCommand(arguments, standardOutput, standardError);
+        }
+
         if (!TryReadSource(arguments, standardInput, standardError, out var source))
         {
             return 2;
@@ -72,6 +78,40 @@ internal static class DotPythonCommand
         {
             standardError.WriteLine("dotpython: execution cancelled");
             return 130;
+        }
+    }
+
+    private static int RunWheelCommand(
+        IReadOnlyList<string> arguments,
+        TextWriter standardOutput,
+        TextWriter standardError
+    )
+    {
+        if (arguments.Count != 3 || arguments[1] != "inspect")
+        {
+            standardError.WriteLine("dotpython: usage: dotpython wheel inspect <artifact.whl>");
+            return 2;
+        }
+
+        try
+        {
+            var inspection = PythonWheelInspector.Inspect(arguments[2]);
+            standardOutput.WriteLine(PythonWheelInspectionJson.Serialize(inspection));
+            return inspection.IsValid ? 0 : 1;
+        }
+        catch (IOException exception)
+        {
+            standardError.WriteLine(
+                $"dotpython: cannot inspect '{arguments[2]}': {exception.Message}"
+            );
+            return 1;
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            standardError.WriteLine(
+                $"dotpython: cannot inspect '{arguments[2]}': {exception.Message}"
+            );
+            return 1;
         }
     }
 
@@ -149,6 +189,7 @@ internal static class DotPythonCommand
         output.WriteLine("Usage: dotpython -c command [args]");
         output.WriteLine("       dotpython - [args]");
         output.WriteLine("       dotpython script.py [args]");
+        output.WriteLine("       dotpython wheel inspect artifact.whl");
         output.WriteLine();
         output.WriteLine(
             "Current managed subset: literals, names, assignment, arithmetic, and calls."

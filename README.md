@@ -52,12 +52,18 @@ dotnet run --project src/DotPython.Cli/DotPython.Cli.csproj -- -c "print(1 + 2)"
 dotpython -c command      # execute a Python snippet
 dotpython -                # read and execute a program from stdin
 dotpython script.py        # execute a Python source file
+dotpython wheel inspect x.whl # classify a wheel without loading native code
 dotpython -V | --version   # print implementation and target language version
 dotpython -h | --help      # print usage
 ```
 
 Exit codes follow familiar conventions: `0` success, `1` execution/diagnostic error,
 `2` usage error, `130` cancelled. Interactive (REPL) mode is not yet implemented.
+
+`wheel inspect` reports canonical filename and embedded tags, platform/libc/architecture,
+free-threaded ABI selection, SHA-256, native archive entries, imported symbols when their ELF,
+Mach-O, or PE tables are readable, and actionable incompatibility diagnostics. Classification
+never loads or executes a library and does not change the managed runtime's CPython ABI support.
 
 ## Typed module contracts
 
