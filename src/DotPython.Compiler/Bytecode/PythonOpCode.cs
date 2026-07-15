@@ -45,4 +45,5 @@ public enum PythonOpCode
     StoreSubscript = 40,
     GetIterator = 41,
     ForIter = 42,
+    ReturnLocal = 43,
 }

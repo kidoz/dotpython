@@ -58,7 +58,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":4,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":5,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -126,6 +126,33 @@ public sealed class DotPythonModuleArtifactTests
     }
 
     [Fact]
+    public void Deserialize_RoundTripsReturnLocalInstruction()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "identity",
+                Compile("def identity(value): return value\n")
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    restored.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+
+        Assert.Contains(
+            function.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnLocal
+        );
+        Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
     public void Deserialize_RejectsCorruptionTruncationAndTrailingData()
     {
         var bytes = DotPythonModuleArtifactSerializer.Serialize(
@@ -154,9 +181,15 @@ public sealed class DotPythonModuleArtifactTests
         const string unsupported =
             "{\"formatVersion\":5,\"moduleName\":\"sample\",\"languageVersion\":\"3.14\","
             + "\"bytecodeFormatVersion\":4,\"exports\":[]}";
+        const string unsupportedBytecode =
+            "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14\","
+            + "\"bytecodeFormatVersion\":4,\"exports\":[]}";
 
         Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupported)
+        );
+        Assert.Throws<InvalidDataException>(() =>
+            DotPythonModuleManifestJson.Deserialize(unsupportedBytecode)
         );
         Assert.Throws<ArgumentException>(() =>
             DotPythonModuleArtifact.Create(
@@ -186,6 +219,7 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Equal(40, (int)PythonOpCode.StoreSubscript);
         Assert.Equal(41, (int)PythonOpCode.GetIterator);
         Assert.Equal(42, (int)PythonOpCode.ForIter);
+        Assert.Equal(43, (int)PythonOpCode.ReturnLocal);
         Assert.Equal(0, (int)PythonConstantType.NoneValue);
         Assert.Equal(7, (int)PythonConstantType.CodeObject);
     }

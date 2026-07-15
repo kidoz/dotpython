@@ -328,6 +328,9 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.ReturnValue:
                 ReturnFromFrame(Pop(instruction.Span));
                 break;
+            case PythonOpCode.ReturnLocal:
+                ReturnFromFrame(LoadLocal(instruction.Operand, instruction.Span));
+                break;
             case PythonOpCode.ReturnNone:
                 ReturnFromFrame(PythonNoneValue.Instance);
                 break;

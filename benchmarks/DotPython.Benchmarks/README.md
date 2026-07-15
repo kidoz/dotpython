@@ -85,6 +85,16 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ManagedReturnContinuationBenchmarks*'
 ```
 
+`ManagedReturnLocalBenchmarks` is the matched control for compiling `LoadLocal -> ReturnValue`
+as one `ReturnLocal` superinstruction. Both methods execute equivalent compiler output through
+specialized call sites; setup verifies the baseline pair and optimized opcode before measurement.
+Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedReturnLocalBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh

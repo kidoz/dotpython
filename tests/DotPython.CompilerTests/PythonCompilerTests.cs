@@ -234,7 +234,7 @@ public sealed class PythonCompilerTests
         );
         Assert.Contains(
             functionCode.Instructions,
-            instruction => instruction.OpCode == PythonOpCode.ReturnValue
+            instruction => instruction.OpCode == PythonOpCode.ReturnLocal
         );
     }
 
@@ -267,6 +267,38 @@ public sealed class PythonCompilerTests
                 instruction.OpCode is PythonOpCode.LoadConstant or PythonOpCode.ReturnValue
         );
         Assert.Empty(function.Constants);
+    }
+
+    [Theory]
+    [InlineData("value")]
+    [InlineData("(value)")]
+    public void Compile_UsesReturnLocalForUncapturedLocalNames(string expression)
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText($"def identity(value): return {expression}\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var returnLocal = Assert.Single(
+            function.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnLocal
+        );
+        Assert.Equal(0, returnLocal.Operand);
+        Assert.DoesNotContain(
+            function.Instructions,
+            instruction => instruction.OpCode is PythonOpCode.LoadLocal or PythonOpCode.ReturnValue
+        );
     }
 
     [Fact]
@@ -304,6 +336,10 @@ public sealed class PythonCompilerTests
         Assert.Contains(
             inner.Instructions,
             instruction => instruction.OpCode == PythonOpCode.LoadCell
+        );
+        Assert.DoesNotContain(
+            inner.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnLocal
         );
     }
 

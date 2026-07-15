@@ -88,7 +88,9 @@ public sealed class PreparedPythonCodeTests
         Assert.Equal(10, profile.GetPairCount(PythonOpCode.LoadName, PythonOpCode.Call));
         Assert.Equal(10, profile.GetPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal));
         Assert.Equal(10, profile.GetInstructionCount(PythonOpCode.ReturnNone));
+        Assert.Equal(1, profile.GetInstructionCount(PythonOpCode.ReturnLocal));
         Assert.Equal(0, profile.GetPairCount(PythonOpCode.LoadConstant, PythonOpCode.ReturnValue));
+        Assert.Equal(0, profile.GetPairCount(PythonOpCode.LoadLocal, PythonOpCode.ReturnValue));
         Assert.Contains(
             new PythonInstructionPairCount(PythonOpCode.Call, PythonOpCode.StoreLocal, 10),
             profile.GetPairs()
@@ -261,6 +263,41 @@ public sealed class PreparedPythonCodeTests
                 TestContext.Current.CancellationToken
             )
         );
+    }
+
+    [Fact]
+    public void ReturnLocal_PreservesInstructionAccountingAndFailureCleanup()
+    {
+        var code = Compile(
+            "def identity(value): return value\n"
+                + "def fail():\n"
+                + "    return value\n"
+                + "    value = 42\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("return_local", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var arguments = new PythonValue[] { PythonWholeNumberValue.Create(42) };
+
+        Assert.True(initialization.Success);
+        AssertWholeNumber(
+            42,
+            engine.Invoke(
+                "identity",
+                arguments,
+                TextWriter.Null,
+                new ManagedExecutionOptions { InstructionLimit = 1 },
+                TestContext.Current.CancellationToken
+            )
+        );
+        var fault = Assert.Throws<PythonRuntimeException>(() =>
+            Invoke(engine, "fail", Array.Empty<PythonValue>())
+        );
+        Assert.Equal("DPY4008", fault.Code);
+        AssertWholeNumber(42, Invoke(engine, "identity", arguments));
     }
 
     [Fact]

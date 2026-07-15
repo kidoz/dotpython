@@ -10,12 +10,31 @@ public static class PythonCompiler
 {
     public static PythonCompilationResult Compile(PythonModule module, string codeName = "<module>")
     {
+        return CompileCore(module, codeName, enableReturnLocal: true);
+    }
+
+    internal static PythonCompilationResult CompileWithoutReturnLocal(
+        PythonModule module,
+        string codeName = "<module>"
+    )
+    {
+        return CompileCore(module, codeName, enableReturnLocal: false);
+    }
+
+    private static PythonCompilationResult CompileCore(
+        PythonModule module,
+        string codeName,
+        bool enableReturnLocal
+    )
+    {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentException.ThrowIfNullOrWhiteSpace(codeName);
 
         var binding = PythonSymbolBinder.Bind(module);
         var diagnostics = new List<Diagnostic>(binding.Diagnostics);
-        return new Compiler(codeName, binding.ModuleScope, diagnostics).Compile(module);
+        return new Compiler(codeName, binding.ModuleScope, diagnostics, enableReturnLocal).Compile(
+            module
+        );
     }
 
     private sealed class Compiler
@@ -26,12 +45,19 @@ public static class PythonCompiler
         private readonly List<PythonInstruction> _instructions = [];
         private readonly List<string> _names = [];
         private readonly PythonBoundScope _scope;
+        private readonly bool _enableReturnLocal;
 
-        internal Compiler(string codeName, PythonBoundScope scope, List<Diagnostic> diagnostics)
+        internal Compiler(
+            string codeName,
+            PythonBoundScope scope,
+            List<Diagnostic> diagnostics,
+            bool enableReturnLocal
+        )
         {
             _codeName = codeName;
             _scope = scope;
             _diagnostics = diagnostics;
+            _enableReturnLocal = enableReturnLocal;
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
@@ -220,7 +246,12 @@ public static class PythonCompiler
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, function)
             );
-            var childCompiler = new Compiler(function.Name.Name, childScope, _diagnostics);
+            var childCompiler = new Compiler(
+                function.Name.Name,
+                childScope,
+                _diagnostics,
+                _enableReturnLocal
+            );
             var childCode = childCompiler.CompileCode(function.Body, function.Span.End);
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
@@ -243,9 +274,35 @@ public static class PythonCompiler
                 return;
             }
 
+            var returnedName = GetReturnedName(statement.Value);
+            if (
+                _enableReturnLocal
+                && returnedName is not null
+                && _scope.IsLocal(returnedName.Name)
+                && !_scope.IsCellVariable(returnedName.Name)
+            )
+            {
+                Emit(
+                    PythonOpCode.ReturnLocal,
+                    GetVariableIndex(returnedName.Name),
+                    returnedName.Span
+                );
+                return;
+            }
+
             CompileExpression(statement.Value);
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
         }
+
+        private static PythonNameExpression? GetReturnedName(PythonExpression expression) =>
+            expression switch
+            {
+                PythonNameExpression name => name,
+                PythonParenthesizedExpression parenthesized => GetReturnedName(
+                    parenthesized.Expression
+                ),
+                _ => null,
+            };
 
         private static bool IsNoneLiteral(PythonExpression expression) =>
             expression switch
