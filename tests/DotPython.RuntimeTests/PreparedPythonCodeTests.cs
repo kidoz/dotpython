@@ -524,6 +524,56 @@ public sealed class PreparedPythonCodeTests
     }
 
     [Fact]
+    public void CallLocal_ReusesCallSpecializationAndPreservesFailureCleanup()
+    {
+        var code = Compile(
+            "def no_arguments(): return 42\n"
+                + "def needs_argument(value): return value\n"
+                + "def call_managed():\n"
+                + "    target = no_arguments\n"
+                + "    return target()\n"
+                + "def call_builtin():\n"
+                + "    target = print\n"
+                + "    return target()\n"
+                + "def call_invalid():\n"
+                + "    target = needs_argument\n"
+                + "    return target()\n"
+                + "def call_unbound():\n"
+                + "    return target()\n"
+                + "    target = no_arguments\n"
+        );
+        var engine = new ManagedPythonEngine();
+        var initialization = engine.Execute(
+            DotPythonModuleArtifact.Create("call_local", code),
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var function = GetPreparedFunction(engine, code, "call_managed");
+        var callIndex = GetInstructionIndex(function, PythonOpCode.CallLocal);
+
+        for (var invocation = 0; invocation < 8; invocation++)
+        {
+            AssertWholeNumber(42, Invoke(engine, "call_managed", Array.Empty<PythonValue>()));
+        }
+
+        Assert.True(initialization.Success);
+        Assert.Equal(
+            AdaptiveCallCacheState.ManagedFunctionEmptyFrame,
+            function.GetCallCacheState(callIndex)
+        );
+        Assert.IsType<PythonNoneValue>(Invoke(engine, "call_builtin", Array.Empty<PythonValue>()));
+        var arityFailure = Assert.Throws<PythonRuntimeException>(() =>
+            Invoke(engine, "call_invalid", Array.Empty<PythonValue>())
+        );
+        Assert.Equal("DPY4009", arityFailure.Code);
+        var unboundFailure = Assert.Throws<PythonRuntimeException>(() =>
+            Invoke(engine, "call_unbound", Array.Empty<PythonValue>())
+        );
+        Assert.Equal("DPY4008", unboundFailure.Code);
+        AssertWholeNumber(42, Invoke(engine, "call_managed", Array.Empty<PythonValue>()));
+    }
+
+    [Fact]
     public void ManagedCallCache_KeepsClosureFunctionsOnTheGeneralFramePath()
     {
         var code = Compile(

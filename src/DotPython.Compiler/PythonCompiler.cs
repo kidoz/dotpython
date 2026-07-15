@@ -10,7 +10,7 @@ public static class PythonCompiler
 {
     public static PythonCompilationResult Compile(PythonModule module, string codeName = "<module>")
     {
-        return CompileCore(module, codeName, enableReturnLocal: true);
+        return CompileCore(module, codeName, enableReturnLocal: true, enableCallLocal: true);
     }
 
     internal static PythonCompilationResult CompileWithoutReturnLocal(
@@ -18,13 +18,22 @@ public static class PythonCompiler
         string codeName = "<module>"
     )
     {
-        return CompileCore(module, codeName, enableReturnLocal: false);
+        return CompileCore(module, codeName, enableReturnLocal: false, enableCallLocal: true);
+    }
+
+    internal static PythonCompilationResult CompileWithoutCallLocal(
+        PythonModule module,
+        string codeName = "<module>"
+    )
+    {
+        return CompileCore(module, codeName, enableReturnLocal: true, enableCallLocal: false);
     }
 
     private static PythonCompilationResult CompileCore(
         PythonModule module,
         string codeName,
-        bool enableReturnLocal
+        bool enableReturnLocal,
+        bool enableCallLocal
     )
     {
         ArgumentNullException.ThrowIfNull(module);
@@ -32,9 +41,13 @@ public static class PythonCompiler
 
         var binding = PythonSymbolBinder.Bind(module);
         var diagnostics = new List<Diagnostic>(binding.Diagnostics);
-        return new Compiler(codeName, binding.ModuleScope, diagnostics, enableReturnLocal).Compile(
-            module
-        );
+        return new Compiler(
+            codeName,
+            binding.ModuleScope,
+            diagnostics,
+            enableReturnLocal,
+            enableCallLocal
+        ).Compile(module);
     }
 
     private sealed class Compiler
@@ -45,19 +58,22 @@ public static class PythonCompiler
         private readonly List<PythonInstruction> _instructions = [];
         private readonly List<string> _names = [];
         private readonly PythonBoundScope _scope;
+        private readonly bool _enableCallLocal;
         private readonly bool _enableReturnLocal;
 
         internal Compiler(
             string codeName,
             PythonBoundScope scope,
             List<Diagnostic> diagnostics,
-            bool enableReturnLocal
+            bool enableReturnLocal,
+            bool enableCallLocal
         )
         {
             _codeName = codeName;
             _scope = scope;
             _diagnostics = diagnostics;
             _enableReturnLocal = enableReturnLocal;
+            _enableCallLocal = enableCallLocal;
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
@@ -150,6 +166,20 @@ public static class PythonCompiler
                     CompileComparisonExpression(comparison);
                     break;
                 case PythonCallExpression call:
+                    var targetName = GetNameExpression(call.Target);
+                    if (
+                        _enableCallLocal
+                        && call.Arguments.Count == 0
+                        && targetName is not null
+                        && _scope.Kind == PythonScopeKind.Function
+                        && _scope.IsLocal(targetName.Name)
+                        && !_scope.IsCellVariable(targetName.Name)
+                    )
+                    {
+                        Emit(PythonOpCode.CallLocal, GetVariableIndex(targetName.Name), call.Span);
+                        break;
+                    }
+
                     CompileExpression(call.Target);
                     foreach (var argument in call.Arguments)
                     {
@@ -250,7 +280,8 @@ public static class PythonCompiler
                 function.Name.Name,
                 childScope,
                 _diagnostics,
-                _enableReturnLocal
+                _enableReturnLocal,
+                _enableCallLocal
             );
             var childCode = childCompiler.CompileCode(function.Body, function.Span.End);
             var constantIndex = AddConstant(
@@ -274,7 +305,7 @@ public static class PythonCompiler
                 return;
             }
 
-            var returnedName = GetReturnedName(statement.Value);
+            var returnedName = GetNameExpression(statement.Value);
             if (
                 _enableReturnLocal
                 && returnedName is not null
@@ -294,11 +325,11 @@ public static class PythonCompiler
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
         }
 
-        private static PythonNameExpression? GetReturnedName(PythonExpression expression) =>
+        private static PythonNameExpression? GetNameExpression(PythonExpression expression) =>
             expression switch
             {
                 PythonNameExpression name => name,
-                PythonParenthesizedExpression parenthesized => GetReturnedName(
+                PythonParenthesizedExpression parenthesized => GetNameExpression(
                     parenthesized.Expression
                 ),
                 _ => null,

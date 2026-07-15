@@ -416,6 +416,7 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.LoadLocal:
             case PythonOpCode.StoreLocal:
             case PythonOpCode.ReturnLocal:
+            case PythonOpCode.CallLocal:
                 ValidateIndex(instruction.Operand, code.VariableNames.Count, instructionIndex);
                 break;
             case PythonOpCode.LoadCell:

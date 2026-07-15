@@ -30,7 +30,9 @@ internal sealed class PreparedPythonCode
         ];
         _callCacheIndexes = new int[definition.Instructions.Count];
         _callCaches = new AdaptiveCallCache[
-            definition.Instructions.Count(instruction => instruction.OpCode == PythonOpCode.Call)
+            definition.Instructions.Count(instruction =>
+                instruction.OpCode is PythonOpCode.Call or PythonOpCode.CallLocal
+            )
         ];
         _closureCellIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var index = 0; index < definition.CellVariableNames.Count; index++)
@@ -88,6 +90,7 @@ internal sealed class PreparedPythonCode
                     _binaryAddCacheIndexes[index] = ++binaryAddCacheIndex;
                     break;
                 case PythonOpCode.Call:
+                case PythonOpCode.CallLocal:
                     _callCacheIndexes[index] = ++callCacheIndex;
                     break;
                 case PythonOpCode.LoadName:

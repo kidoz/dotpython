@@ -95,6 +95,16 @@ dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
   --filter '*ManagedReturnLocalBenchmarks*'
 ```
 
+`ManagedCallLocalBenchmarks` is the matched control for compiling a zero-argument
+`LoadLocal -> Call` sequence as one `CallLocal` superinstruction. Both methods execute the same
+10,000-call loop through the same empty-frame call specialization; setup verifies the baseline
+pair and optimized opcode before measurement. Run it with:
+
+```sh
+dotnet run -c Release --project benchmarks/DotPython.Benchmarks -- \
+  --filter '*ManagedCallLocalBenchmarks*'
+```
+
 Run a short local runtime sample from the repository root:
 
 ```sh

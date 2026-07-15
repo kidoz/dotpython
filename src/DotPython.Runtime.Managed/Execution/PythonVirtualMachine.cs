@@ -304,6 +304,14 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.Call:
                 ApplyCall(frame.Code, instructionIndex, instruction);
                 break;
+            case PythonOpCode.CallLocal:
+                ApplyLocalCall(
+                    frame.Code,
+                    instructionIndex,
+                    LoadLocal(instruction.Operand, instruction.Span),
+                    instruction.Span
+                );
+                break;
             case PythonOpCode.BuildList:
                 BuildCollection(instruction.Operand, buildTuple: false, instruction.Span);
                 break;
@@ -929,10 +937,63 @@ internal sealed class PythonVirtualMachine
         PushFunctionFrameUnchecked(function, instruction.Operand, instruction.Span);
     }
 
-    private void PushEmptyFunctionFrame(PythonFunctionValue function, TextSpan span)
+    private void ApplyLocalCall(
+        PreparedPythonCode code,
+        int instructionIndex,
+        PythonValue target,
+        TextSpan span
+    )
+    {
+        if (
+            code.TryGetCachedManagedCall(
+                instructionIndex,
+                target,
+                out var cachedFunction,
+                out var useEmptyFrame
+            )
+        )
+        {
+            if (useEmptyFrame)
+            {
+                PushEmptyFunctionFrame(cachedFunction, span, popTarget: false);
+            }
+            else
+            {
+                PushFunctionFrameUnchecked(cachedFunction, 0, span, popTarget: false);
+            }
+
+            return;
+        }
+
+        if (target is PythonBuiltinFunctionValue builtin)
+        {
+            _evaluationStack.Push(builtin.Invoke(Array.Empty<PythonValue>()));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
+        if (target is not PythonFunctionValue function)
+        {
+            throw Fault("DPY4003", "The selected value is not callable.", span);
+        }
+
+        ValidateArgumentCount(function, 0, span);
+        code.RecordManagedCall(instructionIndex, function);
+        PushFunctionFrameUnchecked(function, 0, span, popTarget: false);
+    }
+
+    private void PushEmptyFunctionFrame(
+        PythonFunctionValue function,
+        TextSpan span,
+        bool popTarget = true
+    )
     {
         var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
-        Pop(span);
+        if (popTarget)
+        {
+            Pop(span);
+        }
+
         PushFrame(
             function.Code,
             function.Globals,
@@ -963,7 +1024,8 @@ internal sealed class PythonVirtualMachine
     private void PushFunctionFrameUnchecked(
         PythonFunctionValue function,
         int argumentCount,
-        TextSpan span
+        TextSpan span,
+        bool popTarget = true
     )
     {
         var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
@@ -974,7 +1036,11 @@ internal sealed class PythonVirtualMachine
             StoreArgument(function.Code, cells, localsBase, index, Pop(span));
         }
 
-        Pop(span);
+        if (popTarget)
+        {
+            Pop(span);
+        }
+
         PushFrame(
             function.Code,
             function.Globals,

@@ -58,7 +58,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":5,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":6,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -153,6 +153,33 @@ public sealed class DotPythonModuleArtifactTests
     }
 
     [Fact]
+    public void Deserialize_RoundTripsCallLocalInstruction()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "invoke",
+                Compile("def invoke(target): return target()\n")
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    restored.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+
+        Assert.Contains(
+            function.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.CallLocal
+        );
+        Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
     public void Deserialize_RejectsCorruptionTruncationAndTrailingData()
     {
         var bytes = DotPythonModuleArtifactSerializer.Serialize(
@@ -208,10 +235,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":5,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":6,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":5,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":6,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
@@ -268,6 +295,7 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Equal(41, (int)PythonOpCode.GetIterator);
         Assert.Equal(42, (int)PythonOpCode.ForIter);
         Assert.Equal(43, (int)PythonOpCode.ReturnLocal);
+        Assert.Equal(44, (int)PythonOpCode.CallLocal);
         Assert.Equal(0, (int)PythonConstantType.NoneValue);
         Assert.Equal(7, (int)PythonConstantType.CodeObject);
     }

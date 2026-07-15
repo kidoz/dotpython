@@ -46,4 +46,5 @@ public enum PythonOpCode
     GetIterator = 41,
     ForIter = 42,
     ReturnLocal = 43,
+    CallLocal = 44,
 }

@@ -301,6 +301,85 @@ public sealed class PythonCompilerTests
         );
     }
 
+    [Theory]
+    [InlineData("target")]
+    [InlineData("(target)")]
+    public void Compile_UsesCallLocalForZeroArgumentUncapturedLocalTargets(string expression)
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText($"def invoke(target): return {expression}()\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var callLocal = Assert.Single(
+            function.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.CallLocal
+        );
+        Assert.Equal(0, callLocal.Operand);
+        Assert.DoesNotContain(
+            function.Instructions,
+            instruction => instruction.OpCode is PythonOpCode.LoadLocal or PythonOpCode.Call
+        );
+    }
+
+    [Fact]
+    public void Compile_LeavesArgumentedAndCapturedCallsOnGeneralPath()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def invoke(target, value): return target(value)\n"
+                    + "def outer(target):\n"
+                    + "    def inner(): return target()\n"
+                    + "    return inner\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var functions = result
+            .Code.Constants.Where(constant => constant.Type == PythonConstantType.CodeObject)
+            .Select(constant => Assert.IsType<PythonCodeObject>(constant.Value))
+            .ToDictionary(function => function.Name, StringComparer.Ordinal);
+        var invoke = functions["invoke"];
+        var outer = functions["outer"];
+        var inner = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(outer.Constants, constant => constant.Type == PythonConstantType.CodeObject)
+                .Value
+        );
+
+        Assert.Contains(
+            invoke.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.Call
+        );
+        Assert.DoesNotContain(
+            invoke.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.CallLocal
+        );
+        Assert.Contains(
+            inner.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.LoadCell
+        );
+        Assert.Contains(inner.Instructions, instruction => instruction.OpCode == PythonOpCode.Call);
+        Assert.DoesNotContain(
+            inner.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.CallLocal
+        );
+    }
+
     [Fact]
     public void Compile_EmitsClosureMetadataAndCellOperations()
     {
