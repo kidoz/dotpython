@@ -77,6 +77,36 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsImportAndAttributeBytecode()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "import helper as module\n"
+                    + "from helper import answer as result\n"
+                    + "print(module.answer(), result)"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(["helper", "module", "answer", "result", "print"], result.Code.Names);
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.ImportName
+            )
+        );
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.LoadAttribute
+            )
+        );
+    }
+
+    [Fact]
     public void Compile_EmitsDictionarySubscriptionMutationAndIterationBytecode()
     {
         var parseResult = PythonParser.Parse(

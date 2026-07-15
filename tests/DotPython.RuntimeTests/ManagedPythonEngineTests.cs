@@ -10,6 +10,17 @@ namespace DotPython.RuntimeTests;
 public sealed class ManagedPythonEngineTests
 {
     [Fact]
+    public void Constructor_RejectsModuleCatalogNamesOutsideTheImplementedSubset()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["package.module"] = new("answer = 42"),
+        };
+
+        Assert.Throws<ArgumentException>(() => new ManagedPythonEngine(modules));
+    }
+
+    [Fact]
     public void Execute_RunsDeserializedModuleArtifact()
     {
         var parseResult = PythonParser.Parse(
@@ -74,6 +85,156 @@ public sealed class ManagedPythonEngineTests
         Assert.True(assignment.Success);
         Assert.True(print.Success);
         Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_ImportsManagedSourceModulesAndCachesInitialization()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["helper"] = new(
+                "print('initializing')\n"
+                    + "answer = 40\n"
+                    + "def add(value): return answer + value",
+                "helper.py"
+            ),
+        };
+        var engine = new ManagedPythonEngine(modules);
+        using var output = new StringWriter();
+
+        var first = engine.Execute(
+            "import helper as module\n"
+                + "from helper import add as calculate\n"
+                + "print(module.answer, calculate(2), module)",
+            "first.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var second = engine.Execute(
+            "def run():\n    import helper\n    return helper.add(2)\nprint(run())",
+            "second.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.Equal(
+            $"initializing{Environment.NewLine}40 42 <module 'helper'>{Environment.NewLine}"
+                + $"42{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_AllowsCyclicImportsToObservePartiallyInitializedModules()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["first"] = new("import second\nvalue = second.value + 1", "first.py"),
+            ["second"] = new("import first\nvalue = 41", "second.py"),
+        };
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "import first\nprint(first.value)",
+            "main.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42{Environment.NewLine}", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("import missing", "DPY4020")]
+    [InlineData("from helper import missing", "DPY4022")]
+    public void Execute_ReturnsStructuredImportDiagnostics(string code, string expectedCode)
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["helper"] = new("answer = 42", "helper.py"),
+        };
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            code,
+            "main.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(expectedCode, Assert.Single(result.Diagnostics).Code);
+    }
+
+    [Fact]
+    public void Execute_RemovesFailedModulesSoLaterImportsRetryInitialization()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["broken"] = new("print('attempt')\nprint(1 / 0)", "broken.py"),
+        };
+        var engine = new ManagedPythonEngine(modules);
+        using var output = new StringWriter();
+
+        var first = engine.Execute(
+            "import broken",
+            "first.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var second = engine.Execute(
+            "import broken",
+            "second.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4004", Assert.Single(first.Diagnostics).Code);
+        Assert.Equal("DPY4004", Assert.Single(second.Diagnostics).Code);
+        Assert.Equal(
+            $"attempt{Environment.NewLine}attempt{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_ReportsModuleCompilationFailureAtTheImportSite()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["broken"] = new("value =", "broken.py"),
+        };
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "import broken",
+            "main.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4021", diagnostic.Code);
+        Assert.Contains("could not be compiled", diagnostic.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Execute_ChargesImportedModuleInitializationToTheInstructionLimit()
+    {
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["unbounded"] = new("while True: value = 1", "unbounded.py"),
+        };
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "import unbounded",
+            "main.py",
+            TextWriter.Null,
+            new ManagedExecutionOptions { InstructionLimit = 20 },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4001", Assert.Single(result.Diagnostics).Code);
     }
 
     [Theory]
@@ -469,6 +630,7 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print({[]: 1})", "DPY4014")]
     [InlineData("for item in 1: print(item)", "DPY4015")]
     [InlineData("mapping = {'a': 1}\nfor key in mapping: mapping['b'] = 2", "DPY4016")]
+    [InlineData("value = 1\nprint(value.real)", "DPY4023")]
     public void Execute_ReturnsRuntimeDiagnostics(string code, string expectedCode)
     {
         var result = new ManagedPythonEngine().Execute(

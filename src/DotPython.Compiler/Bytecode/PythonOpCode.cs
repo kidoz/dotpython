@@ -47,4 +47,6 @@ public enum PythonOpCode
     ForIter = 42,
     ReturnLocal = 43,
     CallLocal = 44,
+    ImportName = 45,
+    LoadAttribute = 46,
 }

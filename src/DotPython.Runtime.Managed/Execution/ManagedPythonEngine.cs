@@ -12,8 +12,23 @@ public sealed class ManagedPythonEngine
 {
     private readonly object _executionGate = new();
     private readonly PythonGlobalNamespace _globals = new();
+    private readonly PythonModuleRegistry _modules;
     private readonly ConditionalWeakTable<PythonCodeObject, PreparedPythonCode> _preparedCodes =
         new();
+
+    /// <summary>Creates an engine without registered source modules.</summary>
+    public ManagedPythonEngine()
+        : this(null) { }
+
+    /// <summary>Creates an engine with an immutable catalog of importable managed source modules.</summary>
+    /// <param name="moduleSources">
+    /// Top-level module names and decoded sources. The catalog is copied and module state remains
+    /// private to this engine.
+    /// </param>
+    public ManagedPythonEngine(IReadOnlyDictionary<string, SourceText>? moduleSources)
+    {
+        _modules = new PythonModuleRegistry(moduleSources, CompileModule);
+    }
 
     public ManagedExecutionResult Execute(
         string code,
@@ -82,6 +97,7 @@ public sealed class ManagedPythonEngine
             cancellationToken.ThrowIfCancellationRequested();
             var virtualMachine = new PythonVirtualMachine(
                 _globals,
+                _modules,
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation,
@@ -112,6 +128,7 @@ public sealed class ManagedPythonEngine
             cancellationToken.ThrowIfCancellationRequested();
             var virtualMachine = new PythonVirtualMachine(
                 _globals,
+                _modules,
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation: false,
@@ -203,6 +220,7 @@ public sealed class ManagedPythonEngine
         {
             var virtualMachine = new PythonVirtualMachine(
                 _globals,
+                _modules,
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation: true,
@@ -225,4 +243,32 @@ public sealed class ManagedPythonEngine
         ArgumentNullException.ThrowIfNull(code);
         return _preparedCodes.GetValue(code, PreparedPythonCode.Create);
     }
+
+    private PreparedPythonCode CompileModule(string name, SourceText source, TextSpan importSpan)
+    {
+        var parseResult = PythonParser.Parse(source);
+        if (!parseResult.Success)
+        {
+            throw ModuleCompilationFailure(name, parseResult.Diagnostics[0], importSpan);
+        }
+
+        var compilation = PythonCompiler.Compile(parseResult.Module, source.FilePath ?? name);
+        if (!compilation.Success)
+        {
+            throw ModuleCompilationFailure(name, compilation.Diagnostics[0], importSpan);
+        }
+
+        return PrepareCode(compilation.Code);
+    }
+
+    private static PythonRuntimeException ModuleCompilationFailure(
+        string name,
+        Diagnostic diagnostic,
+        TextSpan importSpan
+    ) =>
+        new(
+            "DPY4021",
+            $"Managed module '{name}' could not be compiled: {diagnostic.Message}",
+            importSpan
+        );
 }

@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using DotPython.Cli;
 using DotPython.Language;
+using DotPython.Language.Text;
+using DotPython.Runtime.Managed.Execution;
 using Xunit;
 
 namespace DotPython.DifferentialTests;
@@ -103,13 +105,68 @@ public sealed class ManagedCliDifferentialTests
         Assert.Contains("DPY4002", error.ToString(), StringComparison.Ordinal);
     }
 
-    private static ReferenceResult RunReference(string executable, string code)
+    [Fact]
+    public void ManagedImports_MatchReferenceForTheSupportedTopLevelSubset()
+    {
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        const string moduleSource =
+            "print('initializing')\nanswer = 40\ndef add(value): return answer + value\n";
+        const string code =
+            "import helper as module\n"
+            + "from helper import add as calculate\n"
+            + "import helper\n"
+            + "print(module.answer, calculate(2), helper == module)";
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-import-differential-{Guid.NewGuid():N}"
+        );
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "helper.py"), moduleSource);
+            var reference = RunReference(python, code, directory);
+            var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+            {
+                ["helper"] = new(moduleSource, "helper.py"),
+            };
+            using var output = new StringWriter();
+
+            var result = new ManagedPythonEngine(modules).Execute(
+                code,
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(0, reference.ExitCode);
+            Assert.Equal(reference.StandardOutput, output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static ReferenceResult RunReference(
+        string executable,
+        string code,
+        string? workingDirectory = null
+    )
     {
         var startInfo = new ProcessStartInfo(executable)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            WorkingDirectory = workingDirectory ?? string.Empty,
         };
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(code);

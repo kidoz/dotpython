@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "c69eafa63a1b5673b440bea3b21a53f8de776b0540bcf0731fdd4fa6788c8915";
-    internal const int RuleCount = 33;
+    internal const string SourceSha256 = "530d4d56d9b17ced45521af2d11d326e332d28948f1b984d2c711a4fdb3776e2";
+    internal const int RuleCount = 36;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -14,9 +14,12 @@ internal static class GeneratedPythonGrammar
         statement: compound_stmt | simple_stmts
         compound_stmt: if_stmt | while_stmt | for_stmt | function_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | return_stmt | expression
+        simple_stmt: assignment | return_stmt | import_stmt | from_import_stmt | expression
         assignment: primary '=' expression
         return_stmt: 'return' [expression]
+        import_stmt: 'import' ','.import_alias+
+        from_import_stmt: 'from' NAME 'import' ','.import_alias+
+        import_alias: NAME ['as' NAME]
         if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
         while_stmt: 'while' expression ':' block ['else' ':' block]
         for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]
@@ -32,7 +35,7 @@ internal static class GeneratedPythonGrammar
         term: factor (('*' | '/' | '//' | '%') factor)*
         factor: ('+' | '-' | '~') factor | power
         power: primary ['**' factor]
-        primary: atom (('(' [arguments] ')') | ('[' expression ']'))*
+        primary: atom (('(' [arguments] ')') | ('[' expression ']') | ('.' NAME))*
         arguments: expression_list
         expression_list: ','.expression+ [',']
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group

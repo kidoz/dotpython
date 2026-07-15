@@ -17,6 +17,7 @@ internal sealed class PythonVirtualMachine
     private readonly Stack<PythonValue> _evaluationStack = [];
     private readonly PythonGlobalNamespace _globals;
     private readonly long _instructionLimit;
+    private readonly PythonModuleRegistry _modules;
     private readonly TextWriter _output;
     private PythonFrame[] _frames = new PythonFrame[4];
     private int _frameCount;
@@ -29,6 +30,7 @@ internal sealed class PythonVirtualMachine
 
     internal PythonVirtualMachine(
         PythonGlobalNamespace globals,
+        PythonModuleRegistry modules,
         TextWriter output,
         long instructionLimit,
         bool enableReturnLocalContinuation,
@@ -36,6 +38,7 @@ internal sealed class PythonVirtualMachine
     )
     {
         _globals = globals;
+        _modules = modules;
         _output = output;
         _instructionLimit = instructionLimit;
         _enableReturnLocalContinuation = enableReturnLocalContinuation;
@@ -105,6 +108,7 @@ internal sealed class PythonVirtualMachine
         }
         finally
         {
+            FailActiveModuleInitializations();
             Array.Clear(_frames, 0, _frameCount);
             _frameCount = 0;
             _evaluationStack.Clear();
@@ -148,6 +152,7 @@ internal sealed class PythonVirtualMachine
         }
         finally
         {
+            FailActiveModuleInitializations();
             Array.Clear(_frames, 0, _frameCount);
             _frameCount = 0;
             _evaluationStack.Clear();
@@ -212,6 +217,12 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.StoreCell:
                 StoreCell(instruction.Operand, Pop(instruction.Span), instruction.Span);
+                break;
+            case PythonOpCode.ImportName:
+                ImportModule(ref frame, instruction);
+                break;
+            case PythonOpCode.LoadAttribute:
+                LoadAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
                 break;
             case PythonOpCode.PopTop:
                 Pop(instruction.Span);
@@ -368,6 +379,43 @@ internal sealed class PythonVirtualMachine
                 ? new PythonTupleValue(elements)
                 : new PythonListValue(new List<PythonValue>(elements))
         );
+    }
+
+    private void ImportModule(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        var name = frame.Code.Definition.Names[instruction.Operand];
+        var import = _modules.Resolve(name, instruction.Span);
+        _evaluationStack.Push(import.Module);
+        if (import.InitializationCode is null)
+        {
+            return;
+        }
+
+        var cells = CreateCells(import.InitializationCode, [], instruction.Span);
+        PushFrame(
+            import.InitializationCode,
+            import.Module.Globals,
+            _localsCount,
+            0,
+            cells,
+            initializingModule: import.Module
+        );
+    }
+
+    private void LoadAttribute(string name, TextSpan span)
+    {
+        var target = Pop(span);
+        if (target is not PythonModuleValue module)
+        {
+            throw Fault("DPY4023", "This value does not expose managed attributes.", span);
+        }
+
+        if (!module.Globals.TryGetValue(name, out var value))
+        {
+            throw Fault("DPY4022", $"Module '{module.Name}' has no attribute '{name}'.", span);
+        }
+
+        _evaluationStack.Push(value);
     }
 
     private void BuildDictionary(int itemCount, TextSpan span)
@@ -1133,7 +1181,8 @@ internal sealed class PythonVirtualMachine
         int localsBase,
         int localsCount,
         PythonCell[] cells,
-        bool hasReturnLocalContinuation = false
+        bool hasReturnLocalContinuation = false,
+        PythonModuleValue? initializingModule = null
     )
     {
         if (_frameCount == _frames.Length)
@@ -1148,7 +1197,8 @@ internal sealed class PythonVirtualMachine
             localsCount,
             cells,
             _evaluationStack.Count,
-            hasReturnLocalContinuation
+            hasReturnLocalContinuation,
+            initializingModule
         );
     }
 
@@ -1249,6 +1299,7 @@ internal sealed class PythonVirtualMachine
         var localsBase = CurrentFrame.LocalsBase;
         var localsCount = CurrentFrame.LocalsCount;
         var hasReturnLocalContinuation = CurrentFrame.HasReturnLocalContinuation;
+        var initializingModule = CurrentFrame.InitializingModule;
         while (_evaluationStack.Count > evaluationStackBase)
         {
             _evaluationStack.Pop();
@@ -1257,6 +1308,12 @@ internal sealed class PythonVirtualMachine
         Array.Clear(_locals, localsBase, localsCount);
         _localsCount = localsBase;
         _frames[--_frameCount] = default;
+        if (initializingModule is not null)
+        {
+            _modules.Complete(initializingModule);
+            return;
+        }
+
         if (_frameCount != 0)
         {
             if (hasReturnLocalContinuation)
@@ -1300,6 +1357,17 @@ internal sealed class PythonVirtualMachine
     {
         _output.WriteLine(string.Join(" ", arguments.Select(value => value.ToDisplayString())));
         return PythonNoneValue.Instance;
+    }
+
+    private void FailActiveModuleInitializations()
+    {
+        for (var index = 0; index < _frameCount; index++)
+        {
+            if (_frames[index].InitializingModule is { } module)
+            {
+                _modules.Fail(module);
+            }
+        }
     }
 
     private PythonValue Pop(TextSpan span)
@@ -1525,6 +1593,10 @@ internal sealed class PythonVirtualMachine
                 ReferenceEquals(leftFunction, rightFunction),
             (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
+            (PythonModuleValue leftModule, PythonModuleValue rightModule) => ReferenceEquals(
+                leftModule,
+                rightModule
+            ),
             _ => false,
         };
     }
@@ -1890,7 +1962,8 @@ internal sealed class PythonVirtualMachine
             int localsCount,
             PythonCell[] cells,
             int evaluationStackBase,
-            bool hasReturnLocalContinuation
+            bool hasReturnLocalContinuation,
+            PythonModuleValue? initializingModule
         )
         {
             Code = code;
@@ -1901,6 +1974,7 @@ internal sealed class PythonVirtualMachine
             Globals = globals;
             LocalsBase = localsBase;
             LocalsCount = localsCount;
+            InitializingModule = initializingModule;
         }
 
         // A complemented base marks a return-local continuation without growing each frame.
@@ -1916,6 +1990,8 @@ internal sealed class PythonVirtualMachine
         internal PythonGlobalNamespace Globals { get; }
 
         internal int InstructionPointer { get; set; }
+
+        internal PythonModuleValue? InitializingModule { get; }
 
         internal int LocalsBase { get; }
 

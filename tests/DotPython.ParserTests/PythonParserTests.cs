@@ -173,6 +173,31 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsImportAliasesFromImportsAndAttributes()
+    {
+        var result = Parse(
+            "import helper as module, values\n"
+                + "from helper import answer as result, identity\n"
+                + "print(module.answer(), result, identity)"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var import = Assert.IsType<PythonImportStatement>(result.Module.Statements[0]);
+        Assert.Equal(["helper", "values"], import.Imports.Select(item => item.Name));
+        Assert.Equal("module", import.Imports[0].Alias);
+        var fromImport = Assert.IsType<PythonFromImportStatement>(result.Module.Statements[1]);
+        Assert.Equal("helper", fromImport.ModuleName);
+        Assert.Equal(["answer", "identity"], fromImport.Imports.Select(item => item.Name));
+        Assert.Equal("result", fromImport.Imports[0].Alias);
+        var call = Assert.IsType<PythonCallExpression>(
+            Assert.IsType<PythonExpressionStatement>(result.Module.Statements[2]).Expression
+        );
+        var moduleCall = Assert.IsType<PythonCallExpression>(call.Arguments[0]);
+        var attribute = Assert.IsType<PythonAttributeExpression>(moduleCall.Target);
+        Assert.Equal("answer", attribute.AttributeName);
+    }
+
+    [Fact]
     public void Parse_AllowsFunctionAndReturnOnOneLogicalLine()
     {
         var result = Parse("def identity(value): return value");
@@ -192,6 +217,8 @@ public sealed class PythonParserTests
     [InlineData("return 42", "DPY2008")]
     [InlineData("def duplicate(value, value): return value", "DPY2009")]
     [InlineData("def invalid(return): return 42", "DPY2010")]
+    [InlineData("import", "DPY2001")]
+    [InlineData("from helper answer", "DPY2001")]
     [InlineData("print($)", "DPY1001")]
     public void Parse_ReportsStructuredDiagnosticsAndReachesEnd(string code, string expectedCode)
     {

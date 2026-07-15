@@ -252,6 +252,11 @@ internal sealed record PythonFunctionValue(
     internal override string ToDisplayString() => $"<function {Name}>";
 }
 
+internal sealed record PythonModuleValue(string Name, PythonGlobalNamespace Globals) : PythonValue
+{
+    internal override string ToDisplayString() => $"<module '{Name}'>";
+}
+
 internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
 {
     internal override string ToDisplayString()

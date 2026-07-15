@@ -180,6 +180,20 @@ public static class PythonSymbolBinder
                 case PythonFunctionDefinitionStatement function:
                     AddLocal(function.Name.Name, localNames, localNameSet);
                     break;
+                case PythonImportStatement importStatement:
+                    foreach (var import in importStatement.Imports)
+                    {
+                        AddLocal(import.Alias ?? import.Name, localNames, localNameSet);
+                    }
+
+                    break;
+                case PythonFromImportStatement fromImportStatement:
+                    foreach (var import in fromImportStatement.Imports)
+                    {
+                        AddLocal(import.Alias ?? import.Name, localNames, localNameSet);
+                    }
+
+                    break;
                 case PythonIfStatement conditional:
                     foreach (var clause in conditional.Clauses)
                     {
@@ -324,6 +338,9 @@ public static class PythonSymbolBinder
             case PythonSubscriptionExpression subscription:
                 CollectReferences(subscription.Target, references);
                 CollectReferences(subscription.Index, references);
+                break;
+            case PythonAttributeExpression attribute:
+                CollectReferences(attribute.Target, references);
                 break;
             case PythonParenthesizedExpression parenthesized:
                 CollectReferences(parenthesized.Expression, references);

@@ -12,7 +12,8 @@ inside a .NET solution, and as an early SDK-style `.dpyproj` project language wh
 libraries can be referenced from C# and other managed languages.
 
 > **Status:** early, active development. Today the CLI executes a growing managed subset of the
-> language (literals, names, assignment, arithmetic, calls, control flow, and functions). The
+> language (literals, names, assignment, arithmetic, calls, control flow, functions, and registered
+> source-module imports). The
 > compiler also emits deterministic `.dpyc` module artifacts, the interop layer statically
 > compiles an initial `.pyi` subset into typed CLR export contracts, and the prototype
 > `DotPython.Sdk` generates typed C# facades for single-module projects.
@@ -64,6 +65,25 @@ Exit codes follow familiar conventions: `0` success, `1` execution/diagnostic er
 free-threaded ABI selection, SHA-256, native archive entries, imported symbols when their ELF,
 Mach-O, or PE tables are readable, and actionable incompatibility diagnostics. Classification
 never loads or executes a library and does not change the managed runtime's CPython ABI support.
+
+## Managed source modules
+
+Embedded callers can provide an immutable catalog of top-level source modules. Each engine owns
+its module objects and initialization cache; imports execute in the calling VM and therefore share
+its cancellation token, output, and instruction limit.
+
+```csharp
+var modules = new Dictionary<string, SourceText>
+{
+    ["helper"] = new("answer = 42", "helper.py"),
+};
+var engine = new ManagedPythonEngine(modules);
+engine.Execute("import helper; print(helper.answer)", "main.py", output);
+```
+
+The current slice supports top-level `import`, `from … import`, aliases, and module attribute reads.
+Filesystem discovery, packages, dotted and relative imports, wildcard imports, reload, and native
+extensions are not implemented.
 
 ## Typed module contracts
 

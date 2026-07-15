@@ -31,6 +31,18 @@ public sealed record PythonParameter(string Name, TextSpan Span) : PythonNode(Sp
 public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)
     : PythonStatement(Span);
 
+public sealed record PythonImportStatement(IReadOnlyList<PythonImportAlias> Imports, TextSpan Span)
+    : PythonStatement(Span);
+
+public sealed record PythonFromImportStatement(
+    string ModuleName,
+    IReadOnlyList<PythonImportAlias> Imports,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonImportAlias(string Name, string? Alias, TextSpan Span)
+    : PythonNode(Span);
+
 public sealed record PythonIfStatement(
     IReadOnlyList<PythonConditionalClause> Clauses,
     IReadOnlyList<PythonStatement> ElseBody,
@@ -119,6 +131,12 @@ public sealed record PythonDictionaryItem(
 public sealed record PythonSubscriptionExpression(
     PythonExpression Target,
     PythonExpression Index,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public sealed record PythonAttributeExpression(
+    PythonExpression Target,
+    string AttributeName,
     TextSpan Span
 ) : PythonExpression(Span);
 

@@ -128,6 +128,12 @@ public static class PythonCompiler
                 case PythonReturnStatement returnStatement:
                     CompileReturnStatement(returnStatement);
                     break;
+                case PythonImportStatement importStatement:
+                    CompileImportStatement(importStatement);
+                    break;
+                case PythonFromImportStatement fromImportStatement:
+                    CompileFromImportStatement(fromImportStatement);
+                    break;
                 default:
                     Report(
                         "DPY3001",
@@ -209,6 +215,14 @@ public static class PythonCompiler
                     CompileExpression(subscription.Target);
                     CompileExpression(subscription.Index);
                     Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
+                    break;
+                case PythonAttributeExpression attribute:
+                    CompileExpression(attribute.Target);
+                    Emit(
+                        PythonOpCode.LoadAttribute,
+                        GetNameIndex(attribute.AttributeName),
+                        attribute.Span
+                    );
                     break;
                 default:
                     Report(
@@ -323,6 +337,25 @@ public static class PythonCompiler
 
             CompileExpression(statement.Value);
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
+        }
+
+        private void CompileImportStatement(PythonImportStatement statement)
+        {
+            foreach (var import in statement.Imports)
+            {
+                Emit(PythonOpCode.ImportName, GetNameIndex(import.Name), import.Span);
+                EmitStoreName(new PythonNameExpression(import.Alias ?? import.Name, import.Span));
+            }
+        }
+
+        private void CompileFromImportStatement(PythonFromImportStatement statement)
+        {
+            foreach (var import in statement.Imports)
+            {
+                Emit(PythonOpCode.ImportName, GetNameIndex(statement.ModuleName), statement.Span);
+                Emit(PythonOpCode.LoadAttribute, GetNameIndex(import.Name), import.Span);
+                EmitStoreName(new PythonNameExpression(import.Alias ?? import.Name, import.Span));
+            }
         }
 
         private static PythonNameExpression? GetNameExpression(PythonExpression expression) =>

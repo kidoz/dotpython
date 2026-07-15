@@ -401,6 +401,16 @@ public static class PythonParser
                 return ParseReturnStatement();
             }
 
+            if (IsKeyword("import"))
+            {
+                return ParseImportStatement();
+            }
+
+            if (IsKeyword("from"))
+            {
+                return ParseFromImportStatement();
+            }
+
             if (
                 Current.Kind == SyntaxTokenKind.Identifier
                 && IsUnsupportedStatementKeyword(Current.Text)
@@ -443,6 +453,80 @@ public static class PythonParser
             }
 
             return new PythonExpressionStatement(expression, expression.Span);
+        }
+
+        private PythonImportStatement ParseImportStatement()
+        {
+            var start = Advance().Span.Start;
+            var imports = ParseImportAliases("a module name after 'import'");
+            var end = imports.Count == 0 ? start : imports[^1].Span.End;
+            return new PythonImportStatement(imports, TextSpan.FromBounds(start, end));
+        }
+
+        private PythonFromImportStatement ParseFromImportStatement()
+        {
+            var start = Advance().Span.Start;
+            var module = ExpectImportName("a module name after 'from'");
+            if (!MatchKeyword("import", out _))
+            {
+                ReportExpected("'import' after the module name", Current.Span);
+            }
+
+            var imports = ParseImportAliases("a name after 'import'");
+            var end = imports.Count == 0 ? module.Span.End : imports[^1].Span.End;
+            return new PythonFromImportStatement(
+                module.Text,
+                imports,
+                TextSpan.FromBounds(start, end)
+            );
+        }
+
+        private ReadOnlyCollection<PythonImportAlias> ParseImportAliases(string expected)
+        {
+            var imports = new List<PythonImportAlias>();
+            while (true)
+            {
+                var name = ExpectImportName(expected);
+                SyntaxToken? alias = null;
+                if (MatchKeyword("as", out _))
+                {
+                    alias = ExpectImportName("an alias after 'as'");
+                }
+
+                var end = alias?.Span.End ?? name.Span.End;
+                if (name.Text.Length != 0)
+                {
+                    imports.Add(
+                        new PythonImportAlias(
+                            name.Text,
+                            alias is { Text.Length: > 0 } ? alias.Text : null,
+                            TextSpan.FromBounds(name.Span.Start, end)
+                        )
+                    );
+                }
+
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+            }
+
+            return imports.AsReadOnly();
+        }
+
+        private SyntaxToken ExpectImportName(string expected)
+        {
+            var token = Expect(SyntaxTokenKind.Identifier, expected);
+            if (token.Text.Length != 0 && IsReservedKeyword(token.Text))
+            {
+                Report(
+                    "DPY2010",
+                    $"The keyword '{token.Text}' cannot be used as an import name.",
+                    token.Span
+                );
+            }
+
+            return token;
         }
 
         private PythonReturnStatement ParseReturnStatement()
@@ -776,7 +860,35 @@ public static class PythonParser
 
                 if (!Match(SyntaxTokenKind.LeftBracket, out _))
                 {
-                    break;
+                    if (!Match(SyntaxTokenKind.Dot, out _))
+                    {
+                        break;
+                    }
+
+                    var attribute = Expect(
+                        SyntaxTokenKind.Identifier,
+                        "an attribute name after '.'"
+                    );
+                    if (attribute.Text.Length == 0 || IsReservedKeyword(attribute.Text))
+                    {
+                        if (attribute.Text.Length != 0)
+                        {
+                            Report(
+                                "DPY2010",
+                                $"The keyword '{attribute.Text}' cannot be used as an attribute name.",
+                                attribute.Span
+                            );
+                        }
+
+                        break;
+                    }
+
+                    expression = new PythonAttributeExpression(
+                        expression,
+                        attribute.Text,
+                        TextSpan.FromBounds(expression.Span.Start, attribute.Span.End)
+                    );
+                    continue;
                 }
 
                 var index = ParseExpression();
