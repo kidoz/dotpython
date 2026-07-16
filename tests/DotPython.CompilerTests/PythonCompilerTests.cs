@@ -494,4 +494,52 @@ public sealed class PythonCompilerTests
             instruction => instruction.OpCode == PythonOpCode.StoreCell
         );
     }
+
+    [Fact]
+    public void Compile_EmitsManagedExceptionAndFinallyControlFlow()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "try:\n"
+                    + "    raise ValueError('bad')\n"
+                    + "except ValueError as error:\n"
+                    + "    print(error)\n"
+                    + "else:\n"
+                    + "    print('clean')\n"
+                    + "finally:\n"
+                    + "    print('done')\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.SetupExcept
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.SetupFinally
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MatchException
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ClearException
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.Raise, Operand: 1 }
+        );
+        Assert.All(
+            result.Code.Instructions.Where(instruction =>
+                instruction.OpCode is PythonOpCode.SetupExcept or PythonOpCode.SetupFinally
+            ),
+            instruction => Assert.InRange(instruction.Operand, 0, result.Code.Instructions.Count)
+        );
+    }
 }

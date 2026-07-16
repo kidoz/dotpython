@@ -7,10 +7,32 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed class PythonVirtualMachine
 {
+    private const int MaximumExceptionBlockDepth = 1024;
+    private const int MaximumDeferredCleanupInstructions = 4096;
+
     [ThreadStatic]
     private static HashSet<PythonValuePair>? _activeEqualityPairs;
 
     private static readonly PythonCell[] NoCells = [];
+    private static readonly IReadOnlyDictionary<string, string?> ExceptionBaseNames =
+        new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["BaseException"] = null,
+            ["Exception"] = "BaseException",
+            ["ArithmeticError"] = "Exception",
+            ["LookupError"] = "Exception",
+            ["RuntimeError"] = "Exception",
+            ["TypeError"] = "Exception",
+            ["ValueError"] = "Exception",
+            ["NameError"] = "Exception",
+            ["AttributeError"] = "Exception",
+            ["ImportError"] = "Exception",
+            ["ModuleNotFoundError"] = "ImportError",
+            ["IndexError"] = "LookupError",
+            ["KeyError"] = "LookupError",
+            ["OverflowError"] = "ArithmeticError",
+            ["ZeroDivisionError"] = "ArithmeticError",
+        };
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
     private readonly bool _enableReturnLocalContinuation;
@@ -21,6 +43,8 @@ internal sealed class PythonVirtualMachine
     private readonly TextWriter _output;
     private PythonFrame[] _frames = new PythonFrame[4];
     private int _frameCount;
+    private int _deferredControlFlowCount;
+    private int _deferredCleanupInstructions;
     private long _instructionsExecuted;
     private PythonValue?[] _locals = [];
     private int _localsCount;
@@ -47,6 +71,10 @@ internal sealed class PythonVirtualMachine
         {
             ["print"] = new PythonBuiltinFunctionValue("print", Print),
         };
+        foreach (var name in ExceptionBaseNames.Keys)
+        {
+            _builtins.Add(name, new PythonExceptionTypeValue(name));
+        }
     }
 
     internal PythonValue Execute(PreparedPythonCode code)
@@ -74,34 +102,68 @@ internal sealed class PythonVirtualMachine
         return RunProfiled(profile);
     }
 
-    private PythonValue Run()
+    private PythonValue Run() => RunCore(null);
+
+    private PythonValue RunProfiled(PythonExecutionProfile profile) => RunCore(profile);
+
+    private PythonValue RunCore(PythonExecutionProfile? profile)
     {
         _result = PythonNoneValue.Instance;
         try
         {
             while (_frameCount != 0)
             {
-                _cancellationToken.ThrowIfCancellationRequested();
-                ref var frame = ref CurrentFrame;
-                if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
+                try
                 {
-                    ReturnFromFrame(PythonNoneValue.Instance);
-                    continue;
-                }
+                    if (_deferredControlFlowCount == 0)
+                    {
+                        _cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    else if (_deferredCleanupInstructions++ >= MaximumDeferredCleanupInstructions)
+                    {
+                        throw Fault(
+                            "DPY4032",
+                            $"Deferred cleanup exceeded the {MaximumDeferredCleanupInstructions} instruction limit.",
+                            GetCurrentSpan(CurrentFrame)
+                        );
+                    }
+                    ref var frame = ref CurrentFrame;
+                    if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
+                    {
+                        ReturnFromFrame(PythonNoneValue.Instance);
+                        continue;
+                    }
 
-                var instructionIndex = frame.InstructionPointer;
-                var instruction = frame.Code.Definition.Instructions[instructionIndex];
-                frame.InstructionPointer++;
-                if (_instructionsExecuted++ >= _instructionLimit)
-                {
-                    throw Fault(
-                        "DPY4001",
-                        "The managed instruction limit was exceeded.",
-                        instruction.Span
+                    var instructionIndex = frame.InstructionPointer;
+                    var instruction = frame.Code.Definition.Instructions[instructionIndex];
+                    frame.InstructionPointer++;
+                    if (
+                        _deferredControlFlowCount == 0
+                        && _instructionsExecuted++ >= _instructionLimit
+                    )
+                    {
+                        throw Fault(
+                            "DPY4001",
+                            "The managed instruction limit was exceeded.",
+                            instruction.Span
+                        );
+                    }
+
+                    profile?.Record(
+                        _frameCount - 1,
+                        frame.Code,
+                        instructionIndex,
+                        instruction.OpCode
                     );
+                    ExecuteInstruction(ref frame, instruction, instructionIndex);
                 }
-
-                ExecuteInstruction(ref frame, instruction, instructionIndex);
+                catch (Exception exception) when (IsManagedControlFlowException(exception))
+                {
+                    if (!HandleExceptionalControlFlow(exception))
+                    {
+                        throw;
+                    }
+                }
             }
 
             return _result;
@@ -114,50 +176,8 @@ internal sealed class PythonVirtualMachine
             _evaluationStack.Clear();
             Array.Clear(_locals, 0, _localsCount);
             _localsCount = 0;
-        }
-    }
-
-    private PythonValue RunProfiled(PythonExecutionProfile profile)
-    {
-        _result = PythonNoneValue.Instance;
-        try
-        {
-            while (_frameCount != 0)
-            {
-                _cancellationToken.ThrowIfCancellationRequested();
-                ref var frame = ref CurrentFrame;
-                if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
-                {
-                    ReturnFromFrame(PythonNoneValue.Instance);
-                    continue;
-                }
-
-                var instructionIndex = frame.InstructionPointer;
-                var instruction = frame.Code.Definition.Instructions[instructionIndex];
-                frame.InstructionPointer++;
-                if (_instructionsExecuted++ >= _instructionLimit)
-                {
-                    throw Fault(
-                        "DPY4001",
-                        "The managed instruction limit was exceeded.",
-                        instruction.Span
-                    );
-                }
-
-                profile.Record(_frameCount - 1, frame.Code, instructionIndex, instruction.OpCode);
-                ExecuteInstruction(ref frame, instruction, instructionIndex);
-            }
-
-            return _result;
-        }
-        finally
-        {
-            FailActiveModuleInitializations();
-            Array.Clear(_frames, 0, _frameCount);
-            _frameCount = 0;
-            _evaluationStack.Clear();
-            Array.Clear(_locals, 0, _localsCount);
-            _localsCount = 0;
+            _deferredControlFlowCount = 0;
+            _deferredCleanupInstructions = 0;
         }
     }
 
@@ -347,6 +367,36 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.ForIter:
                 ForIter(ref frame, instruction);
                 break;
+            case PythonOpCode.SetupExcept:
+                PushExceptionBlock(ref frame, PythonExceptionBlockKind.Except, instruction);
+                break;
+            case PythonOpCode.SetupFinally:
+                PushExceptionBlock(ref frame, PythonExceptionBlockKind.Finally, instruction);
+                break;
+            case PythonOpCode.PopExceptionBlock:
+                PopExceptionBlock(ref frame, instruction.Span);
+                break;
+            case PythonOpCode.EnterFinally:
+                PushPendingFinally(
+                    ref frame,
+                    new PythonPendingFinally(null, null, frame.ExceptionBlocks.Count)
+                );
+                break;
+            case PythonOpCode.EndFinally:
+                EndFinally();
+                break;
+            case PythonOpCode.LoadException:
+                _evaluationStack.Push(GetActiveException(instruction.Span).Value);
+                break;
+            case PythonOpCode.MatchException:
+                MatchException(instruction.Span);
+                break;
+            case PythonOpCode.ClearException:
+                ClearException(instruction.Span);
+                break;
+            case PythonOpCode.Raise:
+                Raise(instruction.Operand, instruction.Span);
+                break;
             case PythonOpCode.ReturnValue:
                 ReturnFromFrame(Pop(instruction.Span));
                 break;
@@ -358,6 +408,367 @@ internal sealed class PythonVirtualMachine
                 break;
             default:
                 throw Fault("DPY4007", "Unknown DotPython instruction.", instruction.Span);
+        }
+    }
+
+    private static bool IsManagedControlFlowException(Exception exception) =>
+        exception is PythonRaisedException or PythonRuntimeException or OperationCanceledException;
+
+    private bool HandleExceptionalControlFlow(Exception exception)
+    {
+        while (_frameCount != 0)
+        {
+            ref var frame = ref CurrentFrame;
+            if (exception is PythonRaisedException raised)
+            {
+                if (raised.PreserveTracebackOnNextDispatch)
+                {
+                    raised.PreserveTracebackOnNextDispatch = false;
+                }
+                else
+                {
+                    raised.AddTracebackFrame(frame.Code.Definition.Name, GetCurrentSpan(frame));
+                }
+            }
+            while (true)
+            {
+                var protectedBlockDepth =
+                    frame.PendingFinalies.Count == 0
+                        ? 0
+                        : frame.PendingFinalies.Peek().OuterExceptionBlockDepth;
+                while (frame.ExceptionBlocks.Count > protectedBlockDepth)
+                {
+                    var block = frame.ExceptionBlocks[^1];
+                    frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
+                    ClearEvaluationStack(block.EvaluationStackDepth);
+                    if (block.Kind == PythonExceptionBlockKind.Except)
+                    {
+                        if (exception is not PythonRaisedException catchable)
+                        {
+                            continue;
+                        }
+
+                        frame.ActiveExceptions.Push(catchable);
+                        frame.InstructionPointer = block.HandlerTarget;
+                        return true;
+                    }
+
+                    PushPendingFinally(
+                        ref frame,
+                        new PythonPendingFinally(exception, null, frame.ExceptionBlocks.Count)
+                    );
+                    frame.InstructionPointer = block.HandlerTarget;
+                    return true;
+                }
+
+                if (frame.PendingFinalies.Count == 0)
+                {
+                    break;
+                }
+
+                var interrupted = PopPendingFinally(ref frame);
+                if (
+                    exception is PythonRaisedException replacement
+                    && interrupted.Exception is PythonRaisedException context
+                    && replacement.Value.Cause is null
+                    && replacement.Value.Context is null
+                )
+                {
+                    replacement.Value.Context = context.Value;
+                }
+            }
+
+            UnwindCurrentFrameForException();
+        }
+
+        return false;
+    }
+
+    private static TextSpan GetCurrentSpan(PythonFrame frame)
+    {
+        var instructions = frame.Code.Definition.Instructions;
+        if (instructions.Count == 0)
+        {
+            return new TextSpan(0, 0);
+        }
+
+        var index = Math.Clamp(frame.InstructionPointer - 1, 0, instructions.Count - 1);
+        return instructions[index].Span;
+    }
+
+    private void PushExceptionBlock(
+        ref PythonFrame frame,
+        PythonExceptionBlockKind kind,
+        PythonInstruction instruction
+    )
+    {
+        if (frame.ExceptionBlocks.Count >= MaximumExceptionBlockDepth)
+        {
+            throw Fault(
+                "DPY4030",
+                $"Managed exception handling exceeded the {MaximumExceptionBlockDepth} block limit.",
+                instruction.Span
+            );
+        }
+
+        var handlerTarget = GetJumpTarget(instruction, frame.Code.Definition.Instructions.Count);
+        if (handlerTarget == frame.Code.Definition.Instructions.Count)
+        {
+            throw Fault(
+                "DPY4007",
+                "The managed exception-handler target is invalid.",
+                instruction.Span
+            );
+        }
+
+        frame.ExceptionBlocks.Add(
+            new PythonExceptionBlock(kind, handlerTarget, _evaluationStack.Count)
+        );
+    }
+
+    private static void PopExceptionBlock(ref PythonFrame frame, TextSpan span)
+    {
+        if (frame.ExceptionBlocks.Count == 0)
+        {
+            throw Fault("DPY4007", "The managed exception block stack is empty.", span);
+        }
+
+        frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
+    }
+
+    private void EndFinally()
+    {
+        ref var frame = ref CurrentFrame;
+        if (frame.PendingFinalies.Count == 0)
+        {
+            throw Fault(
+                "DPY4007",
+                "The managed finally state is unavailable.",
+                GetCurrentSpan(frame)
+            );
+        }
+
+        var pending = PopPendingFinally(ref frame);
+        if (pending.Exception is not null)
+        {
+            if (pending.Exception is PythonRaisedException raised)
+            {
+                raised.PreserveTracebackOnNextDispatch = true;
+            }
+
+            System
+                .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(pending.Exception)
+                .Throw();
+        }
+
+        if (pending.ReturnValue is not null)
+        {
+            ReturnFromFrame(pending.ReturnValue);
+        }
+    }
+
+    private void PushPendingFinally(ref PythonFrame frame, PythonPendingFinally pending)
+    {
+        if (pending.Exception is not null)
+        {
+            if (_deferredControlFlowCount == 0)
+            {
+                _deferredCleanupInstructions = 0;
+            }
+
+            _deferredControlFlowCount++;
+        }
+
+        frame.PendingFinalies.Push(pending);
+    }
+
+    private PythonPendingFinally PopPendingFinally(ref PythonFrame frame)
+    {
+        var pending = frame.PendingFinalies.Pop();
+        if (pending.Exception is not null)
+        {
+            _deferredControlFlowCount--;
+        }
+
+        return pending;
+    }
+
+    private PythonRaisedException GetActiveException(TextSpan span)
+    {
+        if (CurrentFrame.ActiveExceptions.Count == 0)
+        {
+            throw CreateRaisedException(
+                new PythonExceptionValue("RuntimeError", "No active exception to reraise.")
+            );
+        }
+
+        return CurrentFrame.ActiveExceptions.Peek();
+    }
+
+    private void ClearException(TextSpan span)
+    {
+        if (CurrentFrame.ActiveExceptions.Count == 0)
+        {
+            throw Fault("DPY4007", "The active exception stack is empty.", span);
+        }
+
+        CurrentFrame.ActiveExceptions.Pop();
+    }
+
+    private void MatchException(TextSpan span)
+    {
+        var handlerType = Pop(span);
+        var exception = Pop(span);
+        if (exception is not PythonExceptionValue exceptionValue)
+        {
+            throw Fault("DPY4007", "The active exception value is invalid.", span);
+        }
+
+        _evaluationStack.Push(
+            PythonTruthValue.FromBoolean(MatchesExceptionType(exceptionValue, handlerType, span))
+        );
+    }
+
+    private static bool MatchesExceptionType(
+        PythonExceptionValue exception,
+        PythonValue handlerType,
+        TextSpan span
+    )
+    {
+        if (handlerType is PythonExceptionTypeValue type)
+        {
+            return IsExceptionSubclass(exception.TypeName, type.Name);
+        }
+
+        if (handlerType is PythonTupleValue tuple)
+        {
+            foreach (var element in tuple.Elements)
+            {
+                if (MatchesExceptionType(exception, element, span))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        throw CreateRaisedException(
+            new PythonExceptionValue(
+                "TypeError",
+                "Catching classes that do not inherit from BaseException is not allowed."
+            )
+        );
+    }
+
+    private static bool IsExceptionSubclass(string candidate, string expected)
+    {
+        for (string? current = candidate; current is not null; )
+        {
+            if (string.Equals(current, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            current = ExceptionBaseNames.GetValueOrDefault(current);
+        }
+
+        return false;
+    }
+
+    private void Raise(int argumentCount, TextSpan span)
+    {
+        if (argumentCount == 0)
+        {
+            var active = GetActiveException(span);
+            active.PreserveTracebackOnNextDispatch = true;
+            throw active;
+        }
+
+        PythonValue? cause = null;
+        if (argumentCount == 2)
+        {
+            cause = Pop(span);
+        }
+
+        var exception = CreateExceptionValue(Pop(span), span);
+        if (argumentCount == 2)
+        {
+            if (cause is PythonNoneValue)
+            {
+                exception.SuppressContext = true;
+            }
+            else
+            {
+                exception.Cause = CreateExceptionValue(cause!, span);
+                exception.SuppressContext = true;
+            }
+        }
+        else if (CurrentFrame.ActiveExceptions.TryPeek(out var active))
+        {
+            exception.Context = active.Value;
+        }
+
+        throw CreateRaisedException(exception);
+    }
+
+    private static PythonExceptionValue CreateExceptionValue(PythonValue value, TextSpan span) =>
+        value switch
+        {
+            PythonExceptionValue exception => exception,
+            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
+            _ => throw CreateRaisedException(
+                new PythonExceptionValue("TypeError", "Exceptions must derive from BaseException.")
+            ),
+        };
+
+    private static PythonRaisedException CreateRaisedException(PythonExceptionValue value) =>
+        new(value);
+
+    private void ClearEvaluationStack(int targetDepth)
+    {
+        if (targetDepth < CurrentFrame.EvaluationStackBase || targetDepth > _evaluationStack.Count)
+        {
+            throw Fault(
+                "DPY4007",
+                "The managed exception block has an invalid evaluation-stack depth.",
+                GetCurrentSpan(CurrentFrame)
+            );
+        }
+
+        while (_evaluationStack.Count > targetDepth)
+        {
+            _evaluationStack.Pop();
+        }
+    }
+
+    private void UnwindCurrentFrameForException()
+    {
+        var evaluationStackBase = CurrentFrame.EvaluationStackBase;
+        var localsBase = CurrentFrame.LocalsBase;
+        var localsCount = CurrentFrame.LocalsCount;
+        var initializingModule = CurrentFrame.InitializingModule;
+        while (CurrentFrame.PendingFinalies.Count != 0)
+        {
+            PopPendingFinally(ref CurrentFrame);
+        }
+
+        ClearEvaluationStack(evaluationStackBase);
+        Array.Clear(_locals, localsBase, localsCount);
+        _localsCount = localsBase;
+        _frames[--_frameCount] = default;
+
+        if (initializingModule is not null)
+        {
+            _modules.Fail(initializingModule);
+            if (
+                _frameCount != 0
+                && _evaluationStack.Count > CurrentFrame.EvaluationStackBase
+                && ReferenceEquals(_evaluationStack.Peek(), initializingModule)
+            )
+            {
+                _evaluationStack.Pop();
+            }
         }
     }
 
@@ -1011,6 +1422,15 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (target is PythonExceptionTypeValue exceptionType)
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            _evaluationStack.Push(CreateExceptionValue(exceptionType, arguments));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
         if (target is not PythonFunctionValue function)
         {
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
@@ -1056,6 +1476,13 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (target is PythonExceptionTypeValue exceptionType)
+        {
+            _evaluationStack.Push(CreateExceptionValue(exceptionType, Array.Empty<PythonValue>()));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
         if (target is not PythonFunctionValue function)
         {
             throw Fault("DPY4003", "The selected value is not callable.", span);
@@ -1097,6 +1524,20 @@ internal sealed class PythonVirtualMachine
         }
 
         return arguments;
+    }
+
+    private static PythonExceptionValue CreateExceptionValue(
+        PythonExceptionTypeValue type,
+        PythonValue[] arguments
+    )
+    {
+        var message = arguments.Length switch
+        {
+            0 => string.Empty,
+            1 => arguments[0].ToDisplayString(),
+            _ => new PythonTupleValue(arguments).ToDisplayString(),
+        };
+        return new PythonExceptionValue(type.Name, message);
     }
 
     private void PushFunctionFrame(PythonFunctionValue function, int argumentCount, TextSpan span)
@@ -1331,6 +1772,39 @@ internal sealed class PythonVirtualMachine
 
     private void ReturnFromFrame(PythonValue value)
     {
+        ref var frame = ref CurrentFrame;
+        while (true)
+        {
+            var protectedBlockDepth =
+                frame.PendingFinalies.Count == 0
+                    ? 0
+                    : frame.PendingFinalies.Peek().OuterExceptionBlockDepth;
+            while (frame.ExceptionBlocks.Count > protectedBlockDepth)
+            {
+                var block = frame.ExceptionBlocks[^1];
+                frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
+                if (block.Kind != PythonExceptionBlockKind.Finally)
+                {
+                    continue;
+                }
+
+                ClearEvaluationStack(block.EvaluationStackDepth);
+                PushPendingFinally(
+                    ref frame,
+                    new PythonPendingFinally(null, value, frame.ExceptionBlocks.Count)
+                );
+                frame.InstructionPointer = block.HandlerTarget;
+                return;
+            }
+
+            if (frame.PendingFinalies.Count == 0)
+            {
+                break;
+            }
+
+            PopPendingFinally(ref frame);
+        }
+
         var evaluationStackBase = CurrentFrame.EvaluationStackBase;
         var localsBase = CurrentFrame.LocalsBase;
         var localsCount = CurrentFrame.LocalsCount;
@@ -2011,6 +2485,9 @@ internal sealed class PythonVirtualMachine
             LocalsBase = localsBase;
             LocalsCount = localsCount;
             InitializingModule = initializingModule;
+            ActiveExceptions = new Stack<PythonRaisedException>();
+            ExceptionBlocks = [];
+            PendingFinalies = new Stack<PythonPendingFinally>();
         }
 
         // A complemented base marks a return-local continuation without growing each frame.
@@ -2018,12 +2495,16 @@ internal sealed class PythonVirtualMachine
 
         internal PreparedPythonCode Code { get; }
 
+        internal Stack<PythonRaisedException> ActiveExceptions { get; }
+
         internal PythonCell[] Cells { get; }
 
         internal int EvaluationStackBase =>
             HasReturnLocalContinuation ? ~_encodedEvaluationStackBase : _encodedEvaluationStackBase;
 
         internal PythonGlobalNamespace Globals { get; }
+
+        internal List<PythonExceptionBlock> ExceptionBlocks { get; }
 
         internal int InstructionPointer { get; set; }
 
@@ -2033,6 +2514,26 @@ internal sealed class PythonVirtualMachine
 
         internal int LocalsCount { get; }
 
+        internal Stack<PythonPendingFinally> PendingFinalies { get; }
+
         internal bool HasReturnLocalContinuation => _encodedEvaluationStackBase < 0;
     }
+
+    private enum PythonExceptionBlockKind
+    {
+        Except,
+        Finally,
+    }
+
+    private readonly record struct PythonExceptionBlock(
+        PythonExceptionBlockKind Kind,
+        int HandlerTarget,
+        int EvaluationStackDepth
+    );
+
+    private readonly record struct PythonPendingFinally(
+        Exception? Exception,
+        PythonValue? ReturnValue,
+        int OuterExceptionBlockDepth
+    );
 }

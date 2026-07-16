@@ -128,6 +128,12 @@ public static class PythonCompiler
                 case PythonReturnStatement returnStatement:
                     CompileReturnStatement(returnStatement);
                     break;
+                case PythonRaiseStatement raiseStatement:
+                    CompileRaiseStatement(raiseStatement);
+                    break;
+                case PythonTryStatement tryStatement:
+                    CompileTryStatement(tryStatement);
+                    break;
                 case PythonImportStatement importStatement:
                     CompileImportStatement(importStatement);
                     break;
@@ -337,6 +343,109 @@ public static class PythonCompiler
 
             CompileExpression(statement.Value);
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
+        }
+
+        private void CompileRaiseStatement(PythonRaiseStatement statement)
+        {
+            if (statement.Exception is null)
+            {
+                Emit(PythonOpCode.Raise, 0, statement.Span);
+                return;
+            }
+
+            CompileExpression(statement.Exception);
+            if (statement.Cause is null)
+            {
+                Emit(PythonOpCode.Raise, 1, statement.Span);
+                return;
+            }
+
+            CompileExpression(statement.Cause);
+            Emit(PythonOpCode.Raise, 2, statement.Span);
+        }
+
+        private void CompileTryStatement(PythonTryStatement statement)
+        {
+            if (statement.FinallyBody.Count == 0)
+            {
+                CompileTryExcept(statement);
+                return;
+            }
+
+            var setupFinally = Emit(PythonOpCode.SetupFinally, 0, statement.Span);
+            CompileTryExcept(statement);
+            Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            Emit(PythonOpCode.EnterFinally, 0, statement.Span);
+            PatchJump(setupFinally, _instructions.Count);
+            CompileStatements(statement.FinallyBody);
+            Emit(PythonOpCode.EndFinally, 0, statement.Span);
+        }
+
+        private void CompileTryExcept(PythonTryStatement statement)
+        {
+            if (statement.Handlers.Count == 0)
+            {
+                CompileStatements(statement.Body);
+                return;
+            }
+
+            var setupExcept = Emit(PythonOpCode.SetupExcept, 0, statement.Span);
+            CompileStatements(statement.Body);
+            Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            CompileStatements(statement.ElseBody);
+            var normalExit = Emit(PythonOpCode.Jump, 0, statement.Span);
+            PatchJump(setupExcept, _instructions.Count);
+
+            var handledExits = new List<int>();
+            foreach (var handler in statement.Handlers)
+            {
+                int? nextHandler = null;
+                if (handler.Type is not null)
+                {
+                    Emit(PythonOpCode.LoadException, 0, handler.Span);
+                    CompileExpression(handler.Type);
+                    Emit(PythonOpCode.MatchException, 0, handler.Type.Span);
+                    nextHandler = Emit(PythonOpCode.JumpIfFalse, 0, handler.Type.Span);
+                }
+
+                if (handler.Target is not null)
+                {
+                    Emit(PythonOpCode.LoadException, 0, handler.Target.Span);
+                    EmitStoreName(handler.Target);
+                }
+
+                var setupCleanup = Emit(PythonOpCode.SetupFinally, 0, handler.Span);
+                CompileStatements(handler.Body);
+                Emit(PythonOpCode.PopExceptionBlock, 0, handler.Span);
+                Emit(PythonOpCode.EnterFinally, 0, handler.Span);
+                PatchJump(setupCleanup, _instructions.Count);
+                if (handler.Target is not null)
+                {
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                        handler.Target.Span
+                    );
+                    EmitStoreName(handler.Target);
+                }
+
+                Emit(PythonOpCode.ClearException, 0, handler.Span);
+                Emit(PythonOpCode.EndFinally, 0, handler.Span);
+                handledExits.Add(Emit(PythonOpCode.Jump, 0, handler.Span));
+
+                if (nextHandler is not null)
+                {
+                    PatchJump(nextHandler.Value, _instructions.Count);
+                }
+            }
+
+            Emit(PythonOpCode.Raise, 0, statement.Span);
+            var end = _instructions.Count;
+            PatchJump(normalExit, end);
+            foreach (var handledExit in handledExits)
+            {
+                PatchJump(handledExit, end);
+            }
         }
 
         private void CompileImportStatement(PythonImportStatement statement)

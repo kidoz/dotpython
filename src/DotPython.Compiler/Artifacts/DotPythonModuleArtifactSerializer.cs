@@ -443,6 +443,16 @@ public static class DotPythonModuleArtifactSerializer
                 }
 
                 break;
+            case PythonOpCode.SetupExcept:
+            case PythonOpCode.SetupFinally:
+                if (instruction.Operand < 0 || instruction.Operand >= code.Instructions.Count)
+                {
+                    throw new InvalidDataException(
+                        $"Instruction {instructionIndex} has an invalid exception-handler target."
+                    );
+                }
+
+                break;
             case PythonOpCode.Call:
                 if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
@@ -459,6 +469,15 @@ public static class DotPythonModuleArtifactSerializer
                 {
                     throw new InvalidDataException(
                         $"Instruction {instructionIndex} has an invalid element count."
+                    );
+                }
+
+                break;
+            case PythonOpCode.Raise:
+                if (instruction.Operand is < 0 or > 2)
+                {
+                    throw new InvalidDataException(
+                        $"Instruction {instructionIndex} has an invalid raise argument count."
                     );
                 }
 

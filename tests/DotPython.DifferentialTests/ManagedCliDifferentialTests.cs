@@ -270,6 +270,56 @@ public sealed class ManagedCliDifferentialTests
         }
     }
 
+    [Fact]
+    public void RaisedExceptionHandlersAndFinally_MatchReferencePython()
+    {
+        const string code =
+            "def classify(value):\n"
+            + "    try:\n"
+            + "        if value:\n"
+            + "            raise ValueError('bad')\n"
+            + "    except TypeError:\n"
+            + "        print('wrong')\n"
+            + "    except (ValueError, RuntimeError) as error:\n"
+            + "        print('caught', error)\n"
+            + "    else:\n"
+            + "        print('clean')\n"
+            + "    finally:\n"
+            + "        print('done')\n"
+            + "classify(False)\n"
+            + "classify(True)\n"
+            + "try:\n"
+            + "    try:\n"
+            + "        raise ValueError('again')\n"
+            + "    except ValueError:\n"
+            + "        raise\n"
+            + "except Exception as error:\n"
+            + "    print('reraised', error)\n";
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        var reference = RunReference(python, code);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = DotPythonCommand.Run(
+            ["-c", code],
+            TextReader.Null,
+            output,
+            error,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(reference.ExitCode, exitCode);
+        Assert.Equal(reference.StandardOutput, output.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
     private static ReferenceResult RunReference(
         string executable,
         string code,

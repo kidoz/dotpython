@@ -10,6 +10,201 @@ namespace DotPython.RuntimeTests;
 public sealed class ManagedPythonEngineTests
 {
     [Fact]
+    public void Execute_HandlesRaisedExceptionsAndRunsElseAndFinally()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def classify(value):\n"
+                + "    try:\n"
+                + "        if value:\n"
+                + "            raise ValueError('bad')\n"
+                + "    except TypeError:\n"
+                + "        print('wrong')\n"
+                + "    except (ValueError, RuntimeError) as error:\n"
+                + "        print('caught', error)\n"
+                + "    else:\n"
+                + "        print('clean')\n"
+                + "    finally:\n"
+                + "        print('done')\n"
+                + "classify(False)\n"
+                + "classify(True)\n",
+            "exceptions.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"clean{Environment.NewLine}done{Environment.NewLine}"
+                + $"caught bad{Environment.NewLine}done{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_ReraisesAcrossFunctionFramesAndRunsHandlerCleanup()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def fail():\n"
+                + "    try:\n"
+                + "        raise ValueError('inner')\n"
+                + "    except ValueError as error:\n"
+                + "        print(error)\n"
+                + "        raise\n"
+                + "try:\n"
+                + "    fail()\n"
+                + "except Exception as error:\n"
+                + "    print('outer', error)\n",
+            "reraise.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"inner{Environment.NewLine}outer inner{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_FinallyReturnOverridesPendingReturn()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def choose():\n"
+                + "    try:\n"
+                + "        return 'try'\n"
+                + "    finally:\n"
+                + "        return 'finally'\n"
+                + "print(choose())\n",
+            "finally_return.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"finally{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_RunsFinallyBeforeAnExistingRuntimeFaultEscapes()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n" + "    missing_name\n" + "finally:\n" + "    print('cleanup')\n",
+            "runtime_fault.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4002", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal($"cleanup{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_PreservesPendingExceptionAcrossAHandledExceptionInsideFinally()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n"
+                + "    raise ValueError('outer')\n"
+                + "finally:\n"
+                + "    try:\n"
+                + "        raise TypeError('inner')\n"
+                + "    except TypeError as error:\n"
+                + "        print('caught', error)\n",
+            "nested_finally.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4031", diagnostic.Code);
+        Assert.Equal("ValueError: outer", diagnostic.Message);
+        Assert.Equal($"caught inner{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_DefersCancellationWhileFinallyRuns()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var output = new CancelAfterFirstLineWriter(cancellation);
+
+        Assert.Throws<OperationCanceledException>(() =>
+            new ManagedPythonEngine().Execute(
+                "try:\n" + "    print('body')\n" + "finally:\n" + "    print('cleanup')\n",
+                "cancelled_finally.py",
+                output,
+                cancellationToken: cancellation.Token
+            )
+        );
+        Assert.Equal($"body{Environment.NewLine}cleanup{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_DefersTheInstructionLimitWhileFinallyRuns()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n"
+                + "    while True:\n"
+                + "        1\n"
+                + "finally:\n"
+                + "    print('cleanup')\n",
+            "limited_finally.py",
+            output,
+            new ManagedExecutionOptions { InstructionLimit = 20 },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4001", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal($"cleanup{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_BoundsDeferredFinallyCleanup()
+    {
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n"
+                + "    raise ValueError('original')\n"
+                + "finally:\n"
+                + "    while True:\n"
+                + "        1\n",
+            "unbounded_finally.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4032", Assert.Single(result.Diagnostics).Code);
+    }
+
+    [Fact]
+    public void Execute_ReportsAnUncaughtPythonExceptionAtItsRaiseSpan()
+    {
+        var source = "raise RuntimeError('failed')";
+
+        var result = new ManagedPythonEngine().Execute(
+            source,
+            "uncaught.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4031", diagnostic.Code);
+        Assert.Equal("RuntimeError: failed", diagnostic.Message);
+        Assert.Equal(new TextSpan(0, source.Length), diagnostic.Span);
+    }
+
+    [Fact]
     public void Constructor_RejectsMissingAndDuplicateModuleSearchPaths()
     {
         var missing = Path.Combine(Path.GetTempPath(), $"dotpython-missing-{Guid.NewGuid():N}");
@@ -1202,5 +1397,21 @@ public sealed class ManagedPythonEngineTests
         );
         Directory.CreateDirectory(directory);
         return directory;
+    }
+
+    private sealed class CancelAfterFirstLineWriter(CancellationTokenSource cancellation)
+        : StringWriter
+    {
+        private bool _cancelled;
+
+        public override void WriteLine(string? value)
+        {
+            base.WriteLine(value);
+            if (!_cancelled)
+            {
+                _cancelled = true;
+                cancellation.Cancel();
+            }
+        }
     }
 }

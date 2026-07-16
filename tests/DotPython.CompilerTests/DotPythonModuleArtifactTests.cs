@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
 using DotPython.Compiler;
 using DotPython.Compiler.Artifacts;
 using DotPython.Compiler.Bytecode;
@@ -58,7 +60,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":8,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":9,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -123,6 +125,39 @@ public sealed class DotPythonModuleArtifactTests
             instruction => instruction.OpCode == PythonOpCode.ForIter
         );
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
+    public void Deserialize_RoundTripsManagedExceptionControlFlow()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "exceptions",
+                Compile(
+                    "try:\n"
+                        + "    raise ValueError('bad')\n"
+                        + "except ValueError:\n"
+                        + "    print('caught')\n"
+                        + "finally:\n"
+                        + "    print('done')\n"
+                )
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.SetupExcept
+        );
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.SetupFinally
+        );
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.Raise
+        );
     }
 
     [Fact]
@@ -258,10 +293,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":8,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":9,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":8,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":9,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
@@ -319,8 +354,62 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Equal(42, (int)PythonOpCode.ForIter);
         Assert.Equal(43, (int)PythonOpCode.ReturnLocal);
         Assert.Equal(44, (int)PythonOpCode.CallLocal);
+        Assert.Equal(45, (int)PythonOpCode.ImportName);
+        Assert.Equal(46, (int)PythonOpCode.LoadAttribute);
+        Assert.Equal(47, (int)PythonOpCode.ImportFrom);
+        Assert.Equal(48, (int)PythonOpCode.SetupExcept);
+        Assert.Equal(49, (int)PythonOpCode.SetupFinally);
+        Assert.Equal(50, (int)PythonOpCode.PopExceptionBlock);
+        Assert.Equal(51, (int)PythonOpCode.EnterFinally);
+        Assert.Equal(52, (int)PythonOpCode.EndFinally);
+        Assert.Equal(53, (int)PythonOpCode.LoadException);
+        Assert.Equal(54, (int)PythonOpCode.MatchException);
+        Assert.Equal(55, (int)PythonOpCode.ClearException);
+        Assert.Equal(56, (int)PythonOpCode.Raise);
         Assert.Equal(0, (int)PythonConstantType.NoneValue);
         Assert.Equal(7, (int)PythonConstantType.CodeObject);
+    }
+
+    [Fact]
+    public void Deserialize_RejectsAnExceptionHandlerTargetAtEndOfCode()
+    {
+        var code = Compile(
+            "try:\n"
+                + "    raise ValueError('bad')\n"
+                + "except ValueError:\n"
+                + "    print('caught')\n"
+        );
+        var instruction = Assert.Single(
+            code.Instructions,
+            candidate => candidate.OpCode == PythonOpCode.SetupExcept
+        );
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create("invalid", code)
+        );
+        var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(10, 4));
+        var payload = bytes.AsSpan(14, payloadLength);
+        var encodedInstruction = new byte[14];
+        BinaryPrimitives.WriteUInt16LittleEndian(encodedInstruction, (ushort)instruction.OpCode);
+        BinaryPrimitives.WriteInt32LittleEndian(encodedInstruction.AsSpan(2), instruction.Operand);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            encodedInstruction.AsSpan(6),
+            instruction.Span.Start
+        );
+        BinaryPrimitives.WriteInt32LittleEndian(
+            encodedInstruction.AsSpan(10),
+            instruction.Span.Length
+        );
+        var instructionOffset = payload.IndexOf(encodedInstruction);
+        Assert.True(instructionOffset >= 0);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            payload[(instructionOffset + 2)..],
+            code.Instructions.Count
+        );
+        SHA256.HashData(payload).CopyTo(bytes.AsSpan(14 + payloadLength));
+
+        Assert.Throws<InvalidDataException>(() =>
+            DotPythonModuleArtifactSerializer.Deserialize(bytes)
+        );
     }
 
     private static PythonCodeObject Compile(string source)

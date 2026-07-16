@@ -215,6 +215,21 @@ public static class PythonSymbolBinder
                     CollectBoundNames(loop.Body, localNames, localNameSet);
                     CollectBoundNames(loop.ElseBody, localNames, localNameSet);
                     break;
+                case PythonTryStatement tryStatement:
+                    CollectBoundNames(tryStatement.Body, localNames, localNameSet);
+                    foreach (var handler in tryStatement.Handlers)
+                    {
+                        if (handler.Target is not null)
+                        {
+                            AddLocal(handler.Target.Name, localNames, localNameSet);
+                        }
+
+                        CollectBoundNames(handler.Body, localNames, localNameSet);
+                    }
+
+                    CollectBoundNames(tryStatement.ElseBody, localNames, localNameSet);
+                    CollectBoundNames(tryStatement.FinallyBody, localNames, localNameSet);
+                    break;
             }
         }
     }
@@ -265,6 +280,18 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonRaiseStatement raiseStatement:
+                    if (raiseStatement.Exception is not null)
+                    {
+                        CollectReferences(raiseStatement.Exception, references);
+                    }
+
+                    if (raiseStatement.Cause is not null)
+                    {
+                        CollectReferences(raiseStatement.Cause, references);
+                    }
+
+                    break;
                 case PythonIfStatement conditional:
                     foreach (var clause in conditional.Clauses)
                     {
@@ -283,6 +310,21 @@ public static class PythonSymbolBinder
                     CollectReferences(loop.Iterable, references);
                     CollectReferences(loop.Body, references, diagnostics, scopeKind);
                     CollectReferences(loop.ElseBody, references, diagnostics, scopeKind);
+                    break;
+                case PythonTryStatement tryStatement:
+                    CollectReferences(tryStatement.Body, references, diagnostics, scopeKind);
+                    foreach (var handler in tryStatement.Handlers)
+                    {
+                        if (handler.Type is not null)
+                        {
+                            CollectReferences(handler.Type, references);
+                        }
+
+                        CollectReferences(handler.Body, references, diagnostics, scopeKind);
+                    }
+
+                    CollectReferences(tryStatement.ElseBody, references, diagnostics, scopeKind);
+                    CollectReferences(tryStatement.FinallyBody, references, diagnostics, scopeKind);
                     break;
                 case PythonFunctionDefinitionStatement:
                     break;
@@ -403,6 +445,31 @@ public static class PythonSymbolBinder
                     }
 
                     foreach (var nested in EnumerateFunctions(loop.ElseBody))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonTryStatement tryStatement:
+                    foreach (var nested in EnumerateFunctions(tryStatement.Body))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var handler in tryStatement.Handlers)
+                    {
+                        foreach (var nested in EnumerateFunctions(handler.Body))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    foreach (var nested in EnumerateFunctions(tryStatement.ElseBody))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateFunctions(tryStatement.FinallyBody))
                     {
                         yield return nested;
                     }

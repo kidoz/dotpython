@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using DotPython.Compiler.Bytecode;
 using DotPython.Language.Text;
@@ -241,6 +242,31 @@ internal sealed record PythonBuiltinFunctionValue(
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<built-in function {Name}>";
+}
+
+internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
+{
+    internal override string ToDisplayString() => $"<class '{Name}'>";
+}
+
+internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
+{
+    internal PythonExceptionValue? Cause { get; set; }
+
+    internal PythonExceptionValue? Context { get; set; }
+
+    internal bool SuppressContext { get; set; }
+
+    public bool Equals(PythonExceptionValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
+    internal override string ToDisplayString() => Message;
+
+    internal override string ToRepresentationString() =>
+        Message.Length == 0
+            ? $"{TypeName}()"
+            : $"{TypeName}({new PythonTextValue(Message).ToRepresentationString()})";
 }
 
 internal sealed record PythonFunctionValue(

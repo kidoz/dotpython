@@ -12,8 +12,8 @@ inside a .NET solution, and as an early SDK-style `.dpyproj` project language wh
 libraries can be referenced from C# and other managed languages.
 
 > **Status:** early, active development. Today the CLI executes a growing managed subset of the
-> language (literals, names, assignment, arithmetic, calls, control flow, functions, and registered
-> source-module imports). The
+> language (literals, names, assignment, arithmetic, calls, control flow, functions, explicit
+> exceptions, and managed package imports). The
 > compiler also emits deterministic `.dpyc` module artifacts, the interop layer statically
 > compiles an initial `.pyi` subset into typed CLR export contracts, and the prototype
 > `DotPython.Sdk` generates typed C# facades for single-module projects.
@@ -113,6 +113,23 @@ Namespace packages, wheel/zip imports, wildcard imports, reload, and import hook
 implemented. Native `.so` and `.pyd` files are recognized but never loaded; importing one produces
 the actionable `DPY4027` unsupported-native-extension diagnostic. CPython ABI compatibility remains
 disabled.
+
+## Managed exceptions
+
+The managed compiler and VM support explicit `raise`, including bare re-raise and
+`raise ... from ...`, plus `try` / `except` / `else` / `finally`. Handlers can match the
+implemented built-in exception hierarchy, tuples of exception types, or a final bare clause, and
+can bind an exception with `as`. Exception propagation crosses managed function and module frames;
+uncaught explicit exceptions produce `DPY4031` at the original raise span.
+
+`finally` executes for normal completion, returns, explicit exceptions, existing runtime faults,
+cancellation, and the normal instruction limit. Deferred cleanup has its own fixed instruction
+budget so cancellation or a resource-limit failure cannot open an unbounded cleanup path.
+
+This is an initial exception-state slice. Existing VM operation faults still retain their stable
+`DPY4xxx` diagnostics and are not yet converted into catchable Python exception objects.
+User-defined exception classes, exception groups and `except*`, `sys.exception()`, public traceback
+objects, and exact deletion of an `except ... as` target remain follow-up work.
 
 ## Typed module contracts
 

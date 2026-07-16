@@ -102,6 +102,10 @@ public static class PythonParser
                 {
                     statements.Add(ParseForStatement());
                 }
+                else if (IsKeyword("try"))
+                {
+                    statements.Add(ParseTryStatement());
+                }
                 else if (IsKeyword("def"))
                 {
                     statements.Add(ParseFunctionDefinition());
@@ -224,6 +228,116 @@ public static class PythonParser
                 iterable,
                 body,
                 elseBody,
+                TextSpan.FromBounds(start, end)
+            );
+        }
+
+        private PythonTryStatement ParseTryStatement()
+        {
+            var start = Advance().Span.Start;
+            var colon = Expect(SyntaxTokenKind.Colon, "':' after 'try'");
+            var body = ParseSuite();
+            var handlers = new List<PythonExceptHandler>();
+            var sawBareHandler = false;
+            var end = GetBodyEnd(body, colon.Span.End);
+
+            while (MatchKeyword("except", out var exceptToken))
+            {
+                PythonExpression? type = null;
+                PythonNameExpression? target = null;
+                if (Current.Kind != SyntaxTokenKind.Colon)
+                {
+                    type = ParseRequiredExpression("an exception type after 'except'");
+                    if (MatchKeyword("as", out _))
+                    {
+                        var targetToken = Expect(SyntaxTokenKind.Identifier, "a target after 'as'");
+                        if (IsReservedKeyword(targetToken.Text))
+                        {
+                            Report(
+                                "DPY2010",
+                                $"The keyword '{targetToken.Text}' cannot be used as an exception target.",
+                                targetToken.Span
+                            );
+                        }
+
+                        target = new PythonNameExpression(targetToken.Text, targetToken.Span);
+                    }
+                }
+                else
+                {
+                    if (sawBareHandler)
+                    {
+                        Report(
+                            "DPY2012",
+                            "A try statement cannot contain more than one bare except clause.",
+                            exceptToken.Span
+                        );
+                    }
+
+                    sawBareHandler = true;
+                }
+
+                var handlerColon = Expect(SyntaxTokenKind.Colon, "':' after the except clause");
+                var handlerBody = ParseSuite();
+                end = GetBodyEnd(handlerBody, handlerColon.Span.End);
+                handlers.Add(
+                    new PythonExceptHandler(
+                        type,
+                        target,
+                        handlerBody,
+                        TextSpan.FromBounds(exceptToken.Span.Start, end)
+                    )
+                );
+
+                if (sawBareHandler && IsKeyword("except"))
+                {
+                    Report(
+                        "DPY2013",
+                        "A bare except clause must be the last exception handler.",
+                        Current.Span
+                    );
+                }
+            }
+
+            IReadOnlyList<PythonStatement> elseBody = Array.Empty<PythonStatement>();
+            if (MatchKeyword("else", out var elseToken))
+            {
+                if (handlers.Count == 0)
+                {
+                    Report(
+                        "DPY2014",
+                        "A try statement requires an except clause before 'else'.",
+                        elseToken.Span
+                    );
+                }
+
+                var elseColon = Expect(SyntaxTokenKind.Colon, "':' after 'else'");
+                elseBody = ParseSuite();
+                end = GetBodyEnd(elseBody, elseColon.Span.End);
+            }
+
+            IReadOnlyList<PythonStatement> finallyBody = Array.Empty<PythonStatement>();
+            if (MatchKeyword("finally", out _))
+            {
+                var finallyColon = Expect(SyntaxTokenKind.Colon, "':' after 'finally'");
+                finallyBody = ParseSuite();
+                end = GetBodyEnd(finallyBody, finallyColon.Span.End);
+            }
+
+            if (handlers.Count == 0 && finallyBody.Count == 0)
+            {
+                Report(
+                    "DPY2015",
+                    "A try statement requires at least one except or finally clause.",
+                    new TextSpan(start, Math.Max(1, end - start))
+                );
+            }
+
+            return new PythonTryStatement(
+                body,
+                handlers.AsReadOnly(),
+                elseBody,
+                finallyBody,
                 TextSpan.FromBounds(start, end)
             );
         }
@@ -399,6 +513,11 @@ public static class PythonParser
             if (IsKeyword("return"))
             {
                 return ParseReturnStatement();
+            }
+
+            if (IsKeyword("raise"))
+            {
+                return ParseRaiseStatement();
             }
 
             if (IsKeyword("import"))
@@ -637,6 +756,44 @@ public static class PythonParser
             return new PythonReturnStatement(
                 value,
                 TextSpan.FromBounds(returnToken.Span.Start, value.Span.End)
+            );
+        }
+
+        private PythonRaiseStatement ParseRaiseStatement()
+        {
+            var raiseToken = Advance();
+            if (
+                Current.Kind
+                is SyntaxTokenKind.Semicolon
+                    or SyntaxTokenKind.NewLine
+                    or SyntaxTokenKind.Dedent
+                    or SyntaxTokenKind.EndOfFile
+            )
+            {
+                return new PythonRaiseStatement(null, null, raiseToken.Span);
+            }
+
+            var exception = ParseExpression();
+            if (exception is null)
+            {
+                ReportExpected("an exception after 'raise'", Current.Span);
+                return new PythonRaiseStatement(null, null, raiseToken.Span);
+            }
+
+            PythonExpression? cause = null;
+            if (MatchKeyword("from", out _))
+            {
+                cause = ParseExpression();
+                if (cause is null)
+                {
+                    ReportExpected("an exception after 'from'", Current.Span);
+                }
+            }
+
+            return new PythonRaiseStatement(
+                exception,
+                cause,
+                TextSpan.FromBounds(raiseToken.Span.Start, cause?.Span.End ?? exception.Span.End)
             );
         }
 
@@ -1346,7 +1503,19 @@ public static class PythonParser
             };
 
         private static bool IsExpressionKeyword(string value) =>
-            value is "and" or "or" or "not" or "in" or "elif" or "else" or "def" or "return";
+            value
+                is "and"
+                    or "or"
+                    or "not"
+                    or "in"
+                    or "as"
+                    or "from"
+                    or "except"
+                    or "finally"
+                    or "elif"
+                    or "else"
+                    or "def"
+                    or "return";
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value

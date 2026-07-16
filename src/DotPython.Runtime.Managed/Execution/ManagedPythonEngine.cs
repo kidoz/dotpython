@@ -114,7 +114,14 @@ public sealed class ManagedPythonEngine
                 enableReturnLocalContinuation,
                 cancellationToken
             );
-            return virtualMachine.Invoke(functionName, arguments);
+            try
+            {
+                return virtualMachine.Invoke(functionName, arguments);
+            }
+            catch (PythonRaisedException raised)
+            {
+                throw ToRuntimeFault(raised);
+            }
         }
     }
 
@@ -145,7 +152,14 @@ public sealed class ManagedPythonEngine
                 enableReturnLocalContinuation: false,
                 cancellationToken
             );
-            return virtualMachine.InvokeProfiled(functionName, arguments, profile);
+            try
+            {
+                return virtualMachine.InvokeProfiled(functionName, arguments, profile);
+            }
+            catch (PythonRaisedException raised)
+            {
+                throw ToRuntimeFault(raised);
+            }
         }
     }
 
@@ -247,6 +261,14 @@ public sealed class ManagedPythonEngine
                 [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
             );
         }
+        catch (PythonRaisedException raised)
+        {
+            var fault = ToRuntimeFault(raised);
+            return new ManagedExecutionResult(
+                source,
+                [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
+            );
+        }
     }
 
     internal PreparedPythonCode PrepareCode(PythonCodeObject code)
@@ -301,4 +323,14 @@ public sealed class ManagedPythonEngine
             $"Managed module '{name}' could not be compiled: {diagnostic.Message}",
             importSpan
         );
+
+    private static PythonRuntimeException ToRuntimeFault(PythonRaisedException raised)
+    {
+        var span = raised.Traceback.Count == 0 ? new TextSpan(0, 0) : raised.Traceback[0].Span;
+        var message =
+            raised.Value.Message.Length == 0
+                ? raised.Value.TypeName
+                : $"{raised.Value.TypeName}: {raised.Value.Message}";
+        return new PythonRuntimeException("DPY4031", message, span);
+    }
 }

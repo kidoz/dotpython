@@ -131,6 +131,50 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsRaiseTryExceptElseAndFinally()
+    {
+        var result = Parse(
+            "try:\n"
+                + "    raise ValueError('bad') from None\n"
+                + "except (TypeError, ValueError) as error:\n"
+                + "    print(error)\n"
+                + "except:\n"
+                + "    raise\n"
+                + "else:\n"
+                + "    print('clean')\n"
+                + "finally:\n"
+                + "    print('done')\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var statement = Assert.IsType<PythonTryStatement>(Assert.Single(result.Module.Statements));
+        var raised = Assert.IsType<PythonRaiseStatement>(Assert.Single(statement.Body));
+        Assert.NotNull(raised.Exception);
+        Assert.IsType<PythonConstantExpression>(raised.Cause);
+        Assert.Equal(2, statement.Handlers.Count);
+        Assert.IsType<PythonTupleExpression>(statement.Handlers[0].Type);
+        Assert.Equal("error", statement.Handlers[0].Target?.Name);
+        Assert.IsType<PythonRaiseStatement>(Assert.Single(statement.Handlers[1].Body));
+        Assert.Single(statement.ElseBody);
+        Assert.Single(statement.FinallyBody);
+    }
+
+    [Fact]
+    public void Parse_RejectsAHandlerAfterBareExcept()
+    {
+        var result = Parse(
+            "try:\n"
+                + "    raise ValueError()\n"
+                + "except:\n"
+                + "    print('all')\n"
+                + "except ValueError:\n"
+                + "    print('value')\n"
+        );
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "DPY2013");
+    }
+
+    [Fact]
     public void Parse_AppliesBooleanAndComparisonPrecedence()
     {
         var result = Parse("value = not first < middle < last and fallback or final");

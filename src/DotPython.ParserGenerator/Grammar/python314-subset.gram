@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 7.
+# DotPython executable PEG subset, version 8.
 # Upstream tag: CPython v3.14.6.
 # Upstream commit: c63aec69bd59c55314c06c23f4c22c03de76fe45.
 # Provenance: https://github.com/python/cpython/blob/c63aec69bd59c55314c06c23f4c22c03de76fe45/Grammar/python.gram
@@ -8,11 +8,12 @@
 file: [statements] ENDMARKER
 statements: statement+
 statement: compound_stmt | simple_stmts
-compound_stmt: if_stmt | while_stmt | for_stmt | function_def
+compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def
 simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-simple_stmt: assignment | return_stmt | import_stmt | from_import_stmt | expression
+simple_stmt: assignment | return_stmt | raise_stmt | import_stmt | from_import_stmt | expression
 assignment: primary '=' expression
 return_stmt: 'return' [expression]
+raise_stmt: 'raise' [expression ['from' expression]]
 import_stmt: 'import' ','.dotted_import_alias+
 from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)
 dotted_import_alias: dotted_name ['as' NAME]
@@ -25,6 +26,8 @@ relative_dots: ('.' | '...')+
 if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
 while_stmt: 'while' expression ':' block ['else' ':' block]
 for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]
+try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
+except_block: 'except' [expression ['as' NAME]] ':' block
 function_def: 'def' NAME '(' [parameters] ')' ':' block
 parameters: ','.NAME+ [',']
 block: NEWLINE INDENT statements DEDENT | simple_stmts

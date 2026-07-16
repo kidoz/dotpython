@@ -50,4 +50,13 @@ public enum PythonOpCode
     ImportName = 45,
     LoadAttribute = 46,
     ImportFrom = 47,
+    SetupExcept = 48,
+    SetupFinally = 49,
+    PopExceptionBlock = 50,
+    EnterFinally = 51,
+    EndFinally = 52,
+    LoadException = 53,
+    MatchException = 54,
+    ClearException = 55,
+    Raise = 56,
 }
