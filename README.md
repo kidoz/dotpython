@@ -141,8 +141,11 @@ directly.
 
 Runtime disposal rejects new work, drains work that was already admitted, releases remaining
 resources in reverse registration order, clears runtime module state, and then stops the owning
-thread. Cancellation remains cooperative after a call begins. Reentrant scheduling from the owner
-thread is rejected until the callback/reentrancy contract is implemented explicitly.
+thread. Cancellation remains cooperative after a call begins. A synchronous host callback can
+re-enter the same runtime inline on its owning thread, with active and explicit cancellation linked
+and nesting limited to 64 calls. Cross-runtime entry from an owning thread, execution during
+resource/finalization cleanup, and asynchronous callback suspension are rejected to avoid hidden
+queue waits and deadlocks.
 
 This lifecycle foundation does not load native code or change the compatibility contract. No
 CPython ABI, HPy, Anyver, or NumPy execution support is enabled.

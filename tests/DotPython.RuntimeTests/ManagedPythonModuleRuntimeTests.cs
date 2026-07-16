@@ -158,6 +158,49 @@ public sealed class ManagedPythonModuleRuntimeTests
     }
 
     [Fact]
+    public async Task HostCallback_CanSynchronouslyReenterTheSameModuleRuntime()
+    {
+        var definition = CreateDefinition(
+            "callbacks",
+            "def outer(value):\n"
+                + "    print(value)\n"
+                + "    return value\n"
+                + "def inner(value): return value + 1",
+            Function(
+                "outer",
+                "OuterAsync",
+                [Parameter("value", BigIntegerType())],
+                BigIntegerType()
+            ),
+            Function(
+                "inner",
+                "InnerAsync",
+                [Parameter("value", BigIntegerType())],
+                BigIntegerType()
+            )
+        );
+        var output = new ReentrantInvocationWriter();
+        await using IDotPythonModuleRuntime runtime = new ManagedPythonModuleRuntime(
+            output: output
+        );
+        await using var module = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+        output.Module = module;
+
+        var result = await module.InvokeAsync<BigInteger>(
+            new PythonFunctionInvocation("outer", [new BigInteger(41)]),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(new BigInteger(41), result);
+        Assert.Equal(new BigInteger(42), output.CallbackResult);
+        Assert.Equal(1, output.CallbackCount);
+        Assert.NotEqual(Environment.CurrentManagedThreadId, output.CallbackThreadId);
+    }
+
+    [Fact]
     public async Task Invocation_ReportsStructuredContractAndRuntimeFailures()
     {
         var definition = CreateDefinition(
@@ -338,5 +381,35 @@ public sealed class ManagedPythonModuleRuntimeTests
 
         public override void WriteLine(string? value) =>
             ThreadIds.Add(Environment.CurrentManagedThreadId);
+    }
+
+    private sealed class ReentrantInvocationWriter : TextWriter
+    {
+        internal BigInteger? CallbackResult { get; private set; }
+
+        internal int CallbackCount { get; private set; }
+
+        internal int CallbackThreadId { get; private set; }
+
+        internal IDotPythonModule? Module { get; set; }
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void WriteLine(string? value)
+        {
+            CallbackCount++;
+            CallbackThreadId = Environment.CurrentManagedThreadId;
+            var invocation = Module!.InvokeAsync<BigInteger>(
+                new PythonFunctionInvocation("inner", [new BigInteger(41)])
+            );
+            if (!invocation.IsCompleted)
+            {
+                throw new InvalidOperationException(
+                    "A synchronous runtime callback did not complete inline."
+                );
+            }
+
+            CallbackResult = invocation.GetAwaiter().GetResult();
+        }
     }
 }

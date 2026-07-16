@@ -22,6 +22,10 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
 {
     internal const int MaximumPendingWork = 1024;
     internal const int MaximumOwnedResources = 4096;
+    internal const int MaximumReentrantDepth = 64;
+
+    [ThreadStatic]
+    private static ManagedRuntimeScheduler? _activeScheduler;
 
     private readonly SemaphoreSlim _admission = new(MaximumPendingWork, MaximumPendingWork);
     private readonly List<Exception> _cleanupFailures = [];
@@ -47,6 +51,9 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
         );
     private long _nextResourceId;
     private int _ownerThreadId;
+    private CancellationToken _activeCancellationToken;
+    private int _executionDepth;
+    private int _reentrantDepth;
     private ManagedRuntimeSchedulerState _state = ManagedRuntimeSchedulerState.Created;
 
     internal ManagedRuntimeScheduler(Action? initialize = null, Action? finalize = null)
@@ -87,9 +94,14 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(callback);
         if (IsOwnerThread)
         {
+            return InvokeReentrant(callback, cancellationToken);
+        }
+
+        if (_activeScheduler is not null)
+        {
             return ValueTask.FromException<T>(
                 new InvalidOperationException(
-                    "Reentrant managed-runtime scheduling is not supported."
+                    "A managed-runtime owning thread cannot synchronously enter another runtime."
                 )
             );
         }
@@ -192,6 +204,116 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
     [SuppressMessage(
         "Design",
         "CA1031:Do not catch general exception types",
+        Justification = "Inline callback failures must retain the asynchronous invocation contract without escaping across a native callback boundary."
+    )]
+    private ValueTask<T> InvokeReentrant<T>(
+        Func<CancellationToken, T> callback,
+        CancellationToken cancellationToken
+    )
+    {
+        if (_executionDepth == 0)
+        {
+            return ValueTask.FromException<T>(
+                new InvalidOperationException(
+                    "Managed-runtime execution can only re-enter from an active runtime call."
+                )
+            );
+        }
+
+        if (_reentrantDepth >= MaximumReentrantDepth)
+        {
+            return ValueTask.FromException<T>(
+                new InvalidOperationException(
+                    $"Managed-runtime callback reentrancy exceeded the {MaximumReentrantDepth}-call limit."
+                )
+            );
+        }
+
+        CancellationTokenSource? linkedCancellation = null;
+        var effectiveCancellationToken = GetReentrantCancellationToken(
+            cancellationToken,
+            out linkedCancellation
+        );
+        var previousCancellationToken = _activeCancellationToken;
+        _activeCancellationToken = effectiveCancellationToken;
+        _reentrantDepth++;
+        try
+        {
+            effectiveCancellationToken.ThrowIfCancellationRequested();
+            return new ValueTask<T>(callback(effectiveCancellationToken));
+        }
+        catch (OperationCanceledException) when (effectiveCancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled<T>(effectiveCancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return ValueTask.FromException<T>(exception);
+        }
+        finally
+        {
+            _reentrantDepth--;
+            _activeCancellationToken = previousCancellationToken;
+            linkedCancellation?.Dispose();
+        }
+    }
+
+    private CancellationToken GetReentrantCancellationToken(
+        CancellationToken cancellationToken,
+        out CancellationTokenSource? linkedCancellation
+    )
+    {
+        linkedCancellation = null;
+        if (!cancellationToken.CanBeCanceled)
+        {
+            return _activeCancellationToken;
+        }
+
+        if (
+            !_activeCancellationToken.CanBeCanceled
+            || cancellationToken == _activeCancellationToken
+        )
+        {
+            return cancellationToken;
+        }
+
+        linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _activeCancellationToken,
+            cancellationToken
+        );
+        return linkedCancellation.Token;
+    }
+
+    private T ExecuteTopLevel<T>(
+        Func<CancellationToken, T> callback,
+        CancellationToken cancellationToken
+    )
+    {
+        EnsureOwnerThread();
+        if (_executionDepth != 0)
+        {
+            throw new InvalidOperationException(
+                "The managed runtime attempted to start overlapping top-level work."
+            );
+        }
+
+        _executionDepth = 1;
+        _activeCancellationToken = cancellationToken;
+        try
+        {
+            return callback(cancellationToken);
+        }
+        finally
+        {
+            _activeCancellationToken = default;
+            _executionDepth = 0;
+            _reentrantDepth = 0;
+        }
+    }
+
+    [SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
         Justification = "Owner-thread cleanup failures must be returned through the asynchronous resource-release contract."
     )]
     private ValueTask ReleaseResourceAsync(long resourceId)
@@ -253,6 +375,7 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
     private void Run()
     {
         Volatile.Write(ref _ownerThreadId, Environment.CurrentManagedThreadId);
+        _activeScheduler = this;
         try
         {
             _initialize?.Invoke();
@@ -287,6 +410,7 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
         }
         finally
         {
+            _activeScheduler = null;
             _workItems.Writer.TryComplete();
         }
     }
@@ -419,11 +543,12 @@ internal sealed class ManagedRuntimeScheduler : IAsyncDisposable
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                _completion.TrySetResult(callback(cancellationToken));
+                _completion.TrySetResult(scheduler.ExecuteTopLevel(callback, cancellationToken));
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException exception)
+                when (exception.CancellationToken.IsCancellationRequested)
             {
-                _completion.TrySetCanceled(cancellationToken);
+                _completion.TrySetCanceled(exception.CancellationToken);
             }
             catch (Exception exception)
             {
