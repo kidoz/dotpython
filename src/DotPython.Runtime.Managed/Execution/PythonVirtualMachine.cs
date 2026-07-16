@@ -1006,7 +1006,7 @@ internal sealed class PythonVirtualMachine
         {
             var arguments = PopArguments(instruction.Operand, instruction.Span);
             Pop(instruction.Span);
-            _evaluationStack.Push(builtin.Invoke(arguments));
+            _evaluationStack.Push(builtin.Invoke(arguments, instruction.Span));
             code.RecordBuiltinCall(instructionIndex);
             return;
         }
@@ -1051,7 +1051,7 @@ internal sealed class PythonVirtualMachine
 
         if (target is PythonBuiltinFunctionValue builtin)
         {
-            _evaluationStack.Push(builtin.Invoke(Array.Empty<PythonValue>()));
+            _evaluationStack.Push(builtin.Invoke(Array.Empty<PythonValue>(), span));
             code.RecordBuiltinCall(instructionIndex);
             return;
         }
@@ -1389,7 +1389,7 @@ internal sealed class PythonVirtualMachine
         }
     }
 
-    private PythonNoneValue Print(IReadOnlyList<PythonValue> arguments)
+    private PythonNoneValue Print(IReadOnlyList<PythonValue> arguments, TextSpan _)
     {
         _output.WriteLine(string.Join(" ", arguments.Select(value => value.ToDisplayString())));
         return PythonNoneValue.Instance;

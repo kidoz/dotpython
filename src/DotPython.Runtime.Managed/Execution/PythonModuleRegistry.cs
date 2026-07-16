@@ -12,52 +12,49 @@ internal sealed class PythonModuleRegistry
     private const int MaxModuleSourceLength = 8 * 1024 * 1024;
     private const int MaxTotalSourceLength = 64 * 1024 * 1024;
 
-    private readonly Func<string, SourceText, TextSpan, PreparedPythonCode> _compile;
+    private readonly Func<string, PythonModuleDefinition, TextSpan, PreparedPythonCode> _compile;
     private readonly Dictionary<string, LoadedPythonModule> _loaded = new(StringComparer.Ordinal);
     private readonly HashSet<string> _packages = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SourceText> _sources;
+    private readonly Dictionary<string, PythonModuleDefinition> _definitions;
     private int _initializingCount;
 
     internal PythonModuleRegistry(
-        IReadOnlyDictionary<string, SourceText>? sources,
-        Func<string, SourceText, TextSpan, PreparedPythonCode> compile
+        IReadOnlyDictionary<string, PythonModuleDefinition> definitions,
+        Func<string, PythonModuleDefinition, TextSpan, PreparedPythonCode> compile
     )
     {
+        ArgumentNullException.ThrowIfNull(definitions);
         ArgumentNullException.ThrowIfNull(compile);
         _compile = compile;
-        _sources = new Dictionary<string, SourceText>(StringComparer.Ordinal);
-        if (sources is null)
-        {
-            return;
-        }
+        _definitions = new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal);
 
-        if (sources.Count > MaxModuleCount)
+        if (definitions.Count > MaxModuleCount)
         {
             throw new ArgumentException(
                 $"The managed module catalog exceeds the {MaxModuleCount} module limit.",
-                nameof(sources)
+                nameof(definitions)
             );
         }
 
         var totalSourceLength = 0L;
-        foreach (var (name, source) in sources)
+        foreach (var (name, definition) in definitions)
         {
-            if (_sources.Count >= MaxModuleCount)
+            if (_definitions.Count >= MaxModuleCount)
             {
                 throw new ArgumentException(
                     $"The managed module catalog exceeds the {MaxModuleCount} module limit.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
-            ArgumentNullException.ThrowIfNull(source);
+            ArgumentNullException.ThrowIfNull(definition);
             if (name.Length > MaxModuleNameLength)
             {
                 throw new ArgumentException(
                     $"Managed module name '{name[..Math.Min(name.Length, 80)]}…' exceeds the "
                         + $"{MaxModuleNameLength} character limit.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
@@ -65,31 +62,35 @@ internal sealed class PythonModuleRegistry
             {
                 throw new ArgumentException(
                     $"Managed module name '{name}' must be one or more dot-separated Python identifiers.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
-            if (source.Length > MaxModuleSourceLength)
+            if (definition.Source is { } source && source.Length > MaxModuleSourceLength)
             {
                 throw new ArgumentException(
                     $"Managed module '{name}' exceeds the {MaxModuleSourceLength} character source limit.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
-            totalSourceLength += source.Length;
+            totalSourceLength += definition.Source?.Length ?? 0;
             if (totalSourceLength > MaxTotalSourceLength)
             {
                 throw new ArgumentException(
                     $"The managed module catalog exceeds the {MaxTotalSourceLength} character source limit.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
-            _sources.Add(name, source);
+            _definitions.Add(name, definition);
+            if (definition.IsPackage)
+            {
+                _packages.Add(name);
+            }
         }
 
-        foreach (var name in _sources.Keys)
+        foreach (var name in _definitions.Keys)
         {
             var separator = name.AsSpan().LastIndexOf('.');
             if (separator < 0)
@@ -98,11 +99,11 @@ internal sealed class PythonModuleRegistry
             }
 
             var parentName = name[..separator];
-            if (!_sources.ContainsKey(parentName))
+            if (!_definitions.ContainsKey(parentName))
             {
                 throw new ArgumentException(
                     $"Managed package '{parentName}' must be registered before submodule '{name}'.",
-                    nameof(sources)
+                    nameof(definitions)
                 );
             }
 
@@ -110,7 +111,7 @@ internal sealed class PythonModuleRegistry
         }
     }
 
-    internal bool ContainsAbsolute(string name) => _sources.ContainsKey(name);
+    internal bool ContainsAbsolute(string name) => _definitions.ContainsKey(name);
 
     internal PythonModuleImport Resolve(string name, string currentPackage, TextSpan span) =>
         ResolveAbsolute(NormalizeName(name, currentPackage, span), span);
@@ -133,13 +134,36 @@ internal sealed class PythonModuleRegistry
             return new PythonModuleImport(loaded.Module, null);
         }
 
-        if (!_sources.TryGetValue(name, out var source))
+        if (!_definitions.TryGetValue(name, out var definition))
         {
             throw new PythonRuntimeException(
                 "DPY4020",
                 $"No managed module named '{name}' is registered.",
                 span
             );
+        }
+
+        if (definition.IsNativeExtension)
+        {
+            throw new PythonRuntimeException(
+                "DPY4027",
+                $"Native extension module '{name}' at '{definition.NativeExtensionPath}' cannot execute in the managed runtime.",
+                span
+            );
+        }
+
+        var parent = GetLoadedParent(name, span);
+        var globals = new PythonGlobalNamespace();
+        globals.SetValue("__name__", new PythonTextValue(name));
+        globals.SetValue("__package__", new PythonTextValue(GetPackageName(name)));
+        var module = new PythonModuleValue(name, globals);
+        if (definition.Initialize is not null)
+        {
+            definition.Initialize(globals);
+            var initialized = new LoadedPythonModule(module, parent) { IsInitialized = true };
+            _loaded.Add(name, initialized);
+            parent?.Globals.SetValue(GetLeafName(name), module);
+            return new PythonModuleImport(module, null);
         }
 
         if (_initializingCount >= MaxImportDepth)
@@ -151,12 +175,7 @@ internal sealed class PythonModuleRegistry
             );
         }
 
-        var parent = GetLoadedParent(name, span);
-        var code = _compile(name, source, span);
-        var globals = new PythonGlobalNamespace();
-        globals.SetValue("__name__", new PythonTextValue(name));
-        globals.SetValue("__package__", new PythonTextValue(GetPackageName(name)));
-        var module = new PythonModuleValue(name, globals);
+        var code = _compile(name, definition, span);
         _loaded.Add(name, new LoadedPythonModule(module, parent));
         _initializingCount++;
         return new PythonModuleImport(module, code);

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 using DotPython.Compiler.Bytecode;
+using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
@@ -236,7 +237,7 @@ internal sealed record PythonByteSequenceValue(byte[] Value) : PythonValue
 
 internal sealed record PythonBuiltinFunctionValue(
     string Name,
-    Func<IReadOnlyList<PythonValue>, PythonValue> Invoke
+    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Invoke
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<built-in function {Name}>";

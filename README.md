@@ -66,7 +66,7 @@ free-threaded ABI selection, SHA-256, native archive entries, imported symbols w
 Mach-O, or PE tables are readable, and actionable incompatibility diagnostics. Classification
 never loads or executes a library and does not change the managed runtime's CPython ABI support.
 
-## Managed source modules
+## Managed modules and packages
 
 Embedded callers can provide an immutable catalog of source modules and packages. A package is a
 catalog entry that has registered dot-separated child modules. Each engine owns its module objects
@@ -86,8 +86,33 @@ engine.Execute("import helpers.values; print(helpers.values.answer)", "main.py",
 The current slice supports dotted absolute imports, explicit packages, relative `from` imports,
 aliases, parenthesized import lists, submodule fallback, and module attribute reads. Catalog size,
 source size, module-name length, and active import depth are bounded. Every dotted child requires an
-explicit parent-package source entry. Filesystem and artifact discovery, namespace packages,
-wildcard imports, reload, import hooks, and native extensions are not implemented.
+explicit parent-package source entry.
+
+An engine can instead take an ordered set of package roots. Startup discovers regular packages
+from `__init__.py`, source modules, validated DotPython `.dpyc` artifacts, and top-level
+`*.dist-info/METADATA` records. The snapshot is immutable after construction; the first configured
+root wins across roots, while ambiguous source/artifact identities within one root are rejected.
+
+```csharp
+var engine = new ManagedPythonEngine(
+    new ManagedModuleDiscoveryOptions
+    {
+        SearchPaths = ["/opt/my-application/python"],
+    }
+);
+engine.Execute("import helpers.values; print(helpers.values.answer)", "main.py", output);
+```
+
+The CLI applies the same discovery contract to the script directory, or to the current directory
+for `-c` and standard-input execution. A minimal runtime-owned `importlib.metadata.version()` reads
+the startup metadata snapshot, including normalized distribution names. Discovery has fixed entry,
+depth, per-file, and aggregate payload limits, uses strict UTF-8, and does not traverse symbolic
+links or reparse points.
+
+Namespace packages, wheel/zip imports, wildcard imports, reload, and import hooks are not
+implemented. Native `.so` and `.pyd` files are recognized but never loaded; importing one produces
+the actionable `DPY4027` unsupported-native-extension diagnostic. CPython ABI compatibility remains
+disabled.
 
 ## Typed module contracts
 

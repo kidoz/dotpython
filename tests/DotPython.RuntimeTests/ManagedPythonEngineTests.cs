@@ -10,6 +10,311 @@ namespace DotPython.RuntimeTests;
 public sealed class ManagedPythonEngineTests
 {
     [Fact]
+    public void Constructor_RejectsMissingAndDuplicateModuleSearchPaths()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"dotpython-missing-{Guid.NewGuid():N}");
+
+        Assert.Throws<ArgumentException>(() =>
+            new ManagedPythonEngine(new ManagedModuleDiscoveryOptions { SearchPaths = [missing] })
+        );
+
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            Assert.Throws<ArgumentException>(() =>
+                new ManagedPythonEngine(
+                    new ManagedModuleDiscoveryOptions { SearchPaths = [directory, directory] }
+                )
+            );
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_DiscoversFilesystemPackagesMetadataAndUsesAnImmutableSnapshot()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var packageDirectory = Directory.CreateDirectory(Path.Combine(directory, "sample"));
+            var metadataDirectory = Directory.CreateDirectory(
+                Path.Combine(directory, "sample_dist-1.2.3.dist-info")
+            );
+            File.WriteAllText(
+                Path.Combine(packageDirectory.FullName, "__init__.py"),
+                "from importlib.metadata import version\n"
+                    + "from . import values\n"
+                    + "__version__ = version('Sample_Dist')\n"
+                    + "answer = values.answer"
+            );
+            File.WriteAllText(Path.Combine(packageDirectory.FullName, "values.py"), "answer = 42");
+            File.WriteAllText(
+                Path.Combine(metadataDirectory.FullName, "METADATA"),
+                "Metadata-Version: 2.4\nName: sample-dist\nVersion: 1.2.3\n"
+            );
+
+            var engine = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            );
+            Directory.Delete(directory, recursive: true);
+            using var output = new StringWriter();
+
+            var result = engine.Execute(
+                "import sample\nprint(sample.answer, sample.__version__)",
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal($"42 1.2.3{Environment.NewLine}", output.ToString());
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Execute_UsesFirstModuleSearchPathPrecedence()
+    {
+        var first = CreateTemporaryDirectory();
+        var second = CreateTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(first, "helper.py"), "answer = 42");
+            File.WriteAllText(Path.Combine(second, "helper.py"), "answer = 99");
+            using var output = new StringWriter();
+
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [first, second] }
+            ).Execute(
+                "import helper\nprint(helper.answer)",
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal($"42{Environment.NewLine}", output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(first, recursive: true);
+            Directory.Delete(second, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Constructor_DoesNotReadShadowedLowerPriorityModules()
+    {
+        var first = CreateTemporaryDirectory();
+        var second = CreateTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(first, "helper.py"), "answer = 42");
+            using (var shadowed = File.Create(Path.Combine(second, "helper.py")))
+            {
+                shadowed.SetLength((8 * 1024 * 1024) + 1);
+            }
+
+            using var output = new StringWriter();
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [first, second] }
+            ).Execute(
+                "import helper\nprint(helper.answer)",
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal($"42{Environment.NewLine}", output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(first, recursive: true);
+            Directory.Delete(second, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_DiscoversValidatedDotPythonArtifacts()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var parseResult = PythonParser.Parse(new SourceText("answer = 42", "compiled.py"));
+            var compilation = PythonCompiler.Compile(parseResult.Module, "compiled.py");
+            var bytes = DotPythonModuleArtifactSerializer.Serialize(
+                DotPythonModuleArtifact.Create("compiled", compilation.Code)
+            );
+            File.WriteAllBytes(Path.Combine(directory, "compiled.dpyc"), bytes);
+            using var output = new StringWriter();
+
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            ).Execute(
+                "import compiled\nprint(compiled.answer)",
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.Empty(parseResult.Diagnostics);
+            Assert.Empty(compilation.Diagnostics);
+            Assert.True(result.Success);
+            Assert.Equal($"42{Environment.NewLine}", output.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Constructor_RejectsArtifactIdentityCollisionsWithinOneRoot()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "helper.py"), "answer = 1");
+            var parseResult = PythonParser.Parse(new SourceText("answer = 2", "helper.py"));
+            var compilation = PythonCompiler.Compile(parseResult.Module, "helper.py");
+            File.WriteAllBytes(
+                Path.Combine(directory, "helper.dpyc"),
+                DotPythonModuleArtifactSerializer.Serialize(
+                    DotPythonModuleArtifact.Create("helper", compilation.Code)
+                )
+            );
+
+            Assert.Throws<InvalidDataException>(() =>
+                new ManagedPythonEngine(
+                    new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+                )
+            );
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_StopsAnAnyverShapedPackageAtTheNativeBoundary()
+    {
+        var directory = CreateTemporaryDirectory();
+        var packageDirectory = Directory.CreateDirectory(Path.Combine(directory, "anyver"));
+        var metadataDirectory = Directory.CreateDirectory(
+            Path.Combine(directory, "anyver-1.1.0.dist-info")
+        );
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(packageDirectory.FullName, "__init__.py"),
+                "from importlib.metadata import version\n"
+                    + "__version__ = version('anyver')\n"
+                    + "from ._anyver import compare"
+            );
+            File.WriteAllBytes(
+                Path.Combine(packageDirectory.FullName, "_anyver.abi3.so"),
+                [0x7f, (byte)'E', (byte)'L', (byte)'F']
+            );
+            File.WriteAllText(
+                Path.Combine(metadataDirectory.FullName, "METADATA"),
+                "Metadata-Version: 2.4\nName: anyver\nVersion: 1.1.0\n"
+            );
+
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            ).Execute(
+                "import anyver",
+                "main.py",
+                TextWriter.Null,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            var diagnostic = Assert.Single(result.Diagnostics);
+            Assert.Equal("DPY4027", diagnostic.Code);
+            Assert.Contains("_anyver.abi3.so", diagnostic.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_ReportsMissingDistributionMetadata()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            ).Execute(
+                "from importlib.metadata import version\nprint(version('missing'))",
+                "main.py",
+                TextWriter.Null,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.Equal("DPY4028", Assert.Single(result.Diagnostics).Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_DoesNotFollowSymbolicLinkModulesOutsideTheSearchRoot()
+    {
+        var directory = CreateTemporaryDirectory();
+        var outsideDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var target = Path.Combine(outsideDirectory, "escape.py");
+            File.WriteAllText(target, "answer = 42");
+            try
+            {
+                File.CreateSymbolicLink(Path.Combine(directory, "escape.py"), target);
+            }
+            catch (Exception exception)
+                when (exception
+                        is IOException
+                            or UnauthorizedAccessException
+                            or PlatformNotSupportedException
+                )
+            {
+                Assert.Skip($"Symbolic links are unavailable: {exception.Message}");
+            }
+
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            ).Execute(
+                "import escape",
+                "main.py",
+                TextWriter.Null,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.Equal("DPY4020", Assert.Single(result.Diagnostics).Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+            Directory.Delete(outsideDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Constructor_RejectsSubmodulesWithoutRegisteredParentPackages()
     {
         var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
@@ -887,5 +1192,15 @@ public sealed class ManagedPythonEngineTests
                 cancellationToken: cancellation.Token
             )
         );
+    }
+
+    private static string CreateTemporaryDirectory()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-module-discovery-{Guid.NewGuid():N}"
+        );
+        Directory.CreateDirectory(directory);
+        return directory;
     }
 }

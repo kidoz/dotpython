@@ -49,14 +49,24 @@ internal static class DotPythonCommand
             return RunWheelCommand(arguments, standardOutput, standardError);
         }
 
-        if (!TryReadSource(arguments, standardInput, standardError, out var source))
+        if (
+            !TryReadSource(
+                arguments,
+                standardInput,
+                standardError,
+                out var source,
+                out var moduleSearchPath
+            )
+        )
         {
             return 2;
         }
 
         try
         {
-            var engine = new ManagedPythonEngine();
+            var engine = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [moduleSearchPath] }
+            );
             var result = engine.Execute(
                 source,
                 standardOutput,
@@ -78,6 +88,17 @@ internal static class DotPythonCommand
         {
             standardError.WriteLine("dotpython: execution cancelled");
             return 130;
+        }
+        catch (Exception exception)
+            when (exception
+                    is IOException
+                        or InvalidDataException
+                        or UnauthorizedAccessException
+                        or ArgumentException
+            )
+        {
+            standardError.WriteLine($"dotpython: module discovery failed: {exception.Message}");
+            return 1;
         }
     }
 
@@ -119,7 +140,8 @@ internal static class DotPythonCommand
         IReadOnlyList<string> arguments,
         TextReader standardInput,
         TextWriter standardError,
-        out SourceText source
+        out SourceText source,
+        out string moduleSearchPath
     )
     {
         if (arguments[0] == "-c")
@@ -128,16 +150,19 @@ internal static class DotPythonCommand
             {
                 standardError.WriteLine("dotpython: argument expected for -c");
                 source = new SourceText(string.Empty, "<string>");
+                moduleSearchPath = Directory.GetCurrentDirectory();
                 return false;
             }
 
             source = new SourceText(arguments[1], "<string>");
+            moduleSearchPath = Directory.GetCurrentDirectory();
             return true;
         }
 
         if (arguments[0] == "-")
         {
             source = new SourceText(standardInput.ReadToEnd(), "<stdin>");
+            moduleSearchPath = Directory.GetCurrentDirectory();
             return true;
         }
 
@@ -145,12 +170,15 @@ internal static class DotPythonCommand
         {
             standardError.WriteLine($"dotpython: unsupported option '{arguments[0]}'");
             source = new SourceText(string.Empty, "<command-line>");
+            moduleSearchPath = Directory.GetCurrentDirectory();
             return false;
         }
 
         try
         {
-            source = new SourceText(File.ReadAllText(arguments[0]), arguments[0]);
+            var fullPath = Path.GetFullPath(arguments[0]);
+            source = new SourceText(File.ReadAllText(fullPath), fullPath);
+            moduleSearchPath = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
             return true;
         }
         catch (IOException exception)
@@ -159,6 +187,7 @@ internal static class DotPythonCommand
                 $"dotpython: cannot read '{arguments[0]}': {exception.Message}"
             );
             source = new SourceText(string.Empty, arguments[0]);
+            moduleSearchPath = Directory.GetCurrentDirectory();
             return false;
         }
         catch (UnauthorizedAccessException exception)
@@ -167,6 +196,7 @@ internal static class DotPythonCommand
                 $"dotpython: cannot read '{arguments[0]}': {exception.Message}"
             );
             source = new SourceText(string.Empty, arguments[0]);
+            moduleSearchPath = Directory.GetCurrentDirectory();
             return false;
         }
     }

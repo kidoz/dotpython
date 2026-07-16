@@ -210,6 +210,66 @@ public sealed class ManagedCliDifferentialTests
         }
     }
 
+    [Fact]
+    public void ScriptPackageAndDistributionMetadataDiscovery_MatchesReferencePython()
+    {
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-script-discovery-differential-{Guid.NewGuid():N}"
+        );
+        var packageDirectory = Path.Combine(directory, "sample");
+        var metadataDirectory = Path.Combine(directory, "sample_dist-1.2.3.dist-info");
+        Directory.CreateDirectory(packageDirectory);
+        Directory.CreateDirectory(metadataDirectory);
+        var scriptPath = Path.Combine(directory, "main.py");
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(packageDirectory, "__init__.py"),
+                "from importlib.metadata import version\n"
+                    + "from . import values\n"
+                    + "__version__ = version('sample-dist')\n"
+                    + "answer = values.answer\n"
+            );
+            File.WriteAllText(Path.Combine(packageDirectory, "values.py"), "answer = 42\n");
+            File.WriteAllText(
+                Path.Combine(metadataDirectory, "METADATA"),
+                "Metadata-Version: 2.4\nName: sample-dist\nVersion: 1.2.3\n"
+            );
+            File.WriteAllText(
+                scriptPath,
+                "import sample\nprint(sample.answer, sample.__version__)\n"
+            );
+            var reference = RunReferenceScript(python, scriptPath);
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            var exitCode = DotPythonCommand.Run(
+                [scriptPath],
+                TextReader.Null,
+                output,
+                error,
+                TestContext.Current.CancellationToken
+            );
+
+            Assert.Equal(reference.ExitCode, exitCode);
+            Assert.Equal(reference.StandardOutput, output.ToString());
+            Assert.Equal(string.Empty, error.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static ReferenceResult RunReference(
         string executable,
         string code,
@@ -225,6 +285,23 @@ public sealed class ManagedCliDifferentialTests
         };
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(code);
+
+        using var process = Process.Start(startInfo);
+        Assert.NotNull(process);
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return new ReferenceResult(process.ExitCode, standardOutput);
+    }
+
+    private static ReferenceResult RunReferenceScript(string executable, string scriptPath)
+    {
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(scriptPath);
 
         using var process = Process.Start(startInfo);
         Assert.NotNull(process);

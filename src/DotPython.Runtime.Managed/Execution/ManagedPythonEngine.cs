@@ -18,7 +18,7 @@ public sealed class ManagedPythonEngine
 
     /// <summary>Creates an engine without registered source modules.</summary>
     public ManagedPythonEngine()
-        : this(null) { }
+        : this(PythonModuleCatalog.Empty) { }
 
     /// <summary>Creates an engine with an immutable catalog of importable managed source modules.</summary>
     /// <param name="moduleSources">
@@ -26,8 +26,19 @@ public sealed class ManagedPythonEngine
     /// modules. The bounded catalog is copied and module state remains private to this engine.
     /// </param>
     public ManagedPythonEngine(IReadOnlyDictionary<string, SourceText>? moduleSources)
+        : this(PythonModuleCatalog.FromSources(moduleSources)) { }
+
+    /// <summary>
+    /// Creates an engine from a deterministic startup snapshot of configured module search paths.
+    /// </summary>
+    /// <param name="discoveryOptions">The validated managed-module discovery configuration.</param>
+    public ManagedPythonEngine(ManagedModuleDiscoveryOptions discoveryOptions)
+        : this(PythonModuleCatalog.Discover(discoveryOptions)) { }
+
+    private ManagedPythonEngine(PythonModuleCatalog catalog)
     {
-        _modules = new PythonModuleRegistry(moduleSources, CompileModule);
+        ArgumentNullException.ThrowIfNull(catalog);
+        _modules = new PythonModuleRegistry(catalog.Modules, CompileModule);
     }
 
     public ManagedExecutionResult Execute(
@@ -244,8 +255,27 @@ public sealed class ManagedPythonEngine
         return _preparedCodes.GetValue(code, PreparedPythonCode.Create);
     }
 
-    private PreparedPythonCode CompileModule(string name, SourceText source, TextSpan importSpan)
+    private PreparedPythonCode CompileModule(
+        string name,
+        PythonModuleDefinition definition,
+        TextSpan importSpan
+    )
     {
+        if (definition.Artifact is not null)
+        {
+            return PrepareCode(definition.Artifact.Code);
+        }
+
+        var source = definition.Source;
+        if (source is null)
+        {
+            throw new PythonRuntimeException(
+                "DPY4021",
+                $"Managed module '{name}' has no executable source or artifact.",
+                importSpan
+            );
+        }
+
         var parseResult = PythonParser.Parse(source);
         if (!parseResult.Success)
         {
