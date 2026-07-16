@@ -19,14 +19,22 @@ public sealed class PythonRuntimeException : Exception
         Code = "DPY4000";
     }
 
-    internal PythonRuntimeException(string code, string message, TextSpan span)
+    internal PythonRuntimeException(
+        string code,
+        string message,
+        TextSpan span,
+        string? pythonExceptionTypeName = null
+    )
         : base(message)
     {
         Code = code;
         Span = span;
+        PythonExceptionTypeName = pythonExceptionTypeName;
     }
 
     public string Code { get; }
 
     public TextSpan Span { get; }
+
+    internal string? PythonExceptionTypeName { get; }
 }

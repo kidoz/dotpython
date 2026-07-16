@@ -326,6 +326,15 @@ public sealed class ManagedPythonEngine
 
     private static PythonRuntimeException ToRuntimeFault(PythonRaisedException raised)
     {
+        if (raised.OriginatingFault is { } originatingFault)
+        {
+            return new PythonRuntimeException(
+                originatingFault.Code,
+                originatingFault.Message,
+                originatingFault.Span
+            );
+        }
+
         var span = raised.Traceback.Count == 0 ? new TextSpan(0, 0) : raised.Traceback[0].Span;
         var message =
             raised.Value.Message.Length == 0

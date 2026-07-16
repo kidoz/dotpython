@@ -352,7 +352,8 @@ internal sealed class PythonModuleCatalog
                 throw new PythonRuntimeException(
                     "DPY4028",
                     "importlib.metadata.version() requires one distribution-name string.",
-                    span
+                    span,
+                    "TypeError"
                 );
             }
 
@@ -362,7 +363,8 @@ internal sealed class PythonModuleCatalog
                 throw new PythonRuntimeException(
                     "DPY4028",
                     $"No installed distribution metadata was found for '{name.Value}'.",
-                    span
+                    span,
+                    "ModuleNotFoundError"
                 );
             }
 

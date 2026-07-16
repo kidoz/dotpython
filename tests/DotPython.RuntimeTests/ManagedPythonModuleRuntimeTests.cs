@@ -248,6 +248,42 @@ public sealed class ManagedPythonModuleRuntimeTests
     }
 
     [Fact]
+    public async Task Invocation_CatchesManagedOperationFaultsInsideAnExport()
+    {
+        using var output = new StringWriter();
+        var definition = CreateDefinition(
+            "safe_division",
+            "def divide(left, right):\n"
+                + "    try:\n"
+                + "        return left // right\n"
+                + "    except ZeroDivisionError as error:\n"
+                + "        print(error)\n"
+                + "        return 0\n",
+            Function(
+                "divide",
+                "DivideAsync",
+                [Parameter("left", BigIntegerType()), Parameter("right", BigIntegerType())],
+                BigIntegerType()
+            )
+        );
+        await using IDotPythonModuleRuntime runtime = new ManagedPythonModuleRuntime(
+            output: output
+        );
+        await using var module = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+
+        var result = await module.InvokeAsync<BigInteger>(
+            new PythonFunctionInvocation("divide", [BigInteger.One, BigInteger.Zero]),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(BigInteger.Zero, result);
+        Assert.Equal($"Division by zero.{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
     public async Task LoadModuleAsync_RejectsArtifactContractMismatch()
     {
         var definition = CreateDefinition(

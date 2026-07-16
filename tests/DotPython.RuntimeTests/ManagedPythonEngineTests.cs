@@ -70,6 +70,161 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Theory]
+    [InlineData("missing", "NameError")]
+    [InlineData("1 / 0", "ZeroDivisionError")]
+    [InlineData("'left' - 'right'", "TypeError")]
+    [InlineData("[1][2]", "IndexError")]
+    [InlineData("{}['missing']", "KeyError")]
+    [InlineData("for item in 1: print(item)", "TypeError")]
+    [InlineData("value = 1\nvalue.missing", "AttributeError")]
+    [InlineData("import missing", "ModuleNotFoundError")]
+    public void Execute_ConvertsOperationFaultsIntoCatchablePythonExceptions(
+        string body,
+        string exceptionType
+    )
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(exceptionType);
+        using var output = new StringWriter();
+        var indentedBody = string.Join(
+            Environment.NewLine,
+            body.Split('\n').Select(line => "    " + line)
+        );
+        var source =
+            $"try:{Environment.NewLine}{indentedBody}{Environment.NewLine}"
+            + $"except {exceptionType} as error:{Environment.NewLine}"
+            + "    print('caught', error)";
+
+        var result = new ManagedPythonEngine().Execute(
+            source,
+            "operation_fault.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.StartsWith("caught ", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Execute_CatchesOperationFaultsAcrossFunctionAndImportFrames()
+    {
+        using var output = new StringWriter();
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["broken"] = new("print(1 / 0)", "broken.py"),
+        };
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "def divide(): return 1 / 0\n"
+                + "try:\n"
+                + "    divide()\n"
+                + "except ArithmeticError:\n"
+                + "    print('function')\n"
+                + "try:\n"
+                + "    import broken\n"
+                + "except ZeroDivisionError:\n"
+                + "    print('import one')\n"
+                + "try:\n"
+                + "    import broken\n"
+                + "except ZeroDivisionError:\n"
+                + "    print('import two')\n",
+            "operation_frames.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"function{Environment.NewLine}"
+                + $"import one{Environment.NewLine}"
+                + $"import two{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_DistinguishesFromImportAndAttributeFailures()
+    {
+        using var output = new StringWriter();
+        var modules = new Dictionary<string, SourceText>(StringComparer.Ordinal)
+        {
+            ["helper"] = new("value = 1", "helper.py"),
+        };
+
+        var result = new ManagedPythonEngine(modules).Execute(
+            "try:\n"
+                + "    from helper import missing\n"
+                + "except ImportError:\n"
+                + "    print('import')\n"
+                + "import helper\n"
+                + "try:\n"
+                + "    helper.missing\n"
+                + "except AttributeError:\n"
+                + "    print('attribute')\n",
+            "operation_imports.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"import{Environment.NewLine}attribute{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_BareReraisePreservesTheOriginatingRuntimeDiagnostic()
+    {
+        var source =
+            "def fail():\n"
+            + "    try:\n"
+            + "        return 1 / 0\n"
+            + "    except ZeroDivisionError:\n"
+            + "        raise\n"
+            + "fail()\n";
+
+        var result = new ManagedPythonEngine().Execute(
+            source,
+            "operation_reraise.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4004", diagnostic.Code);
+        Assert.Equal("Division by zero.", diagnostic.Message);
+        Assert.Equal(
+            new TextSpan(source.IndexOf("1 / 0", StringComparison.Ordinal), 5),
+            diagnostic.Span
+        );
+    }
+
+    [Fact]
+    public void Execute_DoesNotAllowPythonHandlersToSwallowTheInstructionLimit()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n"
+                + "    while True:\n"
+                + "        1\n"
+                + "except Exception:\n"
+                + "    print('swallowed')\n"
+                + "finally:\n"
+                + "    print('cleanup')\n",
+            "operation_limit.py",
+            output,
+            new ManagedExecutionOptions { InstructionLimit = 20 },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("DPY4001", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal($"cleanup{Environment.NewLine}", output.ToString());
+    }
+
     [Fact]
     public void Execute_FinallyReturnOverridesPendingReturn()
     {

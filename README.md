@@ -126,10 +126,18 @@ uncaught explicit exceptions produce `DPY4031` at the original raise span.
 cancellation, and the normal instruction limit. Deferred cleanup has its own fixed instruction
 budget so cancellation or a resource-limit failure cannot open an unbounded cleanup path.
 
-This is an initial exception-state slice. Existing VM operation faults still retain their stable
-`DPY4xxx` diagnostics and are not yet converted into catchable Python exception objects.
+Language-level VM operation failures are converted into catchable built-in exceptions such as
+`TypeError`, `NameError`, `ZeroDivisionError`, `LookupError`, `AttributeError`, and `ImportError`.
+The VM keeps a private raised-error indicator, separate from the exception currently handled by an
+`except` block, so callback bridges can save and restore propagating error state. If a converted
+operation remains uncaught or is re-raised, its original `DPY4xxx` code, message, and source span
+remain the host-facing diagnostic.
+
+Cancellation, instruction limits, exception-block limits, deferred-cleanup limits, and VM
+invariant failures are host/runtime control signals and cannot be swallowed by Python handlers.
 User-defined exception classes, exception groups and `except*`, `sys.exception()`, public traceback
-objects, and exact deletion of an `except ... as` target remain follow-up work.
+objects, and exact deletion of an `except ... as` target remain follow-up work. The internal error
+indicator does not implement or enable CPython's native error ABI.
 
 ## Runtime ownership and shutdown
 

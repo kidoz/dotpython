@@ -17,15 +17,21 @@ internal sealed class PythonRaisedException : Exception
 {
     private readonly List<PythonTracebackFrame> _traceback = [];
 
-    internal PythonRaisedException(PythonExceptionValue value)
+    internal PythonRaisedException(
+        PythonExceptionValue value,
+        PythonRuntimeException? originatingFault = null
+    )
         : base(value.ToDisplayString())
     {
         Value = value;
+        OriginatingFault = originatingFault;
     }
 
     internal IReadOnlyList<PythonTracebackFrame> Traceback => _traceback;
 
     internal PythonExceptionValue Value { get; }
+
+    internal PythonRuntimeException? OriginatingFault { get; }
 
     internal bool PreserveTracebackOnNextDispatch { get; set; }
 

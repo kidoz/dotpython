@@ -22,12 +22,15 @@ internal sealed class PythonVirtualMachine
             ["ArithmeticError"] = "Exception",
             ["LookupError"] = "Exception",
             ["RuntimeError"] = "Exception",
+            ["RecursionError"] = "RuntimeError",
             ["TypeError"] = "Exception",
             ["ValueError"] = "Exception",
             ["NameError"] = "Exception",
+            ["UnboundLocalError"] = "NameError",
             ["AttributeError"] = "Exception",
             ["ImportError"] = "Exception",
             ["ModuleNotFoundError"] = "ImportError",
+            ["SyntaxError"] = "Exception",
             ["IndexError"] = "LookupError",
             ["KeyError"] = "LookupError",
             ["OverflowError"] = "ArithmeticError",
@@ -36,6 +39,7 @@ internal sealed class PythonVirtualMachine
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
     private readonly bool _enableReturnLocalContinuation;
+    private readonly PythonErrorIndicator _errorIndicator = new();
     private readonly Stack<PythonValue> _evaluationStack = [];
     private readonly PythonGlobalNamespace _globals;
     private readonly long _instructionLimit;
@@ -159,9 +163,14 @@ internal sealed class PythonVirtualMachine
                 }
                 catch (Exception exception) when (IsManagedControlFlowException(exception))
                 {
-                    if (!HandleExceptionalControlFlow(exception))
+                    var dispatchException = PrepareExceptionalControlFlow(exception);
+                    if (!HandleExceptionalControlFlow(dispatchException))
                     {
-                        throw;
+                        System
+                            .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                                dispatchException
+                            )
+                            .Throw();
                     }
                 }
             }
@@ -178,6 +187,7 @@ internal sealed class PythonVirtualMachine
             _localsCount = 0;
             _deferredControlFlowCount = 0;
             _deferredCleanupInstructions = 0;
+            _errorIndicator.Clear();
         }
     }
 
@@ -413,6 +423,22 @@ internal sealed class PythonVirtualMachine
 
     private static bool IsManagedControlFlowException(Exception exception) =>
         exception is PythonRaisedException or PythonRuntimeException or OperationCanceledException;
+
+    private Exception PrepareExceptionalControlFlow(Exception exception)
+    {
+        if (
+            exception is not PythonRuntimeException fault
+            || !_errorIndicator.TrySetFromRuntimeFault(fault)
+        )
+        {
+            return exception;
+        }
+
+        return _errorIndicator.GetRaisedException()
+            ?? throw new InvalidOperationException(
+                "The managed Python error indicator did not retain the translated runtime fault."
+            );
+    }
 
     private bool HandleExceptionalControlFlow(Exception exception)
     {
@@ -824,7 +850,12 @@ internal sealed class PythonVirtualMachine
         var childName = module.Name + "." + name;
         if (!_modules.ContainsAbsolute(childName))
         {
-            throw Fault("DPY4022", $"Module '{module.Name}' has no attribute '{name}'.", span);
+            throw Fault(
+                "DPY4022",
+                $"Module '{module.Name}' has no attribute '{name}'.",
+                span,
+                "ImportError"
+            );
         }
 
         PushModuleImport(_modules.ResolveAbsolute(childName, span), span);
@@ -2460,8 +2491,12 @@ internal sealed class PythonVirtualMachine
             );
     }
 
-    private static PythonRuntimeException Fault(string code, string message, TextSpan span) =>
-        new(code, message, span);
+    private static PythonRuntimeException Fault(
+        string code,
+        string message,
+        TextSpan span,
+        string? pythonExceptionTypeName = null
+    ) => new(code, message, span, pythonExceptionTypeName);
 
     private struct PythonFrame
     {
