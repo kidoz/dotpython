@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using DotPython.Compiler.Artifacts;
 using DotPython.Contracts;
@@ -9,10 +10,9 @@ namespace DotPython.Runtime.Managed;
 public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
 {
     private readonly ManagedExecutionOptions _executionOptions;
-    private readonly object _gate = new();
     private readonly Dictionary<string, ManagedModuleState> _modules = new(StringComparer.Ordinal);
     private readonly TextWriter _output;
-    private bool _disposed;
+    private readonly ManagedRuntimeScheduler _scheduler;
 
     /// <summary>Initializes a managed module runtime.</summary>
     public ManagedPythonModuleRuntime(
@@ -23,6 +23,7 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         _executionOptions = executionOptions ?? new ManagedExecutionOptions();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_executionOptions.InstructionLimit);
         _output = output ?? TextWriter.Null;
+        _scheduler = new ManagedRuntimeScheduler(finalize: _modules.Clear);
     }
 
     /// <inheritdoc />
@@ -33,11 +34,20 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
     {
         ArgumentNullException.ThrowIfNull(definition);
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-        }
+        return AwaitModuleAsync(
+            _scheduler.InvokeAsync(token => LoadModule(definition, token), cancellationToken)
+        );
+    }
 
+    private static async ValueTask<IDotPythonModule> AwaitModuleAsync(
+        ValueTask<ManagedPythonModule> module
+    ) => await module.ConfigureAwait(false);
+
+    private ManagedPythonModule LoadModule(
+        PythonModuleDefinition definition,
+        CancellationToken cancellationToken
+    )
+    {
         DotPythonModuleArtifact artifact;
         try
         {
@@ -55,80 +65,67 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         }
 
         ValidateDefinition(definition.Contract, artifact);
-
-        lock (_gate)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_modules.TryGetValue(definition.Contract.ModuleName, out var existing))
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (_modules.TryGetValue(definition.Contract.ModuleName, out var existing))
+            if (
+                !string.Equals(
+                    existing.ArtifactFingerprint,
+                    definition.ArtifactFingerprint,
+                    StringComparison.Ordinal
+                ) || !ContractsEqual(existing.Contract, definition.Contract)
+            )
             {
-                if (
-                    !string.Equals(
-                        existing.ArtifactFingerprint,
-                        definition.ArtifactFingerprint,
-                        StringComparison.Ordinal
-                    ) || !ContractsEqual(existing.Contract, definition.Contract)
-                )
-                {
-                    throw Failure(
-                        "DPY6002",
-                        $"Module '{definition.Contract.ModuleName}' is already loaded with a different definition.",
-                        DotPythonFailurePhase.ModuleLoad,
-                        definition.Contract.ModuleName
-                    );
-                }
-
-                return new ValueTask<IDotPythonModule>(CreateModuleHandle(existing));
-            }
-
-            var engine = new ManagedPythonEngine();
-            var result = engine.Execute(artifact, _output, _executionOptions, cancellationToken);
-            if (!result.Success)
-            {
-                var diagnostic = result.Diagnostics[0];
                 throw Failure(
-                    diagnostic.Code,
-                    diagnostic.Message,
+                    "DPY6002",
+                    $"Module '{definition.Contract.ModuleName}' is already loaded with a different definition.",
                     DotPythonFailurePhase.ModuleLoad,
                     definition.Contract.ModuleName
                 );
             }
 
-            if (
-                definition.Contract.Functions.Any(function =>
-                    !engine.HasFunction(function.PythonName)
-                )
-            )
-            {
-                throw ExportMismatch(definition.Contract.ModuleName);
-            }
-
-            var state = new ManagedModuleState(
-                definition.Contract,
-                definition.ArtifactFingerprint,
-                engine
-            );
-            _modules.Add(definition.Contract.ModuleName, state);
-            return new ValueTask<IDotPythonModule>(CreateModuleHandle(state));
+            return CreateModuleHandle(existing);
         }
+
+        var engine = new ManagedPythonEngine();
+        var result = engine.Execute(artifact, _output, _executionOptions, cancellationToken);
+        if (!result.Success)
+        {
+            var diagnostic = result.Diagnostics[0];
+            throw Failure(
+                diagnostic.Code,
+                diagnostic.Message,
+                DotPythonFailurePhase.ModuleLoad,
+                definition.Contract.ModuleName
+            );
+        }
+
+        if (definition.Contract.Functions.Any(function => !engine.HasFunction(function.PythonName)))
+        {
+            throw ExportMismatch(definition.Contract.ModuleName);
+        }
+
+        var state = new ManagedModuleState(
+            definition.Contract,
+            definition.ArtifactFingerprint,
+            engine
+        );
+        _modules.Add(definition.Contract.ModuleName, state);
+        return CreateModuleHandle(state);
     }
 
     /// <inheritdoc />
-    public ValueTask DisposeAsync()
-    {
-        lock (_gate)
-        {
-            if (_disposed)
-            {
-                return ValueTask.CompletedTask;
-            }
+    public ValueTask DisposeAsync() => _scheduler.DisposeAsync();
 
-            _disposed = true;
-            _modules.Clear();
-            return ValueTask.CompletedTask;
-        }
-    }
+    private ValueTask<TResult> InvokeAsync<TResult>(
+        ManagedModuleState state,
+        PythonFunctionInvocation invocation,
+        CancellationToken cancellationToken
+    ) =>
+        _scheduler.InvokeAsync(
+            token => Invoke<TResult>(state, invocation, token),
+            cancellationToken
+        );
 
     private TResult Invoke<TResult>(
         ManagedModuleState state,
@@ -155,6 +152,25 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
             function.PythonName
         );
     }
+
+    private ValueTask InvokeAsync(
+        ManagedModuleState state,
+        PythonFunctionInvocation invocation,
+        CancellationToken cancellationToken
+    ) =>
+        AwaitVoidInvocationAsync(
+            _scheduler.InvokeAsync(
+                token =>
+                {
+                    Invoke(state, invocation, token);
+                    return true;
+                },
+                cancellationToken
+            )
+        );
+
+    private static async ValueTask AwaitVoidInvocationAsync(ValueTask<bool> invocation) =>
+        await invocation.ConfigureAwait(false);
 
     private void Invoke(
         ManagedModuleState state,
@@ -187,70 +203,64 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
     {
         ArgumentNullException.ThrowIfNull(invocation);
         cancellationToken.ThrowIfCancellationRequested();
-
-        lock (_gate)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            cancellationToken.ThrowIfCancellationRequested();
-            function =
-                state.Contract.Functions.FirstOrDefault(candidate =>
-                    string.Equals(
-                        candidate.PythonName,
-                        invocation.FunctionName,
-                        StringComparison.Ordinal
-                    )
+        function =
+            state.Contract.Functions.FirstOrDefault(candidate =>
+                string.Equals(
+                    candidate.PythonName,
+                    invocation.FunctionName,
+                    StringComparison.Ordinal
                 )
-                ?? throw Failure(
-                    "DPY6005",
-                    $"Function '{invocation.FunctionName}' is not exported by module '{state.Contract.ModuleName}'.",
-                    DotPythonFailurePhase.Invocation,
-                    state.Contract.ModuleName,
-                    invocation.FunctionName
-                );
+            )
+            ?? throw Failure(
+                "DPY6005",
+                $"Function '{invocation.FunctionName}' is not exported by module '{state.Contract.ModuleName}'.",
+                DotPythonFailurePhase.Invocation,
+                state.Contract.ModuleName,
+                invocation.FunctionName
+            );
 
-            if (invocation.Arguments.Count != function.Parameters.Count)
-            {
-                throw Failure(
-                    "DPY6006",
-                    $"Function '{function.PythonName}' expects {function.Parameters.Count} positional argument(s), but received {invocation.Arguments.Count}.",
-                    DotPythonFailurePhase.Invocation,
-                    state.Contract.ModuleName,
-                    function.PythonName
-                );
-            }
+        if (invocation.Arguments.Count != function.Parameters.Count)
+        {
+            throw Failure(
+                "DPY6006",
+                $"Function '{function.PythonName}' expects {function.Parameters.Count} positional argument(s), but received {invocation.Arguments.Count}.",
+                DotPythonFailurePhase.Invocation,
+                state.Contract.ModuleName,
+                function.PythonName
+            );
+        }
 
-            var arguments = new PythonValue[function.Parameters.Count];
-            for (var index = 0; index < arguments.Length; index++)
-            {
-                arguments[index] = PythonValueConverter.FromClr(
-                    invocation.Arguments[index],
-                    function.Parameters[index].Type,
-                    state.Contract.ModuleName,
-                    function.PythonName
-                );
-            }
+        var arguments = new PythonValue[function.Parameters.Count];
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            arguments[index] = PythonValueConverter.FromClr(
+                invocation.Arguments[index],
+                function.Parameters[index].Type,
+                state.Contract.ModuleName,
+                function.PythonName
+            );
+        }
 
-            try
-            {
-                return state.Engine.Invoke(
-                    function.PythonName,
-                    arguments,
-                    _output,
-                    _executionOptions,
-                    cancellationToken
-                );
-            }
-            catch (PythonRuntimeException exception)
-            {
-                throw Failure(
-                    exception.Code,
-                    exception.Message,
-                    DotPythonFailurePhase.Invocation,
-                    state.Contract.ModuleName,
-                    function.PythonName,
-                    exception
-                );
-            }
+        try
+        {
+            return state.Engine.Invoke(
+                function.PythonName,
+                arguments,
+                _output,
+                _executionOptions,
+                cancellationToken
+            );
+        }
+        catch (PythonRuntimeException exception)
+        {
+            throw Failure(
+                exception.Code,
+                exception.Message,
+                DotPythonFailurePhase.Invocation,
+                state.Contract.ModuleName,
+                function.PythonName,
+                exception
+            );
         }
     }
 
@@ -348,8 +358,17 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         Exception? innerException = null
     ) => new(code, message, phase, moduleName, functionName, innerException);
 
-    private ManagedPythonModule CreateModuleHandle(ManagedModuleState state) =>
-        new ManagedPythonModule(this, state);
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The returned module handle takes ownership of the scheduler resource lease."
+    )]
+    private ManagedPythonModule CreateModuleHandle(ManagedModuleState state)
+    {
+        var resource = _scheduler.RegisterResource(state.ReleaseHandle);
+        state.AcquireHandle();
+        return new ManagedPythonModule(this, state, resource);
+    }
 
     private static bool ContractsEqual(PythonModuleContract left, PythonModuleContract right) =>
         string.Equals(left.ClrNamespace, right.ClrNamespace, StringComparison.Ordinal)
@@ -388,15 +407,29 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         && left.TypeArguments.Zip(right.TypeArguments)
             .All(pair => TypesEqual(pair.First, pair.Second));
 
-    private sealed record ManagedModuleState(
-        PythonModuleContract Contract,
-        string ArtifactFingerprint,
-        ManagedPythonEngine Engine
-    );
+    private sealed class ManagedModuleState(
+        PythonModuleContract contract,
+        string artifactFingerprint,
+        ManagedPythonEngine engine
+    )
+    {
+        internal PythonModuleContract Contract { get; } = contract;
+
+        internal string ArtifactFingerprint { get; } = artifactFingerprint;
+
+        internal ManagedPythonEngine Engine { get; } = engine;
+
+        internal int OpenHandleCount { get; private set; }
+
+        internal void AcquireHandle() => OpenHandleCount++;
+
+        internal void ReleaseHandle() => OpenHandleCount--;
+    }
 
     private sealed class ManagedPythonModule(
         ManagedPythonModuleRuntime owner,
-        ManagedModuleState state
+        ManagedModuleState state,
+        ManagedRuntimeScheduler.SchedulerOwnedResource resource
     ) : IDotPythonModule
     {
         private int _disposed;
@@ -409,8 +442,7 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         )
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            owner.Invoke(state, invocation, cancellationToken);
-            return ValueTask.CompletedTask;
+            return owner.InvokeAsync(state, invocation, cancellationToken);
         }
 
         public ValueTask<TResult> InvokeAsync<TResult>(
@@ -419,15 +451,14 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         )
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            return new ValueTask<TResult>(
-                owner.Invoke<TResult>(state, invocation, cancellationToken)
-            );
+            return owner.InvokeAsync<TResult>(state, invocation, cancellationToken);
         }
 
         public ValueTask DisposeAsync()
         {
-            Interlocked.Exchange(ref _disposed, 1);
-            return ValueTask.CompletedTask;
+            return Interlocked.Exchange(ref _disposed, 1) == 0
+                ? resource.DisposeAsync()
+                : ValueTask.CompletedTask;
         }
     }
 }

@@ -131,6 +131,22 @@ This is an initial exception-state slice. Existing VM operation faults still ret
 User-defined exception classes, exception groups and `except*`, `sys.exception()`, public traceback
 objects, and exact deletion of an `except ... as` target remain follow-up work.
 
+## Runtime ownership and shutdown
+
+`ManagedPythonModuleRuntime` serializes module loading and invocation onto one dedicated owning
+thread. Normal work admission is limited to 1,024 pending calls. Runtime-owned logical resource
+leases are limited to 4,096 registrations; explicit disposal schedules an exactly-once release on
+the owner thread, while a managed finalizer can only enqueue the same release and never executes it
+directly.
+
+Runtime disposal rejects new work, drains work that was already admitted, releases remaining
+resources in reverse registration order, clears runtime module state, and then stops the owning
+thread. Cancellation remains cooperative after a call begins. Reentrant scheduling from the owner
+thread is rejected until the callback/reentrancy contract is implemented explicitly.
+
+This lifecycle foundation does not load native code or change the compatibility contract. No
+CPython ABI, HPy, Anyver, or NumPy execution support is enabled.
+
 ## Typed module contracts
 
 DotPython can parse typed module stubs without importing or executing Python:

@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
+using System.Text;
 using DotPython.Compiler;
 using DotPython.Compiler.Artifacts;
 using DotPython.Contracts;
@@ -115,6 +116,45 @@ public sealed class ManagedPythonModuleRuntimeTests
                 TestContext.Current.CancellationToken
             )
         );
+    }
+
+    [Fact]
+    public async Task ConcurrentInvocations_RunSeriallyOnTheRuntimeOwningThread()
+    {
+        var definition = CreateDefinition(
+            "reporter",
+            "def report(value):\n" + "    print(value)\n" + "    return value",
+            Function(
+                "report",
+                "ReportAsync",
+                [Parameter("value", BigIntegerType())],
+                BigIntegerType()
+            )
+        );
+        var output = new ThreadRecordingWriter();
+        await using IDotPythonModuleRuntime runtime = new ManagedPythonModuleRuntime(
+            output: output
+        );
+        await using var module = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+
+        var calls = Enumerable
+            .Range(0, 16)
+            .Select(value =>
+                module
+                    .InvokeAsync<BigInteger>(
+                        new PythonFunctionInvocation("report", [new BigInteger(value)]),
+                        TestContext.Current.CancellationToken
+                    )
+                    .AsTask()
+            );
+        var results = await Task.WhenAll(calls);
+
+        Assert.Equal(Enumerable.Range(0, 16).Select(value => new BigInteger(value)), results);
+        Assert.Single(output.ThreadIds.Distinct());
+        Assert.DoesNotContain(Environment.CurrentManagedThreadId, output.ThreadIds);
     }
 
     [Fact]
@@ -288,5 +328,15 @@ public sealed class ManagedPythonModuleRuntimeTests
                 new PythonFunctionInvocation("add", [left, right]),
                 cancellationToken
             );
+    }
+
+    private sealed class ThreadRecordingWriter : TextWriter
+    {
+        internal List<int> ThreadIds { get; } = [];
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void WriteLine(string? value) =>
+            ThreadIds.Add(Environment.CurrentManagedThreadId);
     }
 }
