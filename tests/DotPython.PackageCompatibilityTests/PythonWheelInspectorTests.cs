@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using DotPython.Hosting.Packaging;
+using DotPython.Runtime.Managed;
 using Xunit;
 
 namespace DotPython.PackageCompatibilityTests;
@@ -57,9 +58,7 @@ public sealed class PythonWheelInspectorTests
                 diagnostic.Code == PythonWheelDiagnosticCode.NativeRuntimeUnsupported
                 && diagnostic.Severity == PythonWheelDiagnosticSeverity.Warning
         );
-        Assert.False(
-            DotPython.Runtime.Managed.ManagedRuntimeDescriptor.Compatibility.SupportsCpythonAbi
-        );
+        Assert.Empty(ManagedRuntimeDescriptor.Compatibility.NativeExtensionCapabilities);
     }
 
     [Fact]

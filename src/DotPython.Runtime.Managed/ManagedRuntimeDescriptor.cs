@@ -12,6 +12,6 @@ public static class ManagedRuntimeDescriptor
             LanguageVersion = PythonLanguageVersion.Current,
             SupportedArtifactLanguageVersions = PythonLanguageVersion.SupportedArtifactVersions,
             Implementation = "dotpython-managed",
-            SupportsCpythonAbi = false,
+            NativeExtensionCapabilities = [],
         };
 }

@@ -6,8 +6,8 @@ namespace DotPython.DifferentialTests;
 public sealed class CompatibilityContractTests
 {
     [Fact]
-    public void ManagedProfile_DoesNotClaimCpythonBinaryCompatibility()
+    public void ManagedProfile_DoesNotClaimExecutableNativeCompatibility()
     {
-        Assert.False(ManagedRuntimeDescriptor.Compatibility.SupportsCpythonAbi);
+        Assert.Empty(ManagedRuntimeDescriptor.Compatibility.NativeExtensionCapabilities);
     }
 }

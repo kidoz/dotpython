@@ -14,6 +14,9 @@ public sealed record PythonCompatibilityProfile
     /// <summary>Gets the stable implementation identifier.</summary>
     public required string Implementation { get; init; }
 
-    /// <summary>Gets whether CPython extension binaries can be loaded.</summary>
-    public required bool SupportsCpythonAbi { get; init; }
+    /// <summary>
+    /// Gets the executable native-extension capabilities exposed by this runtime provider.
+    /// An empty list means native wheels may be recognized by tooling but cannot be executed.
+    /// </summary>
+    public required IReadOnlyList<PythonNativeExtensionCapability> NativeExtensionCapabilities { get; init; }
 }

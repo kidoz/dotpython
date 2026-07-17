@@ -5,7 +5,8 @@
 
 A managed implementation of Python for **.NET 10 / C# 14**. DotPython owns the full
 execution pipeline — tokenizer, PEG parser, AST, symbol binder, bytecode compiler, and a
-managed stack VM — and runs Python **without loading or hosting CPython**.
+managed stack VM. The default runtime runs Python **without loading or hosting CPython**;
+an optional, explicitly selected CPython worker provider is planned for unchanged native packages.
 
 DotPython is usable as a command-line application, as an embedded scripting/runtime service
 inside a .NET solution, and as an early SDK-style `.dpyproj` project language whose compiled
@@ -21,10 +22,16 @@ libraries can be referenced from C# and other managed languages.
 ## Compatibility contract
 
 - Targets the **Python 3.14** language surface through an explicit compatibility profile.
-- CPython is a **differential reference only** — not an execution dependency or fallback.
-- CPython bytecode and CPython C-extension binaries are **unsupported**.
+- CPython is a **differential reference** for managed execution and is never an implicit fallback.
+- CPython bytecode and C-extension binaries are **unsupported by the managed runtime today**.
+- An optional CPython worker provider is accepted architecture but is not yet implemented or
+  qualified.
 - The managed interpreter is the semantic reference; any future JIT tier must fall back to it.
 - Host/.NET access is **capability based**; arbitrary assembly loading and reflection are off by default.
+
+The native-extension direction is layered: managed `abi3` and HPy work begins in workers, while
+unchanged version-specific packages use an explicitly selected CPython worker provider. None of
+these executable native capabilities is implemented or qualified yet.
 
 ## Requirements
 
@@ -111,8 +118,8 @@ links or reparse points.
 
 Namespace packages, wheel/zip imports, wildcard imports, reload, and import hooks are not
 implemented. Native `.so` and `.pyd` files are recognized but never loaded; importing one produces
-the actionable `DPY4027` unsupported-native-extension diagnostic. CPython ABI compatibility remains
-disabled.
+the actionable `DPY4027` unsupported-native-extension diagnostic. The managed runtime currently
+reports an empty executable native-extension capability list.
 
 ## Managed exceptions
 
