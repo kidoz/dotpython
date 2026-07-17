@@ -883,17 +883,7 @@ internal sealed class PythonVirtualMachine
     private void LoadAttribute(string name, TextSpan span)
     {
         var target = Pop(span);
-        if (target is not PythonModuleValue module)
-        {
-            throw Fault("DPY4023", "This value does not expose managed attributes.", span);
-        }
-
-        if (!module.Globals.TryGetValue(name, out var value))
-        {
-            throw Fault("DPY4022", $"Module '{module.Name}' has no attribute '{name}'.", span);
-        }
-
-        _evaluationStack.Push(value);
+        _evaluationStack.Push(ManagedObjectProtocols.GetAttribute(target, name, span));
     }
 
     private void BuildDictionary(int itemCount, TextSpan span)
@@ -927,7 +917,7 @@ internal sealed class PythonVirtualMachine
     {
         var index = Pop(span);
         var target = Pop(span);
-        _evaluationStack.Push(GetSubscript(target, index, span));
+        _evaluationStack.Push(ManagedObjectProtocols.GetItem(target, index, span));
     }
 
     private void StoreSubscript(TextSpan span)
@@ -936,46 +926,13 @@ internal sealed class PythonVirtualMachine
         var target = Pop(span);
         var value = Pop(span);
 
-        switch (target)
-        {
-            case PythonListValue list:
-                list.Elements[GetSequenceIndex(index, list.Elements.Count, span)] = value;
-                break;
-            case PythonDictionaryValue dictionary:
-                SetDictionaryItem(dictionary, index, value, span);
-                break;
-            default:
-                throw Fault("DPY4011", "This value does not support item assignment.", span);
-        }
+        ManagedObjectProtocols.SetItem(target, index, value, span);
     }
 
     private void GetIterator(TextSpan span)
     {
         var iterable = Pop(span);
-        if (iterable is PythonIteratorValue iterator)
-        {
-            _evaluationStack.Push(iterator);
-            return;
-        }
-
-        if (
-            iterable
-            is not (
-                PythonListValue
-                or PythonTupleValue
-                or PythonDictionaryValue
-                or PythonTextValue
-                or PythonByteSequenceValue
-            )
-        )
-        {
-            throw Fault("DPY4015", "This value is not iterable.", span);
-        }
-
-        var dictionaryVersion = iterable is PythonDictionaryValue dictionary
-            ? dictionary.SizeVersion
-            : -1;
-        _evaluationStack.Push(new PythonIteratorValue(iterable, dictionaryVersion));
+        _evaluationStack.Push(ManagedObjectProtocols.GetIterator(iterable, span));
     }
 
     private void ForIter(ref PythonFrame frame, PythonInstruction instruction)
@@ -985,7 +942,7 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4007", "The for-loop iterator is invalid.", instruction.Span);
         }
 
-        if (TryGetNext(iterator, instruction.Span, out var value))
+        if (ManagedObjectProtocols.TryGetNext(iterator, out var value, instruction.Span))
         {
             _evaluationStack.Push(value);
             return;
@@ -996,106 +953,6 @@ internal sealed class PythonVirtualMachine
             instruction,
             frame.Code.Definition.Instructions.Count
         );
-    }
-
-    private static bool TryGetNext(
-        PythonIteratorValue iterator,
-        TextSpan span,
-        out PythonValue value
-    )
-    {
-        switch (iterator.Iterable)
-        {
-            case PythonListValue list when iterator.Index < list.Elements.Count:
-                value = list.Elements[iterator.Index++];
-                return true;
-            case PythonTupleValue tuple when iterator.Index < tuple.Elements.Length:
-                value = tuple.Elements[iterator.Index++];
-                return true;
-            case PythonDictionaryValue dictionary:
-                if (dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
-                {
-                    throw Fault("DPY4016", "Dictionary size changed during iteration.", span);
-                }
-
-                if (iterator.Index < dictionary.Items.Count)
-                {
-                    value = dictionary.Items[iterator.Index++].Key;
-                    return true;
-                }
-
-                break;
-            case PythonTextValue text:
-            {
-                var runes = text.Value.EnumerateRunes().ToArray();
-                if (iterator.Index < runes.Length)
-                {
-                    value = new PythonTextValue(runes[iterator.Index++].ToString());
-                    return true;
-                }
-
-                break;
-            }
-            case PythonByteSequenceValue bytes when iterator.Index < bytes.Value.Length:
-                value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
-                return true;
-        }
-
-        value = PythonNoneValue.Instance;
-        return false;
-    }
-
-    private static PythonValue GetSubscript(PythonValue target, PythonValue index, TextSpan span)
-    {
-        switch (target)
-        {
-            case PythonListValue list:
-                return list.Elements[GetSequenceIndex(index, list.Elements.Count, span)];
-            case PythonTupleValue tuple:
-                return tuple.Elements[GetSequenceIndex(index, tuple.Elements.Length, span)];
-            case PythonTextValue text:
-            {
-                var runes = text.Value.EnumerateRunes().ToArray();
-                return new PythonTextValue(
-                    runes[GetSequenceIndex(index, runes.Length, span)].ToString()
-                );
-            }
-            case PythonByteSequenceValue bytes:
-                return PythonWholeNumberValue.Create(
-                    bytes.Value[GetSequenceIndex(index, bytes.Value.Length, span)]
-                );
-            case PythonDictionaryValue dictionary:
-                if (TryFindDictionaryItem(dictionary, index, out var item))
-                {
-                    return item.Value;
-                }
-
-                throw Fault("DPY4013", "The dictionary key was not found.", span);
-            default:
-                throw Fault("DPY4011", "This value is not subscriptable.", span);
-        }
-    }
-
-    private static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
-    {
-        index = PromoteTruthValue(index);
-        if (index is not PythonWholeNumberValue wholeNumber)
-        {
-            throw Fault("DPY4011", "Sequence indices must be integers.", span);
-        }
-
-        var value = wholeNumber.Value;
-        if (value < 0)
-        {
-            value += count;
-        }
-
-        if (value < 0 || value >= count)
-        {
-            throw Fault("DPY4012", "The sequence index is out of range.", span);
-        }
-
-        return (int)value;
     }
 
     private static void SetDictionaryItem(
@@ -2427,21 +2284,7 @@ internal sealed class PythonVirtualMachine
     private static bool IsNumeric(PythonValue value) =>
         value is PythonWholeNumberValue or PythonFloatingPointValue or PythonComplexValue;
 
-    private static bool IsTruthy(PythonValue value) =>
-        value switch
-        {
-            PythonNoneValue => false,
-            PythonTruthValue truth => truth.Value,
-            PythonWholeNumberValue whole => !whole.Value.IsZero,
-            PythonFloatingPointValue floatingPoint => floatingPoint.Value != 0,
-            PythonComplexValue complex => complex.Value != Complex.Zero,
-            PythonTextValue text => text.Value.Length != 0,
-            PythonByteSequenceValue bytes => bytes.Value.Length != 0,
-            PythonListValue list => list.Elements.Count != 0,
-            PythonTupleValue tuple => tuple.Elements.Length != 0,
-            PythonDictionaryValue dictionary => dictionary.Items.Count != 0,
-            _ => true,
-        };
+    private static bool IsTruthy(PythonValue value) => ManagedObjectProtocols.IsTrue(value);
 
     private static PythonValue PromoteTruthValue(PythonValue value) =>
         value is PythonTruthValue truth

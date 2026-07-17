@@ -244,6 +244,84 @@ internal sealed record PythonBuiltinFunctionValue(
     internal override string ToDisplayString() => $"<built-in function {Name}>";
 }
 
+internal sealed record PythonProtocolFunctionValue(
+    string Name,
+    Func<PythonValue?, IReadOnlyList<PythonValue>, PythonValue> Invoke
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<built-in function {Name}>";
+}
+
+internal sealed record PythonBoundMethodValue(
+    string Name,
+    PythonValue Target,
+    PythonProtocolFunctionValue Function
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<bound method {Name}>";
+}
+
+internal sealed record PythonDescriptorValue(
+    string Name,
+    Func<PythonValue, PythonValue> Get,
+    Action<PythonValue, PythonValue>? Set = null,
+    bool IsDataDescriptor = true
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<descriptor '{Name}'>";
+}
+
+internal sealed record PythonManagedTypeValue : PythonValue
+{
+    internal PythonManagedTypeValue(
+        string name,
+        PythonManagedTypeValue? baseType = null,
+        Func<IReadOnlyList<PythonValue>, PythonValue>? construct = null
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        Name = name;
+        BaseType = baseType;
+        Construct = construct;
+    }
+
+    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+
+    internal PythonManagedTypeValue? BaseType { get; }
+
+    internal Func<IReadOnlyList<PythonValue>, PythonValue>? Construct { get; }
+
+    internal string Name { get; }
+
+    public bool Equals(PythonManagedTypeValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
+    internal override string ToDisplayString() => $"<class '{Name}'>";
+}
+
+internal sealed record PythonManagedObjectValue : PythonValue
+{
+    internal PythonManagedObjectValue(PythonManagedTypeValue type, object? payload = null)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        Type = type;
+        Payload = payload;
+    }
+
+    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+
+    internal object? Payload { get; }
+
+    internal PythonManagedTypeValue Type { get; }
+
+    public bool Equals(PythonManagedObjectValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
+    internal override string ToDisplayString() => $"<{Type.Name} object>";
+}
+
 internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
 {
     internal override string ToDisplayString() => $"<class '{Name}'>";
