@@ -162,6 +162,14 @@ and nesting limited to 64 calls. Cross-runtime entry from an owning thread, exec
 resource/finalization cleanup, and asynchronous callback suspension are rejected to avoid hidden
 queue waits and deadlocks.
 
+An internal managed-only native-boundary simulator now exercises this lifecycle without loading a
+library. Logical handles carry runtime identity, generation, and handle identity; borrowed, new,
+stolen, immortal, and nullable reference transitions are explicit. New references are backed by
+the existing scheduler-owned leases, so explicit disposal and forced-GC cleanup release on the
+owning thread and shutdown preserves reverse registration order. The simulator also keeps a
+separate native-style raised-error indicator and saves/restores it around bounded re-entrant
+callbacks.
+
 This lifecycle foundation does not load native code or change the compatibility contract. No
 CPython ABI, HPy, Anyver, or NumPy execution support is enabled.
 
