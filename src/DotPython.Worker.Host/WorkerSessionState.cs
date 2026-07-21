@@ -147,10 +147,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
         try
         {
-            var objectId = LoadStableAbiModuleAsync(
-                    entry.Configuration,
-                    CancellationToken.None
-                )
+            var objectId = LoadStableAbiModuleAsync(entry.Configuration, CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
             _boundNativeObjectIds.Add(entry.Manifest.ModuleName, objectId);

@@ -136,10 +136,7 @@ internal sealed record WorkerHostOptions(
         );
     }
 
-    private static List<string> RequiredMany(
-        Dictionary<string, List<string>> values,
-        string name
-    )
+    private static List<string> RequiredMany(Dictionary<string, List<string>> values, string name)
     {
         if (!values.TryGetValue(name, out var entries) || entries.Count == 0)
         {

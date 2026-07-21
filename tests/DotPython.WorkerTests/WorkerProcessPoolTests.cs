@@ -44,7 +44,7 @@ public sealed class WorkerProcessPoolTests
                     StringComparison.Ordinal
                 )
         );
-        Assert.Contains("managed-stable-abi-fixture-v3", session.WorkerIdentity.Features);
+        Assert.Contains("managed-stable-abi-fixture-v4", session.WorkerIdentity.Features);
         Assert.Equal(WorkerProcessState.Running, pool.State);
     }
 
@@ -82,18 +82,16 @@ public sealed class WorkerProcessPoolTests
         Assert.False(secondaryFailure.Success);
         Assert.Contains(
             secondaryFailure.Diagnostics,
-            diagnostic => diagnostic.Message.Contains("secondary fixture failure", StringComparison.Ordinal)
+            diagnostic =>
+                diagnostic.Message.Contains("secondary fixture failure", StringComparison.Ordinal)
         );
         Assert.True(
             primaryAfterFailure.Success,
             string.Join(Environment.NewLine, primaryAfterFailure.Diagnostics)
         );
         Assert.Equal($"10{Environment.NewLine}", primaryAfterFailure.StandardOutput);
-        Assert.Contains("managed-stable-abi-fixture-v3", session.WorkerIdentity.Features);
-        Assert.Contains(
-            "managed-stable-abi-fixture-secondary-v1",
-            session.WorkerIdentity.Features
-        );
+        Assert.Contains("managed-stable-abi-fixture-v4", session.WorkerIdentity.Features);
+        Assert.Contains("managed-stable-abi-fixture-secondary-v2", session.WorkerIdentity.Features);
         Assert.Equal(WorkerProcessState.Running, pool.State);
     }
 
@@ -118,7 +116,10 @@ public sealed class WorkerProcessPoolTests
         var options = CreateOptions(stableAbiModule: true);
         var mutableCatalog = options.StableAbiModules.ToList();
         await using var pool = new WorkerProcessPool(
-            options with { StableAbiModules = mutableCatalog }
+            options with
+            {
+                StableAbiModules = mutableCatalog,
+            }
         );
         mutableCatalog.Clear();
 
@@ -159,6 +160,11 @@ public sealed class WorkerProcessPoolTests
             print(value.is_prerelease)
             print(value[0])
             print(value.to_dict()["raw"])
+            gate = anyver.Version("1.2.3")
+            print(repr(gate))
+            print(len(gate))
+            print(gate < anyver.Version("2.0"))
+            print(anyver.Version.from_dict(gate.to_dict()) == gate)
             """,
             fileName: "<generic-anyver-qualification>",
             cancellationToken: TestContext.Current.CancellationToken
@@ -179,7 +185,11 @@ public sealed class WorkerProcessPoolTests
                 "3",
                 "True",
                 "1",
-                "1.2.3-rc.1+build.42"
+                "1.2.3-rc.1+build.42",
+                "Version('1.2.3')",
+                "3",
+                "True",
+                "True"
             ) + Environment.NewLine,
             result.StandardOutput
         );
@@ -750,12 +760,12 @@ public sealed class WorkerProcessPoolTests
         {
             "managed-execution",
             manifestFileName == "anyver-symbol-manifest.json"
-                ? "managed-stable-abi-qualified-v1"
-                : "managed-stable-abi-fixture-v3",
+                ? "managed-stable-abi-qualified-v2"
+                : "managed-stable-abi-fixture-v4",
         };
         if (secondaryStableAbiModule)
         {
-            features.Add("managed-stable-abi-fixture-secondary-v1");
+            features.Add("managed-stable-abi-fixture-secondary-v2");
         }
 
         return features;

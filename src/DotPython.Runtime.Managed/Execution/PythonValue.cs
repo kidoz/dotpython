@@ -254,13 +254,19 @@ internal interface PythonExternalObjectProtocol
 
     int GetLength(TextSpan span);
 
+    PythonTruthValue RichCompare(PythonValue other, PythonRichComparison comparison, TextSpan span);
+
     string ToDisplayString();
+
+    string ToRepresentationString();
 }
 
 internal sealed record PythonExternalObjectValue(PythonExternalObjectProtocol Protocol)
     : PythonValue
 {
     internal override string ToDisplayString() => Protocol.ToDisplayString();
+
+    internal override string ToRepresentationString() => Protocol.ToRepresentationString();
 
     public bool Equals(PythonExternalObjectValue? other) => ReferenceEquals(this, other);
 

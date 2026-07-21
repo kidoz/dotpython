@@ -85,8 +85,53 @@ internal sealed class QualifiedStableAbiObjectProtocol(
             span
         );
 
+    public PythonTruthValue RichCompare(
+        PythonValue other,
+        PythonRichComparison comparison,
+        TextSpan span
+    ) =>
+        Invoke(
+            () =>
+                Session.InvokeNative(() =>
+                {
+                    var temporary = new List<StableAbiObject>();
+                    try
+                    {
+                        var right = ToNative(other, temporary, span);
+                        using var result = NativeObject.RichCompare(
+                            right,
+                            comparison switch
+                            {
+                                PythonRichComparison.LessThan => StableAbiRichComparison.LessThan,
+                                PythonRichComparison.LessThanOrEqual =>
+                                    StableAbiRichComparison.LessThanOrEqual,
+                                PythonRichComparison.Equal => StableAbiRichComparison.Equal,
+                                PythonRichComparison.NotEqual => StableAbiRichComparison.NotEqual,
+                                PythonRichComparison.GreaterThan =>
+                                    StableAbiRichComparison.GreaterThan,
+                                PythonRichComparison.GreaterThanOrEqual =>
+                                    StableAbiRichComparison.GreaterThanOrEqual,
+                                _ => throw new ArgumentOutOfRangeException(nameof(comparison)),
+                            }
+                        );
+                        return PythonTruthValue.FromBoolean(result.AsBoolean());
+                    }
+                    finally
+                    {
+                        for (var index = temporary.Count - 1; index >= 0; index--)
+                        {
+                            temporary[index].Dispose();
+                        }
+                    }
+                }),
+            span
+        );
+
     public string ToDisplayString() =>
         Invoke(() => Session.InvokeNative(NativeObject.ToDisplayString), default);
+
+    public string ToRepresentationString() =>
+        Invoke(() => Session.InvokeNative(NativeObject.ToRepresentationString), default);
 
     internal static PythonValue ToManaged(WorkerSessionState session, StableAbiObject value)
     {

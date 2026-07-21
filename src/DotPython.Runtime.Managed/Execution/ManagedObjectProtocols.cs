@@ -392,6 +392,16 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
+        if (left is PythonExternalObjectValue leftExternal)
+        {
+            return leftExternal.Protocol.RichCompare(right, comparison, span);
+        }
+
+        if (right is PythonExternalObjectValue rightExternal)
+        {
+            return rightExternal.Protocol.RichCompare(left, Reverse(comparison), span);
+        }
+
         if (comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual)
         {
             var equals = AreEqual(left, right);
@@ -417,6 +427,18 @@ internal static class ManagedObjectProtocols
             }
         );
     }
+
+    private static PythonRichComparison Reverse(PythonRichComparison comparison) =>
+        comparison switch
+        {
+            PythonRichComparison.LessThan => PythonRichComparison.GreaterThan,
+            PythonRichComparison.LessThanOrEqual => PythonRichComparison.GreaterThanOrEqual,
+            PythonRichComparison.Equal => PythonRichComparison.Equal,
+            PythonRichComparison.NotEqual => PythonRichComparison.NotEqual,
+            PythonRichComparison.GreaterThan => PythonRichComparison.LessThan,
+            PythonRichComparison.GreaterThanOrEqual => PythonRichComparison.LessThanOrEqual,
+            _ => throw new ArgumentOutOfRangeException(nameof(comparison)),
+        };
 
     internal static int GetPythonHash(PythonValue value, TextSpan span = default)
     {

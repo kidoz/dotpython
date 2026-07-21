@@ -76,6 +76,17 @@ DP_ABI3_EXPORT int dp_abi3_object_string(
     const char **result,
     int64_t *result_length
 );
+DP_ABI3_EXPORT int dp_abi3_object_repr(
+    PyObject *object,
+    const char **result,
+    int64_t *result_length
+);
+DP_ABI3_EXPORT int dp_abi3_object_rich_compare(
+    PyObject *left,
+    PyObject *right,
+    int operation,
+    PyObject **result
+);
 DP_ABI3_EXPORT int dp_abi3_object_size(PyObject *object, int64_t *result);
 DP_ABI3_EXPORT int
 dp_abi3_object_get_item(PyObject *object, PyObject *key, PyObject **result);

@@ -121,11 +121,7 @@ public sealed record WorkerProcessOptions
                     Path.GetFullPath(module.BridgePath),
                     Path.GetFullPath(first.BridgePath)
                 )
-                || !string.Equals(
-                    module.BridgeSha256,
-                    first.BridgeSha256,
-                    StringComparison.Ordinal
-                )
+                || !string.Equals(module.BridgeSha256, first.BridgeSha256, StringComparison.Ordinal)
             )
             {
                 throw new ArgumentException(

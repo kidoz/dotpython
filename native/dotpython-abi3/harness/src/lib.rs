@@ -77,6 +77,17 @@ unsafe extern "C" {
         result: *mut *const c_char,
         result_length: *mut i64,
     ) -> c_int;
+    pub fn dp_abi3_object_repr(
+        object: *mut PyObject,
+        result: *mut *const c_char,
+        result_length: *mut i64,
+    ) -> c_int;
+    pub fn dp_abi3_object_rich_compare(
+        left: *mut PyObject,
+        right: *mut PyObject,
+        operation: c_int,
+        result: *mut *mut PyObject,
+    ) -> c_int;
     pub fn dp_abi3_object_size(object: *mut PyObject, result: *mut i64) -> c_int;
     pub fn dp_abi3_object_get_item(
         object: *mut PyObject,
@@ -93,6 +104,11 @@ unsafe extern "C" {
     pub fn PyUnicode_AsUTF8AndSize(unicode: *mut PyObject, size: *mut Py_ssize_t) -> *const c_char;
     pub fn PyObject_Str(object: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_Repr(object: *mut PyObject) -> *mut PyObject;
+    pub fn PyObject_RichCompare(
+        left: *mut PyObject,
+        right: *mut PyObject,
+        operation: c_int,
+    ) -> *mut PyObject;
     pub fn PyObject_GetAttr(object: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_Call(
         callable: *mut PyObject,
@@ -150,6 +166,8 @@ pub const RTLD_GLOBAL: c_int = 0x8;
 pub const DP_ABI3_OBJECT_INT: c_int = 3;
 pub const DP_ABI3_OBJECT_LIST: c_int = 6;
 pub const DP_ABI3_OBJECT_CALLABLE: c_int = 10;
+pub const DP_PY_LT: c_int = 0;
+pub const DP_PY_EQ: c_int = 2;
 
 pub struct Library {
     handle: *mut c_void,

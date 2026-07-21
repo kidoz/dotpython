@@ -2479,6 +2479,104 @@ pub extern "C" fn PyObject_Repr(object: *mut PyObject) -> *mut PyObject {
     PyObject_Str(object)
 }
 
+fn swapped_comparison(operation: c_int) -> c_int {
+    match operation {
+        PY_LT => PY_GT,
+        PY_LE => PY_GE,
+        PY_EQ => PY_EQ,
+        PY_NE => PY_NE,
+        PY_GT => PY_LT,
+        PY_GE => PY_LE,
+        _ => operation,
+    }
+}
+
+unsafe fn call_rich_comparison(
+    function: *mut c_void,
+    left: *mut PyObject,
+    right: *mut PyObject,
+    operation: c_int,
+) -> *mut PyObject {
+    let compare: richcmpfunc = unsafe { transmute(function) };
+    unsafe { compare(left, right, operation) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_RichCompare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    operation: c_int,
+) -> *mut PyObject {
+    require_owner!(ptr::null_mut());
+    if left.is_null() || right.is_null() || !(PY_LT..=PY_GE).contains(&operation) {
+        set_error(
+            unsafe { PyExc_TypeError },
+            "rich comparison inputs are invalid",
+        );
+        return ptr::null_mut();
+    }
+
+    let left_type = unsafe { (*left).ob_type };
+    let right_type = unsafe { (*right).ob_type };
+    let left_compare = unsafe { slot(left_type, PY_TP_RICHCOMPARE) };
+    let right_compare = unsafe { slot(right_type, PY_TP_RICHCOMPARE) };
+    let not_implemented = &raw mut _Py_NotImplementedStruct;
+    let mut tried_reverse = false;
+
+    if left_type != right_type
+        && !right_compare.is_null()
+        && right_compare != left_compare
+        && PyType_IsSubtype(right_type, left_type) != 0
+    {
+        let result = unsafe {
+            call_rich_comparison(right_compare, right, left, swapped_comparison(operation))
+        };
+        if result.is_null() || result != not_implemented {
+            return result;
+        }
+        release(result);
+        tried_reverse = true;
+    }
+
+    if !left_compare.is_null() {
+        let result = unsafe { call_rich_comparison(left_compare, left, right, operation) };
+        if result.is_null() || result != not_implemented {
+            return result;
+        }
+        release(result);
+    }
+
+    if !tried_reverse && !right_compare.is_null() {
+        let result = unsafe {
+            call_rich_comparison(right_compare, right, left, swapped_comparison(operation))
+        };
+        if result.is_null() || result != not_implemented {
+            return result;
+        }
+        release(result);
+    }
+
+    match operation {
+        PY_EQ => newref(if left == right {
+            &raw mut _Py_TrueStruct
+        } else {
+            &raw mut _Py_FalseStruct
+        }),
+        PY_NE => newref(if left != right {
+            &raw mut _Py_TrueStruct
+        } else {
+            &raw mut _Py_FalseStruct
+        }),
+        _ => {
+            set_error(
+                unsafe { PyExc_TypeError },
+                "objects do not support the requested ordering",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
 // ===========================================================================
 // Modules.
 // ===========================================================================
@@ -3385,6 +3483,48 @@ pub extern "C" fn dp_abi3_object_string(
     let status = copy_object_text(text, result, result_length);
     release(text);
     status
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_repr(
+    object: *mut PyObject,
+    result: *mut *const c_char,
+    result_length: *mut i64,
+) -> c_int {
+    require_owner!(-1);
+    let text = PyObject_Repr(object);
+    if text.is_null() {
+        return -1;
+    }
+    let status = copy_object_text(text, result, result_length);
+    release(text);
+    status
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_rich_compare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    operation: c_int,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) || left.is_null() || right.is_null() {
+        if !result.is_null() {
+            set_error(
+                unsafe { PyExc_TypeError },
+                "rich comparison inputs are invalid",
+            );
+        }
+        return -1;
+    }
+    clear_error();
+    let compared = PyObject_RichCompare(left, right, operation);
+    if compared.is_null() {
+        return -1;
+    }
+    unsafe { *result = compared };
+    0
 }
 
 #[unsafe(no_mangle)]

@@ -59,6 +59,7 @@ pub type binaryfunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut
 pub type objobjargproc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
 pub type destructor = unsafe extern "C" fn(*mut PyObject);
 pub type reprfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+pub type richcmpfunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject;
 pub type getiterfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 pub type iternextfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 pub type newfunc =
@@ -156,10 +157,18 @@ pub const PY_TP_ITERNEXT: c_int = 63;
 pub const PY_TP_METHODS: c_int = 64;
 pub const PY_TP_NEW: c_int = 65;
 pub const PY_TP_REPR: c_int = 66;
+pub const PY_TP_RICHCOMPARE: c_int = 67;
 pub const PY_TP_STR: c_int = 70;
 pub const PY_TP_GETSET: c_int = 73;
 pub const PY_TP_FREE: c_int = 74;
 
 /// Immortal refcount sentinel (`(Py_ssize_t)3 << 30`) shared with the C header.
 pub const DP_ABI3_IMMORTAL_REFCNT: Py_ssize_t = 3 << 30;
-pub const DP_ABI3_BRIDGE_VERSION: c_int = 5;
+pub const PY_LT: c_int = 0;
+pub const PY_LE: c_int = 1;
+pub const PY_EQ: c_int = 2;
+pub const PY_NE: c_int = 3;
+pub const PY_GT: c_int = 4;
+pub const PY_GE: c_int = 5;
+
+pub const DP_ABI3_BRIDGE_VERSION: c_int = 6;

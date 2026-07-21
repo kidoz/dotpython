@@ -438,6 +438,47 @@ internal sealed class StableAbiModule : IDisposable
         }
     }
 
+    internal string GetObjectRepresentation(StableAbiObject value)
+    {
+        lock (_gate)
+        {
+            if (
+                _generic.ObjectRepresentation(ValidateHandle(value), out var result, out var length)
+                != 0
+            )
+            {
+                throw InvocationFailure();
+            }
+
+            return ReadUtf8(result, length);
+        }
+    }
+
+    internal StableAbiObject RichCompareObjects(
+        StableAbiObject left,
+        StableAbiObject right,
+        StableAbiRichComparison comparison
+    )
+    {
+        lock (_gate)
+        {
+            if (
+                _generic.ObjectRichCompare(
+                    ValidateHandle(left),
+                    ValidateHandle(right),
+                    (int)comparison,
+                    out var result
+                ) != 0
+                || result == 0
+            )
+            {
+                throw InvocationFailure();
+            }
+
+            return Track(result);
+        }
+    }
+
     internal long GetObjectSize(StableAbiObject value)
     {
         lock (_gate)
@@ -662,6 +703,12 @@ internal sealed class StableAbiModule : IDisposable
     private delegate int ObjectString(nint value, out nint result, out long length);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectRepresentation(nint value, out nint result, out long length);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectRichCompare(nint left, nint right, int operation, out nint result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int ObjectSize(nint value, out long result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -696,6 +743,8 @@ internal sealed class StableAbiModule : IDisposable
         ObjectAsBool ObjectAsBool,
         ObjectAsUtf8 ObjectAsUtf8,
         ObjectString ObjectString,
+        ObjectRepresentation ObjectRepresentation,
+        ObjectRichCompare ObjectRichCompare,
         ObjectSize ObjectSize,
         ObjectGetItem ObjectGetItem,
         ObjectRelease ObjectRelease
@@ -716,6 +765,8 @@ internal sealed class StableAbiModule : IDisposable
                 GetDelegate<ObjectAsBool>(library, "dp_abi3_object_as_bool"),
                 GetDelegate<ObjectAsUtf8>(library, "dp_abi3_object_as_utf8"),
                 GetDelegate<ObjectString>(library, "dp_abi3_object_string"),
+                GetDelegate<ObjectRepresentation>(library, "dp_abi3_object_repr"),
+                GetDelegate<ObjectRichCompare>(library, "dp_abi3_object_rich_compare"),
                 GetDelegate<ObjectSize>(library, "dp_abi3_object_size"),
                 GetDelegate<ObjectGetItem>(library, "dp_abi3_object_get_item"),
                 GetDelegate<ObjectRelease>(library, "dp_abi3_object_release")
@@ -738,6 +789,16 @@ internal enum StableAbiObjectKind
     Callable = 10,
     Type = 11,
     Instance = 12,
+}
+
+internal enum StableAbiRichComparison
+{
+    LessThan = 0,
+    LessThanOrEqual = 1,
+    Equal = 2,
+    NotEqual = 3,
+    GreaterThan = 4,
+    GreaterThanOrEqual = 5,
 }
 
 internal sealed class StableAbiObject : IDisposable
@@ -768,6 +829,13 @@ internal sealed class StableAbiObject : IDisposable
     internal string AsText() => RequireOwner().GetObjectText(this);
 
     internal string ToDisplayString() => RequireOwner().GetObjectDisplay(this);
+
+    internal string ToRepresentationString() => RequireOwner().GetObjectRepresentation(this);
+
+    internal StableAbiObject RichCompare(
+        StableAbiObject right,
+        StableAbiRichComparison comparison
+    ) => RequireOwner().RichCompareObjects(this, right, comparison);
 
     internal long GetSize() => RequireOwner().GetObjectSize(this);
 

@@ -29,11 +29,10 @@ internal sealed record StableAbiSymbolManifest(
     string? SourceRevision
 )
 {
-    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v3";
-    internal const string ExpectedSecondaryManifestVersion =
-        "dotpython-abi3-fixture-secondary-v1";
+    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v4";
+    internal const string ExpectedSecondaryManifestVersion = "dotpython-abi3-fixture-secondary-v2";
     internal const string ExpectedProviderId = "dotpython-managed-abi3";
-    internal const int ExpectedBridgeAbiVersion = 5;
+    internal const int ExpectedBridgeAbiVersion = 6;
 
     internal bool IsConformanceFixture =>
         string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal)
@@ -129,6 +128,7 @@ internal sealed record StableAbiSymbolManifest(
         "PyObject_GetItem",
         "PyObject_GetIter",
         "PyObject_Repr",
+        "PyObject_RichCompare",
         "PyObject_SetAttr",
         "PyObject_SetAttrString",
         "PyObject_SetItem",
@@ -184,6 +184,8 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_object_get_item",
         "dp_abi3_object_kind_of",
         "dp_abi3_object_release",
+        "dp_abi3_object_repr",
+        "dp_abi3_object_rich_compare",
         "dp_abi3_object_sequence",
         "dp_abi3_object_size",
         "dp_abi3_object_string",
@@ -274,8 +276,8 @@ internal sealed record StableAbiSymbolManifest(
         );
         var expectedModuleName = secondary ? "dotpython_fixture_secondary" : "dotpython_fixture";
         var expectedCapability = secondary
-            ? "managed-stable-abi-fixture-secondary-v1"
-            : "managed-stable-abi-fixture-v3";
+            ? "managed-stable-abi-fixture-secondary-v2"
+            : "managed-stable-abi-fixture-v4";
         var expectedInitializer = secondary
             ? "PyInit_dotpython_fixture_secondary"
             : "PyInit_dotpython_fixture";

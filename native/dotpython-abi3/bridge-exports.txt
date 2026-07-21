@@ -57,6 +57,7 @@ PyObject_GetAttr
 PyObject_GetItem
 PyObject_GetIter
 PyObject_Repr
+PyObject_RichCompare
 PyObject_SetAttr
 PyObject_SetAttrString
 PyObject_SetItem
@@ -108,6 +109,8 @@ dp_abi3_object_get_attr
 dp_abi3_object_get_item
 dp_abi3_object_kind_of
 dp_abi3_object_release
+dp_abi3_object_repr
+dp_abi3_object_rich_compare
 dp_abi3_object_sequence
 dp_abi3_object_size
 dp_abi3_object_string

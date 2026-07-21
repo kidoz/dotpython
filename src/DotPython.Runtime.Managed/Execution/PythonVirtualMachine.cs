@@ -73,7 +73,9 @@ internal sealed class PythonVirtualMachine
         _cancellationToken = cancellationToken;
         _builtins = new Dictionary<string, PythonValue>(StringComparer.Ordinal)
         {
+            ["len"] = new PythonBuiltinFunctionValue("len", Length),
             ["print"] = new PythonBuiltinFunctionValue("print", Print),
+            ["repr"] = new PythonBuiltinFunctionValue("repr", Representation),
         };
         foreach (var name in ExceptionBaseNames.Keys)
         {
@@ -1787,6 +1789,41 @@ internal sealed class PythonVirtualMachine
         return PythonNoneValue.Instance;
     }
 
+    private static PythonWholeNumberValue Length(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        ValidateBuiltinArgumentCount("len", arguments, span);
+        return PythonWholeNumberValue.Create(ManagedObjectProtocols.GetLength(arguments[0], span));
+    }
+
+    private static PythonTextValue Representation(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        ValidateBuiltinArgumentCount("repr", arguments, span);
+        return new PythonTextValue(arguments[0].ToRepresentationString());
+    }
+
+    private static void ValidateBuiltinArgumentCount(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"{name}() takes exactly one argument ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+    }
+
     private void FailActiveModuleInitializations()
     {
         for (var index = 0; index < _frameCount; index++)
@@ -1888,6 +1925,36 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        var richComparison = opCode switch
+        {
+            PythonOpCode.CompareLessThan => PythonRichComparison.LessThan,
+            PythonOpCode.CompareLessThanOrEqual => PythonRichComparison.LessThanOrEqual,
+            PythonOpCode.CompareEqual => PythonRichComparison.Equal,
+            PythonOpCode.CompareNotEqual => PythonRichComparison.NotEqual,
+            PythonOpCode.CompareGreaterThan => PythonRichComparison.GreaterThan,
+            PythonOpCode.CompareGreaterThanOrEqual => PythonRichComparison.GreaterThanOrEqual,
+            _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+        };
+        if (left is PythonExternalObjectValue leftExternal)
+        {
+            return leftExternal.Protocol.RichCompare(right, richComparison, span);
+        }
+
+        if (right is PythonExternalObjectValue rightExternal)
+        {
+            var reversed = richComparison switch
+            {
+                PythonRichComparison.LessThan => PythonRichComparison.GreaterThan,
+                PythonRichComparison.LessThanOrEqual => PythonRichComparison.GreaterThanOrEqual,
+                PythonRichComparison.Equal => PythonRichComparison.Equal,
+                PythonRichComparison.NotEqual => PythonRichComparison.NotEqual,
+                PythonRichComparison.GreaterThan => PythonRichComparison.LessThan,
+                PythonRichComparison.GreaterThanOrEqual => PythonRichComparison.LessThanOrEqual,
+                _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
+            };
+            return rightExternal.Protocol.RichCompare(left, reversed, span);
+        }
+
         if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
         {
             var equal = AreEqual(left, right);

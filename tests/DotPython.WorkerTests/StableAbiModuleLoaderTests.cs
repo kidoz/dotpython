@@ -43,7 +43,7 @@ public sealed class StableAbiModuleLoaderTests
         var module = StableAbiModuleLoader.Load(configuration);
 
         Assert.Equal("dotpython_fixture", module.ModuleName);
-        Assert.Equal("dotpython-abi3-fixture-v3", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-fixture-v4", module.ManifestVersion);
         Assert.True(module.MultiPhase);
         using var ready = module.GetAttribute("fixture_ready");
         Assert.Equal(1, ready.AsInt64());
@@ -77,6 +77,9 @@ public sealed class StableAbiModuleLoaderTests
         Assert.Equal(StableAbiObjectKind.Integer, result.Kind);
         Assert.Equal(42, result.AsInt64());
         Assert.Equal("42", result.ToDisplayString());
+        Assert.Equal("42", result.ToRepresentationString());
+        using var equality = result.RichCompare(result, StableAbiRichComparison.Equal);
+        Assert.True(equality.AsBoolean());
 
         using var first = module.CreateText("alpha");
         using var second = module.CreateText("beta");
@@ -95,7 +98,7 @@ public sealed class StableAbiModuleLoaderTests
         using var module = StableAbiModuleLoader.Load(configuration);
 
         Assert.Equal("anyver._anyver", module.ModuleName);
-        Assert.Equal("dotpython-abi3-anyver-1.1.0-v3", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-anyver-1.1.0-v4", module.ManifestVersion);
         Assert.Equal(
             "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
             module.ArtifactSha256
@@ -123,6 +126,11 @@ public sealed class StableAbiModuleLoaderTests
         Assert.Equal(StableAbiObjectKind.Instance, version.Kind);
         Assert.Equal("2.0", raw.AsText());
         Assert.Equal("2.0", version.ToDisplayString());
+        Assert.Equal("Version('2.0')", version.ToRepresentationString());
+        using var laterText = module.CreateText("3.0");
+        using var later = versionType.Call([laterText, auto]);
+        using var ordered = version.RichCompare(later, StableAbiRichComparison.LessThan);
+        Assert.True(ordered.AsBoolean());
     }
 
     [Fact]
@@ -340,7 +348,7 @@ public sealed class StableAbiModuleLoaderTests
 
         Assert.True(manifest.ProcessPinned);
         Assert.False(manifest.IsConformanceFixture);
-        Assert.Equal("managed-stable-abi-qualified-v1", manifest.CapabilityId);
+        Assert.Equal("managed-stable-abi-qualified-v2", manifest.CapabilityId);
         Assert.Equal("anyver._anyver", manifest.ModuleName);
     }
 

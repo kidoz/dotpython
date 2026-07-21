@@ -116,6 +116,30 @@ fn display(object: *mut PyObject) -> String {
     copy_text(pointer, length)
 }
 
+fn representation(object: *mut PyObject) -> String {
+    let mut pointer = ptr::null();
+    let mut length = 0;
+    check!(
+        unsafe { dp_abi3_object_repr(object, &mut pointer, &mut length) } == 0,
+        "{}",
+        err_msg()
+    );
+    copy_text(pointer, length)
+}
+
+fn rich_compare(left: *mut PyObject, right: *mut PyObject, operation: c_int) -> bool {
+    let mut compared = ptr::null_mut();
+    check!(
+        unsafe { dp_abi3_object_rich_compare(left, right, operation, &mut compared) } == 0,
+        "{}",
+        err_msg()
+    );
+    let mut result = 0;
+    check!(unsafe { dp_abi3_object_as_bool(compared, &mut result) } == 0);
+    release(compared);
+    result != 0
+}
+
 fn invoke_comparison(
     module: *mut PyObject,
     left: &str,
@@ -233,7 +257,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     section("Pinned Anyver module satisfies the generic native ABI contract");
-    check!(unsafe { dp_abi3_bridge_version() } == 5);
+    check!(unsafe { dp_abi3_bridge_version() } == 6);
 
     let lib = Library::open(&args[1]);
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit__anyver")) };
@@ -268,6 +292,10 @@ fn main() -> std::process::ExitCode {
     let mut prerelease_value = 0;
     check!(unsafe { dp_abi3_object_as_bool(prerelease, &mut prerelease_value) } == 0);
     check!(prerelease_value == 1);
+    check!(representation(version) == "Version('1.2.3-rc.1')");
+    let later = create_version(module, "2.0");
+    check!(rich_compare(version, later, DP_PY_LT));
+    release(later);
 
     section("Generic object bridge dispatches Anyver sequence slots");
     let key = integer(0);

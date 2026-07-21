@@ -35,7 +35,7 @@ fn lifecycle(success: &str, failure: &str) {
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit_dotpython_fixture")) };
     let cleanup: CleanupFn = unsafe { transmute(lib.symbol("dotpython_fixture_cleanup_count")) };
 
-    check!(unsafe { dp_abi3_bridge_version() } == 5);
+    check!(unsafe { dp_abi3_bridge_version() } == 6);
 
     let mut module: *mut PyObject = ptr::null_mut();
     let mut multi_phase: c_int = 0;
@@ -82,6 +82,16 @@ fn lifecycle(success: &str, failure: &str) {
     check!(unsafe { dp_abi3_object_string(returned, &mut text, &mut text_length) } == 0);
     check!(text_length == 2);
     check!(unsafe { cstr(text) } == "42");
+    check!(unsafe { dp_abi3_object_repr(returned, &mut text, &mut text_length) } == 0);
+    check!(unsafe { cstr(text) } == "42");
+    let mut equals_self = ptr::null_mut();
+    check!(
+        unsafe { dp_abi3_object_rich_compare(returned, returned, DP_PY_EQ, &mut equals_self) } == 0
+    );
+    let mut equals = 0;
+    check!(unsafe { dp_abi3_object_as_bool(equals_self, &mut equals) } == 0);
+    check!(equals == 1);
+    unsafe { dp_abi3_object_release(equals_self) };
 
     let mut first = ptr::null_mut();
     let mut second = ptr::null_mut();

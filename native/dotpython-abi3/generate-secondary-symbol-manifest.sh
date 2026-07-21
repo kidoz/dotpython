@@ -19,12 +19,12 @@ emit_array() {
 
 {
     printf '{\n  "schemaVersion": 3,\n'
-    printf '  "manifestVersion": "dotpython-abi3-fixture-secondary-v1",\n'
+    printf '  "manifestVersion": "dotpython-abi3-fixture-secondary-v2",\n'
     printf '  "providerId": "dotpython-managed-abi3",\n'
     printf '  "abiFamily": "abi3",\n'
     printf '  "minimumAbiVersion": "3.11",\n'
-    printf '  "bridgeAbiVersion": 5,\n'
-    printf '  "capabilityId": "managed-stable-abi-fixture-secondary-v1",\n'
+    printf '  "bridgeAbiVersion": 6,\n'
+    printf '  "capabilityId": "managed-stable-abi-fixture-secondary-v2",\n'
     printf '  "libraryLifetime": "module",\n'
     printf '  "moduleName": "dotpython_fixture_secondary",\n'
     printf '  "initializationSymbol": "PyInit_dotpython_fixture_secondary",\n'

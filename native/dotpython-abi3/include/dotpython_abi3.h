@@ -243,6 +243,8 @@ DP_ABI3_EXPORT PyObject *PyObject_GetAttr(PyObject *object, PyObject *name);
 DP_ABI3_EXPORT PyObject *PyObject_GetItem(PyObject *object, PyObject *key);
 DP_ABI3_EXPORT PyObject *PyObject_GetIter(PyObject *object);
 DP_ABI3_EXPORT PyObject *PyObject_Repr(PyObject *object);
+DP_ABI3_EXPORT PyObject *
+PyObject_RichCompare(PyObject *left, PyObject *right, int operation);
 DP_ABI3_EXPORT int PyObject_SetAttr(PyObject *object, PyObject *name, PyObject *value);
 DP_ABI3_EXPORT int PyObject_SetAttrString(PyObject *object, const char *name, PyObject *value);
 DP_ABI3_EXPORT int PyObject_SetItem(PyObject *object, PyObject *key, PyObject *value);
