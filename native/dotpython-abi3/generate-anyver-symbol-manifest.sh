@@ -18,12 +18,14 @@ emit_array() {
 }
 
 {
-    printf '{\n  "schemaVersion": 1,\n'
-    printf '  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v1",\n'
+    printf '{\n  "schemaVersion": 2,\n'
+    printf '  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v2",\n'
     printf '  "providerId": "dotpython-managed-abi3",\n'
     printf '  "abiFamily": "abi3",\n'
     printf '  "minimumAbiVersion": "3.11",\n'
-    printf '  "bridgeAbiVersion": 3,\n'
+    printf '  "bridgeAbiVersion": 4,\n'
+    printf '  "capabilityId": "managed-stable-abi-qualified-v1",\n'
+    printf '  "libraryLifetime": "process",\n'
     printf '  "moduleName": "anyver._anyver",\n'
     printf '  "initializationSymbol": "PyInit__anyver",\n'
     printf '  "artifactFileName": "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",\n'

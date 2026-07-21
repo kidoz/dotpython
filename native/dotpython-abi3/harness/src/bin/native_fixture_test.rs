@@ -35,7 +35,7 @@ fn lifecycle(success: &str, failure: &str) {
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit_dotpython_fixture")) };
     let cleanup: CleanupFn = unsafe { transmute(lib.symbol("dotpython_fixture_cleanup_count")) };
 
-    check!(unsafe { dp_abi3_bridge_version() } == 3);
+    check!(unsafe { dp_abi3_bridge_version() } == 4);
 
     let mut module: *mut PyObject = ptr::null_mut();
     let mut multi_phase: c_int = 0;

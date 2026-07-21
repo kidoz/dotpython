@@ -162,4 +162,4 @@ pub const PY_TP_FREE: c_int = 74;
 
 /// Immortal refcount sentinel (`(Py_ssize_t)3 << 30`) shared with the C header.
 pub const DP_ABI3_IMMORTAL_REFCNT: Py_ssize_t = 3 << 30;
-pub const DP_ABI3_BRIDGE_VERSION: c_int = 3;
+pub const DP_ABI3_BRIDGE_VERSION: c_int = 4;

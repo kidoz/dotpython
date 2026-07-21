@@ -100,26 +100,6 @@ unsafe extern "C" {
     pub fn dp_abi3_error_type() -> *const c_char;
     pub fn dp_abi3_error_message() -> *const c_char;
     pub fn dp_abi3_active_object_count() -> i64;
-    pub fn dp_abi3_anyver_compare(
-        module: *mut PyObject,
-        left: *const c_char,
-        right: *const c_char,
-        ecosystem: *const c_char,
-        result: *mut i64,
-    ) -> c_int;
-    pub fn dp_abi3_anyver_sort_versions(
-        module: *mut PyObject,
-        versions: *const *const c_char,
-        count: i64,
-        ecosystem: *const c_char,
-        result_json: *mut *const c_char,
-    ) -> c_int;
-    pub fn dp_abi3_anyver_version_to_json(
-        module: *mut PyObject,
-        version: *const c_char,
-        ecosystem: *const c_char,
-        result_json: *mut *const c_char,
-    ) -> c_int;
 
     pub fn PyUnicode_FromStringAndSize(text: *const c_char, size: Py_ssize_t) -> *mut PyObject;
     pub fn PyUnicode_AsUTF8AndSize(unicode: *mut PyObject, size: *mut Py_ssize_t) -> *const c_char;

@@ -90,9 +90,6 @@ __Py_NoneStruct
 __Py_NotImplementedStruct
 __Py_TrueStruct
 _dp_abi3_active_object_count
-_dp_abi3_anyver_compare
-_dp_abi3_anyver_sort_versions
-_dp_abi3_anyver_version_to_json
 _dp_abi3_bridge_version
 _dp_abi3_error_message
 _dp_abi3_error_type

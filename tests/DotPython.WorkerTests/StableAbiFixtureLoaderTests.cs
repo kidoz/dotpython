@@ -15,7 +15,7 @@ public sealed class StableAbiFixtureLoaderTests
         var module = StableAbiFixtureLoader.Load(configuration);
 
         Assert.Equal("dotpython_fixture", module.ModuleName);
-        Assert.Equal("dotpython-abi3-fixture-v1", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-fixture-v2", module.ManifestVersion);
         Assert.True(module.MultiPhase);
         Assert.Equal(1, module.ReadyValue);
         Assert.Equal(42, module.InvokeLong("increment", 41));
@@ -57,37 +57,20 @@ public sealed class StableAbiFixtureLoaderTests
     }
 
     [Fact]
-    public void Load_ExecutesPinnedAnyverModuleWithoutChangingTheWheelBinary()
+    public void Load_InvokesPinnedAnyverThroughGenericObjectBridge()
     {
         SkipAnyverWhenUnavailable();
         var configuration = CreateAnyverConfiguration();
         using var module = StableAbiFixtureLoader.Load(configuration);
 
         Assert.Equal("anyver._anyver", module.ModuleName);
-        Assert.Equal("dotpython-abi3-anyver-1.1.0-v1", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-anyver-1.1.0-v2", module.ManifestVersion);
         Assert.Equal(
             "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
             module.ArtifactSha256
         );
         Assert.Equal(configuration.FixtureSha256, module.NativeEntrySha256);
         Assert.True(module.MultiPhase);
-        Assert.Equal(-1, module.CompareAnyver("1.0", "2.0", "generic"));
-        Assert.Equal(
-            ["1.0-alpha", "1.0", "2.0"],
-            module.SortAnyver(["2.0", "1.0-alpha", "1.0"], "generic")
-        );
-
-        var version = module.DescribeAnyverVersion("1.2.3", "auto");
-        Assert.Equal("1.2.3", version.Raw);
-        Assert.Equal(1, version.Major);
-        Assert.False(version.IsPrerelease);
-    }
-
-    [Fact]
-    public void Load_InvokesPinnedAnyverThroughGenericObjectBridge()
-    {
-        SkipAnyverWhenUnavailable();
-        using var module = StableAbiFixtureLoader.Load(CreateAnyverConfiguration());
 
         var names = module.GetAttributeNames();
         Assert.Contains("Version", names);
@@ -120,7 +103,7 @@ public sealed class StableAbiFixtureLoaderTests
         for (var iteration = 0; iteration < 25; iteration++)
         {
             using var module = StableAbiFixtureLoader.Load(configuration);
-            Assert.Equal(0, module.CompareAnyver("2.0", "2.0", "generic"));
+            Assert.Equal(0, InvokeQualifiedComparison(module, "2.0", "2.0", "generic"));
         }
     }
 
@@ -133,9 +116,8 @@ public sealed class StableAbiFixtureLoaderTests
         for (var iteration = 0; iteration < 256; iteration++)
         {
             var raw = $"1.2.{iteration % 100}";
-            var version = module.DescribeAnyverVersion(raw, "auto");
-            Assert.Equal(raw, version.Raw);
-            Assert.Equal(-1, module.CompareAnyver(raw, "2.0.0", "generic"));
+            Assert.Equal(raw, ReadQualifiedVersionRaw(module, raw));
+            Assert.Equal(-1, InvokeQualifiedComparison(module, raw, "2.0.0", "generic"));
 
             if (iteration % 32 == 0)
             {
@@ -147,14 +129,14 @@ public sealed class StableAbiFixtureLoaderTests
         for (var iteration = 0; iteration < 128; iteration++)
         {
             var exception = Assert.Throws<StableAbiLoadException>(() =>
-                module.CompareAnyver("1.0", "2.0", "dotpython-invalid-ecosystem")
+                InvokeQualifiedComparison(module, "1.0", "2.0", "dotpython-invalid-ecosystem")
             );
             Assert.Equal("DPY8005", exception.Code);
             Assert.Equal(StableAbiLoadPhase.Invocation, exception.Phase);
             Assert.Contains("ValueError", exception.Message, StringComparison.Ordinal);
         }
 
-        Assert.Equal(-1, module.CompareAnyver("1.0", "2.0", "generic"));
+        Assert.Equal(-1, InvokeQualifiedComparison(module, "1.0", "2.0", "generic"));
     }
 
     [Fact]
@@ -315,6 +297,61 @@ public sealed class StableAbiFixtureLoaderTests
 
         Assert.Equal("DPY8003", exception.Code);
         Assert.Equal(StableAbiLoadPhase.Manifest, exception.Phase);
+    }
+
+    [Fact]
+    public void Manifest_QualifiesProcessPinnedArtifactWithoutRuntimePackageBranch()
+    {
+        var manifest = StableAbiSymbolManifest.Load(FixturePath("anyver-symbol-manifest.json"));
+
+        Assert.True(manifest.ProcessPinned);
+        Assert.False(manifest.IsConformanceFixture);
+        Assert.Equal("managed-stable-abi-qualified-v1", manifest.CapabilityId);
+        Assert.Equal("anyver._anyver", manifest.ModuleName);
+    }
+
+    [Fact]
+    public void Manifest_RejectsUnsafeQualifiedArtifactPath()
+    {
+        using var temporary = new TemporaryDirectory();
+        var manifest =
+            JsonNode.Parse(File.ReadAllText(FixturePath("anyver-symbol-manifest.json")))
+            ?? throw new InvalidOperationException("Qualified manifest could not be parsed.");
+        manifest["nativeEntry"] = "../outside.abi3.so";
+        var path = Path.Combine(temporary.Path, "unsafe-manifest.json");
+        File.WriteAllText(path, manifest.ToJsonString());
+
+        var exception = Assert.Throws<StableAbiLoadException>(() =>
+            StableAbiSymbolManifest.Load(path)
+        );
+
+        Assert.Equal("DPY8003", exception.Code);
+        Assert.Equal(StableAbiLoadPhase.Manifest, exception.Phase);
+    }
+
+    private static long InvokeQualifiedComparison(
+        StableAbiFixtureModule module,
+        string left,
+        string right,
+        string ecosystem
+    )
+    {
+        using var compare = module.GetAttribute("compare");
+        using var leftValue = module.CreateText(left);
+        using var rightValue = module.CreateText(right);
+        using var ecosystemValue = module.CreateText(ecosystem);
+        using var result = compare.Call([leftValue, rightValue, ecosystemValue]);
+        return result.AsInt64();
+    }
+
+    private static string ReadQualifiedVersionRaw(StableAbiFixtureModule module, string value)
+    {
+        using var versionType = module.GetAttribute("Version");
+        using var rawValue = module.CreateText(value);
+        using var ecosystem = module.CreateText("auto");
+        using var version = versionType.Call([rawValue, ecosystem]);
+        using var raw = version.GetAttribute("raw");
+        return raw.AsText();
     }
 
     private static StableAbiFixtureConfiguration CreateConfiguration(string fixturePath)

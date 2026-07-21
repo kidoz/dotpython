@@ -77,40 +77,6 @@ internal sealed class WorkerSessionState : IAsyncDisposable
             cancellationToken
         );
 
-    internal Task<long> CompareAnyverAsync(
-        long objectId,
-        string left,
-        string right,
-        string ecosystem,
-        CancellationToken cancellationToken
-    ) =>
-        _nativeLane.InvokeAsync(
-            () => GetModule(objectId).CompareAnyver(left, right, ecosystem),
-            cancellationToken
-        );
-
-    internal Task<IReadOnlyList<string>> SortAnyverAsync(
-        long objectId,
-        IReadOnlyList<string> versions,
-        string ecosystem,
-        CancellationToken cancellationToken
-    ) =>
-        _nativeLane.InvokeAsync(
-            () => GetModule(objectId).SortAnyver(versions, ecosystem),
-            cancellationToken
-        );
-
-    internal Task<StableAbiAnyverVersionInfo> DescribeAnyverVersionAsync(
-        long objectId,
-        string version,
-        string ecosystem,
-        CancellationToken cancellationToken
-    ) =>
-        _nativeLane.InvokeAsync(
-            () => GetModule(objectId).DescribeAnyverVersion(version, ecosystem),
-            cancellationToken
-        );
-
     internal Task<bool> ReleaseStableAbiModuleAsync(
         long objectId,
         CancellationToken cancellationToken

@@ -1,6 +1,6 @@
 namespace DotPython.Runtime.Native;
 
-internal static class StableAbiAnyverLibraryCache
+internal static class StableAbiProcessLibraryCache
 {
     private static readonly object Gate = new();
     private static string? _bridgeIdentity;
@@ -29,7 +29,7 @@ internal static class StableAbiAnyverLibraryCache
                     throw new StableAbiLoadException(
                         "DPY8004",
                         StableAbiLoadPhase.Policy,
-                        "A worker process can pin only one Anyver bridge and native entry identity.",
+                        "A worker process can pin only one Stable-ABI bridge and native entry identity.",
                         fixturePath,
                         fixtureHash,
                         missingSymbol: null

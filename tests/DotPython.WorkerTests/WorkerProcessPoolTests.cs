@@ -39,7 +39,7 @@ public sealed class WorkerProcessPoolTests
 
         Assert.Equal(42, result);
         Assert.Equal("dotpython_fixture", module.ModuleName);
-        Assert.Equal("dotpython-abi3-fixture-v1", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-fixture-v2", module.ManifestVersion);
         Assert.Equal(
             StableAbiFixtureLoader.ComputeSha256(NativeFixturePath("dotpython_fixture.abi3.so")),
             module.ArtifactSha256
@@ -53,70 +53,10 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
-    public async Task Worker_ExecutesPinnedAnyverModuleThroughTypedProtocol()
-    {
-        SkipAnyverWhenUnavailable();
-        await using var pool = new WorkerProcessPool(
-            CreateOptions(
-                stableAbiFixture: true,
-                nativeFixtureFileName: "anyver._anyver.abi3.so",
-                nativeManifestFileName: "anyver-symbol-manifest.json"
-            )
-        );
-        await using var session = await pool.OpenSessionAsync(
-            TestContext.Current.CancellationToken
-        );
-        await using var module = await session.LoadStableAbiModuleAsync(
-            TestContext.Current.CancellationToken
-        );
-
-        Assert.Equal("anyver._anyver", module.ModuleName);
-        Assert.Equal(
-            "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
-            module.ArtifactSha256
-        );
-        Assert.Equal(
-            StableAbiFixtureLoader.ComputeSha256(NativeFixturePath("anyver._anyver.abi3.so")),
-            module.NativeEntrySha256
-        );
-        Assert.Equal(
-            -1,
-            await module.CompareAnyverAsync(
-                "1.0",
-                "2.0",
-                cancellationToken: TestContext.Current.CancellationToken
-            )
-        );
-        Assert.Equal(
-            ["1.0-alpha", "1.0", "2.0"],
-            await module.SortAnyverAsync(
-                ["2.0", "1.0-alpha", "1.0"],
-                cancellationToken: TestContext.Current.CancellationToken
-            )
-        );
-        var version = await module.DescribeAnyverVersionAsync(
-            "1.2.3",
-            cancellationToken: TestContext.Current.CancellationToken
-        );
-        Assert.Equal("1.2.3", version.Raw);
-        Assert.Equal(1, version.Major);
-        Assert.False(version.IsPrerelease);
-        Assert.Equal(WorkerProcessState.Running, pool.State);
-    }
-
-    [Fact]
     public async Task Worker_ImportsUnchangedAnyverWheelThroughGenericStableAbiObjects()
     {
         SkipAnyverPackageWhenUnavailable();
-        var packageRoot = NativeFixturePath("anyver-package");
-        await using var pool = new WorkerProcessPool(
-            CreateOptions(
-                stableAbiFixture: true,
-                nativeManifestFileName: "anyver-symbol-manifest.json",
-                nativeFixturePath: Path.Combine(packageRoot, "anyver", "_anyver.abi3.so"),
-                packageRoots: [packageRoot]
-            )
-        );
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
         await using var session = await pool.OpenSessionAsync(
             TestContext.Current.CancellationToken
         );
@@ -167,31 +107,20 @@ public sealed class WorkerProcessPoolTests
     [Fact]
     public async Task Worker_ReusesPinnedAnyverCachesAcrossLogicalModuleLoads()
     {
-        SkipAnyverWhenUnavailable();
-        await using var pool = new WorkerProcessPool(
-            CreateOptions(
-                stableAbiFixture: true,
-                nativeFixtureFileName: "anyver._anyver.abi3.so",
-                nativeManifestFileName: "anyver-symbol-manifest.json"
-            )
-        );
-        await using var session = await pool.OpenSessionAsync(
-            TestContext.Current.CancellationToken
-        );
+        SkipAnyverPackageWhenUnavailable();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
 
         for (var iteration = 0; iteration < 10; iteration++)
         {
-            await using var module = await session.LoadStableAbiModuleAsync(
+            await using var session = await pool.OpenSessionAsync(
                 TestContext.Current.CancellationToken
             );
-            Assert.Equal(
-                0,
-                await module.CompareAnyverAsync(
-                    "2.0",
-                    "2.0",
-                    cancellationToken: TestContext.Current.CancellationToken
-                )
+            var result = await session.ExecuteAsync(
+                "import anyver\nprint(anyver.compare('2.0', '2.0'))",
+                cancellationToken: TestContext.Current.CancellationToken
             );
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+            Assert.Equal("0" + Environment.NewLine, result.StandardOutput);
         }
 
         Assert.Equal(WorkerProcessState.Running, pool.State);
@@ -200,72 +129,50 @@ public sealed class WorkerProcessPoolTests
     [Fact]
     public async Task Worker_ContainsRepeatedAnyverFailuresWithoutPoisoningOwnerLane()
     {
-        SkipAnyverWhenUnavailable();
-        await using var pool = new WorkerProcessPool(
-            CreateOptions(
-                stableAbiFixture: true,
-                nativeFixtureFileName: "anyver._anyver.abi3.so",
-                nativeManifestFileName: "anyver-symbol-manifest.json"
-            )
-        );
+        SkipAnyverPackageWhenUnavailable();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
         await using var session = await pool.OpenSessionAsync(
             TestContext.Current.CancellationToken
         );
-        await using var module = await session.LoadStableAbiModuleAsync(
-            TestContext.Current.CancellationToken
-        );
-
         for (var iteration = 0; iteration < 64; iteration++)
         {
-            var exception = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
-                module.CompareAnyverAsync(
-                    "1.0",
-                    "2.0",
-                    "dotpython-invalid-ecosystem",
-                    TestContext.Current.CancellationToken
-                )
+            var failure = await session.ExecuteAsync(
+                "import anyver\nanyver.compare('1.0', '2.0', 'dotpython-invalid-ecosystem')",
+                cancellationToken: TestContext.Current.CancellationToken
             );
-            Assert.Equal("DPY8005", exception.Fault.Code);
-            Assert.Equal("Invocation", exception.Fault.Details?["nativePhase"]);
+            Assert.False(failure.Success);
+            Assert.Contains(
+                failure.Diagnostics,
+                diagnostic => diagnostic.Message.Contains("ValueError", StringComparison.Ordinal)
+            );
         }
 
-        Assert.Equal(
-            -1,
-            await module.CompareAnyverAsync(
-                "1.0",
-                "2.0",
-                cancellationToken: TestContext.Current.CancellationToken
-            )
+        var success = await session.ExecuteAsync(
+            "import anyver\nprint(anyver.compare('1.0', '2.0'))",
+            cancellationToken: TestContext.Current.CancellationToken
         );
+        Assert.True(success.Success, string.Join(Environment.NewLine, success.Diagnostics));
+        Assert.Equal("-1" + Environment.NewLine, success.StandardOutput);
         Assert.Equal(WorkerProcessState.Running, pool.State);
     }
 
     [Fact]
     public async Task Worker_RestartsPinnedAnyverAfterOrderlyProcessShutdown()
     {
-        SkipAnyverWhenUnavailable();
+        SkipAnyverPackageWhenUnavailable();
 
         for (var iteration = 0; iteration < 4; iteration++)
         {
-            await using var pool = new WorkerProcessPool(
-                CreateOptions(
-                    stableAbiFixture: true,
-                    nativeFixtureFileName: "anyver._anyver.abi3.so",
-                    nativeManifestFileName: "anyver-symbol-manifest.json"
-                )
-            );
+            await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
             await using var session = await pool.OpenSessionAsync(
                 TestContext.Current.CancellationToken
             );
-            await using var module = await session.LoadStableAbiModuleAsync(
-                TestContext.Current.CancellationToken
-            );
-
-            var version = await module.DescribeAnyverVersionAsync(
-                $"1.2.{iteration}",
+            var result = await session.ExecuteAsync(
+                $"import anyver\nprint(anyver.Version('1.2.{iteration}').raw)",
                 cancellationToken: TestContext.Current.CancellationToken
             );
-            Assert.Equal($"1.2.{iteration}", version.Raw);
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+            Assert.Equal($"1.2.{iteration}{Environment.NewLine}", result.StandardOutput);
             Assert.Equal(WorkerProcessState.Running, pool.State);
         }
     }
@@ -597,7 +504,7 @@ public sealed class WorkerProcessPoolTests
         var baseline = CreateOptions();
         var options = baseline with
         {
-            Arguments = [.. baseline.Arguments, "--protocol-major", "2"],
+            Arguments = [.. baseline.Arguments, "--protocol-major", "3"],
         };
         await using var pool = new WorkerProcessPool(options);
 
@@ -728,11 +635,22 @@ public sealed class WorkerProcessPoolTests
                 [
                     "managed-execution",
                     nativeManifestFileName == "anyver-symbol-manifest.json"
-                        ? "managed-stable-abi-anyver-1.1.0"
-                        : "managed-stable-abi-fixture-v1",
+                        ? "managed-stable-abi-qualified-v1"
+                        : "managed-stable-abi-fixture-v2",
                 ]
                 : ["managed-execution"],
         };
+    }
+
+    private static WorkerProcessOptions CreateQualifiedAnyverOptions()
+    {
+        var packageRoot = NativeFixturePath("anyver-package");
+        return CreateOptions(
+            stableAbiFixture: true,
+            nativeManifestFileName: "anyver-symbol-manifest.json",
+            nativeFixturePath: Path.Combine(packageRoot, "anyver", "_anyver.abi3.so"),
+            packageRoots: [packageRoot]
+        );
     }
 
     private static string NativeFixturePath(string fileName) =>

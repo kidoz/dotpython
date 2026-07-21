@@ -38,9 +38,9 @@ internal static class StableAbiFixtureLoader
             );
         }
 
-        if (manifest.IsAnyver)
+        if (manifest.ProcessPinned)
         {
-            var cached = StableAbiAnyverLibraryCache.Load(
+            var cached = StableAbiProcessLibraryCache.Load(
                 configuration.BridgePath,
                 bridgeHash,
                 configuration.FixturePath,
@@ -75,7 +75,7 @@ internal static class StableAbiFixtureLoader
                 throw new StableAbiLoadException(
                     "DPY8004",
                     StableAbiLoadPhase.ModuleInitialization,
-                    $"Pinned Anyver initialization left process-lifetime native caches in an unknown state: {exception.Message}",
+                    $"Pinned Stable-ABI initialization left process-lifetime native caches in an unknown state: {exception.Message}",
                     configuration.FixturePath,
                     fixtureHash,
                     missingSymbol: null,

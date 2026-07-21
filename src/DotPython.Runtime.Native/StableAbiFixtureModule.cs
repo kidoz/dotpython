@@ -6,7 +6,6 @@ namespace DotPython.Runtime.Native;
 
 internal sealed class StableAbiFixtureModule : IDisposable
 {
-    private const int MaximumAnyverVersions = 4096;
     private const int MaximumGenericObjects = 8192;
     private readonly nint _bridgeLibrary;
     private readonly nint _fixtureLibrary;
@@ -22,9 +21,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
     private readonly int _expectedCleanupCount;
     private readonly bool _releaseLibraries;
     private readonly CleanupCount? _cleanupCount;
-    private readonly AnyverCompare? _anyverCompare;
-    private readonly AnyverSortVersions? _anyverSortVersions;
-    private readonly AnyverVersionToJson? _anyverVersionToJson;
     private readonly GenericBridgeApi _generic;
     private readonly List<nint> _genericObjects = [];
     private readonly object _gate = new();
@@ -47,10 +43,7 @@ internal sealed class StableAbiFixtureModule : IDisposable
         int expectedCleanupCount,
         bool releaseLibraries,
         CleanupCount? cleanupCount,
-        GenericBridgeApi generic,
-        AnyverCompare? anyverCompare,
-        AnyverSortVersions? anyverSortVersions,
-        AnyverVersionToJson? anyverVersionToJson
+        GenericBridgeApi generic
     )
     {
         _bridgeLibrary = bridgeLibrary;
@@ -68,9 +61,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
         _releaseLibraries = releaseLibraries;
         _cleanupCount = cleanupCount;
         _generic = generic;
-        _anyverCompare = anyverCompare;
-        _anyverSortVersions = anyverSortVersions;
-        _anyverVersionToJson = anyverVersionToJson;
         ManifestVersion = manifest.ManifestVersion;
         ModuleName = manifest.ModuleName;
         ArtifactSha256 = manifest.ArtifactSha256;
@@ -250,111 +240,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
         }
     }
 
-    internal long CompareAnyver(string left, string right, string ecosystem)
-    {
-        RequireAnyverText(left, "left version");
-        RequireAnyverText(right, "right version");
-        RequireAnyverText(ecosystem, "ecosystem");
-        lock (_gate)
-        {
-            EnsureAnyver();
-            if (_anyverCompare!(_module, left, right, ecosystem, out var result) != 0)
-            {
-                throw InvocationFailure();
-            }
-
-            return result;
-        }
-    }
-
-    internal IReadOnlyList<string> SortAnyver(IReadOnlyList<string> versions, string ecosystem)
-    {
-        if (versions is null)
-        {
-            throw InvalidArguments("The Anyver version collection is required.");
-        }
-
-        RequireAnyverText(ecosystem, "ecosystem");
-        if (versions.Count > MaximumAnyverVersions)
-        {
-            throw InvalidArguments(
-                $"At most {MaximumAnyverVersions} versions may be sorted per call."
-            );
-        }
-
-        lock (_gate)
-        {
-            EnsureAnyver();
-            var strings = new nint[versions.Count];
-            nint pointers = 0;
-            try
-            {
-                for (var index = 0; index < versions.Count; index++)
-                {
-                    RequireAnyverText(versions[index], $"version at index {index}");
-                    strings[index] = Marshal.StringToCoTaskMemUTF8(versions[index]);
-                }
-
-                pointers = Marshal.AllocHGlobal(checked(strings.Length * IntPtr.Size));
-                Marshal.Copy(strings, 0, pointers, strings.Length);
-                if (
-                    _anyverSortVersions!(_module, pointers, versions.Count, ecosystem, out var json)
-                    != 0
-                )
-                {
-                    throw InvocationFailure();
-                }
-
-                return JsonSerializer.Deserialize(
-                        ReadUtf8(json),
-                        StableAbiResultJsonContext.Default.StringArray
-                    ) ?? throw InvalidResult("Anyver sort returned JSON null.");
-            }
-            catch (JsonException exception)
-            {
-                throw InvalidResult("Anyver sort returned invalid JSON.", exception);
-            }
-            finally
-            {
-                if (pointers != 0)
-                {
-                    Marshal.FreeHGlobal(pointers);
-                }
-
-                foreach (var value in strings)
-                {
-                    Marshal.FreeCoTaskMem(value);
-                }
-            }
-        }
-    }
-
-    internal StableAbiAnyverVersionInfo DescribeAnyverVersion(string version, string ecosystem)
-    {
-        RequireAnyverText(version, "version");
-        RequireAnyverText(ecosystem, "ecosystem");
-        lock (_gate)
-        {
-            EnsureAnyver();
-            if (_anyverVersionToJson!(_module, version, ecosystem, out var json) != 0)
-            {
-                throw InvocationFailure();
-            }
-
-            try
-            {
-                return JsonSerializer.Deserialize(
-                        ReadUtf8(json),
-                        StableAbiResultJsonContext.Default.StableAbiAnyverVersionInfo
-                    ) ?? throw InvalidResult("Anyver Version returned JSON null.");
-            }
-            catch (JsonException exception)
-            {
-                throw InvalidResult("Anyver Version returned invalid JSON.", exception);
-            }
-        }
-    }
-
     public void Dispose()
     {
         lock (_gate)
@@ -455,23 +340,8 @@ internal sealed class StableAbiFixtureModule : IDisposable
 
         long readyValue = 0;
         CleanupCount? cleanupCount = null;
-        AnyverCompare? anyverCompare = null;
-        AnyverSortVersions? anyverSortVersions = null;
-        AnyverVersionToJson? anyverVersionToJson = null;
         var expectedCleanupCount = 0;
-        if (manifest.IsAnyver)
-        {
-            anyverCompare = GetDelegate<AnyverCompare>(bridgeLibrary, "dp_abi3_anyver_compare");
-            anyverSortVersions = GetDelegate<AnyverSortVersions>(
-                bridgeLibrary,
-                "dp_abi3_anyver_sort_versions"
-            );
-            anyverVersionToJson = GetDelegate<AnyverVersionToJson>(
-                bridgeLibrary,
-                "dp_abi3_anyver_version_to_json"
-            );
-        }
-        else
+        if (manifest.IsConformanceFixture)
         {
             cleanupCount = GetDelegate<CleanupCount>(
                 fixtureLibrary,
@@ -508,10 +378,7 @@ internal sealed class StableAbiFixtureModule : IDisposable
             expectedCleanupCount,
             releaseLibraries,
             cleanupCount,
-            generic,
-            anyverCompare,
-            anyverSortVersions,
-            anyverVersionToJson
+            generic
         );
     }
 
@@ -758,33 +625,12 @@ internal sealed class StableAbiFixtureModule : IDisposable
         }
     }
 
-    private void EnsureAnyver()
-    {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        if (_anyverCompare is null || _anyverSortVersions is null || _anyverVersionToJson is null)
-        {
-            throw Failure(
-                "DPY8003",
-                StableAbiLoadPhase.Invocation,
-                "The loaded native module is not the pinned Anyver module."
-            );
-        }
-    }
-
     private StableAbiLoadException InvocationFailure() =>
         Failure(
             "DPY8005",
             StableAbiLoadPhase.Invocation,
             $"{ReadUtf8(_errorType())}: {ReadUtf8(_errorMessage())}"
         );
-
-    private static void RequireAnyverText(string? value, string name)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw InvalidArguments($"The Anyver {name} cannot be empty.");
-        }
-    }
 
     private static StableAbiLoadException InvalidArguments(string message) =>
         Failure("DPY8005", StableAbiLoadPhase.Invocation, message);
@@ -899,32 +745,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void ObjectRelease(nint value);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int AnyverCompare(
-        nint module,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string left,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string right,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string ecosystem,
-        out long result
-    );
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int AnyverSortVersions(
-        nint module,
-        nint versions,
-        long versionCount,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string ecosystem,
-        out nint resultJson
-    );
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int AnyverVersionToJson(
-        nint module,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string version,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string ecosystem,
-        out nint resultJson
-    );
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void ModuleDestroy(nint module);
@@ -1057,19 +877,6 @@ internal sealed class StableAbiObject : IDisposable
         _owner ?? throw new ObjectDisposedException(nameof(StableAbiObject));
 }
 
-internal sealed record StableAbiAnyverVersionInfo(
-    string Raw,
-    string Ecosystem,
-    long Epoch,
-    long Major,
-    long Minor,
-    long Patch,
-    string Build,
-    [property: JsonPropertyName("is_prerelease")] bool IsPrerelease,
-    [property: JsonPropertyName("is_postrelease")] bool IsPostrelease
-);
-
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web, PropertyNameCaseInsensitive = false)]
 [JsonSerializable(typeof(string[]))]
-[JsonSerializable(typeof(StableAbiAnyverVersionInfo))]
 internal sealed partial class StableAbiResultJsonContext : JsonSerializerContext;

@@ -10,6 +10,8 @@ internal sealed record StableAbiSymbolManifest(
     string AbiFamily,
     string MinimumAbiVersion,
     int BridgeAbiVersion,
+    string CapabilityId,
+    string LibraryLifetime,
     string ModuleName,
     string InitializationSymbol,
     IReadOnlyList<string> AllowedStableAbiSymbols,
@@ -27,13 +29,15 @@ internal sealed record StableAbiSymbolManifest(
     string? SourceRevision
 )
 {
-    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v1";
-    internal const string AnyverManifestVersion = "dotpython-abi3-anyver-1.1.0-v1";
+    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v2";
     internal const string ExpectedProviderId = "dotpython-managed-abi3";
-    internal const int ExpectedBridgeAbiVersion = 3;
+    internal const int ExpectedBridgeAbiVersion = 4;
 
-    internal bool IsAnyver =>
-        string.Equals(ManifestVersion, AnyverManifestVersion, StringComparison.Ordinal);
+    internal bool IsConformanceFixture =>
+        string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal);
+
+    internal bool ProcessPinned =>
+        string.Equals(LibraryLifetime, "process", StringComparison.Ordinal);
 
     private static readonly string[] StableAbiSymbols =
     [
@@ -52,7 +56,7 @@ internal sealed record StableAbiSymbolManifest(
         "dotpython_fixture_cleanup_count",
     ];
 
-    private static readonly string[] AnyverStableAbiSymbols =
+    private static readonly string[] BridgeStableAbiSymbols =
     [
         "PyBaseObject_Type",
         "PyBytes_AsString",
@@ -146,12 +150,9 @@ internal sealed record StableAbiSymbolManifest(
         "_Py_TrueStruct",
     ];
 
-    private static readonly string[] BridgeOnlyExports =
+    private static readonly string[] BridgeControlExports =
     [
         "dp_abi3_active_object_count",
-        "dp_abi3_anyver_compare",
-        "dp_abi3_anyver_sort_versions",
-        "dp_abi3_anyver_version_to_json",
         "dp_abi3_bridge_version",
         "dp_abi3_error_message",
         "dp_abi3_error_type",
@@ -179,42 +180,6 @@ internal sealed record StableAbiSymbolManifest(
 
     private static readonly string[] FixtureMethods = ["fail", "increment"];
 
-    private static readonly string[] AnyverMethods =
-    [
-        "Version",
-        "batch_compare",
-        "build_purl",
-        "build_vers",
-        "bump_major",
-        "bump_minor",
-        "bump_patch",
-        "bump_prerelease",
-        "compare",
-        "compare_semver_strict",
-        "eq",
-        "ge",
-        "gt",
-        "gte",
-        "latest_stable",
-        "le",
-        "lt",
-        "lte",
-        "max_version",
-        "min_version",
-        "ne",
-        "next_stable",
-        "osv_affected",
-        "parse_purl",
-        "purl_ecosystem",
-        "range_contains",
-        "ranges_intersect",
-        "satisfies",
-        "sort_versions",
-        "stable_versions",
-        "vers_contains",
-        "version",
-    ];
-
     internal static StableAbiSymbolManifest Load(string path)
     {
         var bytes = File.ReadAllBytes(path);
@@ -239,11 +204,16 @@ internal sealed record StableAbiSymbolManifest(
     private void Validate()
     {
         if (
-            SchemaVersion != 1
+            SchemaVersion != 2
             || !string.Equals(ProviderId, ExpectedProviderId, StringComparison.Ordinal)
             || !string.Equals(AbiFamily, "abi3", StringComparison.Ordinal)
             || !string.Equals(MinimumAbiVersion, "3.11", StringComparison.Ordinal)
             || BridgeAbiVersion != ExpectedBridgeAbiVersion
+            || !IsToken(ManifestVersion)
+            || !IsToken(CapabilityId)
+            || LibraryLifetime is not ("module" or "process")
+            || !IsQualifiedModuleName(ModuleName)
+            || string.IsNullOrWhiteSpace(InitializationSymbol)
         )
         {
             throw Invalid("The Stable-ABI symbol manifest identity is unsupported.");
@@ -251,20 +221,35 @@ internal sealed record StableAbiSymbolManifest(
 
         RequireExactSet(
             RequiredBridgeExports,
-            AnyverStableAbiSymbols.Append("PyModule_AddIntConstant").Concat(BridgeOnlyExports),
+            BridgeStableAbiSymbols.Append("PyModule_AddIntConstant").Concat(BridgeControlExports),
             "bridge exports"
         );
-        if (IsAnyver)
+        ValidateSymbolList(AllowedStableAbiSymbols, "Stable-ABI imports", maximumCount: 512);
+        ValidateSymbolList(RequiredFixtureExports, "native module exports", maximumCount: 32);
+        ValidateSymbolList(AllowedMethods, "module methods", maximumCount: 512);
+        if (
+            !AllowedStableAbiSymbols.All(symbol =>
+                string.Equals(symbol, "PyModule_AddIntConstant", StringComparison.Ordinal)
+                || BridgeStableAbiSymbols.Contains(symbol, StringComparer.Ordinal)
+            )
+        )
         {
-            ValidateAnyver();
+            throw Invalid("The manifest imports symbols outside the versioned bridge capability.");
         }
-        else if (string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal))
+
+        var moduleLeaf = ModuleName.Split('.').Last();
+        if (!string.Equals(InitializationSymbol, $"PyInit_{moduleLeaf}", StringComparison.Ordinal))
+        {
+            throw Invalid("The native initializer does not match the qualified module name.");
+        }
+
+        if (IsConformanceFixture)
         {
             ValidateFixture();
         }
         else
         {
-            throw Invalid("The Stable-ABI symbol manifest version is unsupported.");
+            ValidateQualifiedArtifact();
         }
     }
 
@@ -272,6 +257,12 @@ internal sealed record StableAbiSymbolManifest(
     {
         if (
             !string.Equals(ModuleName, "dotpython_fixture", StringComparison.Ordinal)
+            || !string.Equals(
+                CapabilityId,
+                "managed-stable-abi-fixture-v2",
+                StringComparison.Ordinal
+            )
+            || !string.Equals(LibraryLifetime, "module", StringComparison.Ordinal)
             || !string.Equals(
                 InitializationSymbol,
                 "PyInit_dotpython_fixture",
@@ -296,56 +287,103 @@ internal sealed record StableAbiSymbolManifest(
         RequireExact(AllowedMethods, FixtureMethods, "fixture methods");
     }
 
-    private void ValidateAnyver()
+    private void ValidateQualifiedArtifact()
     {
         if (
-            !string.Equals(ModuleName, "anyver._anyver", StringComparison.Ordinal)
-            || !string.Equals(InitializationSymbol, "PyInit__anyver", StringComparison.Ordinal)
-            || !string.Equals(
-                ArtifactFileName,
-                "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(
-                ArtifactSha256,
-                "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(NativeEntry, "anyver/_anyver.abi3.so", StringComparison.Ordinal)
-            || !string.Equals(
-                NativeEntrySha256,
-                "d635b4b37c6db5688d49ecb1b924fc6c3bfe7f51b630d5ca153ab6ab474b2827",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(PackageInitializer, "anyver/__init__.py", StringComparison.Ordinal)
-            || !string.Equals(
-                PackageInitializerSha256,
-                "ba47d9b12385aae3a3c80639257d78d02bd358986265416843886d10da8e0b85",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(
-                PackageMetadata,
-                "anyver-1.1.0.dist-info/METADATA",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(
-                PackageMetadataSha256,
-                "694cf4e43015442df187f18527c51ecb9085790bdeae9987374e2016b3f8aa05",
-                StringComparison.Ordinal
-            )
-            || !string.Equals(
-                SourceRevision,
-                "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",
-                StringComparison.Ordinal
-            )
+            !ProcessPinned
+            || string.IsNullOrWhiteSpace(ArtifactFileName)
+            || ArtifactFileName.IndexOfAny(['/', '\\']) >= 0
+            || Path.GetFileName(ArtifactFileName) != ArtifactFileName
+            || !ArtifactFileName.EndsWith(".whl", StringComparison.Ordinal)
+            || !IsSha256(ArtifactSha256)
+            || !IsSafeRelativePath(NativeEntry)
+            || !IsSha256(NativeEntrySha256)
+            || !IsSafeRelativePath(PackageInitializer)
+            || !IsSha256(PackageInitializerSha256)
+            || !IsSafeRelativePath(PackageMetadata)
+            || !IsSha256(PackageMetadataSha256)
+            || string.IsNullOrWhiteSpace(SourceRevision)
+            || SourceRevision.Length > 128
+            || AllowedStableAbiSymbols.Count == 0
+            || AllowedMethods.Count == 0
         )
         {
-            throw Invalid("The Anyver Stable-ABI manifest identity is unsupported.");
+            throw Invalid("The qualified Stable-ABI artifact manifest is incomplete or unsafe.");
         }
 
-        RequireExact(AllowedStableAbiSymbols, AnyverStableAbiSymbols, "Anyver Stable-ABI imports");
-        RequireExact(RequiredFixtureExports, ["PyInit__anyver"], "Anyver exports");
-        RequireExact(AllowedMethods, AnyverMethods, "Anyver methods");
+        RequireExact(RequiredFixtureExports, [InitializationSymbol], "native module exports");
+    }
+
+    private static void ValidateSymbolList(
+        IReadOnlyList<string> values,
+        string name,
+        int maximumCount
+    )
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        if (
+            values.Count > maximumCount
+            || values.Any(value =>
+                string.IsNullOrWhiteSpace(value)
+                || value.Length > 256
+                || value.Any(character =>
+                    character
+                        is not ('_' or >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9')
+                )
+            )
+            || values.Count != values.Distinct(StringComparer.Ordinal).Count()
+        )
+        {
+            throw Invalid($"The allowlisted {name} are invalid or exceed their bound.");
+        }
+    }
+
+    private static bool IsSha256(string? value) =>
+        value is { Length: 64 }
+        && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsToken(string? value) =>
+        value is { Length: > 0 and <= 128 }
+        && value.All(character =>
+            character
+                is '-'
+                    or '.'
+                    or '_'
+                    or >= 'a'
+                    and <= 'z'
+                    or >= 'A'
+                    and <= 'Z'
+                    or >= '0'
+                    and <= '9'
+        );
+
+    private static bool IsQualifiedModuleName(string? value) =>
+        value is { Length: > 0 and <= 256 }
+        && value
+            .Split('.')
+            .All(segment =>
+                segment.Length > 0
+                && segment[0] is '_' or >= 'a' and <= 'z' or >= 'A' and <= 'Z'
+                && segment.All(character =>
+                    character is '_' or >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9'
+                )
+            );
+
+    private static bool IsSafeRelativePath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || Path.IsPathFullyQualified(value))
+        {
+            return false;
+        }
+
+        var segments = value.Split(['/', '\\']);
+        return segments.Length > 1
+            && segments.All(segment =>
+                segment.Length > 0
+                && segment is not "." and not ".."
+                && !segment.Contains(':', StringComparison.Ordinal)
+                && !segment.Contains('\0', StringComparison.Ordinal)
+            );
     }
 
     private static void RequireExact(

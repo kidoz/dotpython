@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define DP_ABI3_BRIDGE_VERSION 3
+#define DP_ABI3_BRIDGE_VERSION 4
 
 typedef enum dp_abi3_object_kind {
     DP_ABI3_OBJECT_INVALID = 0,
@@ -88,28 +88,6 @@ DP_ABI3_EXPORT int dp_abi3_object_size(PyObject *object, int64_t *result);
 DP_ABI3_EXPORT int
 dp_abi3_object_get_item(PyObject *object, PyObject *key, PyObject **result);
 DP_ABI3_EXPORT void dp_abi3_object_release(PyObject *object);
-/* Anyver scalar outputs are copied values. result_json uses the temporary storage described above.
- */
-DP_ABI3_EXPORT int dp_abi3_anyver_compare(
-    PyObject *module,
-    const char *left,
-    const char *right,
-    const char *ecosystem,
-    int64_t *result
-);
-DP_ABI3_EXPORT int dp_abi3_anyver_sort_versions(
-    PyObject *module,
-    const char *const *versions,
-    int64_t version_count,
-    const char *ecosystem,
-    const char **result_json
-);
-DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
-    PyObject *module,
-    const char *version,
-    const char *ecosystem,
-    const char **result_json
-);
 /*
  * Releases module when non-NULL and clears the owner thread's native error indicator. Passing
  * NULL performs only the error-state cleanup, including release of all owned error references;
