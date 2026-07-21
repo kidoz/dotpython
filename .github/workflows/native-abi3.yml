@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  ANYVER_MACOS_ARM64_SHA256: '0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9'
+  ANYVER_MACOS_ARM64_URL: 'https://files.pythonhosted.org/packages/17/b2/bc88c1b3900fbd213fb95ae8904ac574a8e28e4899b67eaa835bc7011c4b/anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_NOLOGO: 'true'
 
@@ -63,6 +65,15 @@ jobs:
           cargo clippy --version
           dotnet --info
 
+      - name: Download the pinned Anyver acceptance wheel
+        if: runner.os == 'macOS'
+        run: |
+          wheel="$RUNNER_TEMP/anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl"
+          curl --fail --location --retry 3 --output "$wheel" "$ANYVER_MACOS_ARM64_URL"
+          actual=$(shasum -a 256 "$wheel" | awk '{ print $1 }')
+          test "$actual" = "$ANYVER_MACOS_ARM64_SHA256"
+          echo "DOTPYTHON_ANYVER_WHEEL=$wheel" >> "$GITHUB_ENV"
+
       - name: Check native formatting
         run: cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all -- --check
 
@@ -79,7 +90,15 @@ jobs:
         run: cargo test --manifest-path native/dotpython-abi3/Cargo.toml --workspace
 
       - name: Build, verify, and stage the native ABI targets
-        run: native/dotpython-abi3/build.sh build/native-abi3
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            native/dotpython-abi3/prepare-anyver-acceptance.sh \
+              "$DOTPYTHON_ANYVER_WHEEL" build/native-abi3
+            ANYVER_MODULE="$PWD/build/native-abi3/anyver._anyver.abi3.so" \
+              native/dotpython-abi3/build.sh build/native-abi3
+          else
+            native/dotpython-abi3/build.sh build/native-abi3
+          fi
 
       - name: Build the worker tests and staged native artifacts
         run: dotnet build tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj --configuration Release
@@ -98,12 +117,23 @@ jobs:
             native_anyver_test \
             native_fixture_test \
             symbol-manifest.json | LC_ALL=C sort)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            expected=$(printf '%s\n%s\n' "$expected" anyver._anyver.abi3.so | LC_ALL=C sort)
+          fi
           actual=$(find "$native_directory" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
           test "$actual" = "$expected"
 
       - name: Run the worker tests
-        run: >-
-          dotnet run
-          --project tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj
-          --configuration Release
-          --no-build
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            dotnet run \
+              --project tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj \
+              --configuration Release \
+              --no-build \
+              -- -failSkips
+          else
+            dotnet run \
+              --project tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj \
+              --configuration Release \
+              --no-build
+          fi
