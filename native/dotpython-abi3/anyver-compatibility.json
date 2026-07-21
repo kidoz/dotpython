@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "package": "anyver",
+  "packageVersion": "1.1.0",
+  "qualificationStatus": "partial",
+  "qualifiedPlatform": "macos-arm64",
+  "wheel": "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
+  "wheelSha256": "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
+  "sourceRevision": "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",
+  "bridgeAbiVersion": 3,
+  "unchangedPackage": {
+    "importsPassed": 1,
+    "importsFailed": 0,
+    "publicChecksPassed": 12,
+    "publicChecksFailed": 0
+  },
+  "upstreamPythonSuite": {
+    "collectedCases": 325,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 325,
+    "reason": "The managed language/runtime does not yet claim the full pytest, class, assertion, builtin, keyword-call, and comparison surface required to execute the upstream suite unchanged. No upstream pytest case is claimed as passed."
+  },
+  "qualifiedGenericProtocols": [
+    "module-attribute-discovery",
+    "positional-call",
+    "none-bool-int-text-conversion",
+    "list-tuple-conversion",
+    "attribute-access",
+    "integer-and-text-item-access",
+    "string-conversion",
+    "explicit-owner-thread-release"
+  ],
+  "supportsCpythonAbi": false
+}

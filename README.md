@@ -210,17 +210,24 @@ required bridge and module export. Native addresses remain inside the dedicated 
 
 The Anyver manifest records the immutable wheel and native-entry hashes and exactly 90 imported
 Stable-ABI symbols. `inspect-anyver-wheel.sh` rejects wheel, entry-point, or import-surface drift.
-The unchanged `_anyver.abi3.so` can perform comparisons and sorting and construct the PyO3 `Version`
-heap type through typed worker protocol calls. PyO3 heap-type and intern caches are retained for the
-worker lifetime; transient module objects are released on logical-module disposal and all remaining
-native state is reclaimed by worker termination.
+Bridge ABI v3 exposes a generic opaque-object surface for qualified modules: attribute discovery,
+positional calls, primitive and sequence conversion, attribute/item access, string conversion, and
+explicit owner-thread release. The worker can therefore import the unchanged Anyver Python wrapper
+from the staged wheel and use its native exports without an Anyver-specific managed adapter. The
+acceptance path covers comparisons, sorting, `Version` construction/display/properties/indexing, and
+dictionary results. PyO3 heap-type and intern caches are retained for the worker lifetime; transient
+module objects are released on logical-module disposal and all remaining native state is reclaimed
+by worker termination.
 
 The macOS ARM64 native CI lane downloads the exact PyPI wheel, verifies its pinned SHA-256 and
 native symbol surface, and treats every skipped worker test as a failure. For local acceptance, set
 `DOTPYTHON_ANYVER_WHEEL` to the pinned wheel when building `DotPython.WorkerTests`; the native
-harness additionally accepts its prepared module through `ANYVER_MODULE`. This is a package- and
-artifact-specific experiment. The pure-Python wrapper and upstream suite are not yet qualified,
-and this does not claim NumPy, HPy, or general `abi3` compatibility.
+harness additionally accepts its prepared module through `ANYVER_MODULE`. The checked-in
+`anyver-compatibility.json` records 1 successful unchanged-package import, 12 passing public checks,
+and all 325 upstream pytest cases as skipped because the complete required Python/pytest surface is
+not yet claimed. This remains a package-, artifact-, and platform-specific partial result;
+`SupportsCpythonAbi` remains false, and this does not claim NumPy, HPy, or general `abi3`
+compatibility.
 
 ## Typed module contracts
 

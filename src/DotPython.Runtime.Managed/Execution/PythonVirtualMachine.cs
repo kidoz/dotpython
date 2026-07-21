@@ -1319,6 +1319,21 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (
+            target
+            is PythonProtocolFunctionValue
+                or PythonBoundMethodValue
+                or PythonManagedTypeValue
+                or PythonExternalObjectValue
+        )
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            _evaluationStack.Push(ManagedObjectProtocols.Call(target, arguments, instruction.Span));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
         if (target is not PythonFunctionValue function)
         {
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
@@ -1367,6 +1382,21 @@ internal sealed class PythonVirtualMachine
         if (target is PythonExceptionTypeValue exceptionType)
         {
             _evaluationStack.Push(CreateExceptionValue(exceptionType, Array.Empty<PythonValue>()));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
+        if (
+            target
+            is PythonProtocolFunctionValue
+                or PythonBoundMethodValue
+                or PythonManagedTypeValue
+                or PythonExternalObjectValue
+        )
+        {
+            _evaluationStack.Push(
+                ManagedObjectProtocols.Call(target, Array.Empty<PythonValue>(), span)
+            );
             code.RecordBuiltinCall(instructionIndex);
             return;
         }

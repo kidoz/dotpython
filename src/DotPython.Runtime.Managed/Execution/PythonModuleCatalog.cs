@@ -30,7 +30,7 @@ internal sealed class PythonModuleCatalog
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.SearchPaths);
-        var builder = new Builder(options.SearchPaths);
+        var builder = new Builder(options.SearchPaths, options.NativeExtensionResolver);
         builder.Discover();
         return new PythonModuleCatalog(builder.CreateModules());
     }
@@ -63,11 +63,20 @@ internal sealed class PythonModuleCatalog
             StringComparer.Ordinal
         );
         private readonly string[] _roots;
+        private readonly Func<
+            string,
+            string,
+            Action<PythonGlobalNamespace>?
+        >? _nativeExtensionResolver;
         private int _entryCount;
         private long _payloadLength;
 
-        internal Builder(IReadOnlyList<string> searchPaths)
+        internal Builder(
+            IReadOnlyList<string> searchPaths,
+            Func<string, string, Action<PythonGlobalNamespace>?>? nativeExtensionResolver
+        )
         {
+            _nativeExtensionResolver = nativeExtensionResolver;
             var pathComparer = OperatingSystem.IsWindows()
                 ? StringComparer.OrdinalIgnoreCase
                 : StringComparer.Ordinal;
@@ -527,9 +536,12 @@ internal sealed class PythonModuleCatalog
                 return;
             }
 
+            var initialize = _nativeExtensionResolver?.Invoke(nativeName, file.FullName);
             AddModule(
                 nativeName,
-                PythonModuleDefinition.UnsupportedNativeExtension(file.FullName),
+                initialize is null
+                    ? PythonModuleDefinition.UnsupportedNativeExtension(file.FullName)
+                    : PythonModuleDefinition.Native(file.FullName, isPackage: false, initialize),
                 rootIndex
             );
         }

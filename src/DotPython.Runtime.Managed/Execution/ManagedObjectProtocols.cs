@@ -34,6 +34,7 @@ internal static class ManagedObjectProtocols
             PythonBuiltinFunctionValue builtin => builtin.Invoke(arguments, span),
             PythonProtocolFunctionValue function => function.Invoke(null, arguments),
             PythonBoundMethodValue method => method.Function.Invoke(method.Target, arguments),
+            PythonExternalObjectValue external => external.Protocol.Call(arguments, span),
             PythonManagedTypeValue type when type.Construct is not null => type.Construct(
                 arguments
             ),
@@ -89,6 +90,8 @@ internal static class ManagedObjectProtocols
                 return value;
             case PythonManagedTypeValue type:
                 throw MissingAttribute(type.Name, name, span);
+            case PythonExternalObjectValue external:
+                return external.Protocol.GetAttribute(name, span);
             default:
                 throw Fault(
                     "DPY4023",
@@ -158,6 +161,7 @@ internal static class ManagedObjectProtocols
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonDictionaryValue dictionary => dictionary.Items.Count,
+            PythonExternalObjectValue external => external.Protocol.GetLength(span),
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
 
@@ -272,6 +276,8 @@ internal static class ManagedObjectProtocols
                 return item.Value;
             case PythonDictionaryValue:
                 throw Fault("DPY4013", "The dictionary key was not found.", span, "KeyError");
+            case PythonExternalObjectValue external:
+                return external.Protocol.GetItem(index, span);
             default:
                 throw Fault("DPY4011", "This value is not subscriptable.", span, "TypeError");
         }
@@ -426,6 +432,7 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => GetByteHash(bytes.Value),
             PythonTupleValue tuple => GetTupleHash(tuple, span),
             PythonManagedObjectValue instance => RuntimeHelpers.GetHashCode(instance),
+            PythonExternalObjectValue external => RuntimeHelpers.GetHashCode(external),
             PythonManagedTypeValue type => RuntimeHelpers.GetHashCode(type),
             PythonBuiltinFunctionValue function => RuntimeHelpers.GetHashCode(function),
             PythonProtocolFunctionValue function => RuntimeHelpers.GetHashCode(function),
@@ -473,6 +480,7 @@ internal static class ManagedObjectProtocols
             PythonModuleValue => "module",
             PythonManagedTypeValue => "type",
             PythonManagedObjectValue instance => instance.Type.Name,
+            PythonExternalObjectValue => "object",
             PythonBuiltinFunctionValue or PythonProtocolFunctionValue =>
                 "builtin_function_or_method",
             PythonBoundMethodValue => "method",

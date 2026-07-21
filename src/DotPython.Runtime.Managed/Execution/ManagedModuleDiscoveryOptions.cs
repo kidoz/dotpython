@@ -8,4 +8,10 @@ public sealed class ManagedModuleDiscoveryOptions
     /// extension candidates, and installed-distribution metadata. Earlier roots take precedence.
     /// </summary>
     public IReadOnlyList<string> SearchPaths { get; init; } = Array.Empty<string>();
+
+    internal Func<
+        string,
+        string,
+        Action<PythonGlobalNamespace>?
+    >? NativeExtensionResolver { get; init; }
 }

@@ -8,12 +8,36 @@ internal sealed class WorkerSessionState : IAsyncDisposable
     private readonly NativeExecutionLane _nativeLane = new();
     private readonly Dictionary<long, StableAbiFixtureModule> _nativeModules = [];
     private readonly List<long> _nativeOrder = [];
+    private readonly StableAbiFixtureConfiguration? _stableAbiFixture;
+    private readonly StableAbiSymbolManifest? _stableAbiManifest;
+    private long _boundNativeObjectId;
     private long _nextObjectId;
     private int _disposed;
 
-    internal WorkerSessionState(ManagedPythonEngine engine)
+    internal WorkerSessionState(
+        IReadOnlyList<string> packageRoots,
+        StableAbiFixtureConfiguration? stableAbiFixture
+    )
     {
-        Engine = engine;
+        ArgumentNullException.ThrowIfNull(packageRoots);
+        _stableAbiFixture = stableAbiFixture;
+        _stableAbiManifest = stableAbiFixture is null
+            ? null
+            : StableAbiSymbolManifest.Load(stableAbiFixture.ManifestPath);
+        if (stableAbiFixture is not null && _stableAbiManifest is not null)
+        {
+            ValidateQualifiedPackage(packageRoots, stableAbiFixture, _stableAbiManifest);
+        }
+        Engine =
+            packageRoots.Count == 0
+                ? new ManagedPythonEngine()
+                : new ManagedPythonEngine(
+                    new ManagedModuleDiscoveryOptions
+                    {
+                        SearchPaths = packageRoots,
+                        NativeExtensionResolver = ResolveNativeExtension,
+                    }
+                );
     }
 
     internal ManagedPythonEngine Engine { get; }
@@ -148,6 +172,171 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
         return module;
     }
+
+    internal T InvokeNative<T>(Func<T> operation) =>
+        _nativeLane.InvokeAsync(operation, CancellationToken.None).GetAwaiter().GetResult();
+
+    private Action<PythonGlobalNamespace>? ResolveNativeExtension(string name, string path)
+    {
+        if (
+            _stableAbiFixture is null
+            || _stableAbiManifest is null
+            || !string.Equals(name, _stableAbiManifest.ModuleName, StringComparison.Ordinal)
+        )
+        {
+            return null;
+        }
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (
+            !string.Equals(
+                Path.GetFullPath(path),
+                Path.GetFullPath(_stableAbiFixture.FixturePath),
+                comparison
+            )
+        )
+        {
+            throw new InvalidDataException(
+                $"Qualified native module '{name}' resolved to an artifact other than its configured path."
+            );
+        }
+
+        return InitializeNativeExtension;
+    }
+
+    private void InitializeNativeExtension(PythonGlobalNamespace globals)
+    {
+        if (_stableAbiFixture is null || _boundNativeObjectId != 0)
+        {
+            throw new PythonRuntimeException(
+                "DPY4029",
+                "The qualified native module cannot be initialized in this session.",
+                default,
+                "ImportError"
+            );
+        }
+
+        try
+        {
+            var loaded = LoadStableAbiModuleAsync(_stableAbiFixture, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            _boundNativeObjectId = loaded.ObjectId;
+            var exports = InvokeNative(() =>
+            {
+                var module = GetModule(loaded.ObjectId);
+                return module
+                    .GetAttributeNames()
+                    .Where(name =>
+                        _stableAbiManifest!.AllowedMethods.Contains(name, StringComparer.Ordinal)
+                    )
+                    .Select(name => new KeyValuePair<string, PythonValue>(
+                        name,
+                        QualifiedStableAbiObjectProtocol.ToManaged(this, module.GetAttribute(name))
+                    ))
+                    .ToArray();
+            });
+            foreach (var export in exports)
+            {
+                globals.SetValue(export.Key, export.Value);
+            }
+        }
+        catch (StableAbiLoadException exception)
+        {
+            throw new PythonRuntimeException(
+                exception.Code,
+                exception.Message,
+                default,
+                "ImportError"
+            );
+        }
+    }
+
+    private static void ValidateQualifiedPackage(
+        IReadOnlyList<string> packageRoots,
+        StableAbiFixtureConfiguration configuration,
+        StableAbiSymbolManifest manifest
+    )
+    {
+        if (
+            manifest.NativeEntry is null
+            || manifest.PackageInitializer is null
+            || manifest.PackageInitializerSha256 is null
+            || manifest.PackageMetadata is null
+            || manifest.PackageMetadataSha256 is null
+        )
+        {
+            return;
+        }
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var packageRoot = packageRoots.FirstOrDefault(root =>
+            string.Equals(
+                Path.GetFullPath(Path.Combine(root, manifest.NativeEntry)),
+                Path.GetFullPath(configuration.FixturePath),
+                comparison
+            )
+        );
+        if (packageRoot is null)
+        {
+            return;
+        }
+
+        ValidatePackageFile(
+            packageRoot,
+            manifest.PackageInitializer,
+            manifest.PackageInitializerSha256
+        );
+        ValidatePackageFile(packageRoot, manifest.PackageMetadata, manifest.PackageMetadataSha256);
+    }
+
+    private static void ValidatePackageFile(
+        string packageRoot,
+        string relativePath,
+        string expectedSha256
+    )
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(packageRoot));
+        var path = Path.GetFullPath(Path.Combine(root, relativePath));
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!path.StartsWith(root + Path.DirectorySeparatorChar, comparison) || !File.Exists(path))
+        {
+            throw PackagePolicyFailure(path, "A qualified package file is missing.");
+        }
+
+        var file = new FileInfo(path);
+        if (
+            file.LinkTarget is not null
+            || (file.Attributes & FileAttributes.ReparsePoint) != 0
+            || !string.Equals(
+                StableAbiFixtureLoader.ComputeSha256(path),
+                expectedSha256,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            throw PackagePolicyFailure(
+                path,
+                "A qualified package file failed identity validation."
+            );
+        }
+    }
+
+    private static StableAbiLoadException PackagePolicyFailure(string path, string message) =>
+        new(
+            "DPY8001",
+            StableAbiLoadPhase.Policy,
+            message,
+            path,
+            artifactSha256: null,
+            missingSymbol: null
+        );
 }
 
 internal sealed record LoadedStableAbiModule(

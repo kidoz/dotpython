@@ -244,6 +244,29 @@ internal sealed record PythonBuiltinFunctionValue(
     internal override string ToDisplayString() => $"<built-in function {Name}>";
 }
 
+internal interface PythonExternalObjectProtocol
+{
+    PythonValue Call(IReadOnlyList<PythonValue> arguments, TextSpan span);
+
+    PythonValue GetAttribute(string name, TextSpan span);
+
+    PythonValue GetItem(PythonValue index, TextSpan span);
+
+    int GetLength(TextSpan span);
+
+    string ToDisplayString();
+}
+
+internal sealed record PythonExternalObjectValue(PythonExternalObjectProtocol Protocol)
+    : PythonValue
+{
+    internal override string ToDisplayString() => Protocol.ToDisplayString();
+
+    public bool Equals(PythonExternalObjectValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+}
+
 internal sealed record PythonProtocolFunctionValue(
     string Name,
     Func<PythonValue?, IReadOnlyList<PythonValue>, PythonValue> Invoke

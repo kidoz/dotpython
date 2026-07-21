@@ -105,6 +105,66 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_ImportsUnchangedAnyverWheelThroughGenericStableAbiObjects()
+    {
+        SkipAnyverPackageWhenUnavailable();
+        var packageRoot = NativeFixturePath("anyver-package");
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(
+                stableAbiFixture: true,
+                nativeManifestFileName: "anyver-symbol-manifest.json",
+                nativeFixturePath: Path.Combine(packageRoot, "anyver", "_anyver.abi3.so"),
+                packageRoots: [packageRoot]
+            )
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        var result = await session.ExecuteAsync(
+            """
+            import anyver
+            print(anyver.__version__)
+            print(anyver.compare("1.0", "2.0"))
+            print(anyver.eq("1.0", "1.0.0"))
+            print(anyver.sort_versions(["2.0", "1.0-alpha", "1.0"]))
+            value = anyver.Version("1.2.3-rc.1+build.42")
+            print(value)
+            print(value.raw)
+            print(value.major)
+            print(value.minor)
+            print(value.patch)
+            print(value.is_prerelease)
+            print(value[0])
+            print(value.to_dict()["raw"])
+            """,
+            fileName: "<generic-anyver-qualification>",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "1.1.0",
+                "-1",
+                "True",
+                "['1.0-alpha', '1.0', '2.0']",
+                "1.2.3-rc.1+build.42",
+                "1.2.3-rc.1+build.42",
+                "1",
+                "2",
+                "3",
+                "True",
+                "1",
+                "1.2.3-rc.1+build.42"
+            ) + Environment.NewLine,
+            result.StandardOutput
+        );
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
     public async Task Worker_ReusesPinnedAnyverCachesAcrossLogicalModuleLoads()
     {
         SkipAnyverWhenUnavailable();
@@ -621,7 +681,8 @@ public sealed class WorkerProcessPoolTests
         bool stableAbiFixture = false,
         string nativeFixtureFileName = "dotpython_fixture.abi3.so",
         string nativeManifestFileName = "symbol-manifest.json",
-        string? nativeFixturePath = null
+        string? nativeFixturePath = null,
+        IReadOnlyList<string>? packageRoots = null
     )
     {
         var appPath = Path.Combine(AppContext.BaseDirectory, "worker", "DotPython.Worker.App.dll");
@@ -661,6 +722,7 @@ public sealed class WorkerProcessPoolTests
             Policy = policy ?? new WorkerResourcePolicy(),
             EnableTestFaultInjection = enableTestFaultInjection,
             StableAbiFixture = nativeOptions,
+            PackageRoots = packageRoots ?? Array.Empty<string>(),
             RequiredFeatures = stableAbiFixture
                 ?
                 [
@@ -689,6 +751,15 @@ public sealed class WorkerProcessPoolTests
         if (!OperatingSystem.IsMacOS() || !File.Exists(NativeFixturePath("anyver._anyver.abi3.so")))
         {
             Assert.Skip("Set DOTPYTHON_ANYVER_WHEEL to the pinned macOS ARM64 Anyver 1.1.0 wheel.");
+        }
+    }
+
+    private static void SkipAnyverPackageWhenUnavailable()
+    {
+        SkipAnyverWhenUnavailable();
+        if (!Directory.Exists(NativeFixturePath("anyver-package")))
+        {
+            Assert.Skip("The pinned Anyver wheel package was not staged for qualification.");
         }
     }
 

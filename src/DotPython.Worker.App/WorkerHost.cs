@@ -153,13 +153,12 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
             return;
         }
 
-        var engine =
-            options.PackageRoots.Count == 0
-                ? new ManagedPythonEngine()
-                : new ManagedPythonEngine(
-                    new ManagedModuleDiscoveryOptions { SearchPaths = options.PackageRoots }
-                );
-        if (!_sessions.TryAdd(request.SessionId, new WorkerSessionState(engine)))
+        if (
+            !_sessions.TryAdd(
+                request.SessionId,
+                new WorkerSessionState(options.PackageRoots, options.StableAbiFixture)
+            )
+        )
         {
             await SendFaultAsync(
                     envelope.CorrelationId,
