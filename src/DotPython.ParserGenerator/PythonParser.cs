@@ -360,11 +360,22 @@ public static class PythonParser
 
             var parameters = new List<PythonParameter>();
             var parameterNames = new HashSet<string>(StringComparer.Ordinal);
+            var sawDefault = false;
             if (Current.Kind != SyntaxTokenKind.RightParenthesis)
             {
                 while (true)
                 {
                     var parameter = Expect(SyntaxTokenKind.Identifier, "a parameter name");
+                    PythonExpression? defaultValue = null;
+                    if (Match(SyntaxTokenKind.Equal))
+                    {
+                        defaultValue = ParseExpression();
+                        if (defaultValue is null)
+                        {
+                            ReportExpected("a default value after '='", Current.Span);
+                        }
+                    }
+
                     if (!string.IsNullOrEmpty(parameter.Text))
                     {
                         if (IsReservedKeyword(parameter.Text))
@@ -385,7 +396,31 @@ public static class PythonParser
                             );
                         }
 
-                        parameters.Add(new PythonParameter(parameter.Text, parameter.Span));
+                        if (defaultValue is not null)
+                        {
+                            sawDefault = true;
+                        }
+                        else if (sawDefault)
+                        {
+                            Report(
+                                "DPY2016",
+                                "A parameter without a default follows a parameter with a default.",
+                                parameter.Span
+                            );
+                        }
+
+                        parameters.Add(
+                            new PythonParameter(
+                                parameter.Text,
+                                defaultValue,
+                                defaultValue is null
+                                    ? parameter.Span
+                                    : TextSpan.FromBounds(
+                                        parameter.Span.Start,
+                                        defaultValue.Span.End
+                                    )
+                            )
+                        );
                     }
 
                     if (!Match(SyntaxTokenKind.Comma))
@@ -528,6 +563,16 @@ public static class PythonParser
             if (IsKeyword("pass"))
             {
                 return new PythonPassStatement(Advance().Span);
+            }
+
+            if (IsKeyword("global"))
+            {
+                return ParseScopeDeclarationStatement(isGlobal: true);
+            }
+
+            if (IsKeyword("nonlocal"))
+            {
+                return ParseScopeDeclarationStatement(isGlobal: false);
             }
 
             if (IsKeyword("raise"))
@@ -740,6 +785,45 @@ public static class PythonParser
             }
 
             return token;
+        }
+
+        private PythonStatement ParseScopeDeclarationStatement(bool isGlobal)
+        {
+            var keywordToken = Advance();
+            var names = new List<PythonNameExpression>();
+            while (true)
+            {
+                var nameToken = Expect(
+                    SyntaxTokenKind.Identifier,
+                    $"a name after '{keywordToken.Text}'"
+                );
+                if (nameToken.Text.Length != 0)
+                {
+                    if (IsReservedKeyword(nameToken.Text))
+                    {
+                        Report(
+                            "DPY2010",
+                            $"The keyword '{nameToken.Text}' cannot be used as a declared name.",
+                            nameToken.Span
+                        );
+                    }
+                    else
+                    {
+                        names.Add(new PythonNameExpression(nameToken.Text, nameToken.Span));
+                    }
+                }
+
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+            }
+
+            var end = names.Count == 0 ? keywordToken.Span.End : names[^1].Span.End;
+            var span = TextSpan.FromBounds(keywordToken.Span.Start, end);
+            return isGlobal
+                ? new PythonGlobalStatement(names.AsReadOnly(), span)
+                : new PythonNonlocalStatement(names.AsReadOnly(), span);
         }
 
         private PythonReturnStatement ParseReturnStatement()
@@ -1072,18 +1156,65 @@ public static class PythonParser
                 if (Match(SyntaxTokenKind.LeftParenthesis, out _))
                 {
                     var arguments = new List<PythonExpression>();
+                    var keywordArguments = new List<PythonKeywordArgument>();
+                    var keywordNames = new HashSet<string>(StringComparer.Ordinal);
                     if (Current.Kind != SyntaxTokenKind.RightParenthesis)
                     {
                         while (true)
                         {
-                            var argument = ParseExpression();
-                            if (argument is null)
+                            if (
+                                Current.Kind == SyntaxTokenKind.Identifier
+                                && Peek(1).Kind == SyntaxTokenKind.Equal
+                                && !IsReservedKeyword(Current.Text)
+                            )
                             {
-                                ReportExpected("a call argument", Current.Span);
-                                break;
+                                var name = Advance();
+                                Advance();
+                                var value = ParseExpression();
+                                if (value is null)
+                                {
+                                    ReportExpected("a keyword argument value", Current.Span);
+                                    break;
+                                }
+
+                                if (!keywordNames.Add(name.Text))
+                                {
+                                    Report(
+                                        "DPY2018",
+                                        $"Keyword argument repeated: '{name.Text}'.",
+                                        name.Span
+                                    );
+                                }
+
+                                keywordArguments.Add(
+                                    new PythonKeywordArgument(
+                                        name.Text,
+                                        value,
+                                        TextSpan.FromBounds(name.Span.Start, value.Span.End)
+                                    )
+                                );
+                            }
+                            else
+                            {
+                                var argument = ParseExpression();
+                                if (argument is null)
+                                {
+                                    ReportExpected("a call argument", Current.Span);
+                                    break;
+                                }
+
+                                if (keywordArguments.Count != 0)
+                                {
+                                    Report(
+                                        "DPY2017",
+                                        "A positional argument follows a keyword argument.",
+                                        argument.Span
+                                    );
+                                }
+
+                                arguments.Add(argument);
                             }
 
-                            arguments.Add(argument);
                             if (!Match(SyntaxTokenKind.Comma))
                             {
                                 break;
@@ -1104,6 +1235,7 @@ public static class PythonParser
                     expression = new PythonCallExpression(
                         expression,
                         arguments.AsReadOnly(),
+                        keywordArguments.AsReadOnly(),
                         TextSpan.FromBounds(expression.Span.Start, end)
                     );
                     continue;
@@ -1533,7 +1665,9 @@ public static class PythonParser
                     or "return"
                     or "break"
                     or "continue"
-                    or "pass";
+                    or "pass"
+                    or "global"
+                    or "nonlocal";
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value
@@ -1545,10 +1679,8 @@ public static class PythonParser
                     or "elif"
                     or "else"
                     or "from"
-                    or "global"
                     or "if"
                     or "import"
-                    or "nonlocal"
                     or "raise"
                     or "return"
                     or "try"

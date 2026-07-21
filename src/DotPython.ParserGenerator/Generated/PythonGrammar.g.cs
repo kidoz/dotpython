@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "c8933b120c9d81678532c9aa1722d5d3350c5662c8c21726fca813234d1ad589";
-    internal const int RuleCount = 47;
+    internal const string SourceSha256 = "d465b12ab5547012776fa732f58715ed03a2aa16b357591d7bf64f71e13efbb7";
+    internal const int RuleCount = 51;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -14,12 +14,14 @@ internal static class GeneratedPythonGrammar
         statement: compound_stmt | simple_stmts
         compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | raise_stmt | import_stmt | from_import_stmt | expression
+        simple_stmt: assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression
         assignment: primary '=' expression
         return_stmt: 'return' [expression]
         break_stmt: 'break'
         continue_stmt: 'continue'
         pass_stmt: 'pass'
+        global_stmt: 'global' ','.NAME+
+        nonlocal_stmt: 'nonlocal' ','.NAME+
         raise_stmt: 'raise' [expression ['from' expression]]
         import_stmt: 'import' ','.dotted_import_alias+
         from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)
@@ -35,7 +37,8 @@ internal static class GeneratedPythonGrammar
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ':' block
-        parameters: ','.NAME+ [',']
+        parameters: ','.parameter+ [',']
+        parameter: NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
         expression: disjunction
         disjunction: conjunction ('or' conjunction)*
@@ -47,7 +50,8 @@ internal static class GeneratedPythonGrammar
         factor: ('+' | '-' | '~') factor | power
         power: primary ['**' factor]
         primary: atom (('(' [arguments] ')') | ('[' expression ']') | ('.' NAME))*
-        arguments: expression_list
+        arguments: ','.argument+ [',']
+        argument: NAME '=' expression | expression
         expression_list: ','.expression+ [',']
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
         list_display: '[' [expression_list] ']'

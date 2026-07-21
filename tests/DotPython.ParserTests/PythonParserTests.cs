@@ -286,6 +286,43 @@ public sealed class PythonParserTests
         Assert.IsType<PythonPassStatement>(result.Module.Statements[2]);
     }
 
+    [Fact]
+    public void Parse_BuildsParameterDefaultsAndKeywordArguments()
+    {
+        var result = Parse("def act(first, second=2):\n    return first\nact(1, second=9)\n");
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.Null(function.Parameters[0].Default);
+        var defaultValue = Assert.IsType<PythonConstantExpression>(function.Parameters[1].Default);
+        Assert.Equal("2", defaultValue.TokenText);
+
+        var call = Assert.IsType<PythonCallExpression>(
+            Assert.IsType<PythonExpressionStatement>(result.Module.Statements[1]).Expression
+        );
+        Assert.Single(call.Arguments);
+        var keywordArgument = Assert.Single(call.KeywordArguments);
+        Assert.Equal("second", keywordArgument.Name);
+        Assert.IsType<PythonConstantExpression>(keywordArgument.Value);
+    }
+
+    [Fact]
+    public void Parse_BuildsGlobalAndNonlocalDeclarations()
+    {
+        var result = Parse("def act():\n    global first, second\n    nonlocal third\n");
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var globalStatement = Assert.IsType<PythonGlobalStatement>(function.Body[0]);
+        Assert.Equal(["first", "second"], globalStatement.Names.Select(name => name.Name));
+        var nonlocalStatement = Assert.IsType<PythonNonlocalStatement>(function.Body[1]);
+        Assert.Equal("third", Assert.Single(nonlocalStatement.Names).Name);
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
@@ -296,6 +333,11 @@ public sealed class PythonParserTests
     [InlineData("import", "DPY2001")]
     [InlineData("from helper answer", "DPY2001")]
     [InlineData("print($)", "DPY1001")]
+    [InlineData("def act(first=1, second): return first", "DPY2016")]
+    [InlineData("act(first=1, 2)", "DPY2017")]
+    [InlineData("act(first=1, first=2)", "DPY2018")]
+    [InlineData("global for", "DPY2010")]
+    [InlineData("nonlocal", "DPY2001")]
     public void Parse_ReportsStructuredDiagnosticsAndReachesEnd(string code, string expectedCode)
     {
         var result = Parse(code);

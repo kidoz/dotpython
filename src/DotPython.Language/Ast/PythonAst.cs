@@ -26,7 +26,8 @@ public sealed record PythonFunctionDefinitionStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
-public sealed record PythonParameter(string Name, TextSpan Span) : PythonNode(Span);
+public sealed record PythonParameter(string Name, PythonExpression? Default, TextSpan Span)
+    : PythonNode(Span);
 
 public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)
     : PythonStatement(Span);
@@ -36,6 +37,14 @@ public sealed record PythonBreakStatement(TextSpan Span) : PythonStatement(Span)
 public sealed record PythonContinueStatement(TextSpan Span) : PythonStatement(Span);
 
 public sealed record PythonPassStatement(TextSpan Span) : PythonStatement(Span);
+
+public sealed record PythonGlobalStatement(IReadOnlyList<PythonNameExpression> Names, TextSpan Span)
+    : PythonStatement(Span);
+
+public sealed record PythonNonlocalStatement(
+    IReadOnlyList<PythonNameExpression> Names,
+    TextSpan Span
+) : PythonStatement(Span);
 
 public sealed record PythonRaiseStatement(
     PythonExpression? Exception,
@@ -135,8 +144,12 @@ public sealed record PythonComparisonPart(
 public sealed record PythonCallExpression(
     PythonExpression Target,
     IReadOnlyList<PythonExpression> Arguments,
+    IReadOnlyList<PythonKeywordArgument> KeywordArguments,
     TextSpan Span
 ) : PythonExpression(Span);
+
+public sealed record PythonKeywordArgument(string Name, PythonExpression Value, TextSpan Span)
+    : PythonNode(Span);
 
 public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);
