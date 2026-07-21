@@ -163,6 +163,74 @@ public sealed class PythonWheelInspectorTests
     }
 
     [Fact]
+    public void Inspect_RejectsOverlappingElfTablesBeyondSharedSymbolBudget()
+    {
+        var inspection = NativeBinarySymbolInspector.Inspect(
+            CreateElfWithOverlappingSymbolTables(),
+            new NativeBinaryInspectionLimits(
+                MaximumSymbolReads: 3,
+                MaximumMachOSlices: 16,
+                MaximumMachODepth: 4
+            )
+        );
+
+        Assert.Equal(PythonNativeBinaryFormat.Elf, inspection.Format);
+        Assert.False(inspection.SymbolsAvailable);
+        Assert.Empty(inspection.RequiredSymbols);
+    }
+
+    [Fact]
+    public void Inspect_RejectsOverlappingPeThunksBeyondSharedSymbolBudget()
+    {
+        var inspection = NativeBinarySymbolInspector.Inspect(
+            CreatePeWithOverlappingThunkTables(),
+            new NativeBinaryInspectionLimits(
+                MaximumSymbolReads: 3,
+                MaximumMachOSlices: 16,
+                MaximumMachODepth: 4
+            )
+        );
+
+        Assert.Equal(PythonNativeBinaryFormat.PortableExecutable, inspection.Format);
+        Assert.False(inspection.SymbolsAvailable);
+        Assert.Empty(inspection.RequiredSymbols);
+    }
+
+    [Fact]
+    public void Inspect_RejectsRecursiveFatMachOSlice()
+    {
+        var inspection = NativeBinarySymbolInspector.Inspect(
+            CreateRecursiveFatMachO(),
+            new NativeBinaryInspectionLimits(
+                MaximumSymbolReads: 16,
+                MaximumMachOSlices: 16,
+                MaximumMachODepth: 2
+            )
+        );
+
+        Assert.Equal(PythonNativeBinaryFormat.MachO, inspection.Format);
+        Assert.False(inspection.SymbolsAvailable);
+        Assert.Empty(inspection.RequiredSymbols);
+    }
+
+    [Fact]
+    public void Inspect_RejectsFatMachOSlicesBeyondSharedSliceBudget()
+    {
+        var inspection = NativeBinarySymbolInspector.Inspect(
+            CreateFatMachOWithOverlappingSlices(),
+            new NativeBinaryInspectionLimits(
+                MaximumSymbolReads: 16,
+                MaximumMachOSlices: 2,
+                MaximumMachODepth: 4
+            )
+        );
+
+        Assert.Equal(PythonNativeBinaryFormat.MachO, inspection.Format);
+        Assert.False(inspection.SymbolsAvailable);
+        Assert.Empty(inspection.RequiredSymbols);
+    }
+
+    [Fact]
     public void Inspect_RejectsMetadataMismatchAndDraftVariantFilename()
     {
         using var mismatch = WheelFixture.Create(
@@ -348,6 +416,80 @@ public sealed class PythonWheelInspectorTests
         return result;
     }
 
+    private static byte[] CreateElfWithOverlappingSymbolTables()
+    {
+        const int headerSize = 64;
+        const int sectionSize = 64;
+        const int sectionCount = 3;
+        const int symbolOffset = headerSize + (sectionSize * sectionCount);
+        const int symbolEntrySize = 24;
+        const int symbolCount = 2;
+        const int stringOffset = symbolOffset + (symbolEntrySize * symbolCount);
+        var strings = "\0PyLong_FromLong\0"u8.ToArray();
+        var result = new byte[stringOffset + strings.Length];
+        result[0] = 0x7f;
+        result[1] = (byte)'E';
+        result[2] = (byte)'L';
+        result[3] = (byte)'F';
+        result[4] = 2;
+        result[5] = 1;
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(40), headerSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(58), sectionSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(60), sectionCount);
+
+        for (var sectionIndex = 0; sectionIndex < 2; sectionIndex++)
+        {
+            var symbolTable = result.AsSpan(headerSize + (sectionSize * sectionIndex), sectionSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(symbolTable[4..], 11);
+            BinaryPrimitives.WriteUInt64LittleEndian(symbolTable[24..], symbolOffset);
+            BinaryPrimitives.WriteUInt64LittleEndian(
+                symbolTable[32..],
+                symbolEntrySize * symbolCount
+            );
+            BinaryPrimitives.WriteUInt32LittleEndian(symbolTable[40..], 2);
+            BinaryPrimitives.WriteUInt64LittleEndian(symbolTable[56..], symbolEntrySize);
+        }
+
+        var stringTable = result.AsSpan(headerSize + (sectionSize * 2), sectionSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(stringTable[4..], 3);
+        BinaryPrimitives.WriteUInt64LittleEndian(stringTable[24..], stringOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(stringTable[32..], (ulong)strings.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(symbolOffset + symbolEntrySize), 1);
+        strings.CopyTo(result.AsSpan(stringOffset));
+        return result;
+    }
+
+    private static byte[] CreateRecursiveFatMachO()
+    {
+        var result = new byte[28];
+        BinaryPrimitives.WriteUInt32BigEndian(result, 0xcafebabe);
+        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(16), 0);
+        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(20), (uint)result.Length);
+        return result;
+    }
+
+    private static byte[] CreateFatMachOWithOverlappingSlices()
+    {
+        const int headerSize = 48;
+        var thin = CreateMachOWithUndefinedSymbols();
+        var result = new byte[headerSize + thin.Length];
+        BinaryPrimitives.WriteUInt32BigEndian(result, 0xcafebabe);
+        BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(4), 2);
+        for (var architectureIndex = 0; architectureIndex < 2; architectureIndex++)
+        {
+            var entryOffset = 8 + (architectureIndex * 20);
+            BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(entryOffset + 8), headerSize);
+            BinaryPrimitives.WriteUInt32BigEndian(
+                result.AsSpan(entryOffset + 12),
+                (uint)thin.Length
+            );
+        }
+
+        thin.CopyTo(result.AsSpan(headerSize));
+        return result;
+    }
+
     private static byte[] CreatePeWithImportedSymbol()
     {
         const int peOffset = 0x80;
@@ -378,6 +520,44 @@ public sealed class PythonWheelInspectorTests
         BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(rawSectionOffset + 0x40), 0x1060);
         "PyLong_FromLong\0"u8.CopyTo(result.AsSpan(rawSectionOffset + 0x62));
         "python3.dll\0"u8.CopyTo(result.AsSpan(rawSectionOffset + 0x80));
+        return result;
+    }
+
+    private static byte[] CreatePeWithOverlappingThunkTables()
+    {
+        const int peOffset = 0x80;
+        const int optionalHeaderOffset = peOffset + 24;
+        const int sectionTableOffset = optionalHeaderOffset + 0xf0;
+        const int rawSectionOffset = 0x200;
+        var result = new byte[0x600];
+        result[0] = (byte)'M';
+        result[1] = (byte)'Z';
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(0x3c), peOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(peOffset), 0x00004550);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(peOffset + 6), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(peOffset + 20), 0xf0);
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(optionalHeaderOffset), 0x20b);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(optionalHeaderOffset + 120), 0x1000);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(optionalHeaderOffset + 124), 60);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(sectionTableOffset + 8), 0x400);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(sectionTableOffset + 12), 0x1000);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(sectionTableOffset + 16), 0x400);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            result.AsSpan(sectionTableOffset + 20),
+            rawSectionOffset
+        );
+
+        for (var descriptorIndex = 0; descriptorIndex < 2; descriptorIndex++)
+        {
+            var descriptorOffset = rawSectionOffset + (descriptorIndex * 20);
+            BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(descriptorOffset), 0x1100);
+            BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(descriptorOffset + 12), 0x1180);
+        }
+
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(rawSectionOffset + 0x100), 0x1160);
+        "PyLong_FromLong\0"u8.CopyTo(result.AsSpan(rawSectionOffset + 0x162));
+        "python3.dll\0"u8.CopyTo(result.AsSpan(rawSectionOffset + 0x180));
         return result;
     }
 

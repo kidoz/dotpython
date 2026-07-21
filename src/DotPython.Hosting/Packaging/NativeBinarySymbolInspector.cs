@@ -9,8 +9,26 @@ internal static class NativeBinarySymbolInspector
     private const uint ElfSectionSymbols = 2;
     private const uint MachSymbolTableCommand = 2;
 
-    internal static NativeBinaryInspection Inspect(ReadOnlySpan<byte> bytes)
+    private static readonly NativeBinaryInspectionLimits DefaultLimits = new(
+        MaximumSymbolReads: 4_000_000,
+        MaximumMachOSlices: 4_096,
+        MaximumMachODepth: 8
+    );
+
+    internal static NativeBinaryInspection Inspect(ReadOnlySpan<byte> bytes) =>
+        Inspect(bytes, DefaultLimits);
+
+    internal static NativeBinaryInspection Inspect(
+        ReadOnlySpan<byte> bytes,
+        NativeBinaryInspectionLimits limits
+    )
     {
+        if (!limits.IsValid)
+        {
+            return new NativeBinaryInspection(PythonNativeBinaryFormat.Unknown, false, []);
+        }
+
+        var budget = new NativeBinaryInspectionBudget(limits);
         if (
             bytes.Length >= 4
             && bytes[0] == 0x7f
@@ -21,7 +39,7 @@ internal static class NativeBinarySymbolInspector
         {
             return new NativeBinaryInspection(
                 PythonNativeBinaryFormat.Elf,
-                TryReadElfSymbols(bytes, out var symbols),
+                TryReadElfSymbols(bytes, budget, out var symbols),
                 symbols
             );
         }
@@ -30,7 +48,7 @@ internal static class NativeBinarySymbolInspector
         {
             return new NativeBinaryInspection(
                 PythonNativeBinaryFormat.MachO,
-                TryReadMachOSymbols(bytes, out var symbols),
+                TryReadMachOSymbols(bytes, budget, depth: 0, out var symbols),
                 symbols
             );
         }
@@ -39,7 +57,7 @@ internal static class NativeBinarySymbolInspector
         {
             return new NativeBinaryInspection(
                 PythonNativeBinaryFormat.PortableExecutable,
-                TryReadPortableExecutableSymbols(bytes, out var symbols),
+                TryReadPortableExecutableSymbols(bytes, budget, out var symbols),
                 symbols
             );
         }
@@ -49,6 +67,7 @@ internal static class NativeBinarySymbolInspector
 
     private static bool TryReadElfSymbols(
         ReadOnlySpan<byte> bytes,
+        NativeBinaryInspectionBudget budget,
         out IReadOnlyList<string> symbols
     )
     {
@@ -159,7 +178,7 @@ internal static class NativeBinarySymbolInspector
             }
 
             var symbolCount = symbolTableSize / symbolEntrySize;
-            if (symbolCount > 1_000_000)
+            if (symbolCount > 1_000_000 || !budget.TryConsumeSymbolReads(symbolCount))
             {
                 return false;
             }
@@ -217,14 +236,21 @@ internal static class NativeBinarySymbolInspector
 
     private static bool TryReadMachOSymbols(
         ReadOnlySpan<byte> bytes,
+        NativeBinaryInspectionBudget budget,
+        int depth,
         out IReadOnlyList<string> symbols
     )
     {
         symbols = [];
+        if (bytes.Length < 4 || !budget.TryEnterMachOSlice(depth))
+        {
+            return false;
+        }
+
         var magic = BinaryPrimitives.ReadUInt32BigEndian(bytes);
         if (magic is 0xcafebabe or 0xcafebabf)
         {
-            return TryReadFatMachOSymbols(bytes, magic == 0xcafebabf, out symbols);
+            return TryReadFatMachOSymbols(bytes, magic == 0xcafebabf, budget, depth, out symbols);
         }
 
         var littleEndian = magic is 0xcefaedfe or 0xcffaedfe;
@@ -297,6 +323,7 @@ internal static class NativeBinarySymbolInspector
                     symbolCount,
                     stringTableOffset,
                     stringTableSize,
+                    budget,
                     out symbols
                 );
             }
@@ -310,6 +337,8 @@ internal static class NativeBinarySymbolInspector
     private static bool TryReadFatMachOSymbols(
         ReadOnlySpan<byte> bytes,
         bool is64Bit,
+        NativeBinaryInspectionBudget budget,
+        int depth,
         out IReadOnlyList<string> symbols
     )
     {
@@ -343,6 +372,8 @@ internal static class NativeBinarySymbolInspector
                 || sliceSize > int.MaxValue
                 || !TryReadMachOSymbols(
                     bytes.Slice((int)sliceOffset, (int)sliceSize),
+                    budget,
+                    depth + 1,
                     out var sliceSymbols
                 )
             )
@@ -365,6 +396,7 @@ internal static class NativeBinarySymbolInspector
         ulong symbolCount,
         ulong stringTableOffset,
         ulong stringTableSize,
+        NativeBinaryInspectionBudget budget,
         out IReadOnlyList<string> symbols
     )
     {
@@ -372,6 +404,7 @@ internal static class NativeBinarySymbolInspector
         var entrySize = is64Bit ? 16UL : 12UL;
         if (
             symbolCount > 1_000_000
+            || !budget.TryConsumeSymbolReads(symbolCount)
             || !ContainsRange(bytes, symbolTableOffset, symbolCount * entrySize)
             || !ContainsRange(bytes, stringTableOffset, stringTableSize)
         )
@@ -419,6 +452,7 @@ internal static class NativeBinarySymbolInspector
 
     private static bool TryReadPortableExecutableSymbols(
         ReadOnlySpan<byte> bytes,
+        NativeBinaryInspectionBudget budget,
         out IReadOnlyList<string> symbols
     )
     {
@@ -512,6 +546,11 @@ internal static class NativeBinarySymbolInspector
             var ordinalMask = is64Bit ? 0x8000000000000000UL : 0x80000000UL;
             for (ulong thunkIndex = 0; thunkIndex < 1_000_000; thunkIndex++)
             {
+                if (!budget.TryConsumeSymbolReads(1))
+                {
+                    return false;
+                }
+
                 if (
                     !TryReadUnsigned(
                         bytes,
@@ -681,6 +720,44 @@ internal static class NativeBinarySymbolInspector
         result = left + right;
         return result >= left;
     }
+
+    private sealed class NativeBinaryInspectionBudget(NativeBinaryInspectionLimits limits)
+    {
+        private ulong _remainingSymbolReads = limits.MaximumSymbolReads;
+        private ulong _remainingMachOSlices = limits.MaximumMachOSlices;
+
+        internal bool TryConsumeSymbolReads(ulong count)
+        {
+            if (count > _remainingSymbolReads)
+            {
+                return false;
+            }
+
+            _remainingSymbolReads -= count;
+            return true;
+        }
+
+        internal bool TryEnterMachOSlice(int depth)
+        {
+            if (depth > limits.MaximumMachODepth || _remainingMachOSlices == 0)
+            {
+                return false;
+            }
+
+            _remainingMachOSlices--;
+            return true;
+        }
+    }
+}
+
+internal readonly record struct NativeBinaryInspectionLimits(
+    ulong MaximumSymbolReads,
+    ulong MaximumMachOSlices,
+    int MaximumMachODepth
+)
+{
+    internal bool IsValid =>
+        MaximumSymbolReads > 0 && MaximumMachOSlices > 0 && MaximumMachODepth is >= 0 and <= 64;
 }
 
 internal sealed record NativeBinaryInspection(
