@@ -31,6 +31,12 @@ public sealed record PythonParameter(string Name, TextSpan Span) : PythonNode(Sp
 public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)
     : PythonStatement(Span);
 
+public sealed record PythonBreakStatement(TextSpan Span) : PythonStatement(Span);
+
+public sealed record PythonContinueStatement(TextSpan Span) : PythonStatement(Span);
+
+public sealed record PythonPassStatement(TextSpan Span) : PythonStatement(Span);
+
 public sealed record PythonRaiseStatement(
     PythonExpression? Exception,
     PythonExpression? Cause,

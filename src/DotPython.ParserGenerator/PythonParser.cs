@@ -515,6 +515,21 @@ public static class PythonParser
                 return ParseReturnStatement();
             }
 
+            if (IsKeyword("break"))
+            {
+                return new PythonBreakStatement(Advance().Span);
+            }
+
+            if (IsKeyword("continue"))
+            {
+                return new PythonContinueStatement(Advance().Span);
+            }
+
+            if (IsKeyword("pass"))
+            {
+                return new PythonPassStatement(Advance().Span);
+            }
+
             if (IsKeyword("raise"))
             {
                 return ParseRaiseStatement();
@@ -1515,15 +1530,16 @@ public static class PythonParser
                     or "elif"
                     or "else"
                     or "def"
-                    or "return";
+                    or "return"
+                    or "break"
+                    or "continue"
+                    or "pass";
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value
                 is "assert"
                     or "async"
-                    or "break"
                     or "class"
-                    or "continue"
                     or "def"
                     or "del"
                     or "elif"
@@ -1533,7 +1549,6 @@ public static class PythonParser
                     or "if"
                     or "import"
                     or "nonlocal"
-                    or "pass"
                     or "raise"
                     or "return"
                     or "try"

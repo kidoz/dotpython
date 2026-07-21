@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "f54a5ba12e74ece4b8c14bfac40fe0988f7fa74a36b055d6b214f742284f29a8";
-    internal const int RuleCount = 44;
+    internal const string SourceSha256 = "c8933b120c9d81678532c9aa1722d5d3350c5662c8c21726fca813234d1ad589";
+    internal const int RuleCount = 47;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -14,9 +14,12 @@ internal static class GeneratedPythonGrammar
         statement: compound_stmt | simple_stmts
         compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | return_stmt | raise_stmt | import_stmt | from_import_stmt | expression
+        simple_stmt: assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | raise_stmt | import_stmt | from_import_stmt | expression
         assignment: primary '=' expression
         return_stmt: 'return' [expression]
+        break_stmt: 'break'
+        continue_stmt: 'continue'
+        pass_stmt: 'pass'
         raise_stmt: 'raise' [expression ['from' expression]]
         import_stmt: 'import' ','.dotted_import_alias+
         from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)

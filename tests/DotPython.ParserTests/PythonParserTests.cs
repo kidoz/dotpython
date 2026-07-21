@@ -275,11 +275,21 @@ public sealed class PythonParserTests
         Assert.IsType<PythonReturnStatement>(Assert.Single(function.Body));
     }
 
+    [Fact]
+    public void Parse_BuildsSimpleControlFlowStatements()
+    {
+        var result = Parse("break; continue; pass");
+
+        Assert.Empty(result.Diagnostics);
+        Assert.IsType<PythonBreakStatement>(result.Module.Statements[0]);
+        Assert.IsType<PythonContinueStatement>(result.Module.Statements[1]);
+        Assert.IsType<PythonPassStatement>(result.Module.Statements[2]);
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
     [InlineData("None = 42", "DPY2005")]
-    [InlineData("pass", "DPY2004")]
     [InlineData("return 42", "DPY2008")]
     [InlineData("def duplicate(value, value): return value", "DPY2009")]
     [InlineData("def invalid(return): return 42", "DPY2010")]
