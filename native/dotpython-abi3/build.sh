@@ -25,6 +25,8 @@ case $(uname -s) in
             -L"$output" -ldotpython_abi3 -Wl,-rpath,@loader_path -o "$failure"
         $cc $common $sanitize "$root/test/native_fixture_test.c" -L"$output" \
             -ldotpython_abi3 -Wl,-rpath,@loader_path -o "$output/native_fixture_test"
+        $cc $common $sanitize "$root/test/native_anyver_test.c" -L"$output" \
+            -ldotpython_abi3 -Wl,-rpath,@loader_path -o "$output/native_anyver_test"
         ;;
     Linux)
         bridge="$output/libdotpython_abi3.so"
@@ -38,6 +40,8 @@ case $(uname -s) in
             -L"$output" -ldotpython_abi3 -Wl,-rpath,'$ORIGIN' -o "$failure"
         $cc $common $sanitize "$root/test/native_fixture_test.c" -L"$output" \
             -ldotpython_abi3 -ldl -Wl,-rpath,'$ORIGIN' -o "$output/native_fixture_test"
+        $cc $common $sanitize "$root/test/native_anyver_test.c" -L"$output" \
+            -ldotpython_abi3 -ldl -Wl,-rpath,'$ORIGIN' -o "$output/native_anyver_test"
         ;;
     *)
         echo "unsupported native fixture build platform" >&2
@@ -46,6 +50,7 @@ case $(uname -s) in
 esac
 
 cp "$root/symbol-manifest.json" "$output/symbol-manifest.json"
+cp "$root/anyver-symbol-manifest.json" "$output/anyver-symbol-manifest.json"
 "$root/check-symbol-manifest.sh"
 "$root/check-binary-symbols.sh" "$fixture" imports
 "$root/check-binary-symbols.sh" "$fixture" fixture-exports

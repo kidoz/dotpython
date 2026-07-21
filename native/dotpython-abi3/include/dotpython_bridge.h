@@ -7,25 +7,39 @@
 extern "C" {
 #endif
 
-#define DP_ABI3_BRIDGE_VERSION 1
+#define DP_ABI3_BRIDGE_VERSION 2
 
 DP_ABI3_EXPORT int dp_abi3_bridge_version(void);
-DP_ABI3_EXPORT int dp_abi3_module_initialize(
-    PyObject *initialization_result,
-    PyObject **module,
-    int *multi_phase
-);
-DP_ABI3_EXPORT int dp_abi3_module_get_int(
-    PyObject *module,
-    const char *name,
-    int64_t *value
-);
+DP_ABI3_EXPORT int
+dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, int *multi_phase);
+DP_ABI3_EXPORT int dp_abi3_module_get_int(PyObject *module, const char *name, int64_t *value);
 DP_ABI3_EXPORT int dp_abi3_module_call_long(
     PyObject *module,
     const char *method,
     int has_argument,
     int64_t argument,
     int64_t *result
+);
+/* All Anyver bridge functions return owned managed values, never native object addresses. */
+DP_ABI3_EXPORT int dp_abi3_anyver_compare(
+    PyObject *module,
+    const char *left,
+    const char *right,
+    const char *ecosystem,
+    int64_t *result
+);
+DP_ABI3_EXPORT int dp_abi3_anyver_sort_versions(
+    PyObject *module,
+    const char *const *versions,
+    int64_t version_count,
+    const char *ecosystem,
+    const char **result_json
+);
+DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
+    PyObject *module,
+    const char *version,
+    const char *ecosystem,
+    const char **result_json
 );
 DP_ABI3_EXPORT void dp_abi3_module_destroy(PyObject *module);
 DP_ABI3_EXPORT const char *dp_abi3_error_type(void);
