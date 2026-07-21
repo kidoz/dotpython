@@ -109,8 +109,11 @@ typedef struct PyModuleDef {
     void (*m_free)(void *);
 } PyModuleDef;
 
+/* Keep Stable-ABI initializer spelling independent of the installed clang-format version. */
+// clang-format off
 #define PyObject_HEAD_INIT(type) {1, (type)}
 #define PyModuleDef_HEAD_INIT {PyObject_HEAD_INIT(NULL), NULL, 0, NULL}
+// clang-format on
 
 #define Py_mod_create 1
 #define Py_mod_exec 2

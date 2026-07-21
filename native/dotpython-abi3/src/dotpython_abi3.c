@@ -98,8 +98,11 @@ static PyObject *dp_new_unicode(const char *text, Py_ssize_t size);
 static void dp_set_error_text(PyObject *type, const char *message);
 static PyObject *dp_get_attribute_cstr(PyObject *object, const char *name);
 
+/* Keep Stable-ABI initializer spelling independent of the installed clang-format version. */
+// clang-format off
 #define DP_STATIC_TYPE(name_literal)                                                               \
     {{DP_ABI3_IMMORTAL_REFCNT, NULL}, NULL, (int)sizeof(PyObject), 0, 0, NULL, NULL, NULL, NULL, 0}
+// clang-format on
 
 DP_ABI3_EXPORT PyTypeObject PyBaseObject_Type = DP_STATIC_TYPE("object");
 DP_ABI3_EXPORT PyTypeObject PyDict_Type = DP_STATIC_TYPE("dict");
