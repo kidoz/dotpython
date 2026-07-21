@@ -2252,14 +2252,13 @@ pub extern "C" fn PyObject_GetItem(object: *mut PyObject, dkey: *mut PyObject) -
         }
         return newref(value);
     }
+    let subscript = unsafe { slot((*object).ob_type, PY_MP_SUBSCRIPT) };
+    if !subscript.is_null() {
+        let function: binaryfunc = unsafe { transmute(subscript) };
+        return unsafe { function(object, dkey) };
+    }
     let index = PyLong_AsLong(dkey);
     if index == -1 && !PyErr_Occurred().is_null() {
-        let subscript = unsafe { slot((*object).ob_type, PY_MP_SUBSCRIPT) };
-        if !subscript.is_null() {
-            clear_error();
-            let f: binaryfunc = unsafe { transmute(subscript) };
-            return unsafe { f(object, dkey) };
-        }
         return ptr::null_mut();
     }
     if kind == Some(Kind::List) {
@@ -2272,11 +2271,6 @@ pub extern "C" fn PyObject_GetItem(object: *mut PyObject, dkey: *mut PyObject) -
     if !item.is_null() {
         let f: ssizeargfunc = unsafe { transmute(item) };
         return unsafe { f(object, index as Py_ssize_t) };
-    }
-    let subscript = unsafe { slot((*object).ob_type, PY_MP_SUBSCRIPT) };
-    if !subscript.is_null() {
-        let f: binaryfunc = unsafe { transmute(subscript) };
-        return unsafe { f(object, dkey) };
     }
     set_error(
         unsafe { PyExc_TypeError },
@@ -3063,8 +3057,11 @@ fn json_escape(bytes: &[u8], out: &mut String) {
 }
 
 fn store_result(json: &str) -> *const c_char {
+    store_result_bytes(json.as_bytes())
+}
+
+fn store_result_bytes(bytes: &[u8]) -> *const c_char {
     with_err(|e| {
-        let bytes = json.as_bytes();
         if bytes.len() + 1 > e.result.len() {
             return ptr::null();
         }
@@ -3072,6 +3069,476 @@ fn store_result(json: &str) -> *const c_char {
         e.result[bytes.len()] = 0;
         e.result.as_ptr() as *const c_char
     })
+}
+
+// ===========================================================================
+// Generic qualified object bridge.
+// ===========================================================================
+
+const DP_OBJECT_INVALID: c_int = 0;
+const DP_OBJECT_NONE: c_int = 1;
+const DP_OBJECT_BOOL: c_int = 2;
+const DP_OBJECT_INT: c_int = 3;
+const DP_OBJECT_TEXT: c_int = 4;
+const DP_OBJECT_BYTES: c_int = 5;
+const DP_OBJECT_LIST: c_int = 6;
+const DP_OBJECT_TUPLE: c_int = 7;
+const DP_OBJECT_DICT: c_int = 8;
+const DP_OBJECT_MODULE: c_int = 9;
+const DP_OBJECT_CALLABLE: c_int = 10;
+const DP_OBJECT_TYPE: c_int = 11;
+const DP_OBJECT_INSTANCE: c_int = 12;
+const MAX_BRIDGE_ARGUMENTS: i64 = 4096;
+
+fn initialize_object_output(result: *mut *mut PyObject) -> bool {
+    if result.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "object output is invalid");
+        false
+    } else {
+        unsafe { *result = ptr::null_mut() };
+        true
+    }
+}
+
+fn generic_kind(object: *mut PyObject) -> c_int {
+    if object.is_null() {
+        return DP_OBJECT_INVALID;
+    }
+    unsafe {
+        if object == &raw mut _Py_NoneStruct {
+            return DP_OBJECT_NONE;
+        }
+        if object == &raw mut _Py_TrueStruct || object == &raw mut _Py_FalseStruct {
+            return DP_OBJECT_BOOL;
+        }
+    }
+    match find(object).map(|meta| meta.kind) {
+        Some(Kind::Long) => DP_OBJECT_INT,
+        Some(Kind::Unicode) => DP_OBJECT_TEXT,
+        Some(Kind::Bytes) => DP_OBJECT_BYTES,
+        Some(Kind::List) => DP_OBJECT_LIST,
+        Some(Kind::Tuple) => DP_OBJECT_TUPLE,
+        Some(Kind::Dict) => DP_OBJECT_DICT,
+        Some(Kind::Module) => DP_OBJECT_MODULE,
+        Some(Kind::CMethod) => DP_OBJECT_CALLABLE,
+        Some(Kind::Type) => DP_OBJECT_TYPE,
+        Some(Kind::Instance | Kind::Iterator) => DP_OBJECT_INSTANCE,
+        None => DP_OBJECT_INVALID,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_module_attribute_names(
+    module: *mut PyObject,
+    result_json: *mut *const c_char,
+) -> c_int {
+    require_owner!(-1);
+    if result_json.is_null() {
+        set_error(
+            unsafe { PyExc_TypeError },
+            "attribute-name output is invalid",
+        );
+        return -1;
+    }
+    unsafe { *result_json = ptr::null() };
+    let attributes = match find(module) {
+        Some(meta) if meta.kind == Kind::Module => match &meta.value {
+            Value::Module { attributes, .. } => *attributes,
+            _ => ptr::null_mut(),
+        },
+        _ => {
+            set_error(unsafe { PyExc_TypeError }, "expected module");
+            return -1;
+        }
+    };
+    let keys = match find(attributes) {
+        Some(meta) if meta.kind == Kind::Dict => match &meta.value {
+            Value::Dict { keys, .. } => keys.clone(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let mut json = String::from("[");
+    let mut first = true;
+    for key in &keys {
+        let bytes = match find(*key) {
+            Some(meta) if meta.kind == Kind::Unicode => match &meta.value {
+                Value::Text { bytes } => &bytes[..bytes.len().saturating_sub(1)],
+                _ => continue,
+            },
+            _ => continue,
+        };
+        if !first {
+            json.push(',');
+        }
+        json_escape(bytes, &mut json);
+        first = false;
+    }
+    json.push(']');
+    let stored = store_result(&json);
+    if stored.is_null() {
+        set_error(
+            unsafe { PyExc_ValueError },
+            "module attribute names exceed the bridge result limit",
+        );
+        return -1;
+    }
+    unsafe { *result_json = stored };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_get_attr(
+    object: *mut PyObject,
+    name: *const c_char,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) || object.is_null() || name.is_null() {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "attribute lookup is invalid");
+        }
+        return -1;
+    }
+    clear_error();
+    let attribute = get_attribute_cstr(object, unsafe { cstr_to_str(name) });
+    if attribute.is_null() {
+        return -1;
+    }
+    unsafe { *result = attribute };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_call(
+    callable: *mut PyObject,
+    arguments: *const *mut PyObject,
+    argument_count: i64,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result)
+        || callable.is_null()
+        || !(0..=MAX_BRIDGE_ARGUMENTS).contains(&argument_count)
+        || (argument_count != 0 && arguments.is_null())
+    {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "object call inputs are invalid");
+        }
+        return -1;
+    }
+    let args = PyTuple_New(argument_count as Py_ssize_t);
+    if args.is_null() {
+        return -1;
+    }
+    for index in 0..argument_count {
+        let argument = unsafe { *arguments.add(index as usize) };
+        if argument.is_null() || PyTuple_SetItem(args, index as Py_ssize_t, newref(argument)) != 0 {
+            release(args);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "object call contains an invalid argument",
+            );
+            return -1;
+        }
+    }
+    clear_error();
+    let returned = PyObject_Call(callable, args, ptr::null_mut());
+    release(args);
+    if returned.is_null() {
+        if with_err(|error| error.etype).is_null() {
+            set_error(
+                unsafe { PyExc_RuntimeError },
+                "object call returned NULL without an error",
+            );
+        }
+        return -1;
+    }
+    unsafe { *result = returned };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_from_utf8(
+    value: *const c_char,
+    value_length: i64,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result)
+        || value_length < 0
+        || value_length > isize::MAX as i64
+        || (value_length != 0 && value.is_null())
+    {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "UTF-8 object input is invalid");
+        }
+        return -1;
+    }
+    let object = new_unicode(value, value_length as Py_ssize_t);
+    if object.is_null() {
+        return -1;
+    }
+    unsafe { *result = object };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_from_int64(value: i64, result: *mut *mut PyObject) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) {
+        return -1;
+    }
+    if value < c_long::MIN as i64 || value > c_long::MAX as i64 {
+        set_error(
+            unsafe { PyExc_ValueError },
+            "integer does not fit in C long",
+        );
+        return -1;
+    }
+    let object = PyLong_FromLong(value as c_long);
+    if object.is_null() {
+        return -1;
+    }
+    unsafe { *result = object };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_from_bool(value: c_int, result: *mut *mut PyObject) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) {
+        return -1;
+    }
+    let object = unsafe {
+        if value == 0 {
+            &raw mut _Py_FalseStruct
+        } else {
+            &raw mut _Py_TrueStruct
+        }
+    };
+    unsafe { *result = newref(object) };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_from_none(result: *mut *mut PyObject) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) {
+        return -1;
+    }
+    unsafe { *result = newref(&raw mut _Py_NoneStruct) };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_sequence(
+    kind: c_int,
+    items: *const *mut PyObject,
+    item_count: i64,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result)
+        || !matches!(kind, DP_OBJECT_LIST | DP_OBJECT_TUPLE)
+        || !(0..=MAX_BRIDGE_ARGUMENTS).contains(&item_count)
+        || (item_count != 0 && items.is_null())
+    {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "sequence inputs are invalid");
+        }
+        return -1;
+    }
+    let sequence = if kind == DP_OBJECT_LIST {
+        PyList_New(item_count as Py_ssize_t)
+    } else {
+        PyTuple_New(item_count as Py_ssize_t)
+    };
+    if sequence.is_null() {
+        return -1;
+    }
+    for index in 0..item_count {
+        let item = unsafe { *items.add(index as usize) };
+        let status = if item.is_null() {
+            -1
+        } else if kind == DP_OBJECT_LIST {
+            PyList_SetItem(sequence, index as Py_ssize_t, newref(item))
+        } else {
+            PyTuple_SetItem(sequence, index as Py_ssize_t, newref(item))
+        };
+        if status != 0 {
+            release(sequence);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "sequence contains an invalid item",
+            );
+            return -1;
+        }
+    }
+    unsafe { *result = sequence };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_kind_of(object: *mut PyObject, kind: *mut c_int) -> c_int {
+    require_owner!(-1);
+    if kind.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "object-kind output is invalid");
+        return -1;
+    }
+    let value = generic_kind(object);
+    unsafe { *kind = value };
+    if value == DP_OBJECT_INVALID {
+        set_error(unsafe { PyExc_TypeError }, "object is invalid");
+        -1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_as_int64(object: *mut PyObject, result: *mut i64) -> c_int {
+    require_owner!(-1);
+    if result.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "integer output is invalid");
+        return -1;
+    }
+    clear_error();
+    let value = PyLong_AsLong(object);
+    if value == -1 && !PyErr_Occurred().is_null() {
+        return -1;
+    }
+    unsafe { *result = value as i64 };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_as_bool(object: *mut PyObject, result: *mut c_int) -> c_int {
+    require_owner!(-1);
+    if result.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "boolean output is invalid");
+        return -1;
+    }
+    unsafe {
+        if object == &raw mut _Py_TrueStruct {
+            *result = 1;
+            return 0;
+        }
+        if object == &raw mut _Py_FalseStruct {
+            *result = 0;
+            return 0;
+        }
+    }
+    set_error(unsafe { PyExc_TypeError }, "expected bool");
+    -1
+}
+
+fn copy_object_text(
+    object: *mut PyObject,
+    result: *mut *const c_char,
+    result_length: *mut i64,
+) -> c_int {
+    if result.is_null() || result_length.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "text output is invalid");
+        return -1;
+    }
+    unsafe {
+        *result = ptr::null();
+        *result_length = 0;
+    }
+    let bytes = match find(object) {
+        Some(meta) if matches!(meta.kind, Kind::Unicode | Kind::Bytes) => match &meta.value {
+            Value::Text { bytes } => bytes[..bytes.len().saturating_sub(1)].to_vec(),
+            _ => Vec::new(),
+        },
+        _ => {
+            set_error(unsafe { PyExc_TypeError }, "expected text or bytes");
+            return -1;
+        }
+    };
+    let stored = store_result_bytes(&bytes);
+    if stored.is_null() {
+        set_error(
+            unsafe { PyExc_ValueError },
+            "text exceeds the bridge result limit",
+        );
+        return -1;
+    }
+    unsafe {
+        *result = stored;
+        *result_length = bytes.len() as i64;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_as_utf8(
+    object: *mut PyObject,
+    result: *mut *const c_char,
+    result_length: *mut i64,
+) -> c_int {
+    require_owner!(-1);
+    copy_object_text(object, result, result_length)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_string(
+    object: *mut PyObject,
+    result: *mut *const c_char,
+    result_length: *mut i64,
+) -> c_int {
+    require_owner!(-1);
+    let text = PyObject_Str(object);
+    if text.is_null() {
+        return -1;
+    }
+    let status = copy_object_text(text, result, result_length);
+    release(text);
+    status
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_size(object: *mut PyObject, result: *mut i64) -> c_int {
+    require_owner!(-1);
+    if result.is_null() {
+        set_error(unsafe { PyExc_TypeError }, "size output is invalid");
+        return -1;
+    }
+    clear_error();
+    let size = PyObject_Size(object);
+    if size < 0 {
+        return -1;
+    }
+    unsafe { *result = size as i64 };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_get_item(
+    object: *mut PyObject,
+    key: *mut PyObject,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result) || object.is_null() || key.is_null() {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "item lookup inputs are invalid");
+        }
+        return -1;
+    }
+    clear_error();
+    let item = PyObject_GetItem(object, key);
+    if item.is_null() {
+        return -1;
+    }
+    unsafe { *result = item };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_release(object: *mut PyObject) {
+    require_owner!();
+    release(object);
 }
 
 #[unsafe(no_mangle)]

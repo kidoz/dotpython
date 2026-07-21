@@ -47,6 +47,55 @@ unsafe extern "C" {
         arg: i64,
         result: *mut i64,
     ) -> c_int;
+    pub fn dp_abi3_module_attribute_names(
+        module: *mut PyObject,
+        result_json: *mut *const c_char,
+    ) -> c_int;
+    pub fn dp_abi3_object_get_attr(
+        object: *mut PyObject,
+        name: *const c_char,
+        result: *mut *mut PyObject,
+    ) -> c_int;
+    pub fn dp_abi3_object_call(
+        callable: *mut PyObject,
+        arguments: *const *mut PyObject,
+        argument_count: i64,
+        result: *mut *mut PyObject,
+    ) -> c_int;
+    pub fn dp_abi3_object_from_utf8(
+        value: *const c_char,
+        value_length: i64,
+        result: *mut *mut PyObject,
+    ) -> c_int;
+    pub fn dp_abi3_object_from_int64(value: i64, result: *mut *mut PyObject) -> c_int;
+    pub fn dp_abi3_object_from_bool(value: c_int, result: *mut *mut PyObject) -> c_int;
+    pub fn dp_abi3_object_from_none(result: *mut *mut PyObject) -> c_int;
+    pub fn dp_abi3_object_sequence(
+        kind: c_int,
+        items: *const *mut PyObject,
+        item_count: i64,
+        result: *mut *mut PyObject,
+    ) -> c_int;
+    pub fn dp_abi3_object_kind_of(object: *mut PyObject, kind: *mut c_int) -> c_int;
+    pub fn dp_abi3_object_as_int64(object: *mut PyObject, result: *mut i64) -> c_int;
+    pub fn dp_abi3_object_as_bool(object: *mut PyObject, result: *mut c_int) -> c_int;
+    pub fn dp_abi3_object_as_utf8(
+        object: *mut PyObject,
+        result: *mut *const c_char,
+        result_length: *mut i64,
+    ) -> c_int;
+    pub fn dp_abi3_object_string(
+        object: *mut PyObject,
+        result: *mut *const c_char,
+        result_length: *mut i64,
+    ) -> c_int;
+    pub fn dp_abi3_object_size(object: *mut PyObject, result: *mut i64) -> c_int;
+    pub fn dp_abi3_object_get_item(
+        object: *mut PyObject,
+        key: *mut PyObject,
+        result: *mut *mut PyObject,
+    ) -> c_int;
+    pub fn dp_abi3_object_release(object: *mut PyObject);
     pub fn dp_abi3_module_destroy(module: *mut PyObject);
     pub fn dp_abi3_error_type() -> *const c_char;
     pub fn dp_abi3_error_message() -> *const c_char;
@@ -130,6 +179,9 @@ unsafe extern "C" {
 
 pub const RTLD_NOW: c_int = 0x2;
 pub const RTLD_GLOBAL: c_int = 0x8;
+pub const DP_ABI3_OBJECT_INT: c_int = 3;
+pub const DP_ABI3_OBJECT_LIST: c_int = 6;
+pub const DP_ABI3_OBJECT_CALLABLE: c_int = 10;
 
 pub struct Library {
     handle: *mut c_void,

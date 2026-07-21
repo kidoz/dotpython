@@ -126,7 +126,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     section("Pinned Anyver module satisfies the native ABI contract");
-    check!(unsafe { dp_abi3_bridge_version() } == 2);
+    check!(unsafe { dp_abi3_bridge_version() } == 3);
 
     let lib = Library::open(&args[1]);
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit__anyver")) };
@@ -196,6 +196,21 @@ fn main() -> std::process::ExitCode {
     check!(unsafe { PyErr_Occurred() }.is_null());
     unsafe { _Py_DecRef(comparison) };
     unsafe { _Py_DecRef(compare_args) };
+
+    section("Generic object bridge dispatches Anyver sequence slots");
+    let version = create_version(module, "1.2.3-rc.1");
+    let mut key = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_from_int64(0, &mut key) } == 0);
+    let mut item = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_get_item(version, key, &mut item) } == 0);
+    let mut first_segment = 0;
+    check!(unsafe { dp_abi3_object_as_int64(item, &mut first_segment) } == 0);
+    check!(first_segment == 1);
+    unsafe {
+        dp_abi3_object_release(item);
+        dp_abi3_object_release(key);
+        _Py_DecRef(version);
+    }
 
     stress_heap_type(module);
     stress_failures(module);

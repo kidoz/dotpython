@@ -23,7 +23,7 @@ emit_array() {
     printf '  "providerId": "dotpython-managed-abi3",\n'
     printf '  "abiFamily": "abi3",\n'
     printf '  "minimumAbiVersion": "3.11",\n'
-    printf '  "bridgeAbiVersion": 2,\n'
+    printf '  "bridgeAbiVersion": 3,\n'
     printf '  "moduleName": "dotpython_fixture",\n'
     printf '  "initializationSymbol": "PyInit_dotpython_fixture",\n'
     printf '  "allowedStableAbiSymbols": [\n'

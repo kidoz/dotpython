@@ -7,7 +7,23 @@
 extern "C" {
 #endif
 
-#define DP_ABI3_BRIDGE_VERSION 2
+#define DP_ABI3_BRIDGE_VERSION 3
+
+typedef enum dp_abi3_object_kind {
+    DP_ABI3_OBJECT_INVALID = 0,
+    DP_ABI3_OBJECT_NONE = 1,
+    DP_ABI3_OBJECT_BOOL = 2,
+    DP_ABI3_OBJECT_INT = 3,
+    DP_ABI3_OBJECT_TEXT = 4,
+    DP_ABI3_OBJECT_BYTES = 5,
+    DP_ABI3_OBJECT_LIST = 6,
+    DP_ABI3_OBJECT_TUPLE = 7,
+    DP_ABI3_OBJECT_DICT = 8,
+    DP_ABI3_OBJECT_MODULE = 9,
+    DP_ABI3_OBJECT_CALLABLE = 10,
+    DP_ABI3_OBJECT_TYPE = 11,
+    DP_ABI3_OBJECT_INSTANCE = 12
+} dp_abi3_object_kind;
 
 /*
  * Stateful calls, native callbacks, and object release must stay on the thread that first
@@ -26,6 +42,52 @@ DP_ABI3_EXPORT int dp_abi3_module_call_long(
     int64_t argument,
     int64_t *result
 );
+/*
+ * Generic qualified-object surface. Every PyObject output is a new reference owned by the caller
+ * and must be released with dp_abi3_object_release on the owner thread. Input object arrays contain
+ * borrowed references. Text output uses temporary owner-thread storage and an explicit byte count.
+ */
+DP_ABI3_EXPORT int
+dp_abi3_module_attribute_names(PyObject *module, const char **result_json);
+DP_ABI3_EXPORT int
+dp_abi3_object_get_attr(PyObject *object, const char *name, PyObject **result);
+DP_ABI3_EXPORT int dp_abi3_object_call(
+    PyObject *callable,
+    PyObject *const *arguments,
+    int64_t argument_count,
+    PyObject **result
+);
+DP_ABI3_EXPORT int dp_abi3_object_from_utf8(
+    const char *value,
+    int64_t value_length,
+    PyObject **result
+);
+DP_ABI3_EXPORT int dp_abi3_object_from_int64(int64_t value, PyObject **result);
+DP_ABI3_EXPORT int dp_abi3_object_from_bool(int value, PyObject **result);
+DP_ABI3_EXPORT int dp_abi3_object_from_none(PyObject **result);
+DP_ABI3_EXPORT int dp_abi3_object_sequence(
+    int kind,
+    PyObject *const *items,
+    int64_t item_count,
+    PyObject **result
+);
+DP_ABI3_EXPORT int dp_abi3_object_kind_of(PyObject *object, int *kind);
+DP_ABI3_EXPORT int dp_abi3_object_as_int64(PyObject *object, int64_t *result);
+DP_ABI3_EXPORT int dp_abi3_object_as_bool(PyObject *object, int *result);
+DP_ABI3_EXPORT int dp_abi3_object_as_utf8(
+    PyObject *object,
+    const char **result,
+    int64_t *result_length
+);
+DP_ABI3_EXPORT int dp_abi3_object_string(
+    PyObject *object,
+    const char **result,
+    int64_t *result_length
+);
+DP_ABI3_EXPORT int dp_abi3_object_size(PyObject *object, int64_t *result);
+DP_ABI3_EXPORT int
+dp_abi3_object_get_item(PyObject *object, PyObject *key, PyObject **result);
+DP_ABI3_EXPORT void dp_abi3_object_release(PyObject *object);
 /* Anyver scalar outputs are copied values. result_json uses the temporary storage described above.
  */
 DP_ABI3_EXPORT int dp_abi3_anyver_compare(

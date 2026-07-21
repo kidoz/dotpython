@@ -35,7 +35,7 @@ fn lifecycle(success: &str, failure: &str) {
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit_dotpython_fixture")) };
     let cleanup: CleanupFn = unsafe { transmute(lib.symbol("dotpython_fixture_cleanup_count")) };
 
-    check!(unsafe { dp_abi3_bridge_version() } == 2);
+    check!(unsafe { dp_abi3_bridge_version() } == 3);
 
     let mut module: *mut PyObject = ptr::null_mut();
     let mut multi_phase: c_int = 0;
@@ -61,6 +61,58 @@ fn lifecycle(success: &str, failure: &str) {
         err_msg()
     );
     check!(value == 42, "got {value}");
+
+    section("Generic object bridge owns values and invokes module exports");
+    let mut names = ptr::null();
+    check!(unsafe { dp_abi3_module_attribute_names(module, &mut names) } == 0);
+    check!(unsafe { cstr(names) }.contains("\"increment\""));
+
+    let mut increment = ptr::null_mut();
+    check!(
+        unsafe { dp_abi3_object_get_attr(module, c("increment").as_ptr(), &mut increment) } == 0
+    );
+    let mut kind = 0;
+    check!(unsafe { dp_abi3_object_kind_of(increment, &mut kind) } == 0);
+    check!(kind == DP_ABI3_OBJECT_CALLABLE);
+
+    let mut argument = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_from_int64(41, &mut argument) } == 0);
+    let arguments = [argument];
+    let mut returned = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_call(increment, arguments.as_ptr(), 1, &mut returned) } == 0);
+    check!(unsafe { dp_abi3_object_kind_of(returned, &mut kind) } == 0);
+    check!(kind == DP_ABI3_OBJECT_INT);
+    check!(unsafe { dp_abi3_object_as_int64(returned, &mut value) } == 0);
+    check!(value == 42);
+    let mut text = ptr::null();
+    let mut text_length = 0;
+    check!(unsafe { dp_abi3_object_string(returned, &mut text, &mut text_length) } == 0);
+    check!(text_length == 2);
+    check!(unsafe { cstr(text) } == "42");
+
+    let mut first = ptr::null_mut();
+    let mut second = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_from_utf8(c("alpha").as_ptr(), 5, &mut first) } == 0);
+    check!(unsafe { dp_abi3_object_from_utf8(c("beta").as_ptr(), 4, &mut second) } == 0);
+    let items = [first, second];
+    let mut list = ptr::null_mut();
+    check!(
+        unsafe { dp_abi3_object_sequence(DP_ABI3_OBJECT_LIST, items.as_ptr(), 2, &mut list) } == 0
+    );
+    check!(unsafe { dp_abi3_object_size(list, &mut value) } == 0);
+    check!(value == 2);
+    let mut index = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_from_int64(1, &mut index) } == 0);
+    let mut item = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_get_item(list, index, &mut item) } == 0);
+    check!(unsafe { dp_abi3_object_as_utf8(item, &mut text, &mut text_length) } == 0);
+    check!(text_length == 4);
+    check!(unsafe { cstr(text) } == "beta");
+    for object in [
+        item, index, list, second, first, returned, argument, increment,
+    ] {
+        unsafe { dp_abi3_object_release(object) };
+    }
 
     check!(unsafe { dp_abi3_module_call_long(module, c("fail").as_ptr(), 0, 0, &mut value) } == -1);
     check!(err_type() == "ValueError", "got {}", err_type());
@@ -278,14 +330,26 @@ fn owner_thread_confinement() {
         let count = unsafe { dp_abi3_active_object_count() };
         let initialized = unsafe { Py_IsInitialized() };
         let type_flags = unsafe { PyType_GetFlags(&raw mut PyType_Type) };
+        let mut object = ptr::null_mut();
+        let generic_status = unsafe { dp_abi3_object_from_none(&mut object) };
         let reported = unsafe { cstr(dp_abi3_error_message()) }
             == "native ABI access must execute on its owner thread";
-        (count, initialized, type_flags, reported)
+        (
+            count,
+            initialized,
+            type_flags,
+            generic_status,
+            object.is_null(),
+            reported,
+        )
     });
-    let (count, initialized, type_flags, reported) = handle.join().unwrap();
+    let (count, initialized, type_flags, generic_status, object_is_null, reported) =
+        handle.join().unwrap();
     check!(count == -1);
     check!(initialized == 0);
     check!(type_flags == 0);
+    check!(generic_status == -1);
+    check!(object_is_null);
     check!(reported);
     check!(unsafe { dp_abi3_active_object_count() } == baseline);
 }

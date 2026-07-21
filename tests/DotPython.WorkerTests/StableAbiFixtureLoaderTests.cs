@@ -31,6 +31,32 @@ public sealed class StableAbiFixtureLoaderTests
     }
 
     [Fact]
+    public void Load_UsesGenericObjectBridgeWithoutPackageSpecificCalls()
+    {
+        SkipUnsupportedPlatform();
+        using var module = StableAbiFixtureLoader.Load(
+            CreateConfiguration(FixturePath("dotpython_fixture.abi3.so"))
+        );
+
+        Assert.Contains("increment", module.GetAttributeNames());
+        using var increment = module.GetAttribute("increment");
+        using var argument = module.CreateInt64(41);
+        using var result = increment.Call([argument]);
+        Assert.Equal(StableAbiObjectKind.Callable, increment.Kind);
+        Assert.Equal(StableAbiObjectKind.Integer, result.Kind);
+        Assert.Equal(42, result.AsInt64());
+        Assert.Equal("42", result.ToDisplayString());
+
+        using var first = module.CreateText("alpha");
+        using var second = module.CreateText("beta");
+        using var list = module.CreateSequence(StableAbiObjectKind.List, [first, second]);
+        using var index = module.CreateInt64(1);
+        using var item = list.GetItem(index);
+        Assert.Equal(2, list.GetSize());
+        Assert.Equal("beta", item.AsText());
+    }
+
+    [Fact]
     public void Load_ExecutesPinnedAnyverModuleWithoutChangingTheWheelBinary()
     {
         SkipAnyverWhenUnavailable();
@@ -55,6 +81,34 @@ public sealed class StableAbiFixtureLoaderTests
         Assert.Equal("1.2.3", version.Raw);
         Assert.Equal(1, version.Major);
         Assert.False(version.IsPrerelease);
+    }
+
+    [Fact]
+    public void Load_InvokesPinnedAnyverThroughGenericObjectBridge()
+    {
+        SkipAnyverWhenUnavailable();
+        using var module = StableAbiFixtureLoader.Load(CreateAnyverConfiguration());
+
+        var names = module.GetAttributeNames();
+        Assert.Contains("Version", names);
+        Assert.Contains("compare", names);
+        Assert.Contains("sort_versions", names);
+
+        using var compare = module.GetAttribute("compare");
+        using var left = module.CreateText("1.0");
+        using var right = module.CreateText("2.0");
+        using var generic = module.CreateText("generic");
+        using var comparison = compare.Call([left, right, generic]);
+        Assert.Equal(-1, comparison.AsInt64());
+
+        using var versionType = module.GetAttribute("Version");
+        using var auto = module.CreateText("auto");
+        using var version = versionType.Call([right, auto]);
+        using var raw = version.GetAttribute("raw");
+        Assert.Equal(StableAbiObjectKind.Type, versionType.Kind);
+        Assert.Equal(StableAbiObjectKind.Instance, version.Kind);
+        Assert.Equal("2.0", raw.AsText());
+        Assert.Equal("2.0", version.ToDisplayString());
     }
 
     [Fact]

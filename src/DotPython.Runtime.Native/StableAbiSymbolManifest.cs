@@ -20,13 +20,17 @@ internal sealed record StableAbiSymbolManifest(
     string? ArtifactSha256,
     string? NativeEntry,
     string? NativeEntrySha256,
+    string? PackageInitializer,
+    string? PackageInitializerSha256,
+    string? PackageMetadata,
+    string? PackageMetadataSha256,
     string? SourceRevision
 )
 {
     internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v1";
     internal const string AnyverManifestVersion = "dotpython-abi3-anyver-1.1.0-v1";
     internal const string ExpectedProviderId = "dotpython-managed-abi3";
-    internal const int ExpectedBridgeAbiVersion = 2;
+    internal const int ExpectedBridgeAbiVersion = 3;
 
     internal bool IsAnyver =>
         string.Equals(ManifestVersion, AnyverManifestVersion, StringComparison.Ordinal);
@@ -155,6 +159,22 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_module_destroy",
         "dp_abi3_module_get_int",
         "dp_abi3_module_initialize",
+        "dp_abi3_module_attribute_names",
+        "dp_abi3_object_as_bool",
+        "dp_abi3_object_as_int64",
+        "dp_abi3_object_as_utf8",
+        "dp_abi3_object_call",
+        "dp_abi3_object_from_bool",
+        "dp_abi3_object_from_int64",
+        "dp_abi3_object_from_none",
+        "dp_abi3_object_from_utf8",
+        "dp_abi3_object_get_attr",
+        "dp_abi3_object_get_item",
+        "dp_abi3_object_kind_of",
+        "dp_abi3_object_release",
+        "dp_abi3_object_sequence",
+        "dp_abi3_object_size",
+        "dp_abi3_object_string",
     ];
 
     private static readonly string[] FixtureMethods = ["fail", "increment"];
@@ -261,6 +281,10 @@ internal sealed record StableAbiSymbolManifest(
             || ArtifactSha256 is not null
             || NativeEntry is not null
             || NativeEntrySha256 is not null
+            || PackageInitializer is not null
+            || PackageInitializerSha256 is not null
+            || PackageMetadata is not null
+            || PackageMetadataSha256 is not null
             || SourceRevision is not null
         )
         {
@@ -291,6 +315,22 @@ internal sealed record StableAbiSymbolManifest(
             || !string.Equals(
                 NativeEntrySha256,
                 "d635b4b37c6db5688d49ecb1b924fc6c3bfe7f51b630d5ca153ab6ab474b2827",
+                StringComparison.Ordinal
+            )
+            || !string.Equals(PackageInitializer, "anyver/__init__.py", StringComparison.Ordinal)
+            || !string.Equals(
+                PackageInitializerSha256,
+                "ba47d9b12385aae3a3c80639257d78d02bd358986265416843886d10da8e0b85",
+                StringComparison.Ordinal
+            )
+            || !string.Equals(
+                PackageMetadata,
+                "anyver-1.1.0.dist-info/METADATA",
+                StringComparison.Ordinal
+            )
+            || !string.Equals(
+                PackageMetadataSha256,
+                "694cf4e43015442df187f18527c51ecb9085790bdeae9987374e2016b3f8aa05",
                 StringComparison.Ordinal
             )
             || !string.Equals(
