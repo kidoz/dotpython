@@ -20,7 +20,7 @@ public static class PythonSymbolBinder
             [],
             diagnostics
         );
-        ResolveClosureVariables(moduleScope, []);
+        ResolveClosureVariables(moduleScope, [], diagnostics);
         return new PythonBindingResult(moduleScope, diagnostics);
     }
 
@@ -34,11 +34,41 @@ public static class PythonSymbolBinder
         List<Diagnostic> diagnostics
     )
     {
+        var declaredGlobalNames = new Dictionary<string, TextSpan>(StringComparer.Ordinal);
+        var declaredNonlocalNames = new Dictionary<string, TextSpan>(StringComparer.Ordinal);
+        CollectScopeDeclarations(
+            kind,
+            statements,
+            declaredGlobalNames,
+            declaredNonlocalNames,
+            diagnostics
+        );
+
         var parameterNames = new List<string>();
         var localNames = new List<string>();
         var localNameSet = new HashSet<string>(StringComparer.Ordinal);
         foreach (var parameter in parameters)
         {
+            if (declaredGlobalNames.TryGetValue(parameter.Name, out var globalSpan))
+            {
+                Report(
+                    diagnostics,
+                    "DPY3108",
+                    $"The name '{parameter.Name}' is a parameter and cannot be declared global.",
+                    globalSpan
+                );
+            }
+
+            if (declaredNonlocalNames.TryGetValue(parameter.Name, out var nonlocalSpan))
+            {
+                Report(
+                    diagnostics,
+                    "DPY3108",
+                    $"The name '{parameter.Name}' is a parameter and cannot be declared nonlocal.",
+                    nonlocalSpan
+                );
+            }
+
             if (!localNameSet.Add(parameter.Name))
             {
                 Report(
@@ -54,7 +84,9 @@ public static class PythonSymbolBinder
             localNames.Add(parameter.Name);
         }
 
-        CollectBoundNames(statements, localNames, localNameSet);
+        var excludedNames = new HashSet<string>(declaredGlobalNames.Keys, StringComparer.Ordinal);
+        excludedNames.UnionWith(declaredNonlocalNames.Keys);
+        CollectBoundNames(statements, localNames, localNameSet, excludedNames);
 
         var references = new List<NameReference>();
         CollectReferences(statements, references, diagnostics, kind);
@@ -75,7 +107,9 @@ public static class PythonSymbolBinder
             referencedNames,
             cellVariableNames,
             freeVariableNames,
-            children
+            children,
+            declaredGlobalNames,
+            declaredNonlocalNames
         );
         var childAncestors = ancestors.Append(scope).ToArray();
         foreach (var function in EnumerateFunctions(statements))
@@ -96,16 +130,186 @@ public static class PythonSymbolBinder
         return scope;
     }
 
+    private static void CollectScopeDeclarations(
+        PythonScopeKind kind,
+        IReadOnlyList<PythonStatement> statements,
+        Dictionary<string, TextSpan> declaredGlobalNames,
+        Dictionary<string, TextSpan> declaredNonlocalNames,
+        List<Diagnostic> diagnostics
+    )
+    {
+        foreach (var statement in statements)
+        {
+            switch (statement)
+            {
+                case PythonGlobalStatement globalStatement:
+                    foreach (var name in globalStatement.Names)
+                    {
+                        if (declaredNonlocalNames.ContainsKey(name.Name))
+                        {
+                            Report(
+                                diagnostics,
+                                "DPY3109",
+                                $"The name '{name.Name}' is declared nonlocal and global.",
+                                name.Span
+                            );
+                            continue;
+                        }
+
+                        declaredGlobalNames.TryAdd(name.Name, name.Span);
+                    }
+
+                    break;
+                case PythonNonlocalStatement nonlocalStatement:
+                    if (kind != PythonScopeKind.Function)
+                    {
+                        Report(
+                            diagnostics,
+                            "DPY3107",
+                            "A nonlocal declaration is not allowed at module level.",
+                            nonlocalStatement.Span
+                        );
+                        break;
+                    }
+
+                    foreach (var name in nonlocalStatement.Names)
+                    {
+                        if (declaredGlobalNames.ContainsKey(name.Name))
+                        {
+                            Report(
+                                diagnostics,
+                                "DPY3109",
+                                $"The name '{name.Name}' is declared nonlocal and global.",
+                                name.Span
+                            );
+                            continue;
+                        }
+
+                        declaredNonlocalNames.TryAdd(name.Name, name.Span);
+                    }
+
+                    break;
+                case PythonIfStatement conditional:
+                    foreach (var clause in conditional.Clauses)
+                    {
+                        CollectScopeDeclarations(
+                            kind,
+                            clause.Body,
+                            declaredGlobalNames,
+                            declaredNonlocalNames,
+                            diagnostics
+                        );
+                    }
+
+                    CollectScopeDeclarations(
+                        kind,
+                        conditional.ElseBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    break;
+                case PythonWhileStatement loop:
+                    CollectScopeDeclarations(
+                        kind,
+                        loop.Body,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    CollectScopeDeclarations(
+                        kind,
+                        loop.ElseBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    break;
+                case PythonForStatement loop:
+                    CollectScopeDeclarations(
+                        kind,
+                        loop.Body,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    CollectScopeDeclarations(
+                        kind,
+                        loop.ElseBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    break;
+                case PythonTryStatement tryStatement:
+                    CollectScopeDeclarations(
+                        kind,
+                        tryStatement.Body,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    foreach (var handler in tryStatement.Handlers)
+                    {
+                        CollectScopeDeclarations(
+                            kind,
+                            handler.Body,
+                            declaredGlobalNames,
+                            declaredNonlocalNames,
+                            diagnostics
+                        );
+                    }
+
+                    CollectScopeDeclarations(
+                        kind,
+                        tryStatement.ElseBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    CollectScopeDeclarations(
+                        kind,
+                        tryStatement.FinallyBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    break;
+            }
+        }
+    }
+
     private static void ResolveClosureVariables(
         PythonBoundScope scope,
-        IReadOnlyList<PythonBoundScope> enclosingFunctions
+        IReadOnlyList<PythonBoundScope> enclosingFunctions,
+        List<Diagnostic> diagnostics
     )
     {
         if (scope.Kind == PythonScopeKind.Function)
         {
+            foreach (var (name, span) in scope.DeclaredNonlocalNames)
+            {
+                if (FindClosureOwner(enclosingFunctions, name) is null)
+                {
+                    Report(
+                        diagnostics,
+                        "DPY3110",
+                        $"No binding for nonlocal '{name}' was found.",
+                        span
+                    );
+                    continue;
+                }
+
+                scope.AddFreeVariable(name);
+            }
+
             foreach (var name in scope.ReferencedNames)
             {
-                if (!scope.IsLocal(name) && FindClosureOwner(enclosingFunctions, name) is not null)
+                if (
+                    !scope.IsLocal(name)
+                    && !scope.IsDeclaredGlobal(name)
+                    && FindClosureOwner(enclosingFunctions, name) is not null
+                )
                 {
                     scope.AddFreeVariable(name);
                 }
@@ -118,7 +322,7 @@ public static class PythonSymbolBinder
                 : enclosingFunctions;
         foreach (var child in scope.Children)
         {
-            ResolveClosureVariables(child, childEnclosingFunctions);
+            ResolveClosureVariables(child, childEnclosingFunctions, diagnostics);
         }
 
         if (scope.Kind != PythonScopeKind.Function)
@@ -163,7 +367,8 @@ public static class PythonSymbolBinder
     private static void CollectBoundNames(
         IReadOnlyList<PythonStatement> statements,
         List<string> localNames,
-        HashSet<string> localNameSet
+        HashSet<string> localNameSet,
+        HashSet<string> excludedNames
     )
     {
         foreach (var statement in statements)
@@ -173,12 +378,12 @@ public static class PythonSymbolBinder
                 case PythonAssignmentStatement assignment:
                     if (assignment.Target is PythonNameExpression assignmentTarget)
                     {
-                        AddLocal(assignmentTarget.Name, localNames, localNameSet);
+                        AddLocal(assignmentTarget.Name, localNames, localNameSet, excludedNames);
                     }
 
                     break;
                 case PythonFunctionDefinitionStatement function:
-                    AddLocal(function.Name.Name, localNames, localNameSet);
+                    AddLocal(function.Name.Name, localNames, localNameSet, excludedNames);
                     break;
                 case PythonImportStatement importStatement:
                     foreach (var import in importStatement.Imports)
@@ -186,7 +391,8 @@ public static class PythonSymbolBinder
                         AddLocal(
                             import.Alias ?? GetTopLevelModuleName(import.Name),
                             localNames,
-                            localNameSet
+                            localNameSet,
+                            excludedNames
                         );
                     }
 
@@ -194,41 +400,61 @@ public static class PythonSymbolBinder
                 case PythonFromImportStatement fromImportStatement:
                     foreach (var import in fromImportStatement.Imports)
                     {
-                        AddLocal(import.Alias ?? import.Name, localNames, localNameSet);
+                        AddLocal(
+                            import.Alias ?? import.Name,
+                            localNames,
+                            localNameSet,
+                            excludedNames
+                        );
                     }
 
                     break;
                 case PythonIfStatement conditional:
                     foreach (var clause in conditional.Clauses)
                     {
-                        CollectBoundNames(clause.Body, localNames, localNameSet);
+                        CollectBoundNames(clause.Body, localNames, localNameSet, excludedNames);
                     }
 
-                    CollectBoundNames(conditional.ElseBody, localNames, localNameSet);
+                    CollectBoundNames(
+                        conditional.ElseBody,
+                        localNames,
+                        localNameSet,
+                        excludedNames
+                    );
                     break;
                 case PythonWhileStatement loop:
-                    CollectBoundNames(loop.Body, localNames, localNameSet);
-                    CollectBoundNames(loop.ElseBody, localNames, localNameSet);
+                    CollectBoundNames(loop.Body, localNames, localNameSet, excludedNames);
+                    CollectBoundNames(loop.ElseBody, localNames, localNameSet, excludedNames);
                     break;
                 case PythonForStatement loop:
-                    AddLocal(loop.Target.Name, localNames, localNameSet);
-                    CollectBoundNames(loop.Body, localNames, localNameSet);
-                    CollectBoundNames(loop.ElseBody, localNames, localNameSet);
+                    AddLocal(loop.Target.Name, localNames, localNameSet, excludedNames);
+                    CollectBoundNames(loop.Body, localNames, localNameSet, excludedNames);
+                    CollectBoundNames(loop.ElseBody, localNames, localNameSet, excludedNames);
                     break;
                 case PythonTryStatement tryStatement:
-                    CollectBoundNames(tryStatement.Body, localNames, localNameSet);
+                    CollectBoundNames(tryStatement.Body, localNames, localNameSet, excludedNames);
                     foreach (var handler in tryStatement.Handlers)
                     {
                         if (handler.Target is not null)
                         {
-                            AddLocal(handler.Target.Name, localNames, localNameSet);
+                            AddLocal(handler.Target.Name, localNames, localNameSet, excludedNames);
                         }
 
-                        CollectBoundNames(handler.Body, localNames, localNameSet);
+                        CollectBoundNames(handler.Body, localNames, localNameSet, excludedNames);
                     }
 
-                    CollectBoundNames(tryStatement.ElseBody, localNames, localNameSet);
-                    CollectBoundNames(tryStatement.FinallyBody, localNames, localNameSet);
+                    CollectBoundNames(
+                        tryStatement.ElseBody,
+                        localNames,
+                        localNameSet,
+                        excludedNames
+                    );
+                    CollectBoundNames(
+                        tryStatement.FinallyBody,
+                        localNames,
+                        localNameSet,
+                        excludedNames
+                    );
                     break;
             }
         }
@@ -326,7 +552,15 @@ public static class PythonSymbolBinder
                     CollectReferences(tryStatement.ElseBody, references, diagnostics, scopeKind);
                     CollectReferences(tryStatement.FinallyBody, references, diagnostics, scopeKind);
                     break;
-                case PythonFunctionDefinitionStatement:
+                case PythonFunctionDefinitionStatement function:
+                    foreach (var parameter in function.Parameters)
+                    {
+                        if (parameter.Default is not null)
+                        {
+                            CollectReferences(parameter.Default, references);
+                        }
+                    }
+
                     break;
             }
         }
@@ -362,6 +596,11 @@ public static class PythonSymbolBinder
                 foreach (var argument in call.Arguments)
                 {
                     CollectReferences(argument, references);
+                }
+
+                foreach (var keywordArgument in call.KeywordArguments)
+                {
+                    CollectReferences(keywordArgument.Value, references);
                 }
 
                 break;
@@ -479,9 +718,14 @@ public static class PythonSymbolBinder
         }
     }
 
-    private static void AddLocal(string name, List<string> localNames, HashSet<string> localNameSet)
+    private static void AddLocal(
+        string name,
+        List<string> localNames,
+        HashSet<string> localNameSet,
+        HashSet<string> excludedNames
+    )
     {
-        if (localNameSet.Add(name))
+        if (!excludedNames.Contains(name) && localNameSet.Add(name))
         {
             localNames.Add(name);
         }

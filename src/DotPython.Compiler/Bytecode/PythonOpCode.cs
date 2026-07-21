@@ -59,4 +59,6 @@ public enum PythonOpCode
     MatchException = 54,
     ClearException = 55,
     Raise = 56,
+    MakeFunctionWithDefaults = 57,
+    CallKeyword = 58,
 }

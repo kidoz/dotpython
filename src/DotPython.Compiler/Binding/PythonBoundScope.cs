@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using DotPython.Language.Ast;
+using DotPython.Language.Text;
 
 namespace DotPython.Compiler.Binding;
 
@@ -23,12 +24,16 @@ public sealed class PythonBoundScope
         IList<string> referencedNames,
         IList<string> cellVariableNames,
         IList<string> freeVariableNames,
-        IList<PythonBoundScope> children
+        IList<PythonBoundScope> children,
+        IReadOnlyDictionary<string, TextSpan> declaredGlobalNames,
+        IReadOnlyDictionary<string, TextSpan> declaredNonlocalNames
     )
     {
         Kind = kind;
         Name = name;
         Definition = definition;
+        DeclaredGlobalNames = declaredGlobalNames;
+        DeclaredNonlocalNames = declaredNonlocalNames;
         Parameters = new ReadOnlyCollection<string>(parameters);
         LocalNames = new ReadOnlyCollection<string>(localNames);
         ReferencedNames = new ReadOnlyCollection<string>(referencedNames);
@@ -68,6 +73,12 @@ public sealed class PythonBoundScope
     public IReadOnlyList<PythonBoundScope> Children { get; }
 
     internal PythonFunctionDefinitionStatement? Definition { get; }
+
+    internal IReadOnlyDictionary<string, TextSpan> DeclaredGlobalNames { get; }
+
+    internal IReadOnlyDictionary<string, TextSpan> DeclaredNonlocalNames { get; }
+
+    internal bool IsDeclaredGlobal(string name) => DeclaredGlobalNames.ContainsKey(name);
 
     internal bool IsLocal(string name) => _localNameSet.Contains(name);
 

@@ -380,7 +380,8 @@ internal sealed record PythonFunctionValue(
     string Name,
     PreparedPythonCode Code,
     PythonGlobalNamespace Globals,
-    PythonCell[] Closure
+    PythonCell[] Closure,
+    PythonValue[] Defaults
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<function {Name}>";

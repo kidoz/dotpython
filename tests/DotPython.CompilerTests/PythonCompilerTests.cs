@@ -637,6 +637,105 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsDefaultTuplesAndKeywordCallBytecode()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("def act(first, second=2, third=3): return first\nact(1, third=9)\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var buildTupleIndex = result
+            .Code.Instructions.ToList()
+            .FindIndex(instruction =>
+                instruction is { OpCode: PythonOpCode.BuildTuple, Operand: 2 }
+            );
+        Assert.True(buildTupleIndex >= 0);
+        Assert.Equal(
+            PythonOpCode.MakeFunctionWithDefaults,
+            result.Code.Instructions[buildTupleIndex + 1].OpCode
+        );
+        var keywordCall = Assert.Single(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.CallKeyword
+        );
+        Assert.Equal(2, keywordCall.Operand);
+        Assert.Contains(
+            result.Code.Constants,
+            constant =>
+                constant.Type == PythonConstantType.TextValue && Equals(constant.Value, "third")
+        );
+        Assert.DoesNotContain(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.Call
+        );
+    }
+
+    [Fact]
+    public void Compile_BindsDeclaredGlobalAndNonlocalStores()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "count = 0\n"
+                    + "def bump():\n"
+                    + "    global count\n"
+                    + "    count = count + 1\n"
+                    + "def outer():\n"
+                    + "    value = 0\n"
+                    + "    def inner():\n"
+                    + "        nonlocal value\n"
+                    + "        value = value + 1\n"
+                    + "    inner()\n"
+                    + "    return value\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var functions = result
+            .Code.Constants.Where(constant => constant.Type == PythonConstantType.CodeObject)
+            .Select(constant => Assert.IsType<PythonCodeObject>(constant.Value))
+            .ToList();
+        var bump = Assert.Single(functions, function => function.Name == "bump");
+        Assert.Empty(bump.VariableNames);
+        Assert.Contains(
+            bump.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreName
+        );
+        var outer = Assert.Single(functions, function => function.Name == "outer");
+        Assert.Equal(["value"], outer.CellVariableNames);
+        var inner = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(outer.Constants, constant => constant.Type == PythonConstantType.CodeObject)
+                .Value
+        );
+        Assert.Equal(["value"], inner.FreeVariableNames);
+        Assert.Contains(
+            inner.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreCell
+        );
+    }
+
+    [Theory]
+    [InlineData("nonlocal value\n", "DPY3107")]
+    [InlineData("def act(value):\n    global value\n", "DPY3108")]
+    [InlineData("def act(value):\n    nonlocal value\n", "DPY3108")]
+    [InlineData("def act():\n    global value\n    nonlocal value\n", "DPY3109")]
+    [InlineData("def act():\n    nonlocal value\n    value = 1\n", "DPY3110")]
+    public void Compile_ReportsScopeDeclarationDiagnostics(string code, string expectedCode)
+    {
+        var parseResult = PythonParser.Parse(new SourceText(code));
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == expectedCode);
+    }
+
+    [Fact]
     public void Compile_AllowsLoopControlForLoopsInsideAFinallyClause()
     {
         var parseResult = PythonParser.Parse(

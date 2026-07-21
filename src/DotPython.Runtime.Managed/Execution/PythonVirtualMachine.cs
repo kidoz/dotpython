@@ -14,6 +14,7 @@ internal sealed class PythonVirtualMachine
     private static HashSet<PythonValuePair>? _activeEqualityPairs;
 
     private static readonly PythonCell[] NoCells = [];
+    private static readonly PythonValue[] NoDefaults = [];
     private static readonly IReadOnlyDictionary<string, string?> ExceptionBaseNames =
         new Dictionary<string, string?>(StringComparer.Ordinal)
         {
@@ -345,7 +346,13 @@ internal sealed class PythonVirtualMachine
 
                 break;
             case PythonOpCode.MakeFunction:
-                MakeFunction(instruction);
+                MakeFunction(instruction, withDefaults: false);
+                break;
+            case PythonOpCode.MakeFunctionWithDefaults:
+                MakeFunction(instruction, withDefaults: true);
+                break;
+            case PythonOpCode.CallKeyword:
+                ApplyKeywordCall(instruction);
                 break;
             case PythonOpCode.Call:
                 ApplyCall(frame.Code, instructionIndex, instruction);
@@ -1346,6 +1353,163 @@ internal sealed class PythonVirtualMachine
         PushFunctionFrameUnchecked(function, instruction.Operand, instruction.Span);
     }
 
+    private void ApplyKeywordCall(PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonTupleValue names)
+        {
+            throw Fault("DPY4007", "The keyword-argument name tuple is invalid.", instruction.Span);
+        }
+
+        var keywordCount = names.Elements.Length;
+        if (keywordCount == 0 || keywordCount > instruction.Operand)
+        {
+            throw Fault("DPY4007", "The keyword-argument count is invalid.", instruction.Span);
+        }
+
+        var keywordValues = PopArguments(keywordCount, instruction.Span);
+        var positional = PopArguments(instruction.Operand - keywordCount, instruction.Span);
+        var target = Pop(instruction.Span);
+        if (target is not PythonFunctionValue function)
+        {
+            throw Fault(
+                "DPY4009",
+                target
+                    is PythonBuiltinFunctionValue
+                        or PythonExceptionTypeValue
+                        or PythonProtocolFunctionValue
+                        or PythonBoundMethodValue
+                        or PythonManagedTypeValue
+                        or PythonExternalObjectValue
+                    ? "Keyword arguments are not supported for this callable in this runtime slice."
+                    : "The selected value is not callable.",
+                instruction.Span
+            );
+        }
+
+        var arguments = BindKeywordArguments(
+            function,
+            positional,
+            names,
+            keywordValues,
+            instruction.Span
+        );
+        PushFunctionFrameWithArguments(function, arguments, instruction.Span);
+    }
+
+    private static PythonValue[] BindKeywordArguments(
+        PythonFunctionValue function,
+        PythonValue[] positional,
+        PythonTupleValue names,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        var definition = function.Code.Definition;
+        var parameterCount = definition.ArgumentCount;
+        if (positional.Length > parameterCount)
+        {
+            ValidateArgumentCount(function, positional.Length, span);
+        }
+
+        var arguments = new PythonValue[parameterCount];
+        var assigned = new bool[parameterCount];
+        for (var index = 0; index < positional.Length; index++)
+        {
+            arguments[index] = positional[index];
+            assigned[index] = true;
+        }
+
+        for (var index = 0; index < keywordValues.Length; index++)
+        {
+            if (names.Elements[index] is not PythonTextValue keywordName)
+            {
+                throw Fault("DPY4007", "The keyword-argument name tuple is invalid.", span);
+            }
+
+            var parameterIndex = FindParameterIndex(definition, keywordName.Value);
+            if (parameterIndex < 0)
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"Function '{function.Name}' received an unexpected keyword argument "
+                        + $"'{keywordName.Value}'.",
+                    span
+                );
+            }
+
+            if (assigned[parameterIndex])
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"Function '{function.Name}' received multiple values for argument "
+                        + $"'{keywordName.Value}'.",
+                    span
+                );
+            }
+
+            arguments[parameterIndex] = keywordValues[index];
+            assigned[parameterIndex] = true;
+        }
+
+        var firstDefaultIndex = parameterCount - function.Defaults.Length;
+        for (var index = 0; index < parameterCount; index++)
+        {
+            if (assigned[index])
+            {
+                continue;
+            }
+
+            if (index < firstDefaultIndex)
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"Function '{function.Name}' is missing a value for argument "
+                        + $"'{definition.VariableNames[index]}'.",
+                    span
+                );
+            }
+
+            arguments[index] = function.Defaults[index - firstDefaultIndex];
+        }
+
+        return arguments;
+    }
+
+    private static int FindParameterIndex(PythonCodeObject definition, string name)
+    {
+        for (var index = 0; index < definition.ArgumentCount; index++)
+        {
+            if (string.Equals(definition.VariableNames[index], name, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private void PushFunctionFrameWithArguments(
+        PythonFunctionValue function,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
+        var cells = CreateCells(function.Code, function.Closure, span);
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            StoreArgument(function.Code, cells, localsBase, index, arguments[index]);
+        }
+
+        PushFrame(
+            function.Code,
+            function.Globals,
+            localsBase,
+            function.Code.Definition.VariableNames.Count,
+            cells
+        );
+    }
+
     private void ApplyLocalCall(
         PreparedPythonCode code,
         int instructionIndex,
@@ -1481,6 +1645,7 @@ internal sealed class PythonVirtualMachine
             StoreArgument(function.Code, cells, localsBase, index, Pop(span));
         }
 
+        StoreMissingDefaultArguments(function, cells, localsBase, argumentCount);
         if (popTarget)
         {
             Pop(span);
@@ -1511,6 +1676,7 @@ internal sealed class PythonVirtualMachine
             StoreArgument(function.Code, cells, localsBase, index, arguments[index]);
         }
 
+        StoreMissingDefaultArguments(function, cells, localsBase, arguments.Count);
         PushFrame(
             function.Code,
             function.Globals,
@@ -1518,6 +1684,27 @@ internal sealed class PythonVirtualMachine
             function.Code.Definition.VariableNames.Count,
             cells
         );
+    }
+
+    private void StoreMissingDefaultArguments(
+        PythonFunctionValue function,
+        PythonCell[] cells,
+        int localsBase,
+        int suppliedCount
+    )
+    {
+        var parameterCount = function.Code.Definition.ArgumentCount;
+        var firstDefaultIndex = parameterCount - function.Defaults.Length;
+        for (var index = suppliedCount; index < parameterCount; index++)
+        {
+            StoreArgument(
+                function.Code,
+                cells,
+                localsBase,
+                index,
+                function.Defaults[index - firstDefaultIndex]
+            );
+        }
     }
 
     private void StoreArgument(
@@ -1559,14 +1746,20 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
-        if (argumentCount == function.Code.Definition.ArgumentCount)
+        var maximumCount = function.Code.Definition.ArgumentCount;
+        var minimumCount = maximumCount - function.Defaults.Length;
+        if (argumentCount >= minimumCount && argumentCount <= maximumCount)
         {
             return;
         }
 
+        var expectation =
+            minimumCount == maximumCount
+                ? $"{maximumCount}"
+                : $"between {minimumCount} and {maximumCount}";
         throw Fault(
             "DPY4009",
-            $"Function '{function.Name}' expected {function.Code.Definition.ArgumentCount} positional "
+            $"Function '{function.Name}' expected {expectation} positional "
                 + $"argument(s), but received {argumentCount}.",
             span
         );
@@ -1623,8 +1816,23 @@ internal sealed class PythonVirtualMachine
         return true;
     }
 
-    private void MakeFunction(PythonInstruction instruction)
+    private void MakeFunction(PythonInstruction instruction, bool withDefaults)
     {
+        var defaults = NoDefaults;
+        if (withDefaults)
+        {
+            if (Pop(instruction.Span) is not PythonTupleValue defaultsTuple)
+            {
+                throw Fault(
+                    "DPY4007",
+                    "The function default-value tuple is invalid.",
+                    instruction.Span
+                );
+            }
+
+            defaults = defaultsTuple.Elements;
+        }
+
         PreparedPythonCode code;
         try
         {
@@ -1633,6 +1841,15 @@ internal sealed class PythonVirtualMachine
         catch (InvalidOperationException)
         {
             throw Fault("DPY4007", "The function code object is invalid.", instruction.Span);
+        }
+
+        if (defaults.Length > code.Definition.ArgumentCount)
+        {
+            throw Fault(
+                "DPY4007",
+                "The function default-value count exceeds the parameter count.",
+                instruction.Span
+            );
         }
 
         var closure = new PythonCell[code.Definition.FreeVariableNames.Count];
@@ -1653,7 +1870,13 @@ internal sealed class PythonVirtualMachine
         }
 
         _evaluationStack.Push(
-            new PythonFunctionValue(code.Definition.Name, code, CurrentFrame.Globals, closure)
+            new PythonFunctionValue(
+                code.Definition.Name,
+                code,
+                CurrentFrame.Globals,
+                closure,
+                defaults
+            )
         );
     }
 

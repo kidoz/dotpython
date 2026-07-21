@@ -400,6 +400,7 @@ public static class DotPythonModuleArtifactSerializer
 
                 break;
             case PythonOpCode.MakeFunction:
+            case PythonOpCode.MakeFunctionWithDefaults:
                 ValidateIndex(instruction.Operand, code.Constants.Count, instructionIndex);
                 if (code.Constants[instruction.Operand].Type != PythonConstantType.CodeObject)
                 {
@@ -454,6 +455,7 @@ public static class DotPythonModuleArtifactSerializer
 
                 break;
             case PythonOpCode.Call:
+            case PythonOpCode.CallKeyword:
                 if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(

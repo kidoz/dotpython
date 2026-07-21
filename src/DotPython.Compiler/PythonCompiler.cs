@@ -138,6 +138,8 @@ public static class PythonCompiler
                     CompileContinueStatement(continueStatement);
                     break;
                 case PythonPassStatement:
+                case PythonGlobalStatement:
+                case PythonNonlocalStatement:
                     break;
                 case PythonRaiseStatement raiseStatement:
                     CompileRaiseStatement(raiseStatement);
@@ -193,6 +195,7 @@ public static class PythonCompiler
                     if (
                         _enableCallLocal
                         && call.Arguments.Count == 0
+                        && call.KeywordArguments.Count == 0
                         && targetName is not null
                         && _scope.Kind == PythonScopeKind.Function
                         && _scope.IsLocal(targetName.Name)
@@ -209,7 +212,37 @@ public static class PythonCompiler
                         CompileExpression(argument);
                     }
 
-                    Emit(PythonOpCode.Call, call.Arguments.Count, call.Span);
+                    if (call.KeywordArguments.Count == 0)
+                    {
+                        Emit(PythonOpCode.Call, call.Arguments.Count, call.Span);
+                        break;
+                    }
+
+                    foreach (var keywordArgument in call.KeywordArguments)
+                    {
+                        CompileExpression(keywordArgument.Value);
+                    }
+
+                    foreach (var keywordArgument in call.KeywordArguments)
+                    {
+                        Emit(
+                            PythonOpCode.LoadConstant,
+                            AddConstant(
+                                new PythonConstant(
+                                    PythonConstantType.TextValue,
+                                    keywordArgument.Name
+                                )
+                            ),
+                            keywordArgument.Span
+                        );
+                    }
+
+                    Emit(PythonOpCode.BuildTuple, call.KeywordArguments.Count, call.Span);
+                    Emit(
+                        PythonOpCode.CallKeyword,
+                        call.Arguments.Count + call.KeywordArguments.Count,
+                        call.Span
+                    );
                     break;
                 case PythonListExpression list:
                     CompileElements(list.Elements);
@@ -318,7 +351,28 @@ public static class PythonCompiler
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            Emit(PythonOpCode.MakeFunction, constantIndex, function.Span);
+            var defaultCount = 0;
+            foreach (var parameter in function.Parameters)
+            {
+                if (parameter.Default is null)
+                {
+                    continue;
+                }
+
+                CompileExpression(parameter.Default);
+                defaultCount++;
+            }
+
+            if (defaultCount == 0)
+            {
+                Emit(PythonOpCode.MakeFunction, constantIndex, function.Span);
+            }
+            else
+            {
+                Emit(PythonOpCode.BuildTuple, defaultCount, function.Span);
+                Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, function.Span);
+            }
+
             EmitStoreName(function.Name);
         }
 
@@ -840,7 +894,7 @@ public static class PythonCompiler
 
         private void EmitStoreName(PythonNameExpression name)
         {
-            if (_scope.Kind == PythonScopeKind.Function)
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
             {
                 Emit(
                     _scope.IsCellVariable(name.Name)
@@ -851,6 +905,12 @@ public static class PythonCompiler
                         : GetVariableIndex(name.Name),
                     name.Span
                 );
+                return;
+            }
+
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            {
+                Emit(PythonOpCode.StoreCell, GetCellIndex(name.Name), name.Span);
                 return;
             }
 

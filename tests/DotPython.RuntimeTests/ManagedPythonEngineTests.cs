@@ -1661,6 +1661,117 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_BindsDefaultAndKeywordArguments()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def greet(name, greeting='hello', punctuation='!'):\n"
+                + "    return greeting + ', ' + name + punctuation\n"
+                + "print(greet('world'))\n"
+                + "print(greet('world', 'hi'))\n"
+                + "print(greet('world', punctuation='?'))\n"
+                + "print(greet(punctuation='.', name='all', greeting='hey'))\n"
+                + "base = 10\n"
+                + "def scaled(value, factor=base):\n"
+                + "    return value * factor\n"
+                + "base = 99\n"
+                + "print(scaled(3))\n",
+            "keywords.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"hello, world!{Environment.NewLine}hi, world!{Environment.NewLine}"
+                + $"hello, world?{Environment.NewLine}hey, all.{Environment.NewLine}"
+                + $"30{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RaisesCatchableTypeErrorsForKeywordBindingFailures()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "def act(first, second=2):\n"
+                + "    return first\n"
+                + "def attempt(callback):\n"
+                + "    try:\n"
+                + "        callback()\n"
+                + "    except TypeError as error:\n"
+                + "        print('caught', error)\n"
+                + "def unexpected():\n"
+                + "    act(1, wrong=3)\n"
+                + "def duplicated():\n"
+                + "    act(1, first=3)\n"
+                + "def missing():\n"
+                + "    act(second=3)\n"
+                + "attempt(unexpected)\n"
+                + "attempt(duplicated)\n"
+                + "attempt(missing)\n",
+            "keyword-errors.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"caught Function 'act' received an unexpected keyword argument 'wrong'.{Environment.NewLine}"
+                + $"caught Function 'act' received multiple values for argument 'first'.{Environment.NewLine}"
+                + $"caught Function 'act' is missing a value for argument 'first'.{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RebindsGlobalsAndNonlocalsThroughDeclarations()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "counter = 0\n"
+                + "def bump(step=1):\n"
+                + "    global counter\n"
+                + "    counter = counter + step\n"
+                + "bump()\n"
+                + "bump(step=5)\n"
+                + "print(counter)\n"
+                + "def outer():\n"
+                + "    total = 0\n"
+                + "    def add(amount=2):\n"
+                + "        nonlocal total\n"
+                + "        total = total + amount\n"
+                + "    add()\n"
+                + "    add(amount=10)\n"
+                + "    return total\n"
+                + "print(outer())\n"
+                + "def deep():\n"
+                + "    value = 1\n"
+                + "    def middle():\n"
+                + "        def inner():\n"
+                + "            nonlocal value\n"
+                + "            value = value + 10\n"
+                + "        inner()\n"
+                + "        return value\n"
+                + "    return middle()\n"
+                + "print(deep())\n",
+            "declarations.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"6{Environment.NewLine}12{Environment.NewLine}11{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(
