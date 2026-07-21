@@ -7,6 +7,7 @@ public static class WorkerProtocolFaultCodes
     public const string HardTimeout = "DPY8105";
     public const string StaleHandle = "DPY8106";
     public const string LimitExceeded = "DPY8107";
+    public const string RequestCanceled = "DPY8109";
 }
 
 public sealed class WorkerProtocolException : Exception

@@ -1,12 +1,12 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Text.Json.Serialization.Metadata;
 
 namespace DotPython.Protocol;
 
 public static class WorkerProtocolSerializer
 {
-    private static readonly JsonSerializerOptions Options = CreateOptions();
+    private static readonly JsonSerializerOptions Options = WorkerProtocolJsonContext
+        .Default
+        .Options;
 
     public static WorkerEnvelope CreateEnvelope<T>(
         WorkerMessageType messageType,
@@ -68,19 +68,6 @@ public static class WorkerProtocolSerializer
                 exception
             );
         }
-    }
-
-    private static JsonSerializerOptions CreateOptions()
-    {
-        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-        {
-            PropertyNameCaseInsensitive = false,
-            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
-        };
-        options.Converters.Add(new JsonStringEnumConverter<WorkerMessageType>());
-        options.Converters.Add(new JsonStringEnumConverter<WorkerFaultPhase>());
-        options.Converters.Add(new JsonStringEnumConverter<WorkerTestFault>());
-        return options;
     }
 
     private static void ValidateEnvelope(WorkerEnvelope envelope)

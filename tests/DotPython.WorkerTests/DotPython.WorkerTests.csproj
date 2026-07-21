@@ -10,5 +10,21 @@
 
     <ItemGroup>
         <ProjectReference Include="../../src/DotPython.Protocol/DotPython.Protocol.csproj" />
+        <ProjectReference Include="../../src/DotPython.Worker/DotPython.Worker.csproj" />
+        <ProjectReference
+            Include="../../src/DotPython.Worker.App/DotPython.Worker.App.csproj"
+            ReferenceOutputAssembly="false"
+        />
     </ItemGroup>
+
+    <Target Name="CopyWorkerApp" AfterTargets="Build">
+        <ItemGroup>
+            <_WorkerAppFiles Include="../../src/DotPython.Worker.App/bin/$(Configuration)/net10.0/*" />
+        </ItemGroup>
+        <Copy
+            SourceFiles="@(_WorkerAppFiles)"
+            DestinationFolder="$(OutDir)worker"
+            SkipUnchangedFiles="true"
+        />
+    </Target>
 </Project>

@@ -17,15 +17,17 @@ libraries can be referenced from C# and other managed languages.
 > exceptions, and managed package imports). The
 > compiler also emits deterministic `.dpyc` module artifacts, the interop layer statically
 > compiles an initial `.pyi` subset into typed CLR export contracts, and the prototype
-> `DotPython.Sdk` generates typed C# facades for single-module projects.
+> `DotPython.Sdk` generates typed C# facades for single-module projects. A versioned worker
+> boundary now isolates managed execution in replaceable child processes; it is infrastructure
+> for native experiments, not executable native-extension support.
 
 ## Compatibility contract
 
 - Targets the **Python 3.14** language surface through an explicit compatibility profile.
 - CPython is a **differential reference** for managed execution and is never an implicit fallback.
 - CPython bytecode and C-extension binaries are **unsupported by the managed runtime today**.
-- An optional CPython worker provider is accepted architecture but is not yet implemented or
-  qualified.
+- A provider-neutral worker protocol and managed worker host are implemented. The optional CPython
+  provider itself is not implemented or qualified.
 - The managed interpreter is the semantic reference; any future JIT tier must fall back to it.
 - Host/.NET access is **capability based**; arbitrary assembly loading and reflection are off by default.
 
@@ -173,6 +175,28 @@ callbacks.
 This lifecycle foundation does not load native code or change the compatibility contract. No
 CPython ABI, HPy, Anyver, or NumPy execution support is enabled.
 
+## Worker protocol foundation
+
+`DotPython.Protocol`, `DotPython.Worker`, and `DotPython.Worker.App` establish the worker-first
+boundary required by the native-extension roadmap. The host and child negotiate protocol,
+provider/runtime/environment identity, feature flags, message/output/session/concurrency limits,
+and an explicit worker generation before accepting work. Four-byte little-endian length prefixes
+bound source-generated JSON envelopes carrying correlation IDs, deadlines, cancellation, and
+structured faults.
+
+The parent starts an explicitly configured executable without a shell, clears inherited environment
+variables, and passes only allowlisted values and package roots. Sessions and logical object handles
+are scoped to provider, worker identity, generation, and session. Clean disposal closes sessions and
+drains the child; recycling, malformed protocol, crashes, and hard timeout invalidate the generation.
+Hard timeout sends cooperative cancellation, waits a bounded grace period, and terminates the
+process tree before a replacement is admitted.
+
+The first transport uses redirected standard streams as a private framed channel. Protocol output
+never shares the Python standard-output payload, which is returned inside a bounded response. This
+contains crashes and enables hard termination, but it is not by itself a complete native-code
+sandbox; platform OS resource and network enforcement remain separate work. No provider is selected
+implicitly, and the managed runtime still reports no executable native-extension capability.
+
 ## Typed module contracts
 
 DotPython can parse typed module stubs without importing or executing Python:
@@ -246,6 +270,9 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 | `src/DotPython.Cli` | `dotpython` command-line front end. |
 | `src/DotPython.Build.Tasks` | Deterministic out-of-process module compiler and C# facade generator. |
 | `src/DotPython.Sdk` | Additive MSBuild SDK props, targets, and package layout. |
+| `src/DotPython.Protocol` | Versioned, bounded worker envelopes, framing, handshake, and faults. |
+| `src/DotPython.Worker` | Worker policy, process lifecycle, sessions, recycling, and logical handles. |
+| `src/DotPython.Worker.App` | Executable managed worker host and test-only failure injection. |
 | `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
 
 ## Development
@@ -277,6 +304,7 @@ dotnet test DotPython.sln
 | `tests/DotPython.DifferentialTests` | Behavior compared against the CPython reference. |
 | `tests/DotPython.PackageCompatibilityTests` | Package/language compatibility matrix. |
 | `tests/DotPython.BuildIntegrationTests` | `.dpyproj` SDK packaging, ProjectReference, incremental, and runtime execution. |
+| `tests/DotPython.WorkerTests` | Framing, handshake, process lifecycle, limits, cancellation, crash, timeout, and recycling. |
 
 ## Benchmarking
 
