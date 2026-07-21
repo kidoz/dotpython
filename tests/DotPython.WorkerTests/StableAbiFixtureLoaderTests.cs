@@ -71,6 +71,39 @@ public sealed class StableAbiFixtureLoaderTests
     }
 
     [Fact]
+    public void Load_SurvivesPinnedAnyverReferenceAndFailureChurn()
+    {
+        SkipAnyverWhenUnavailable();
+        using var module = StableAbiFixtureLoader.Load(CreateAnyverConfiguration());
+
+        for (var iteration = 0; iteration < 256; iteration++)
+        {
+            var raw = $"1.2.{iteration % 100}";
+            var version = module.DescribeAnyverVersion(raw, "auto");
+            Assert.Equal(raw, version.Raw);
+            Assert.Equal(-1, module.CompareAnyver(raw, "2.0.0", "generic"));
+
+            if (iteration % 32 == 0)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+
+        for (var iteration = 0; iteration < 128; iteration++)
+        {
+            var exception = Assert.Throws<StableAbiLoadException>(() =>
+                module.CompareAnyver("1.0", "2.0", "dotpython-invalid-ecosystem")
+            );
+            Assert.Equal("DPY8005", exception.Code);
+            Assert.Equal(StableAbiLoadPhase.Invocation, exception.Phase);
+            Assert.Contains("ValueError", exception.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(-1, module.CompareAnyver("1.0", "2.0", "generic"));
+    }
+
+    [Fact]
     public void Load_RejectsArtifactHashMismatchBeforeLoading()
     {
         SkipUnsupportedPlatform();
@@ -182,6 +215,29 @@ public sealed class StableAbiFixtureLoaderTests
             exception.Message,
             StringComparison.Ordinal
         );
+    }
+
+    [Fact]
+    public void Load_RepeatedInitializationFailuresDoNotPoisonLaterLoads()
+    {
+        SkipUnsupportedPlatform();
+        var failureConfiguration = CreateConfiguration(
+            FixturePath("dotpython_fixture_failure.abi3.so")
+        );
+
+        for (var iteration = 0; iteration < 64; iteration++)
+        {
+            var exception = Assert.Throws<StableAbiLoadException>(() =>
+                StableAbiFixtureLoader.Load(failureConfiguration)
+            );
+            Assert.Equal("DPY8005", exception.Code);
+            Assert.Equal(StableAbiLoadPhase.ModuleInitialization, exception.Phase);
+        }
+
+        using var module = StableAbiFixtureLoader.Load(
+            CreateConfiguration(FixturePath("dotpython_fixture.abi3.so"))
+        );
+        Assert.Equal(42, module.InvokeLong("increment", 41));
     }
 
     [Fact]

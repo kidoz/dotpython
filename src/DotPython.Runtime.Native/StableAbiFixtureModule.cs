@@ -294,10 +294,13 @@ internal sealed class StableAbiFixtureModule : IDisposable
             || module == 0
         )
         {
+            var errorTypeText = ReadUtf8(errorType());
+            var errorMessageText = ReadUtf8(errorMessage());
+            destroy(0);
             throw Failure(
                 "DPY8005",
                 StableAbiLoadPhase.ModuleInitialization,
-                $"{ReadUtf8(errorType())}: {ReadUtf8(errorMessage())}",
+                $"{errorTypeText}: {errorMessageText}",
                 fixturePath,
                 fixtureHash
             );

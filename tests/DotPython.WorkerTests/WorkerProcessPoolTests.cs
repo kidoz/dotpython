@@ -138,6 +138,79 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_ContainsRepeatedAnyverFailuresWithoutPoisoningOwnerLane()
+    {
+        SkipAnyverWhenUnavailable();
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(
+                stableAbiFixture: true,
+                nativeFixtureFileName: "anyver._anyver.abi3.so",
+                nativeManifestFileName: "anyver-symbol-manifest.json"
+            )
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        await using var module = await session.LoadStableAbiModuleAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        for (var iteration = 0; iteration < 64; iteration++)
+        {
+            var exception = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+                module.CompareAnyverAsync(
+                    "1.0",
+                    "2.0",
+                    "dotpython-invalid-ecosystem",
+                    TestContext.Current.CancellationToken
+                )
+            );
+            Assert.Equal("DPY8005", exception.Fault.Code);
+            Assert.Equal("Invocation", exception.Fault.Details?["nativePhase"]);
+        }
+
+        Assert.Equal(
+            -1,
+            await module.CompareAnyverAsync(
+                "1.0",
+                "2.0",
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public async Task Worker_RestartsPinnedAnyverAfterOrderlyProcessShutdown()
+    {
+        SkipAnyverWhenUnavailable();
+
+        for (var iteration = 0; iteration < 4; iteration++)
+        {
+            await using var pool = new WorkerProcessPool(
+                CreateOptions(
+                    stableAbiFixture: true,
+                    nativeFixtureFileName: "anyver._anyver.abi3.so",
+                    nativeManifestFileName: "anyver-symbol-manifest.json"
+                )
+            );
+            await using var session = await pool.OpenSessionAsync(
+                TestContext.Current.CancellationToken
+            );
+            await using var module = await session.LoadStableAbiModuleAsync(
+                TestContext.Current.CancellationToken
+            );
+
+            var version = await module.DescribeAnyverVersionAsync(
+                $"1.2.{iteration}",
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+            Assert.Equal($"1.2.{iteration}", version.Raw);
+            Assert.Equal(WorkerProcessState.Running, pool.State);
+        }
+    }
+
+    [Fact]
     public async Task Worker_RejectsUnconfiguredStableAbiCapabilityWithoutFallback()
     {
         await using var pool = new WorkerProcessPool(CreateOptions());
