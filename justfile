@@ -1,16 +1,32 @@
 set positional-arguments
 
+native_build_dir := "build/native-abi3"
+
 default:
     @just --list
 
 # Format the native Stable-ABI sources with clang-format.
 native-format:
-    native/dotpython-abi3/format.sh
+    #!/bin/sh
+    set -eu
+    if [ -f "{{native_build_dir}}/meson-private/coredata.dat" ]; then
+        meson setup --reconfigure "{{native_build_dir}}" native/dotpython-abi3
+    else
+        meson setup "{{native_build_dir}}" native/dotpython-abi3
+    fi
+    meson compile -C "{{native_build_dir}}" --ninja-args=clang-format
 
 # Check native formatting and run clang-tidy with warnings as errors.
 native-lint:
-    native/dotpython-abi3/format.sh --check
-    native/dotpython-abi3/tidy.sh
+    #!/bin/sh
+    set -eu
+    if [ -f "{{native_build_dir}}/meson-private/coredata.dat" ]; then
+        meson setup --reconfigure "{{native_build_dir}}" native/dotpython-abi3
+    else
+        meson setup "{{native_build_dir}}" native/dotpython-abi3
+    fi
+    meson compile -C "{{native_build_dir}}" --ninja-args=clang-format-check
+    meson compile -C "{{native_build_dir}}" --ninja-args=clang-tidy
 
 # Format C#, project files, and native sources with the configured tools.
 format: native-format

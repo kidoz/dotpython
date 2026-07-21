@@ -17,7 +17,7 @@ static void require(int condition, const char *message) {
 }
 
 int main(int argc, char **argv) {
-    require(argc == 2, "fixture path is required");
+    require(argc == 3, "success and failure fixture paths are required");
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     require(library != NULL, dlerror());
 
@@ -60,5 +60,31 @@ int main(int argc, char **argv) {
     require(cleanup_count() == 1, "fixture cleanup did not run exactly once");
     require(dp_abi3_active_object_count() == 0, "native objects leaked");
     require(dlclose(library) == 0, "fixture library did not close");
+
+    library = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
+    require(library != NULL, dlerror());
+    initialize = (module_init_function)dlsym(library, "PyInit_dotpython_fixture");
+    cleanup_count = (cleanup_count_function)dlsym(library, "dotpython_fixture_cleanup_count");
+    require(initialize != NULL, "failure fixture initializer is missing");
+    require(cleanup_count != NULL, "failure fixture cleanup probe is missing");
+
+    module = NULL;
+    multi_phase = 0;
+    require(
+        dp_abi3_module_initialize(initialize(), &module, &multi_phase) == -1,
+        "failure fixture initialization unexpectedly succeeded"
+    );
+    require(module == NULL, "failure fixture published a partial module");
+    require(multi_phase == 0, "failure fixture reported multi-phase success");
+    require(strcmp(dp_abi3_error_type(), "ValueError") == 0, "failure fixture error type mismatch");
+    require(
+        strcmp(dp_abi3_error_message(), "fixture initialization failure") == 0,
+        "failure fixture error message mismatch"
+    );
+    require(cleanup_count() == 0, "failure fixture cleanup unexpectedly ran");
+    require(dp_abi3_active_object_count() == 1, "failure fixture error ownership mismatch");
+    dp_abi3_module_destroy(NULL);
+    require(dp_abi3_active_object_count() == 0, "failure fixture error object leaked");
+    require(dlclose(library) == 0, "failure fixture library did not close");
     return 0;
 }

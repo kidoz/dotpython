@@ -1,0 +1,6 @@
+option(
+  'anyver_module',
+  type: 'string',
+  value: '',
+  description: 'Absolute path to the qualified Anyver 1.1.0 native module for its optional harness test',
+)

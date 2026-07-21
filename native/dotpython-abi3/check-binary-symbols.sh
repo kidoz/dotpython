@@ -8,8 +8,12 @@ observed=$(mktemp "${TMPDIR:-/tmp}/dotpython-abi3-symbols.XXXXXX")
 trap 'rm -f "$observed"' EXIT HUP INT TERM
 
 case $kind in
-    imports)
-        expected="$root/stable-abi-symbols.txt"
+    imports|failure-imports)
+        if [ "$kind" = imports ]; then
+            expected="$root/stable-abi-symbols.txt"
+        else
+            expected="$root/failure-stable-abi-symbols.txt"
+        fi
         case $(uname -s) in
             Darwin)
                 nm -u "$binary" | sed -n 's/^_\(Py[A-Za-z0-9_]*\)$/\1/p' | LC_ALL=C sort > "$observed"
