@@ -10,7 +10,8 @@ typedef int (*cleanup_count_function)(void);
 
 static void require(int condition, const char *message) {
     if (!condition) {
-        fprintf(stderr, "%s\n", message);
+        fputs(message, stderr);
+        fputc('\n', stderr);
         exit(1);
     }
 }
@@ -20,14 +21,10 @@ int main(int argc, char **argv) {
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     require(library != NULL, dlerror());
 
-    module_init_function initialize = (module_init_function)dlsym(
-        library,
-        "PyInit_dotpython_fixture"
-    );
-    cleanup_count_function cleanup_count = (cleanup_count_function)dlsym(
-        library,
-        "dotpython_fixture_cleanup_count"
-    );
+    module_init_function initialize =
+        (module_init_function)dlsym(library, "PyInit_dotpython_fixture");
+    cleanup_count_function cleanup_count =
+        (cleanup_count_function)dlsym(library, "dotpython_fixture_cleanup_count");
     require(initialize != NULL, "fixture initializer is missing");
     require(cleanup_count != NULL, "fixture cleanup probe is missing");
     require(dp_abi3_bridge_version() == DP_ABI3_BRIDGE_VERSION, "bridge version mismatch");

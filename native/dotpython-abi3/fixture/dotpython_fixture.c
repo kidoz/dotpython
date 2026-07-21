@@ -28,15 +28,12 @@ static void fixture_free(void *module) {
 }
 
 static PyMethodDef fixture_methods[] = {
-    { "increment", fixture_increment, METH_O, "Increment a whole number." },
-    { "fail", fixture_fail, METH_NOARGS, "Raise a deliberate fixture error." },
-    { NULL, NULL, 0, NULL }
+    {"increment", fixture_increment, METH_O, "Increment a whole number."},
+    {"fail", fixture_fail, METH_NOARGS, "Raise a deliberate fixture error."},
+    {NULL, NULL, 0, NULL}
 };
 
-static PyModuleDef_Slot fixture_slots[] = {
-    { Py_mod_exec, (void *)fixture_execute },
-    { 0, NULL }
-};
+static PyModuleDef_Slot fixture_slots[] = {{Py_mod_exec, (void *)fixture_execute}, {0, NULL}};
 
 static PyModuleDef fixture_definition = {
     PyModuleDef_HEAD_INIT,

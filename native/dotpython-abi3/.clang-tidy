@@ -1,0 +1,26 @@
+---
+# CPython-compatible names are ABI contracts, and fixture entry points are resolved dynamically.
+# Those boundaries intentionally violate the generic reserved-name and internal-linkage checks.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-reserved-identifier,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-use-internal-linkage,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-identifier-length,
+  -readability-identifier-naming,
+  -readability-magic-numbers
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*dotpython-abi3/.*'
+FormatStyle: file
+...
