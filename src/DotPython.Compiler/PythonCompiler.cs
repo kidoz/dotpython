@@ -55,8 +55,11 @@ public static class PythonCompiler
         private readonly string _codeName;
         private readonly List<PythonConstant> _constants = [];
         private readonly List<Diagnostic> _diagnostics;
+        private readonly List<int> _finallyBarriers = [];
         private readonly List<PythonInstruction> _instructions = [];
+        private readonly List<LoopScope> _loopScopes = [];
         private readonly List<string> _names = [];
+        private readonly List<ProtectionScope> _protectionScopes = [];
         private readonly PythonBoundScope _scope;
         private readonly bool _enableCallLocal;
         private readonly bool _enableReturnLocal;
@@ -127,6 +130,14 @@ public static class PythonCompiler
                     break;
                 case PythonReturnStatement returnStatement:
                     CompileReturnStatement(returnStatement);
+                    break;
+                case PythonBreakStatement breakStatement:
+                    CompileBreakStatement(breakStatement);
+                    break;
+                case PythonContinueStatement continueStatement:
+                    CompileContinueStatement(continueStatement);
+                    break;
+                case PythonPassStatement:
                     break;
                 case PythonRaiseStatement raiseStatement:
                     CompileRaiseStatement(raiseStatement);
@@ -372,12 +383,14 @@ public static class PythonCompiler
                 return;
             }
 
+            _protectionScopes.Add(new FinallyProtection(statement.FinallyBody));
             var setupFinally = Emit(PythonOpCode.SetupFinally, 0, statement.Span);
             CompileTryExcept(statement);
             Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            _protectionScopes.RemoveAt(_protectionScopes.Count - 1);
             Emit(PythonOpCode.EnterFinally, 0, statement.Span);
             PatchJump(setupFinally, _instructions.Count);
-            CompileStatements(statement.FinallyBody);
+            CompileFinallyBody(statement.FinallyBody);
             Emit(PythonOpCode.EndFinally, 0, statement.Span);
         }
 
@@ -389,9 +402,11 @@ public static class PythonCompiler
                 return;
             }
 
+            _protectionScopes.Add(ExceptProtection.Instance);
             var setupExcept = Emit(PythonOpCode.SetupExcept, 0, statement.Span);
             CompileStatements(statement.Body);
             Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            _protectionScopes.RemoveAt(_protectionScopes.Count - 1);
             CompileStatements(statement.ElseBody);
             var normalExit = Emit(PythonOpCode.Jump, 0, statement.Span);
             PatchJump(setupExcept, _instructions.Count);
@@ -414,9 +429,11 @@ public static class PythonCompiler
                     EmitStoreName(handler.Target);
                 }
 
+                _protectionScopes.Add(new HandlerCleanupProtection(handler.Target));
                 var setupCleanup = Emit(PythonOpCode.SetupFinally, 0, handler.Span);
                 CompileStatements(handler.Body);
                 Emit(PythonOpCode.PopExceptionBlock, 0, handler.Span);
+                _protectionScopes.RemoveAt(_protectionScopes.Count - 1);
                 Emit(PythonOpCode.EnterFinally, 0, handler.Span);
                 PatchJump(setupCleanup, _instructions.Count);
                 if (handler.Target is not null)
@@ -545,10 +562,13 @@ public static class PythonCompiler
             var loopStart = _instructions.Count;
             CompileExpression(statement.Condition);
             var exitJump = Emit(PythonOpCode.JumpIfFalse, 0, statement.Condition.Span);
+            var loop = PushLoopScope(isForLoop: false, continueTarget: loopStart);
             CompileStatements(statement.Body);
+            PopLoopScope();
             Emit(PythonOpCode.Jump, loopStart, statement.Span);
             PatchJump(exitJump, _instructions.Count);
             CompileStatements(statement.ElseBody);
+            PatchBreakJumps(loop);
         }
 
         private void CompileForStatement(PythonForStatement statement)
@@ -558,10 +578,117 @@ public static class PythonCompiler
             var loopStart = _instructions.Count;
             var exitJump = Emit(PythonOpCode.ForIter, 0, statement.Iterable.Span);
             EmitStoreName(statement.Target);
+            var loop = PushLoopScope(isForLoop: true, continueTarget: loopStart);
             CompileStatements(statement.Body);
+            PopLoopScope();
             Emit(PythonOpCode.Jump, loopStart, statement.Span);
             PatchJump(exitJump, _instructions.Count);
             CompileStatements(statement.ElseBody);
+            PatchBreakJumps(loop);
+        }
+
+        private void CompileBreakStatement(PythonBreakStatement statement)
+        {
+            var loop = GetTargetLoop("break", "DPY3104", statement.Span);
+            if (loop is null)
+            {
+                return;
+            }
+
+            UnwindProtectionScopes(loop.ProtectionDepth, statement.Span);
+            if (loop.IsForLoop)
+            {
+                Emit(PythonOpCode.PopTop, 0, statement.Span);
+            }
+
+            loop.BreakJumps.Add(Emit(PythonOpCode.Jump, 0, statement.Span));
+        }
+
+        private void CompileContinueStatement(PythonContinueStatement statement)
+        {
+            var loop = GetTargetLoop("continue", "DPY3105", statement.Span);
+            if (loop is null)
+            {
+                return;
+            }
+
+            UnwindProtectionScopes(loop.ProtectionDepth, statement.Span);
+            Emit(PythonOpCode.Jump, loop.ContinueTarget, statement.Span);
+        }
+
+        private LoopScope? GetTargetLoop(string keyword, string outsideLoopCode, TextSpan span)
+        {
+            var barrier = _finallyBarriers.Count == 0 ? 0 : _finallyBarriers[^1];
+            if (_loopScopes.Count > barrier)
+            {
+                return _loopScopes[^1];
+            }
+
+            if (_loopScopes.Count != 0)
+            {
+                Report(
+                    "DPY3106",
+                    $"'{keyword}' inside a 'finally' clause is not supported in this runtime slice.",
+                    span
+                );
+            }
+            else
+            {
+                Report(outsideLoopCode, $"'{keyword}' outside loop.", span);
+            }
+
+            return null;
+        }
+
+        private void UnwindProtectionScopes(int targetDepth, TextSpan span)
+        {
+            for (var index = _protectionScopes.Count - 1; index >= targetDepth; index--)
+            {
+                Emit(PythonOpCode.PopExceptionBlock, 0, span);
+                switch (_protectionScopes[index])
+                {
+                    case HandlerCleanupProtection cleanup:
+                        if (cleanup.Target is not null)
+                        {
+                            Emit(
+                                PythonOpCode.LoadConstant,
+                                AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                                span
+                            );
+                            EmitStoreName(cleanup.Target);
+                        }
+
+                        Emit(PythonOpCode.ClearException, 0, span);
+                        break;
+                    case FinallyProtection finallyProtection:
+                        CompileFinallyBody(finallyProtection.FinallyBody);
+                        break;
+                }
+            }
+        }
+
+        private void CompileFinallyBody(IReadOnlyList<PythonStatement> statements)
+        {
+            _finallyBarriers.Add(_loopScopes.Count);
+            CompileStatements(statements);
+            _finallyBarriers.RemoveAt(_finallyBarriers.Count - 1);
+        }
+
+        private LoopScope PushLoopScope(bool isForLoop, int continueTarget)
+        {
+            var loop = new LoopScope(isForLoop, continueTarget, _protectionScopes.Count);
+            _loopScopes.Add(loop);
+            return loop;
+        }
+
+        private void PopLoopScope() => _loopScopes.RemoveAt(_loopScopes.Count - 1);
+
+        private void PatchBreakJumps(LoopScope loop)
+        {
+            foreach (var breakJump in loop.BreakJumps)
+            {
+                PatchJump(breakJump, _instructions.Count);
+            }
         }
 
         private void CompileStatements(IReadOnlyList<PythonStatement> statements)
@@ -781,4 +908,27 @@ public static class PythonCompiler
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
             };
     }
+
+    private sealed class LoopScope(bool isForLoop, int continueTarget, int protectionDepth)
+    {
+        internal List<int> BreakJumps { get; } = [];
+
+        internal int ContinueTarget { get; } = continueTarget;
+
+        internal bool IsForLoop { get; } = isForLoop;
+
+        internal int ProtectionDepth { get; } = protectionDepth;
+    }
+
+    private abstract record ProtectionScope;
+
+    private sealed record ExceptProtection : ProtectionScope
+    {
+        internal static readonly ExceptProtection Instance = new();
+    }
+
+    private sealed record FinallyProtection(IReadOnlyList<PythonStatement> FinallyBody)
+        : ProtectionScope;
+
+    private sealed record HandlerCleanupProtection(PythonNameExpression? Target) : ProtectionScope;
 }
