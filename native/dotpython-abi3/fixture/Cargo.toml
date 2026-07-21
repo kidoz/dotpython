@@ -1,0 +1,12 @@
+[package]
+name = "dotpython_fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dotpython_fixture"
+crate-type = ["cdylib"]
+test = false
+doctest = false

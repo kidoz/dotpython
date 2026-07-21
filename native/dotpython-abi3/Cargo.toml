@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["bridge", "fixture", "fixture_failure", "harness"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+# The bridge exports a C ABI; a panic must never unwind across it.
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[profile.dev]
+panic = "abort"

@@ -184,6 +184,10 @@ DP_ABI3_EXPORT extern PyObject *PyExc_SystemError;
 DP_ABI3_EXPORT extern PyObject *PyExc_TypeError;
 DP_ABI3_EXPORT extern PyObject *PyExc_ValueError;
 
+/*
+ * Every exported Py* operation is confined to the thread that first activates the bridge.
+ * A call from another thread fails and records RuntimeError in that thread's bridge error state.
+ */
 DP_ABI3_EXPORT char *PyBytes_AsString(PyObject *value);
 DP_ABI3_EXPORT Py_ssize_t PyBytes_Size(PyObject *value);
 DP_ABI3_EXPORT PyObject *

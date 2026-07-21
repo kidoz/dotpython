@@ -1,0 +1,26 @@
+[package]
+name = "dotpython_harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dotpython_harness"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "native_fixture_test"
+path = "src/bin/native_fixture_test.rs"
+test = false
+
+[[bin]]
+name = "native_anyver_test"
+path = "src/bin/native_anyver_test.rs"
+test = false
+
+[dependencies]
+# The Rust dependency supplies Cargo's build-order edge; build.rs still links the C ABI cdylib.
+dotpython_abi3 = { path = "../bridge" }

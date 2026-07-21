@@ -1,0 +1,2 @@
+_PyInit_dotpython_fixture
+_dotpython_fixture_cleanup_count

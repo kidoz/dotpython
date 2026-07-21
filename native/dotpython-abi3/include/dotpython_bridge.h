@@ -48,6 +48,11 @@ DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
     const char *ecosystem,
     const char **result_json
 );
+/*
+ * Releases module when non-NULL and clears the owner thread's native error indicator. Passing
+ * NULL performs only the error-state cleanup, including release of all owned error references;
+ * it is the supported operation for discarding an error without a module handle.
+ */
 DP_ABI3_EXPORT void dp_abi3_module_destroy(PyObject *module);
 DP_ABI3_EXPORT const char *dp_abi3_error_type(void);
 DP_ABI3_EXPORT const char *dp_abi3_error_message(void);

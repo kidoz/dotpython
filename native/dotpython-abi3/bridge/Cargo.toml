@@ -1,0 +1,12 @@
+[package]
+name = "dotpython_abi3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dotpython_abi3"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
