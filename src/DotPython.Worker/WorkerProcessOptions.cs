@@ -32,6 +32,8 @@ public sealed record WorkerProcessOptions
 
     public WorkerResourcePolicy Policy { get; init; } = new();
 
+    public WorkerStableAbiFixtureOptions? StableAbiFixture { get; init; }
+
     public bool EnableTestFaultInjection { get; init; }
 
     internal void Validate()
@@ -50,6 +52,7 @@ public sealed record WorkerProcessOptions
         ArgumentNullException.ThrowIfNull(EnvironmentVariables);
         ArgumentNullException.ThrowIfNull(Policy);
         Policy.Validate();
+        StableAbiFixture?.Validate();
 
         foreach (var feature in RequiredFeatures)
         {

@@ -1,5 +1,6 @@
 using System.Globalization;
 using DotPython.Protocol;
+using DotPython.Runtime.Native;
 
 namespace DotPython.Worker.App;
 
@@ -7,6 +8,7 @@ internal sealed record WorkerHostOptions(
     WorkerIdentity Identity,
     WorkerProtocolLimits Limits,
     IReadOnlyList<string> PackageRoots,
+    StableAbiFixtureConfiguration? StableAbiFixture,
     bool TestFaultInjection,
     WorkerProtocolVersion ProtocolVersion
 )
@@ -59,6 +61,25 @@ internal sealed record WorkerHostOptions(
             features.Add("test-fault-injection");
         }
 
+        StableAbiFixtureConfiguration? stableAbiFixture = null;
+        var hasNativeFixture = values.ContainsKey("--abi3-fixture");
+        if (hasNativeFixture)
+        {
+            stableAbiFixture = new StableAbiFixtureConfiguration(
+                Required(values, "--abi3-bridge"),
+                Required(values, "--abi3-fixture"),
+                Required(values, "--abi3-manifest"),
+                Required(values, "--abi3-bridge-sha256"),
+                Required(values, "--abi3-fixture-sha256"),
+                Required(values, "--abi3-manifest-sha256")
+            );
+            features.Add("managed-stable-abi-fixture-v1");
+        }
+        else if (values.Keys.Any(key => key.StartsWith("--abi3-", StringComparison.Ordinal)))
+        {
+            throw new ArgumentException("The Stable-ABI fixture configuration is incomplete.");
+        }
+
         var protocolMajor = values.TryGetValue("--protocol-major", out var majorValues)
             ? ParsePositive(majorValues.Single(), "--protocol-major")
             : WorkerProtocolVersion.Current.Major;
@@ -81,6 +102,7 @@ internal sealed record WorkerHostOptions(
                 ParsePositive(Required(values, "--max-sessions"), "--max-sessions")
             ),
             packageRoots,
+            stableAbiFixture,
             testFaultInjection,
             new WorkerProtocolVersion(protocolMajor, WorkerProtocolVersion.Current.Minor)
         );

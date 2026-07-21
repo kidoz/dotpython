@@ -1,6 +1,8 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using DotPython.Protocol;
+using DotPython.Runtime.Native;
 using DotPython.Worker;
 using Xunit;
 
@@ -13,6 +15,182 @@ namespace DotPython.WorkerTests;
 )]
 public sealed class WorkerProcessPoolTests
 {
+    [Fact]
+    public async Task Worker_LoadsInvokesAndReleasesStableAbiFixture()
+    {
+        SkipNativeFixtureOnWindows();
+        await using var pool = new WorkerProcessPool(CreateOptions(stableAbiFixture: true));
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        await using var module = await session.LoadStableAbiFixtureAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        session.ValidateHandle(module.Handle);
+        var result = await module.InvokeLongAsync(
+            "increment",
+            41,
+            TestContext.Current.CancellationToken
+        );
+        var failure = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            module.InvokeLongAsync("fail", cancellationToken: TestContext.Current.CancellationToken)
+        );
+
+        Assert.Equal(42, result);
+        Assert.Equal("dotpython_fixture", module.ModuleName);
+        Assert.Equal("dotpython-abi3-fixture-v1", module.ManifestVersion);
+        Assert.Equal(
+            StableAbiFixtureLoader.ComputeSha256(NativeFixturePath("dotpython_fixture.abi3.so")),
+            module.ArtifactSha256
+        );
+        Assert.True(module.MultiPhase);
+        Assert.Equal(1, module.ReadyValue);
+        Assert.Equal("DPY8005", failure.Fault.Code);
+        Assert.Contains("ValueError: fixture failure", failure.Message, StringComparison.Ordinal);
+        Assert.Equal("Invocation", failure.Fault.Details?["nativePhase"]);
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public async Task Worker_RejectsUnconfiguredStableAbiCapabilityWithoutFallback()
+    {
+        await using var pool = new WorkerProcessPool(CreateOptions());
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        var exception = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            session.LoadStableAbiFixtureAsync(TestContext.Current.CancellationToken)
+        );
+
+        Assert.Equal("DPY8000", exception.Fault.Code);
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public async Task Worker_InvalidatesNativeHandleAfterCrash()
+    {
+        SkipNativeFixtureOnWindows();
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(enableTestFaultInjection: true, stableAbiFixture: true)
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        await using var module = await session.LoadStableAbiFixtureAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        _ = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            pool.InjectTestFaultAsync(WorkerTestFault.Crash, TestContext.Current.CancellationToken)
+        );
+        var stale = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            module.InvokeLongAsync("increment", 1, TestContext.Current.CancellationToken)
+        );
+
+        Assert.Equal(WorkerProtocolFaultCodes.StaleHandle, stale.Fault.Code);
+    }
+
+    [Fact]
+    public async Task Worker_ReportsNativeHashAndInitializationFailuresWithPhase()
+    {
+        SkipNativeFixtureOnWindows();
+        var invalidHashOptions = CreateOptions(stableAbiFixture: true);
+        invalidHashOptions = invalidHashOptions with
+        {
+            StableAbiFixture = invalidHashOptions.StableAbiFixture! with
+            {
+                FixtureSha256 = new string('0', 64),
+            },
+        };
+        await using var hashPool = new WorkerProcessPool(invalidHashOptions);
+        await using var hashSession = await hashPool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        var hashFailure = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            hashSession.LoadStableAbiFixtureAsync(TestContext.Current.CancellationToken)
+        );
+
+        await using var initPool = new WorkerProcessPool(
+            CreateOptions(
+                stableAbiFixture: true,
+                nativeFixtureFileName: "dotpython_fixture_failure.abi3.so"
+            )
+        );
+        await using var initSession = await initPool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        var initFailure = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+            initSession.LoadStableAbiFixtureAsync(TestContext.Current.CancellationToken)
+        );
+
+        Assert.Equal("DPY8001", hashFailure.Fault.Code);
+        Assert.Equal("Policy", hashFailure.Fault.Details?["nativePhase"]);
+        Assert.Equal("DPY8005", initFailure.Fault.Code);
+        Assert.Equal("ModuleInitialization", initFailure.Fault.Details?["nativePhase"]);
+        Assert.Equal(
+            "dotpython_fixture_failure.abi3.so",
+            initFailure.Fault.Details?["nativeEntry"]
+        );
+        Assert.Equal(WorkerProcessState.Running, initPool.State);
+    }
+
+    [Fact]
+    public async Task Worker_RecyclesAfterNativeLoaderFailureMarksProcessUnusable()
+    {
+        SkipNativeFixtureOnWindows();
+        var invalidFixture = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-invalid-native-{Guid.NewGuid():N}.so"
+        );
+        var bytes = new byte[4096];
+        if (OperatingSystem.IsMacOS())
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes, 0xfeedfacf);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 0x0100000c);
+        }
+        else
+        {
+            bytes[0] = 0x7f;
+            bytes[1] = (byte)'E';
+            bytes[2] = (byte)'L';
+            bytes[3] = (byte)'F';
+            bytes[4] = 2;
+            bytes[5] = 1;
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(18), 62);
+        }
+
+        await File.WriteAllBytesAsync(invalidFixture, bytes, TestContext.Current.CancellationToken);
+        try
+        {
+            await using var pool = new WorkerProcessPool(
+                CreateOptions(stableAbiFixture: true, nativeFixturePath: invalidFixture)
+            );
+            await using var session = await pool.OpenSessionAsync(
+                TestContext.Current.CancellationToken
+            );
+            var failedIdentity = session.WorkerIdentity;
+
+            var exception = await Assert.ThrowsAsync<WorkerProtocolException>(() =>
+                session.LoadStableAbiFixtureAsync(TestContext.Current.CancellationToken)
+            );
+
+            Assert.Equal("DPY8004", exception.Fault.Code);
+            Assert.False(exception.Fault.WorkerUsable);
+            Assert.Equal(WorkerProcessState.Faulted, pool.State);
+
+            await using var replacement = await pool.OpenSessionAsync(
+                TestContext.Current.CancellationToken
+            );
+            Assert.Equal(failedIdentity.Generation + 1, replacement.WorkerIdentity.Generation);
+        }
+        finally
+        {
+            File.Delete(invalidFixture);
+        }
+    }
+
     [Fact]
     public async Task Worker_ExecutesManagedCodeAndShutsDownCleanly()
     {
@@ -281,7 +459,10 @@ public sealed class WorkerProcessPoolTests
 
     private static WorkerProcessOptions CreateOptions(
         WorkerResourcePolicy? policy = null,
-        bool enableTestFaultInjection = false
+        bool enableTestFaultInjection = false,
+        bool stableAbiFixture = false,
+        string nativeFixtureFileName = "dotpython_fixture.abi3.so",
+        string? nativeFixturePath = null
     )
     {
         var appPath = Path.Combine(AppContext.BaseDirectory, "worker", "DotPython.Worker.App.dll");
@@ -293,6 +474,25 @@ public sealed class WorkerProcessPoolTests
             dotnetRoot.FullName,
             OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"
         );
+        WorkerStableAbiFixtureOptions? nativeOptions = null;
+        if (stableAbiFixture)
+        {
+            var bridge = NativeFixturePath(
+                OperatingSystem.IsMacOS() ? "libdotpython_abi3.dylib" : "libdotpython_abi3.so"
+            );
+            var fixture = nativeFixturePath ?? NativeFixturePath(nativeFixtureFileName);
+            var manifest = NativeFixturePath("symbol-manifest.json");
+            nativeOptions = new WorkerStableAbiFixtureOptions
+            {
+                BridgePath = bridge,
+                FixturePath = fixture,
+                ManifestPath = manifest,
+                BridgeSha256 = StableAbiFixtureLoader.ComputeSha256(bridge),
+                FixtureSha256 = StableAbiFixtureLoader.ComputeSha256(fixture),
+                ManifestSha256 = StableAbiFixtureLoader.ComputeSha256(manifest),
+            };
+        }
+
         return new WorkerProcessOptions
         {
             FileName = dotnetHost,
@@ -301,7 +501,22 @@ public sealed class WorkerProcessPoolTests
             EnvironmentHash = "sha256:worker-tests",
             Policy = policy ?? new WorkerResourcePolicy(),
             EnableTestFaultInjection = enableTestFaultInjection,
+            StableAbiFixture = nativeOptions,
+            RequiredFeatures = stableAbiFixture
+                ? ["managed-execution", "managed-stable-abi-fixture-v1"]
+                : ["managed-execution"],
         };
+    }
+
+    private static string NativeFixturePath(string fileName) =>
+        Path.Combine(AppContext.BaseDirectory, "native", fileName);
+
+    private static void SkipNativeFixtureOnWindows()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("The initial Stable-ABI experiment supports osx-arm64 and linux-x64.");
+        }
     }
 
     private static async Task WaitForStateAsync(WorkerProcessPool pool, WorkerProcessState expected)

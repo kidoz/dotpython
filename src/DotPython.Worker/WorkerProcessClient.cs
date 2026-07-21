@@ -338,6 +338,103 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
     internal void ValidateHandle(WorkerObjectHandle handle, Guid sessionId) =>
         _generationScope.Validate(handle, sessionId);
 
+    internal async Task<WorkerLoadStableAbiModuleResponse> LoadStableAbiModuleAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken
+    )
+    {
+        await _admissionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Increment(ref _requestCount);
+            return await SendRequestAsync<
+                WorkerLoadStableAbiModuleRequest,
+                WorkerLoadStableAbiModuleResponse
+            >(
+                    WorkerMessageType.LoadStableAbiModuleRequest,
+                    WorkerMessageType.LoadStableAbiModuleResponse,
+                    new WorkerLoadStableAbiModuleRequest(sessionId),
+                    DateTimeOffset.UtcNow + _options.Policy.ExecutionTimeout,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _admissionGate.Release();
+        }
+    }
+
+    internal async Task<long> InvokeStableAbiModuleAsync(
+        WorkerObjectHandle handle,
+        string method,
+        long? argument,
+        CancellationToken cancellationToken
+    )
+    {
+        _generationScope.Validate(handle, handle.SessionId);
+        await _admissionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Increment(ref _requestCount);
+            var response = await SendRequestAsync<
+                WorkerInvokeStableAbiModuleRequest,
+                WorkerInvokeStableAbiModuleResponse
+            >(
+                    WorkerMessageType.InvokeStableAbiModuleRequest,
+                    WorkerMessageType.InvokeStableAbiModuleResponse,
+                    new WorkerInvokeStableAbiModuleRequest(
+                        handle.SessionId,
+                        handle.ObjectId,
+                        method,
+                        argument
+                    ),
+                    DateTimeOffset.UtcNow + _options.Policy.ExecutionTimeout,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+            if (response.SessionId != handle.SessionId || response.ObjectId != handle.ObjectId)
+            {
+                throw ProtocolFailure("The worker returned a mismatched native module handle.");
+            }
+
+            return response.Result;
+        }
+        finally
+        {
+            _admissionGate.Release();
+        }
+    }
+
+    internal async ValueTask ReleaseStableAbiModuleAsync(WorkerObjectHandle handle)
+    {
+        if (State != WorkerProcessState.Running)
+        {
+            return;
+        }
+
+        try
+        {
+            var response = await SendRequestAsync<
+                WorkerReleaseStableAbiModuleRequest,
+                WorkerReleaseStableAbiModuleResponse
+            >(
+                    WorkerMessageType.ReleaseStableAbiModuleRequest,
+                    WorkerMessageType.ReleaseStableAbiModuleResponse,
+                    new WorkerReleaseStableAbiModuleRequest(handle.SessionId, handle.ObjectId),
+                    deadlineUtc: null,
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+            if (response.SessionId != handle.SessionId || response.ObjectId != handle.ObjectId)
+            {
+                throw ProtocolFailure("The worker released a mismatched native module handle.");
+            }
+        }
+        catch (WorkerProtocolException exception)
+            when (exception.Fault.Code == WorkerProtocolFaultCodes.StaleHandle) { }
+    }
+
     internal async Task InjectTestFaultAsync(
         WorkerTestFault fault,
         CancellationToken cancellationToken
@@ -462,7 +559,47 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
             throw;
         }
 
-        var envelope = await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        WorkerEnvelope envelope;
+        if (deadlineUtc is null)
+        {
+            envelope = await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            var remaining = deadlineUtc.Value - DateTimeOffset.UtcNow;
+            using var deadlineCancellation = new CancellationTokenSource(
+                remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero
+            );
+            using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                deadlineCancellation.Token
+            );
+            try
+            {
+                envelope = await completion
+                    .Task.WaitAsync(waitCancellation.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await HardTimeoutAsync(correlationId).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                await HardTimeoutAsync(correlationId).ConfigureAwait(false);
+                throw new WorkerProtocolException(
+                    new WorkerFault(
+                        WorkerProtocolFaultCodes.HardTimeout,
+                        WorkerFaultPhase.Cancellation,
+                        "The worker exceeded its hard request deadline and was terminated.",
+                        false
+                    )
+                );
+            }
+        }
+
         return ReadResponse<TResponse>(envelope, responseType);
     }
 
@@ -685,14 +822,20 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
         return completion;
     }
 
-    private static T ReadResponse<T>(WorkerEnvelope envelope, WorkerMessageType expectedMessageType)
+    private T ReadResponse<T>(WorkerEnvelope envelope, WorkerMessageType expectedMessageType)
         where T : notnull
     {
         if (envelope.MessageType == WorkerMessageType.Fault)
         {
-            throw new WorkerProtocolException(
+            var exception = new WorkerProtocolException(
                 WorkerProtocolSerializer.ReadPayload<WorkerFault>(envelope)
             );
+            if (!exception.Fault.WorkerUsable)
+            {
+                Fault(exception);
+            }
+
+            throw exception;
         }
 
         if (envelope.MessageType != expectedMessageType)
@@ -815,6 +958,16 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
         foreach (var packageRoot in options.PackageRoots)
         {
             AddArgument(startInfo, "--package-root", packageRoot);
+        }
+
+        if (options.StableAbiFixture is { } nativeFixture)
+        {
+            AddArgument(startInfo, "--abi3-bridge", nativeFixture.BridgePath);
+            AddArgument(startInfo, "--abi3-fixture", nativeFixture.FixturePath);
+            AddArgument(startInfo, "--abi3-manifest", nativeFixture.ManifestPath);
+            AddArgument(startInfo, "--abi3-bridge-sha256", nativeFixture.BridgeSha256);
+            AddArgument(startInfo, "--abi3-fixture-sha256", nativeFixture.FixtureSha256);
+            AddArgument(startInfo, "--abi3-manifest-sha256", nativeFixture.ManifestSha256);
         }
 
         if (options.EnableTestFaultInjection)

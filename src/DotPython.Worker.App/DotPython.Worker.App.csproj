@@ -7,5 +7,6 @@
     <ItemGroup>
         <ProjectReference Include="../DotPython.Protocol/DotPython.Protocol.csproj" />
         <ProjectReference Include="../DotPython.Runtime.Managed/DotPython.Runtime.Managed.csproj" />
+        <ProjectReference Include="../DotPython.Runtime.Native/DotPython.Runtime.Native.csproj" />
     </ItemGroup>
 </Project>

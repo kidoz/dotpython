@@ -18,22 +18,24 @@ libraries can be referenced from C# and other managed languages.
 > compiler also emits deterministic `.dpyc` module artifacts, the interop layer statically
 > compiles an initial `.pyi` subset into typed CLR export contracts, and the prototype
 > `DotPython.Sdk` generates typed C# facades for single-module projects. A versioned worker
-> boundary now isolates managed execution in replaceable child processes; it is infrastructure
-> for native experiments, not executable native-extension support.
+> boundary now loads and executes one pinned Stable-ABI conformance fixture through an experimental,
+> hash-pinned symbol allowlist. This is not general native-extension support.
 
 ## Compatibility contract
 
 - Targets the **Python 3.14** language surface through an explicit compatibility profile.
 - CPython is a **differential reference** for managed execution and is never an implicit fallback.
-- CPython bytecode and C-extension binaries are **unsupported by the managed runtime today**.
+- CPython bytecode and arbitrary C-extension binaries are **unsupported by the managed runtime
+  today**. One internal Stable-ABI fixture is executable only through its explicit worker option.
 - A provider-neutral worker protocol and managed worker host are implemented. The optional CPython
   provider itself is not implemented or qualified.
 - The managed interpreter is the semantic reference; any future JIT tier must fall back to it.
 - Host/.NET access is **capability based**; arbitrary assembly loading and reflection are off by default.
 
 The native-extension direction is layered: managed `abi3` and HPy work begins in workers, while
-unchanged version-specific packages use an explicitly selected CPython worker provider. None of
-these executable native capabilities is implemented or qualified yet.
+unchanged version-specific packages use an explicitly selected CPython worker provider. The first
+managed `abi3` experiment is intentionally fixture-specific; no package or universal ABI
+compatibility is qualified yet.
 
 ## Requirements
 
@@ -195,7 +197,23 @@ The first transport uses redirected standard streams as a private framed channel
 never shares the Python standard-output payload, which is returned inside a bounded response. This
 contains crashes and enables hard termination, but it is not by itself a complete native-code
 sandbox; platform OS resource and network enforcement remain separate work. No provider is selected
-implicitly, and the managed runtime still reports no executable native-extension capability.
+implicitly.
+
+## Stable-ABI fixture experiment
+
+`DotPython.Runtime.Native` loads only the checked-in `native/dotpython-abi3` conformance fixture.
+The parent must explicitly configure absolute bridge, fixture, and manifest paths plus the exact
+SHA-256 of each artifact. The worker validates bounded regular files, platform and architecture,
+the generated manifest, the `PyInit_dotpython_fixture` entry point, and every bridge export before
+running multi-phase initialization on a dedicated native-owner thread.
+
+The fixture proves module initialization, one integer call, a deliberate native exception, logical
+worker handles, and exactly-once cleanup. Its seven-symbol Stable-ABI import surface and native
+exports are checked against canonical lists during the native build. Loader failures include the
+artifact identity, native entry, architecture, missing symbol, and phase; failures that make the
+native loader unsafe invalidate and recycle the worker. This experiment does not import wheels,
+does not expose native pointers to managed callers, and does not claim Anyver, NumPy, HPy, or general
+`abi3` compatibility.
 
 ## Typed module contracts
 
@@ -271,8 +289,10 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 | `src/DotPython.Build.Tasks` | Deterministic out-of-process module compiler and C# facade generator. |
 | `src/DotPython.Sdk` | Additive MSBuild SDK props, targets, and package layout. |
 | `src/DotPython.Protocol` | Versioned, bounded worker envelopes, framing, handshake, and faults. |
+| `src/DotPython.Runtime.Native` | Experimental manifest-bound Stable-ABI fixture loader and logical module boundary. |
 | `src/DotPython.Worker` | Worker policy, process lifecycle, sessions, recycling, and logical handles. |
 | `src/DotPython.Worker.App` | Executable managed worker host and test-only failure injection. |
+| `native/dotpython-abi3` | Minimal Stable-ABI bridge, pinned fixture, manifest generator, and native harness. |
 | `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
 
 ## Development

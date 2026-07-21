@@ -10,12 +10,32 @@
 
     <ItemGroup>
         <ProjectReference Include="../../src/DotPython.Protocol/DotPython.Protocol.csproj" />
+        <ProjectReference Include="../../src/DotPython.Runtime.Native/DotPython.Runtime.Native.csproj" />
         <ProjectReference Include="../../src/DotPython.Worker/DotPython.Worker.csproj" />
         <ProjectReference
             Include="../../src/DotPython.Worker.App/DotPython.Worker.App.csproj"
             ReferenceOutputAssembly="false"
         />
     </ItemGroup>
+
+    <Target
+        Name="BuildNativeFixture"
+        BeforeTargets="Build"
+        Condition="$([MSBuild]::IsOSPlatform('Windows')) != 'true'"
+    >
+        <PropertyGroup>
+            <_NativeFixtureOutput>$(IntermediateOutputPath)dotpython-abi3</_NativeFixtureOutput>
+        </PropertyGroup>
+        <Exec Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/build.sh&quot; &quot;$(_NativeFixtureOutput)&quot;" />
+        <ItemGroup>
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/*" />
+        </ItemGroup>
+        <Copy
+            SourceFiles="@(_NativeFixtureFiles)"
+            DestinationFolder="$(OutDir)native"
+            SkipUnchangedFiles="true"
+        />
+    </Target>
 
     <Target Name="CopyWorkerApp" AfterTargets="Build">
         <ItemGroup>
