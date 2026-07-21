@@ -1,0 +1,135 @@
+name: Native ABI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-abi3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: 'true'
+  MESON_VERSION: '1.11.2'
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+            expected_kernel: Linux
+            expected_architecture: x86_64
+            bridge: libdotpython_abi3.so
+          - name: macOS ARM64
+            os: macos-15
+            expected_kernel: Darwin
+            expected_architecture: arm64
+            bridge: libdotpython_abi3.dylib
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux native tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang clang-format clang-tidy ninja-build python3-venv
+
+      - name: Install macOS native tools
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install llvm ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Meson
+        run: |
+          python3 -m venv "$RUNNER_TEMP/meson"
+          "$RUNNER_TEMP/meson/bin/python" -m pip install --disable-pip-version-check "meson==$MESON_VERSION"
+          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.301
+
+      - name: Verify toolchain and runner
+        env:
+          EXPECTED_KERNEL: ${{ matrix.expected_kernel }}
+          EXPECTED_ARCHITECTURE: ${{ matrix.expected_architecture }}
+        run: |
+          test "$(uname -s)" = "$EXPECTED_KERNEL"
+          test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
+          meson --version
+          ninja --version
+          clang --version
+          clang-format --version
+          clang-tidy --version
+          dotnet --info
+
+      - name: Configure the native ABI build
+        run: meson setup build/native-abi3 native/dotpython-abi3
+
+      - name: Build the native ABI targets
+        run: meson compile -C build/native-abi3
+
+      - name: Test the native ABI targets
+        run: meson test -C build/native-abi3 --print-errorlogs
+
+      - name: Check native formatting
+        run: meson compile -C build/native-abi3 --ninja-args=clang-format-check
+
+      - name: Run clang-tidy
+        run: meson compile -C build/native-abi3 --ninja-args=clang-tidy
+
+      - name: Configure the sanitized native ABI build
+        run: >-
+          meson setup build/native-abi3-sanitize native/dotpython-abi3
+          -Db_sanitize=address,undefined
+          -Db_lundef=false
+
+      - name: Build the sanitized native ABI targets
+        run: meson compile -C build/native-abi3-sanitize
+
+      - name: Test the sanitized native ABI targets
+        run: meson test -C build/native-abi3-sanitize --print-errorlogs
+
+      - name: Build the worker tests and staged native artifacts
+        run: dotnet build tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj --configuration Release
+
+      - name: Verify the staged native artifact allowlist
+        env:
+          BRIDGE: ${{ matrix.bridge }}
+        run: |
+          native_directory=tests/DotPython.WorkerTests/bin/Release/net10.0/native
+          test -d "$native_directory"
+          expected=$(printf '%s\n' \
+            anyver-symbol-manifest.json \
+            dotpython_fixture.abi3.so \
+            dotpython_fixture_failure.abi3.so \
+            "$BRIDGE" \
+            native_anyver_test \
+            native_fixture_test \
+            symbol-manifest.json | LC_ALL=C sort)
+          actual=$(find "$native_directory" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+          test "$actual" = "$expected"
+
+      - name: Run the worker tests
+        run: >-
+          dotnet run
+          --project tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj
+          --configuration Release
+          --no-build
