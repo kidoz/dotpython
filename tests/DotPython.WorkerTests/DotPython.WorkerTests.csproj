@@ -42,10 +42,12 @@
                 Condition="Exists('$(_NativeFixtureOutput)/libdotpython_abi3.so')"
             />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/dotpython_fixture.abi3.so" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/dotpython_fixture_secondary.abi3.so" />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/dotpython_fixture_failure.abi3.so" />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/native_fixture_test" />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/native_anyver_test" />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/symbol-manifest.json" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/secondary-symbol-manifest.json" />
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/anyver-symbol-manifest.json" />
             <_NativeFixtureFiles
                 Include="$(_NativeFixtureOutput)/anyver._anyver.abi3.so"

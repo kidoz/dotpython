@@ -29,10 +29,12 @@ target="$root/target/release"
 mkdir -p "$output"
 cp "$target/$bridge" "$output/$bridge"
 cp "$target/libdotpython_fixture.$libext" "$output/dotpython_fixture.abi3.so"
+cp "$target/libdotpython_fixture_secondary.$libext" "$output/dotpython_fixture_secondary.abi3.so"
 cp "$target/libdotpython_fixture_failure.$libext" "$output/dotpython_fixture_failure.abi3.so"
 cp "$target/native_fixture_test" "$output/native_fixture_test"
 cp "$target/native_anyver_test" "$output/native_anyver_test"
 cp "$root/symbol-manifest.json" "$output/symbol-manifest.json"
+cp "$root/secondary-symbol-manifest.json" "$output/secondary-symbol-manifest.json"
 cp "$root/anyver-symbol-manifest.json" "$output/anyver-symbol-manifest.json"
 
 # Deterministic symbol-boundary checks (same scripts and expected lists as before).
@@ -40,6 +42,8 @@ cp "$root/anyver-symbol-manifest.json" "$output/anyver-symbol-manifest.json"
 "$root/check-binary-symbols.sh" "$output/$bridge" bridge-exports
 "$root/check-binary-symbols.sh" "$output/dotpython_fixture.abi3.so" imports
 "$root/check-binary-symbols.sh" "$output/dotpython_fixture.abi3.so" fixture-exports
+"$root/check-binary-symbols.sh" "$output/dotpython_fixture_secondary.abi3.so" imports
+"$root/check-binary-symbols.sh" "$output/dotpython_fixture_secondary.abi3.so" secondary-fixture-exports
 "$root/check-binary-symbols.sh" "$output/dotpython_fixture_failure.abi3.so" failure-imports
 "$root/check-binary-symbols.sh" "$output/dotpython_fixture_failure.abi3.so" fixture-exports
 

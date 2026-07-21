@@ -113,9 +113,11 @@ jobs:
             anyver-symbol-manifest.json \
             dotpython_fixture.abi3.so \
             dotpython_fixture_failure.abi3.so \
+            dotpython_fixture_secondary.abi3.so \
             "$BRIDGE" \
             native_anyver_test \
             native_fixture_test \
+            secondary-symbol-manifest.json \
             symbol-manifest.json | LC_ALL=C sort)
           if [ "$RUNNER_OS" = "macOS" ]; then
             expected=$(printf '%s\n%s\n' "$expected" anyver._anyver.abi3.so | LC_ALL=C sort)

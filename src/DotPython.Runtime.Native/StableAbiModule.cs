@@ -311,7 +311,7 @@ internal sealed class StableAbiModule : IDisposable
         {
             cleanupCount = GetDelegate<CleanupCount>(
                 moduleLibrary,
-                "dotpython_fixture_cleanup_count"
+                $"{manifest.ModuleName}_cleanup_count"
             );
             expectedCleanupCount = checked(cleanupCount() + 1);
         }

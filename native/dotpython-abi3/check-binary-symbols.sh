@@ -25,8 +25,12 @@ case $kind in
             *) exit 2 ;;
         esac
         ;;
-    fixture-exports)
-        expected="$root/fixture-exports.txt"
+    fixture-exports|secondary-fixture-exports)
+        if [ "$kind" = fixture-exports ]; then
+            expected="$root/fixture-exports.txt"
+        else
+            expected="$root/secondary-fixture-exports.txt"
+        fi
         case $(uname -s) in
             Darwin)
                 nm -gU "$binary" | awk '{ print $NF }' | sed 's/^_//' \

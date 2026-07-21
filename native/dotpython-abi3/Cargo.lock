@@ -15,6 +15,10 @@ name = "dotpython_fixture_failure"
 version = "0.1.0"
 
 [[package]]
+name = "dotpython_fixture_secondary"
+version = "0.1.0"
+
+[[package]]
 name = "dotpython_harness"
 version = "0.1.0"
 dependencies = [

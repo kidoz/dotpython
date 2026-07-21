@@ -30,11 +30,18 @@ internal sealed record StableAbiSymbolManifest(
 )
 {
     internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v3";
+    internal const string ExpectedSecondaryManifestVersion =
+        "dotpython-abi3-fixture-secondary-v1";
     internal const string ExpectedProviderId = "dotpython-managed-abi3";
     internal const int ExpectedBridgeAbiVersion = 5;
 
     internal bool IsConformanceFixture =>
-        string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal);
+        string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal)
+        || string.Equals(
+            ManifestVersion,
+            ExpectedSecondaryManifestVersion,
+            StringComparison.Ordinal
+        );
 
     internal bool ProcessPinned =>
         string.Equals(LibraryLifetime, "process", StringComparison.Ordinal);
@@ -54,6 +61,12 @@ internal sealed record StableAbiSymbolManifest(
     [
         "PyInit_dotpython_fixture",
         "dotpython_fixture_cleanup_count",
+    ];
+
+    private static readonly string[] SecondaryConformanceModuleExports =
+    [
+        "PyInit_dotpython_fixture_secondary",
+        "dotpython_fixture_secondary_cleanup_count",
     ];
 
     private static readonly string[] BridgeStableAbiSymbols =
@@ -177,6 +190,7 @@ internal sealed record StableAbiSymbolManifest(
     ];
 
     private static readonly string[] ConformanceMethods = ["fail", "increment"];
+    private static readonly string[] SecondaryConformanceMethods = ["double", "fail"];
 
     internal static StableAbiSymbolManifest Load(string path)
     {
@@ -253,19 +267,23 @@ internal sealed record StableAbiSymbolManifest(
 
     private void ValidateFixture()
     {
+        var secondary = string.Equals(
+            ManifestVersion,
+            ExpectedSecondaryManifestVersion,
+            StringComparison.Ordinal
+        );
+        var expectedModuleName = secondary ? "dotpython_fixture_secondary" : "dotpython_fixture";
+        var expectedCapability = secondary
+            ? "managed-stable-abi-fixture-secondary-v1"
+            : "managed-stable-abi-fixture-v3";
+        var expectedInitializer = secondary
+            ? "PyInit_dotpython_fixture_secondary"
+            : "PyInit_dotpython_fixture";
         if (
-            !string.Equals(ModuleName, "dotpython_fixture", StringComparison.Ordinal)
-            || !string.Equals(
-                CapabilityId,
-                "managed-stable-abi-fixture-v3",
-                StringComparison.Ordinal
-            )
+            !string.Equals(ModuleName, expectedModuleName, StringComparison.Ordinal)
+            || !string.Equals(CapabilityId, expectedCapability, StringComparison.Ordinal)
             || !string.Equals(LibraryLifetime, "module", StringComparison.Ordinal)
-            || !string.Equals(
-                InitializationSymbol,
-                "PyInit_dotpython_fixture",
-                StringComparison.Ordinal
-            )
+            || !string.Equals(InitializationSymbol, expectedInitializer, StringComparison.Ordinal)
             || ArtifactFileName is not null
             || ArtifactSha256 is not null
             || NativeEntry is not null
@@ -281,8 +299,16 @@ internal sealed record StableAbiSymbolManifest(
         }
 
         RequireExact(AllowedStableAbiSymbols, StableAbiSymbols, "Stable-ABI imports");
-        RequireExact(RequiredModuleExports, ConformanceModuleExports, "conformance module exports");
-        RequireExact(AllowedMethods, ConformanceMethods, "conformance module methods");
+        RequireExact(
+            RequiredModuleExports,
+            secondary ? SecondaryConformanceModuleExports : ConformanceModuleExports,
+            "conformance module exports"
+        );
+        RequireExact(
+            AllowedMethods,
+            secondary ? SecondaryConformanceMethods : ConformanceMethods,
+            "conformance module methods"
+        );
     }
 
     private void ValidateQualifiedArtifact()
