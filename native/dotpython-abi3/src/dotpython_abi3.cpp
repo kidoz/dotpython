@@ -3,15 +3,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <bit>
 #include <charconv>
 #include <limits.h>
 #include <limits>
-#include <stdio.h>
-#include <stdlib.h>
+#include <new>
 #include <string.h>
 #include <string_view>
+#include <type_traits>
 
 enum dp_object_kind {
+    DP_OBJECT_INVALID = 0,
     DP_OBJECT_BYTES = 1,
     DP_OBJECT_CMETHOD = 2,
     DP_OBJECT_DICT = 3,
@@ -106,7 +109,8 @@ static PyObject *dp_get_attribute_cstr(PyObject *object, const char *name);
 /* Keep Stable-ABI initializer spelling independent of the installed clang-format version. */
 // clang-format off
 #define DP_STATIC_TYPE(name_literal)                                                               \
-    {{DP_ABI3_IMMORTAL_REFCNT, NULL}, NULL, (int)sizeof(PyObject), 0, 0, NULL, NULL, NULL, NULL, 0}
+    {{DP_ABI3_IMMORTAL_REFCNT, NULL}, (char *)(name_literal), (int)sizeof(PyObject), 0, 0, NULL,   \
+     NULL, NULL, NULL, 0}
 // clang-format on
 
 DP_ABI3_EXPORT PyTypeObject PyBaseObject_Type = DP_STATIC_TYPE("object");
@@ -150,10 +154,117 @@ static thread_local PyObject *dp_error_value;
 static thread_local PyObject *dp_error_traceback;
 static thread_local char dp_error_text[1024];
 static thread_local char dp_result_text[16384];
+static thread_local char dp_current_thread_token;
+static thread_local bool dp_setting_error;
 static char dp_thread_state_token;
 static dp_metadata *dp_objects;
 static int64_t dp_active_objects;
 static int dp_initialized;
+static std::atomic<const void *> dp_owner_thread_token{NULL};
+static constexpr size_t dp_max_allocation_size = size_t{64} * 1024U * 1024U;
+
+class dp_owned_ref final {
+  public:
+    explicit dp_owned_ref(PyObject *object = NULL) noexcept : object_(object) {
+    }
+
+    dp_owned_ref(const dp_owned_ref &) = delete;
+    dp_owned_ref &operator=(const dp_owned_ref &) = delete;
+
+    dp_owned_ref(dp_owned_ref &&other) noexcept : object_(other.release()) {
+    }
+
+    dp_owned_ref &operator=(dp_owned_ref &&other) noexcept {
+        if (this != &other) {
+            reset(other.release());
+        }
+        return *this;
+    }
+
+    ~dp_owned_ref() noexcept {
+        dp_release(object_);
+    }
+
+    [[nodiscard]] PyObject *get() const noexcept {
+        return object_;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return object_ != NULL;
+    }
+
+    [[nodiscard]] PyObject *release() noexcept {
+        PyObject *object = object_;
+        object_ = NULL;
+        return object;
+    }
+
+    void reset(PyObject *object = NULL) noexcept {
+        PyObject *previous = object_;
+        object_ = object;
+        dp_release(previous);
+    }
+
+  private:
+    PyObject *object_;
+};
+
+template <typename To, typename From> [[nodiscard]] static To dp_pointer_cast(From value) noexcept {
+    static_assert(std::is_pointer_v<To>);
+    static_assert(std::is_pointer_v<From>);
+    static_assert(sizeof(To) == sizeof(From));
+    if (value == nullptr) {
+        return nullptr;
+    }
+    // ABI3 and the supported POSIX loaders require equal-sized object/function pointer interop.
+    return std::bit_cast<To>(value); // NOLINT(bugprone-bitwise-pointer-cast)
+}
+
+[[nodiscard]] static bool
+dp_checked_add(Py_ssize_t left, Py_ssize_t right, Py_ssize_t *result) noexcept {
+    if (result == NULL || left < 0 || right < 0 ||
+        right > std::numeric_limits<Py_ssize_t>::max() - left) {
+        return false;
+    }
+    *result = left + right;
+    return true;
+}
+
+[[nodiscard]] static bool dp_allocation_fits(Py_ssize_t count, size_t item_size) noexcept {
+    return count >= 0 &&
+           (item_size == 0U || (size_t)count <= std::numeric_limits<size_t>::max() / item_size);
+}
+
+[[nodiscard]] static bool
+dp_checked_growth(Py_ssize_t current, Py_ssize_t initial, Py_ssize_t *result) noexcept {
+    if (result == NULL || current < 0 || initial <= 0) {
+        return false;
+    }
+    if (current == 0) {
+        *result = initial;
+        return true;
+    }
+    return dp_checked_add(current, current, result);
+}
+
+template <typename T> [[nodiscard]] static T *dp_new_array(size_t count) noexcept {
+    if (count == 0U || count > std::numeric_limits<size_t>::max() / sizeof(T) ||
+        count * sizeof(T) > dp_max_allocation_size) {
+        return NULL;
+    }
+    return new (std::nothrow) T[count]{};
+}
+
+[[nodiscard]] static void *dp_new_zeroed_storage(size_t size) noexcept {
+    if (size > dp_max_allocation_size) {
+        return NULL;
+    }
+    void *storage = ::operator new(size, std::nothrow);
+    if (storage != NULL) {
+        std::fill_n(static_cast<unsigned char *>(storage), size, (unsigned char)0);
+    }
+    return storage;
+}
 
 template <typename T>
 [[nodiscard]] static bool dp_copy_items(
@@ -185,6 +296,37 @@ dp_copy_truncated_text(char *destination, size_t capacity, const char *source) n
     }
     destination[length] = '\0';
     return length;
+}
+
+/*
+ * Ownership is claimed by the first calling thread and never released. Thread identity is the
+ * address of a thread_local token, which is unique only among live threads, so this check assumes
+ * the owner thread lives for the whole process — as the worker scheduler thread does. If an owner
+ * thread could exit, a later thread reusing its TLS address would silently pass this check.
+ */
+[[nodiscard]] static bool dp_require_owner_thread() noexcept {
+    const void *current = &dp_current_thread_token;
+    const void *expected = NULL;
+    if (dp_owner_thread_token.compare_exchange_strong(
+            expected,
+            current,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire
+        ) ||
+        expected == current) {
+        return true;
+    }
+
+    /* The foreign thread must not touch registry-owned error objects. */
+    dp_error_type = PyExc_RuntimeError;
+    dp_error_value = NULL;
+    dp_error_traceback = NULL;
+    (void)dp_copy_truncated_text(
+        dp_error_text,
+        sizeof(dp_error_text),
+        "native ABI access must execute on its owner thread"
+    );
+    return false;
 }
 
 static int
@@ -225,22 +367,21 @@ static char *dp_copy_text(const char *text, Py_ssize_t size) {
     if (text_size == std::numeric_limits<size_t>::max()) {
         return NULL;
     }
-    char *copy = (char *)malloc(text_size + 1U);
+    char *copy = dp_new_array<char>(text_size + 1U);
     if (copy == NULL) {
         return NULL;
     }
 
     if (!dp_copy_items(copy, text_size + 1U, text, text_size)) {
-        free(copy);
+        delete[] copy;
         return NULL;
     }
     copy[text_size] = '\0';
     return copy;
 }
 
-static void dp_initialize_type(PyTypeObject *type, const char *name, PyTypeObject *base) {
+static void dp_initialize_type(PyTypeObject *type, PyTypeObject *base) {
     type->base.ob_type = &PyType_Type;
-    type->name = (char *)name;
     type->base_type = base;
 }
 
@@ -249,27 +390,25 @@ static void dp_initialize(void) {
         return;
     }
 
-    PyType_Type.base.ob_type = &PyType_Type;
-    PyType_Type.name = (char *)"type";
-    PyType_Type.base_type = &PyBaseObject_Type;
-    dp_initialize_type(&PyBaseObject_Type, "object", NULL);
-    dp_initialize_type(&PyDict_Type, "dict", &PyBaseObject_Type);
-    dp_initialize_type(&PyList_Type, "list", &PyBaseObject_Type);
-    dp_initialize_type(&PyModule_Type, "module", &PyBaseObject_Type);
-    dp_initialize_type(&PyTuple_Type, "tuple", &PyBaseObject_Type);
-    dp_initialize_type(&PyUnicode_Type, "str", &PyBaseObject_Type);
-    dp_initialize_type(&dp_bytes_type, "bytes", &PyBaseObject_Type);
-    dp_initialize_type(&dp_cmethod_type, "builtin_function_or_method", &PyBaseObject_Type);
-    dp_initialize_type(&dp_iterator_type, "iterator", &PyBaseObject_Type);
-    dp_initialize_type(&dp_long_type, "int", &PyBaseObject_Type);
-    dp_initialize_type(&dp_bool_type, "bool", &dp_long_type);
-    dp_initialize_type(&dp_base_exception_type, "BaseException", &PyBaseObject_Type);
-    dp_initialize_type(&dp_attribute_error_type, "AttributeError", &dp_base_exception_type);
-    dp_initialize_type(&dp_index_error_type, "IndexError", &dp_base_exception_type);
-    dp_initialize_type(&dp_runtime_error_type, "RuntimeError", &dp_base_exception_type);
-    dp_initialize_type(&dp_system_error_type, "SystemError", &dp_base_exception_type);
-    dp_initialize_type(&dp_type_error_type, "TypeError", &dp_base_exception_type);
-    dp_initialize_type(&dp_value_error_type, "ValueError", &dp_base_exception_type);
+    dp_initialize_type(&PyType_Type, &PyBaseObject_Type);
+    dp_initialize_type(&PyBaseObject_Type, NULL);
+    dp_initialize_type(&PyDict_Type, &PyBaseObject_Type);
+    dp_initialize_type(&PyList_Type, &PyBaseObject_Type);
+    dp_initialize_type(&PyModule_Type, &PyBaseObject_Type);
+    dp_initialize_type(&PyTuple_Type, &PyBaseObject_Type);
+    dp_initialize_type(&PyUnicode_Type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_bytes_type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_cmethod_type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_iterator_type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_long_type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_bool_type, &dp_long_type);
+    dp_initialize_type(&dp_base_exception_type, &PyBaseObject_Type);
+    dp_initialize_type(&dp_attribute_error_type, &dp_base_exception_type);
+    dp_initialize_type(&dp_index_error_type, &dp_base_exception_type);
+    dp_initialize_type(&dp_runtime_error_type, &dp_base_exception_type);
+    dp_initialize_type(&dp_system_error_type, &dp_base_exception_type);
+    dp_initialize_type(&dp_type_error_type, &dp_base_exception_type);
+    dp_initialize_type(&dp_value_error_type, &dp_base_exception_type);
     PyType_Type.flags = 1UL << 31;
     PyDict_Type.flags = 1UL << 29;
     PyList_Type.flags = 1UL << 25;
@@ -289,6 +428,9 @@ static void dp_initialize(void) {
 }
 
 static dp_metadata *dp_find(PyObject *object) {
+    if (!dp_require_owner_thread()) {
+        return NULL;
+    }
     for (dp_metadata *entry = dp_objects; entry != NULL; entry = entry->next) {
         if (entry->object == object) {
             return entry;
@@ -298,7 +440,10 @@ static dp_metadata *dp_find(PyObject *object) {
 }
 
 static dp_metadata *dp_add(PyObject *object, enum dp_object_kind kind) {
-    dp_metadata *entry = (dp_metadata *)calloc(1, sizeof(dp_metadata));
+    if (dp_active_objects == std::numeric_limits<int64_t>::max()) {
+        return NULL;
+    }
+    dp_metadata *entry = new (std::nothrow) dp_metadata{};
     if (entry == NULL) {
         return NULL;
     }
@@ -326,11 +471,14 @@ static dp_metadata *dp_detach(PyObject *object) {
 }
 
 static PyObject *dp_allocate(enum dp_object_kind kind, PyTypeObject *type, size_t size) {
+    if (!dp_require_owner_thread()) {
+        return NULL;
+    }
     dp_initialize();
     if (size < sizeof(PyObject)) {
         size = sizeof(PyObject);
     }
-    PyObject *object = (PyObject *)calloc(1, size);
+    PyObject *object = static_cast<PyObject *>(dp_new_zeroed_storage(size));
     if (object == NULL) {
         dp_set_error_text(PyExc_RuntimeError, "native object allocation failed");
         return NULL;
@@ -338,7 +486,7 @@ static PyObject *dp_allocate(enum dp_object_kind kind, PyTypeObject *type, size_
     object->ob_refcnt = 1;
     object->ob_type = type;
     if (dp_add(object, kind) == NULL) {
-        free(object);
+        ::operator delete(object);
         dp_set_error_text(PyExc_RuntimeError, "native object metadata allocation failed");
         return NULL;
     }
@@ -373,10 +521,15 @@ static void dp_clear_error(void) {
 }
 
 static void dp_set_error_text(PyObject *type, const char *message) {
+    const bool reentrant = dp_setting_error;
+    dp_setting_error = true;
     dp_clear_error();
     dp_error_type = Py_NewRef(type == NULL ? PyExc_RuntimeError : type);
     const size_t length = dp_copy_truncated_text(dp_error_text, sizeof(dp_error_text), message);
-    dp_error_value = dp_new_unicode(dp_error_text, (Py_ssize_t)length);
+    if (!reentrant) {
+        dp_error_value = dp_new_unicode(dp_error_text, (Py_ssize_t)length);
+    }
+    dp_setting_error = reentrant;
 }
 
 static void *dp_slot(PyTypeObject *type, int slot) {
@@ -384,10 +537,10 @@ static void *dp_slot(PyTypeObject *type, int slot) {
         return NULL;
     }
     if (slot == Py_tp_alloc) {
-        return (void *)dp_generic_alloc;
+        return dp_pointer_cast<void *>(&dp_generic_alloc);
     }
     if (slot == Py_tp_free) {
-        return (void *)dp_generic_free;
+        return dp_pointer_cast<void *>(&dp_generic_free);
     }
     if (type->slots != NULL) {
         for (PyType_Slot *entry = type->slots; entry->slot != 0; entry++) {
@@ -397,7 +550,7 @@ static void *dp_slot(PyTypeObject *type, int slot) {
         }
     }
     if (slot == Py_tp_new && type == &PyBaseObject_Type) {
-        return (void *)dp_generic_new;
+        return dp_pointer_cast<void *>(&dp_generic_new);
     }
     return type->base_type == NULL ? NULL : dp_slot(type->base_type, slot);
 }
@@ -407,7 +560,7 @@ static void dp_release_sequence(dp_sequence *sequence) {
         for (Py_ssize_t index = 0; index < sequence->size; index++) {
             dp_release(sequence->items[index]);
         }
-        free(sequence->items);
+        delete[] sequence->items;
     }
 }
 
@@ -416,8 +569,8 @@ static void dp_release_dictionary(dp_dictionary *dictionary) {
         dp_release(dictionary->keys[index]);
         dp_release(dictionary->values[index]);
     }
-    free(dictionary->keys);
-    free(dictionary->values);
+    delete[] dictionary->keys;
+    delete[] dictionary->values;
 }
 
 static void dp_destroy_metadata(dp_metadata *entry) {
@@ -425,9 +578,11 @@ static void dp_destroy_metadata(dp_metadata *entry) {
         return;
     }
     switch (entry->kind) {
+    case DP_OBJECT_INVALID:
+        break;
     case DP_OBJECT_BYTES:
     case DP_OBJECT_UNICODE:
-        free(entry->value.text.data);
+        delete[] entry->value.text.data;
         break;
     case DP_OBJECT_CMETHOD:
         dp_release(entry->value.method.self);
@@ -450,31 +605,36 @@ static void dp_destroy_metadata(dp_metadata *entry) {
             entry->value.module.definition->m_free(entry->object);
         }
         dp_release(entry->value.module.attributes);
-        free(entry->value.module.name);
+        delete[] entry->value.module.name;
         break;
     case DP_OBJECT_TYPE: {
         PyTypeObject *type = (PyTypeObject *)entry->object;
-        dp_release(entry->attributes);
         dp_release((PyObject *)type->base_type);
         if (type->dynamic) {
-            free(type->name);
-            free(type->slots);
+            delete[] type->name;
+            delete[] type->slots;
         }
         break;
     }
     case DP_OBJECT_INSTANCE:
-        dp_release(entry->attributes);
         dp_release((PyObject *)entry->object->ob_type);
         break;
     case DP_OBJECT_LONG:
         break;
     }
-    free(entry->object);
-    free(entry);
+    dp_release(entry->attributes);
+    ::operator delete(entry->object);
+    delete entry;
 }
 
 static void dp_release(PyObject *object) {
     if (object == NULL || dp_is_static(object)) {
+        return;
+    }
+    if (!dp_require_owner_thread()) {
+        return;
+    }
+    if (object->ob_refcnt == std::numeric_limits<Py_ssize_t>::max()) {
         return;
     }
     if (object->ob_refcnt <= 0) {
@@ -487,7 +647,7 @@ static void dp_release(PyObject *object) {
 
     dp_metadata *entry = dp_find(object);
     if (entry != NULL && entry->kind == DP_OBJECT_INSTANCE) {
-        destructor dealloc = (destructor)dp_slot(object->ob_type, Py_tp_dealloc);
+        destructor dealloc = dp_pointer_cast<destructor>(dp_slot(object->ob_type, Py_tp_dealloc));
         if (dealloc != NULL) {
             dealloc(object);
             return;
@@ -497,8 +657,10 @@ static void dp_release(PyObject *object) {
 }
 
 DP_ABI3_EXPORT void _Py_IncRef(PyObject *object) {
-    if (object != NULL && !dp_is_static(object)) {
-        object->ob_refcnt++;
+    if (object != NULL && !dp_is_static(object) && dp_require_owner_thread()) {
+        if (object->ob_refcnt != std::numeric_limits<Py_ssize_t>::max()) {
+            object->ob_refcnt++;
+        }
     }
 }
 
@@ -653,7 +815,12 @@ static PyObject *dp_new_sequence(enum dp_object_kind kind, PyTypeObject *type, P
     entry->value.sequence.size = size;
     entry->value.sequence.capacity = size;
     if (size > 0) {
-        entry->value.sequence.items = (PyObject **)calloc((size_t)size, sizeof(PyObject *));
+        if (!dp_allocation_fits(size, sizeof(PyObject *))) {
+            dp_release(object);
+            dp_set_error_text(PyExc_RuntimeError, "sequence allocation exceeds the bridge limit");
+            return NULL;
+        }
+        entry->value.sequence.items = dp_new_array<PyObject *>((size_t)size);
         if (entry->value.sequence.items == NULL) {
             dp_release(object);
             dp_set_error_text(PyExc_RuntimeError, "sequence allocation failed");
@@ -731,13 +898,23 @@ DP_ABI3_EXPORT int PyList_Append(PyObject *list, PyObject *value) {
         return -1;
     }
     if (sequence->size == sequence->capacity) {
-        Py_ssize_t capacity = sequence->capacity == 0 ? 4 : sequence->capacity * 2;
-        PyObject **items =
-            (PyObject **)realloc(sequence->items, (size_t)capacity * sizeof(PyObject *));
+        Py_ssize_t capacity = 0;
+        if (!dp_checked_growth(sequence->capacity, 4, &capacity) ||
+            !dp_allocation_fits(capacity, sizeof(PyObject *))) {
+            dp_set_error_text(PyExc_RuntimeError, "list growth exceeds the bridge limit");
+            return -1;
+        }
+        PyObject **items = dp_new_array<PyObject *>((size_t)capacity);
         if (items == NULL) {
             dp_set_error_text(PyExc_RuntimeError, "list growth failed");
             return -1;
         }
+        if (!dp_copy_items(items, (size_t)capacity, sequence->items, (size_t)sequence->size)) {
+            delete[] items;
+            dp_set_error_text(PyExc_RuntimeError, "list growth copy failed");
+            return -1;
+        }
+        delete[] sequence->items;
         sequence->items = items;
         sequence->capacity = capacity;
     }
@@ -776,7 +953,15 @@ static int dp_equal(PyObject *left, PyObject *right) {
                ) == 0;
     }
     if (left_meta->kind == DP_OBJECT_LONG) {
-        return left_meta->value.number.value == right_meta->value.number.value;
+        const dp_number left_number = left_meta->value.number;
+        const dp_number right_number = right_meta->value.number;
+        if (left_number.value != right_number.value) {
+            return 0;
+        }
+        /* Equal bits still differ in value when exactly one side is a negative signed number. */
+        const bool left_negative = !left_number.is_unsigned && (long long)left_number.value < 0;
+        const bool right_negative = !right_number.is_unsigned && (long long)right_number.value < 0;
+        return left_negative == right_negative;
     }
     return 0;
 }
@@ -810,24 +995,31 @@ DP_ABI3_EXPORT int PyDict_SetItem(PyObject *dictionary, PyObject *key, PyObject 
     }
     Py_ssize_t index = dp_dictionary_index(items, key);
     if (index >= 0) {
+        PyObject *replacement = Py_NewRef(value);
         dp_release(items->values[index]);
-        items->values[index] = Py_NewRef(value);
+        items->values[index] = replacement;
         return 0;
     }
     if (items->size == items->capacity) {
-        Py_ssize_t capacity = items->capacity == 0 ? 8 : items->capacity * 2;
-        PyObject **keys = (PyObject **)realloc(items->keys, (size_t)capacity * sizeof(PyObject *));
-        if (keys == NULL) {
+        Py_ssize_t capacity = 0;
+        if (!dp_checked_growth(items->capacity, 8, &capacity) ||
+            !dp_allocation_fits(capacity, sizeof(PyObject *))) {
+            dp_set_error_text(PyExc_RuntimeError, "dictionary growth exceeds the bridge limit");
+            return -1;
+        }
+        PyObject **keys = dp_new_array<PyObject *>((size_t)capacity);
+        PyObject **values = dp_new_array<PyObject *>((size_t)capacity);
+        if (keys == NULL || values == NULL ||
+            !dp_copy_items(keys, (size_t)capacity, items->keys, (size_t)items->size) ||
+            !dp_copy_items(values, (size_t)capacity, items->values, (size_t)items->size)) {
+            delete[] keys;
+            delete[] values;
             dp_set_error_text(PyExc_RuntimeError, "dictionary growth failed");
             return -1;
         }
+        delete[] items->keys;
+        delete[] items->values;
         items->keys = keys;
-        PyObject **values =
-            (PyObject **)realloc(items->values, (size_t)capacity * sizeof(PyObject *));
-        if (values == NULL) {
-            dp_set_error_text(PyExc_RuntimeError, "dictionary growth failed");
-            return -1;
-        }
         items->values = values;
         items->capacity = capacity;
     }
@@ -948,15 +1140,23 @@ static PyObject *dp_call_method(dp_cmethod *method, PyObject *args, PyObject *kw
     }
     int flags = method->definition->ml_flags;
     int convention = flags & (METH_VARARGS | METH_KEYWORDS | METH_NOARGS | METH_O | METH_FASTCALL);
+    dp_dictionary *keywords = kwargs == NULL ? NULL : dp_require_dictionary(kwargs);
+    if (kwargs != NULL && keywords == NULL) {
+        return NULL;
+    }
+    Py_ssize_t keyword_count = keywords == NULL ? 0 : keywords->size;
+    if (keyword_count > 0 && (flags & METH_KEYWORDS) == 0) {
+        dp_set_error_text(PyExc_TypeError, "method does not accept keyword arguments");
+        return NULL;
+    }
     if ((flags & METH_FASTCALL) != 0) {
-        dp_dictionary *keywords = kwargs == NULL ? NULL : dp_require_dictionary(kwargs);
-        if (kwargs != NULL && keywords == NULL) {
+        Py_ssize_t total = 0;
+        if (!dp_checked_add(positional->size, keyword_count, &total) ||
+            !dp_allocation_fits(total, sizeof(PyObject *))) {
+            dp_set_error_text(PyExc_RuntimeError, "call argument count exceeds the bridge limit");
             return NULL;
         }
-        Py_ssize_t keyword_count = keywords == NULL ? 0 : keywords->size;
-        Py_ssize_t total = positional->size + keyword_count;
-        PyObject **values =
-            total == 0 ? NULL : (PyObject **)calloc((size_t)total, sizeof(PyObject *));
+        PyObject **values = total == 0 ? NULL : dp_new_array<PyObject *>((size_t)total);
         if (total > 0 && values == NULL) {
             dp_set_error_text(PyExc_RuntimeError, "call argument allocation failed");
             return NULL;
@@ -964,56 +1164,59 @@ static PyObject *dp_call_method(dp_cmethod *method, PyObject *args, PyObject *kw
         for (Py_ssize_t index = 0; index < positional->size; index++) {
             values[index] = positional->items[index];
         }
-        PyObject *keyword_names = NULL;
+        dp_owned_ref keyword_names;
         if (keyword_count > 0) {
-            keyword_names = PyTuple_New(keyword_count);
-            if (keyword_names == NULL) {
-                free(values);
+            keyword_names.reset(PyTuple_New(keyword_count));
+            if (!keyword_names) {
+                delete[] values;
                 return NULL;
             }
             for (Py_ssize_t index = 0; index < keyword_count; index++) {
-                PyTuple_SetItem(keyword_names, index, Py_NewRef(keywords->keys[index]));
+                if (PyTuple_SetItem(keyword_names.get(), index, Py_NewRef(keywords->keys[index])) !=
+                    0) {
+                    delete[] values;
+                    return NULL;
+                }
                 values[positional->size + index] = keywords->values[index];
             }
         }
-        union {
-            PyCFunction plain;
-            PyCFunctionFast fast;
-            PyCFunctionFastWithKeywords fast_keywords;
-            PyCMethod method;
-        } callable = {.plain = method->definition->ml_meth};
         PyObject *result;
         if ((flags & METH_METHOD) != 0) {
-            result = callable.method(
+            result = dp_pointer_cast<PyCMethod>(method->definition->ml_meth)(
                 method->self,
                 method->class_type,
                 values,
                 positional->size,
-                keyword_names
+                keyword_names.get()
             );
         } else if ((flags & METH_KEYWORDS) != 0) {
-            result = callable.fast_keywords(method->self, values, positional->size, keyword_names);
+            result = dp_pointer_cast<PyCFunctionFastWithKeywords>(method->definition->ml_meth)(
+                method->self,
+                values,
+                positional->size,
+                keyword_names.get()
+            );
         } else {
-            result = callable.fast(method->self, values, positional->size);
+            result = dp_pointer_cast<PyCFunctionFast>(method->definition->ml_meth)(
+                method->self,
+                values,
+                positional->size
+            );
         }
-        dp_release(keyword_names);
-        free(values);
+        delete[] values;
         return result;
     }
     if (convention == (METH_VARARGS | METH_KEYWORDS)) {
-        union {
-            PyCFunction plain;
-            PyCFunctionWithKeywords keywords;
-        } callable = {.plain = method->definition->ml_meth};
-        return callable.keywords(method->self, args, kwargs);
+        return dp_pointer_cast<PyCFunctionWithKeywords>(method->definition
+                                                            ->ml_meth)(method->self, args, kwargs);
     }
     if (convention == METH_VARARGS) {
         return method->definition->ml_meth(method->self, args);
     }
-    if (convention == METH_NOARGS && positional->size == 0 && kwargs == NULL) {
+    if (convention == METH_NOARGS && positional->size == 0 && keyword_count == 0) {
         return method->definition->ml_meth(method->self, NULL);
     }
-    if (convention == METH_O && positional->size == 1 && kwargs == NULL) {
+    if (convention == METH_O && positional->size == 1 && keyword_count == 0) {
         return method->definition->ml_meth(method->self, positional->items[0]);
     }
     dp_set_error_text(PyExc_TypeError, "method arguments do not match its calling convention");
@@ -1078,6 +1281,8 @@ DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification) {
         dp_set_error_text(PyExc_RuntimeError, "type name allocation failed");
         return NULL;
     }
+    /* Mark dynamic before further allocations so every failure path frees name and slots. */
+    type->dynamic = 1;
     type->basicsize = specification->basicsize;
     type->itemsize = specification->itemsize;
     type->flags = specification->flags | (1UL << 9) | (1UL << 12);
@@ -1095,7 +1300,7 @@ DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification) {
         dp_set_error_text(PyExc_RuntimeError, "type slot allocation exceeds the bridge limit");
         return NULL;
     }
-    type->slots = (PyType_Slot *)calloc(slot_count + 1U, sizeof(PyType_Slot));
+    type->slots = dp_new_array<PyType_Slot>(slot_count + 1U);
     if (type->slots == NULL) {
         dp_release((PyObject *)type);
         dp_set_error_text(PyExc_RuntimeError, "type slot allocation failed");
@@ -1107,7 +1312,6 @@ DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification) {
         return NULL;
     }
     type->base_type = &PyBaseObject_Type;
-    type->dynamic = 1;
     for (PyType_Slot *slot = type->slots; slot->slot != 0; slot++) {
         if (slot->slot == Py_tp_methods) {
             type->methods = (PyMethodDef *)slot->pfunc;
@@ -1273,8 +1477,9 @@ DP_ABI3_EXPORT int PyObject_GenericSetDict(PyObject *object, PyObject *value, vo
         dp_set_error_text(PyExc_TypeError, "__dict__ must be a dict");
         return -1;
     }
+    PyObject *replacement = Py_NewRef(value);
     dp_release(entry->attributes);
-    entry->attributes = Py_NewRef(value);
+    entry->attributes = replacement;
     return 0;
 }
 
@@ -1296,7 +1501,7 @@ DP_ABI3_EXPORT PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObj
     if (entry != NULL && entry->kind == DP_OBJECT_CMETHOD) {
         result = dp_call_method(&entry->value.method, args, kwargs);
     } else if (callable->ob_type == &PyType_Type) {
-        newfunc create = (newfunc)dp_slot((PyTypeObject *)callable, Py_tp_new);
+        newfunc create = dp_pointer_cast<newfunc>(dp_slot((PyTypeObject *)callable, Py_tp_new));
         if (create == NULL) {
             dp_set_error_text(PyExc_TypeError, "type is not constructible");
         } else {
@@ -1307,11 +1512,8 @@ DP_ABI3_EXPORT PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObj
         if (call == NULL) {
             dp_set_error_text(PyExc_TypeError, "object is not callable");
         } else {
-            union {
-                void *pointer;
-                PyObject *(*function)(PyObject *, PyObject *, PyObject *);
-            } operation = {.pointer = call};
-            result = operation.function(callable, args, kwargs);
+            using callfunc = PyObject *(*)(PyObject *, PyObject *, PyObject *);
+            result = dp_pointer_cast<callfunc>(call)(callable, args, kwargs);
         }
     }
     dp_release(args);
@@ -1341,9 +1543,12 @@ DP_ABI3_EXPORT Py_ssize_t PyObject_Size(PyObject *object) {
             return entry->value.text.size;
         }
     }
-    lenfunc length = (lenfunc)dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_length);
+    lenfunc length =
+        dp_pointer_cast<lenfunc>(dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_length));
     if (length == NULL) {
-        length = (lenfunc)dp_slot(object == NULL ? NULL : object->ob_type, Py_sq_length);
+        length = dp_pointer_cast<lenfunc>(
+            dp_slot(object == NULL ? NULL : object->ob_type, Py_sq_length)
+        );
     }
     if (length == NULL) {
         dp_set_error_text(PyExc_TypeError, "object has no length");
@@ -1376,7 +1581,8 @@ DP_ABI3_EXPORT PyObject *PyObject_GetItem(PyObject *object, PyObject *key) {
     }
     long index = PyLong_AsLong(key);
     if (index == -1 && PyErr_Occurred() != NULL) {
-        binaryfunc subscript = (binaryfunc)dp_slot(object->ob_type, Py_mp_subscript);
+        binaryfunc subscript =
+            dp_pointer_cast<binaryfunc>(dp_slot(object->ob_type, Py_mp_subscript));
         if (subscript != NULL) {
             dp_clear_error();
             return subscript(object, key);
@@ -1389,11 +1595,11 @@ DP_ABI3_EXPORT PyObject *PyObject_GetItem(PyObject *object, PyObject *key) {
     if (entry != NULL && entry->kind == DP_OBJECT_TUPLE) {
         return Py_NewRef(dp_sequence_get(object, DP_OBJECT_TUPLE, (Py_ssize_t)index));
     }
-    ssizeargfunc item = (ssizeargfunc)dp_slot(object->ob_type, Py_sq_item);
+    ssizeargfunc item = dp_pointer_cast<ssizeargfunc>(dp_slot(object->ob_type, Py_sq_item));
     if (item != NULL) {
         return item(object, (Py_ssize_t)index);
     }
-    binaryfunc subscript = (binaryfunc)dp_slot(object->ob_type, Py_mp_subscript);
+    binaryfunc subscript = dp_pointer_cast<binaryfunc>(dp_slot(object->ob_type, Py_mp_subscript));
     if (subscript != NULL) {
         return subscript(object, key);
     }
@@ -1406,8 +1612,9 @@ DP_ABI3_EXPORT int PyObject_SetItem(PyObject *object, PyObject *key, PyObject *v
     if (entry != NULL && entry->kind == DP_OBJECT_DICT) {
         return PyDict_SetItem(object, key, value);
     }
-    objobjargproc assign =
-        (objobjargproc)dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_ass_subscript);
+    objobjargproc assign = dp_pointer_cast<objobjargproc>(
+        dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_ass_subscript)
+    );
     if (assign == NULL) {
         dp_set_error_text(PyExc_TypeError, "object does not support item assignment");
         return -1;
@@ -1420,8 +1627,9 @@ DP_ABI3_EXPORT int PyObject_DelItem(PyObject *object, PyObject *key) {
     if (entry != NULL && entry->kind == DP_OBJECT_DICT) {
         return dp_dictionary_delete(object, key);
     }
-    objobjargproc assign =
-        (objobjargproc)dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_ass_subscript);
+    objobjargproc assign = dp_pointer_cast<objobjargproc>(
+        dp_slot(object == NULL ? NULL : object->ob_type, Py_mp_ass_subscript)
+    );
     if (assign == NULL) {
         dp_set_error_text(PyExc_TypeError, "object does not support item deletion");
         return -1;
@@ -1434,7 +1642,7 @@ DP_ABI3_EXPORT PyObject *PyObject_GetIter(PyObject *object) {
         dp_set_error_text(PyExc_TypeError, "cannot iterate NULL");
         return NULL;
     }
-    getiterfunc get_iterator = (getiterfunc)dp_slot(object->ob_type, Py_tp_iter);
+    getiterfunc get_iterator = dp_pointer_cast<getiterfunc>(dp_slot(object->ob_type, Py_tp_iter));
     if (get_iterator != NULL) {
         return get_iterator(object);
     }
@@ -1471,8 +1679,9 @@ DP_ABI3_EXPORT PyObject *PyIter_Next(PyObject *iterator) {
         dp_release(index);
         return result;
     }
-    iternextfunc next =
-        (iternextfunc)dp_slot(iterator == NULL ? NULL : iterator->ob_type, Py_tp_iternext);
+    iternextfunc next = dp_pointer_cast<iternextfunc>(
+        dp_slot(iterator == NULL ? NULL : iterator->ob_type, Py_tp_iternext)
+    );
     if (next == NULL) {
         dp_set_error_text(PyExc_TypeError, "object is not an iterator");
         return NULL;
@@ -1501,7 +1710,7 @@ static PyObject *dp_new_type_description(PyTypeObject *type) noexcept {
         return NULL;
     }
     const size_t length = name.size() + fixed_size;
-    char *buffer = (char *)malloc(length + 1U);
+    char *buffer = dp_new_array<char>(length + 1U);
     if (buffer == NULL) {
         dp_set_error_text(PyExc_RuntimeError, "type description allocation failed");
         return NULL;
@@ -1510,12 +1719,12 @@ static PyObject *dp_new_type_description(PyTypeObject *type) noexcept {
     if (dp_append_text(buffer, length + 1U, &offset, prefix) != 0 ||
         dp_append_text(buffer, length + 1U, &offset, name) != 0 ||
         dp_append_text(buffer, length + 1U, &offset, suffix) != 0) {
-        free(buffer);
+        delete[] buffer;
         dp_set_error_text(PyExc_RuntimeError, "type description formatting failed");
         return NULL;
     }
     PyObject *result = dp_new_unicode(buffer, (Py_ssize_t)length);
-    free(buffer);
+    delete[] buffer;
     return result;
 }
 
@@ -1539,7 +1748,7 @@ DP_ABI3_EXPORT PyObject *PyObject_Str(PyObject *object) {
                    ? dp_new_integer_text(entry->value.number.value)
                    : dp_new_integer_text((long long)entry->value.number.value);
     }
-    reprfunc string = (reprfunc)dp_slot(object->ob_type, Py_tp_str);
+    reprfunc string = dp_pointer_cast<reprfunc>(dp_slot(object->ob_type, Py_tp_str));
     if (string != NULL) {
         return string(object);
     }
@@ -1548,7 +1757,7 @@ DP_ABI3_EXPORT PyObject *PyObject_Str(PyObject *object) {
 
 DP_ABI3_EXPORT PyObject *PyObject_Repr(PyObject *object) {
     if (object != NULL) {
-        reprfunc representation = (reprfunc)dp_slot(object->ob_type, Py_tp_repr);
+        reprfunc representation = dp_pointer_cast<reprfunc>(dp_slot(object->ob_type, Py_tp_repr));
         if (representation != NULL) {
             return representation(object);
         }
@@ -1563,21 +1772,21 @@ DP_ABI3_EXPORT PyObject *PyObject_Repr(PyObject *object) {
                 dp_set_error_text(PyExc_RuntimeError, "representation exceeds the bridge limit");
                 return NULL;
             }
-            char *buffer = (char *)malloc(size + 3U);
+            char *buffer = dp_new_array<char>(size + 3U);
             if (buffer == NULL) {
                 dp_set_error_text(PyExc_RuntimeError, "representation allocation failed");
                 return NULL;
             }
             buffer[0] = '\'';
             if (!dp_copy_items(buffer + 1, size + 2U, entry->value.text.data, size)) {
-                free(buffer);
+                delete[] buffer;
                 dp_set_error_text(PyExc_RuntimeError, "representation copy failed");
                 return NULL;
             }
             buffer[size + 1U] = '\'';
             buffer[size + 2U] = '\0';
             PyObject *result = dp_new_unicode(buffer, (Py_ssize_t)(size + 2U));
-            free(buffer);
+            delete[] buffer;
             return result;
         }
     }
@@ -1589,6 +1798,9 @@ DP_ABI3_EXPORT void PyObject_GC_UnTrack(void *object) {
 }
 
 DP_ABI3_EXPORT PyObject *PyModuleDef_Init(PyModuleDef *definition) {
+    if (!dp_require_owner_thread()) {
+        return NULL;
+    }
     dp_initialize();
     if (definition == NULL || definition->m_name == NULL) {
         dp_set_error_text(PyExc_TypeError, "module definition is invalid");
@@ -1600,7 +1812,12 @@ DP_ABI3_EXPORT PyObject *PyModuleDef_Init(PyModuleDef *definition) {
     return (PyObject *)definition;
 }
 
-static PyObject *dp_create_module(PyModuleDef *definition) {
+static PyObject *dp_create_module(PyModuleDef *definition, const char *synthetic_name = NULL) {
+    const char *name = definition == NULL ? synthetic_name : definition->m_name;
+    if (name == NULL) {
+        dp_set_error_text(PyExc_TypeError, "module name is invalid");
+        return NULL;
+    }
     PyObject *object = dp_allocate(DP_OBJECT_MODULE, &PyModule_Type, sizeof(PyObject));
     if (object == NULL) {
         return NULL;
@@ -1608,7 +1825,7 @@ static PyObject *dp_create_module(PyModuleDef *definition) {
     dp_module *module = &dp_find(object)->value.module;
     module->definition = definition;
     module->attributes = PyDict_New();
-    module->name = dp_copy_text(definition->m_name, (Py_ssize_t)strlen(definition->m_name));
+    module->name = dp_copy_text(name, (Py_ssize_t)strlen(name));
     if (module->attributes == NULL || module->name == NULL) {
         dp_release(object);
         return NULL;
@@ -1620,7 +1837,7 @@ static PyObject *dp_create_module(PyModuleDef *definition) {
         return NULL;
     }
     dp_release(module_name);
-    if (definition->m_methods != NULL) {
+    if (definition != NULL && definition->m_methods != NULL) {
         for (PyMethodDef *method = definition->m_methods; method->ml_name != NULL; method++) {
             PyObject *callable = PyCMethod_New(method, object, NULL, NULL);
             if (callable == NULL ||
@@ -1782,9 +1999,7 @@ DP_ABI3_EXPORT PyObject *PyImport_Import(PyObject *name) {
     if (module_name == NULL) {
         return NULL;
     }
-    PyModuleDef definition =
-        {PyModuleDef_HEAD_INIT, module_name, NULL, -1, NULL, NULL, NULL, NULL, NULL};
-    return dp_create_module(&definition);
+    return dp_create_module(NULL, module_name);
 }
 
 DP_ABI3_EXPORT PyGILState_STATE PyGILState_Ensure(void) {
@@ -1808,12 +2023,14 @@ DP_ABI3_EXPORT int Py_IsInitialized(void) {
 }
 
 DP_ABI3_EXPORT int dp_abi3_bridge_version(void) {
-    dp_initialize();
     return DP_ABI3_BRIDGE_VERSION;
 }
 
 DP_ABI3_EXPORT int
 dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, int *multi_phase) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (module == NULL || multi_phase == NULL) {
         dp_set_error_text(PyExc_TypeError, "module initialization outputs are invalid");
         return -1;
@@ -1835,7 +2052,8 @@ dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, in
     if (dp_last_definition->m_slots != NULL) {
         for (PyModuleDef_Slot *slot = dp_last_definition->m_slots; slot->slot != 0; slot++) {
             if (slot->slot == Py_mod_exec) {
-                int (*execute)(PyObject *) = (int (*)(PyObject *))slot->value;
+                using module_execute = int (*)(PyObject *);
+                module_execute execute = dp_pointer_cast<module_execute>(slot->value);
                 if (execute == NULL || execute(created) != 0) {
                     if (dp_error_type == NULL) {
                         dp_set_error_text(PyExc_RuntimeError, "module execution slot failed");
@@ -1856,6 +2074,9 @@ dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, in
 }
 
 DP_ABI3_EXPORT int dp_abi3_module_get_int(PyObject *module, const char *name, int64_t *value) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (value == NULL) {
         dp_set_error_text(PyExc_TypeError, "module query output is invalid");
         return -1;
@@ -1880,40 +2101,40 @@ DP_ABI3_EXPORT int dp_abi3_module_call_long(
     int64_t argument,
     int64_t *result
 ) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (result == NULL) {
         dp_set_error_text(PyExc_TypeError, "module call output is invalid");
         return -1;
     }
-    PyObject *callable = dp_get_attribute_cstr(module, method);
-    if (callable == NULL) {
+    dp_owned_ref callable(dp_get_attribute_cstr(module, method));
+    if (!callable) {
         return -1;
     }
-    PyObject *args = PyTuple_New(has_argument ? 1 : 0);
-    if (args == NULL) {
-        dp_release(callable);
+    dp_owned_ref args(PyTuple_New(has_argument ? 1 : 0));
+    if (!args) {
         return -1;
     }
     if (has_argument) {
-        PyObject *number = PyLong_FromLong((long)argument);
-        if (number == NULL || PyTuple_SetItem(args, 0, number) != 0) {
-            dp_release(number);
-            dp_release(args);
-            dp_release(callable);
+        if (argument < (int64_t)LONG_MIN || argument > (int64_t)LONG_MAX) {
+            dp_set_error_text(PyExc_ValueError, "module argument does not fit in C long");
+            return -1;
+        }
+        dp_owned_ref number(PyLong_FromLong((long)argument));
+        if (!number || PyTuple_SetItem(args.get(), 0, number.release()) != 0) {
             return -1;
         }
     }
     dp_clear_error();
-    PyObject *returned = PyObject_Call(callable, args, NULL);
-    dp_release(args);
-    dp_release(callable);
-    if (returned == NULL) {
+    dp_owned_ref returned(PyObject_Call(callable.get(), args.get(), NULL));
+    if (!returned) {
         if (dp_error_type == NULL) {
             dp_set_error_text(PyExc_RuntimeError, "module method returned NULL without an error");
         }
         return -1;
     }
-    long converted = PyLong_AsLong(returned);
-    dp_release(returned);
+    long converted = PyLong_AsLong(returned.get());
     if (converted == -1 && PyErr_Occurred() != NULL) {
         return -1;
     }
@@ -1932,15 +2153,12 @@ static PyObject *dp_call_named(PyObject *owner, const char *name, PyObject *args
 }
 
 static int dp_tuple_set_text(PyObject *tuple, Py_ssize_t index, const char *text) {
-    PyObject *value = dp_new_unicode(text, (Py_ssize_t)strlen(text));
-    if (value == NULL) {
+    dp_owned_ref value(dp_new_unicode(text, (Py_ssize_t)strlen(text)));
+    if (!value) {
         return -1;
     }
-    if (PyTuple_SetItem(tuple, index, value) != 0) {
-        dp_release(value);
-        return -1;
-    }
-    return 0;
+    /* PyTuple_SetItem steals the new reference, including on failure. */
+    return PyTuple_SetItem(tuple, index, value.release());
 }
 
 DP_ABI3_EXPORT int dp_abi3_anyver_compare(
@@ -1950,6 +2168,9 @@ DP_ABI3_EXPORT int dp_abi3_anyver_compare(
     const char *ecosystem,
     int64_t *result
 ) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (left == NULL || right == NULL || ecosystem == NULL || result == NULL) {
         dp_set_error_text(PyExc_TypeError, "Anyver comparison inputs are invalid");
         return -1;
@@ -2019,73 +2240,64 @@ DP_ABI3_EXPORT int dp_abi3_anyver_sort_versions(
     const char *ecosystem,
     const char **result_json
 ) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (versions == NULL || version_count < 0 || version_count > 4096 || ecosystem == NULL ||
         result_json == NULL) {
         dp_set_error_text(PyExc_TypeError, "Anyver sort inputs are invalid");
         return -1;
     }
-    PyObject *list = PyList_New(0);
-    if (list == NULL) {
+    dp_owned_ref list(PyList_New(0));
+    if (!list) {
         return -1;
     }
     for (int64_t index = 0; index < version_count; index++) {
         if (versions[index] == NULL) {
-            dp_release(list);
             dp_set_error_text(PyExc_TypeError, "Anyver sort contains a NULL version");
             return -1;
         }
-        PyObject *value = dp_new_unicode(versions[index], (Py_ssize_t)strlen(versions[index]));
-        if (value == NULL || PyList_Append(list, value) != 0) {
-            dp_release(value);
-            dp_release(list);
+        dp_owned_ref value(dp_new_unicode(versions[index], (Py_ssize_t)strlen(versions[index])));
+        if (!value || PyList_Append(list.get(), value.get()) != 0) {
             return -1;
         }
-        dp_release(value);
     }
-    PyObject *args = PyTuple_New(2);
-    if (args == NULL || PyTuple_SetItem(args, 0, list) != 0 ||
-        dp_tuple_set_text(args, 1, ecosystem) != 0) {
-        dp_release(list);
-        dp_release(args);
+    dp_owned_ref args(PyTuple_New(2));
+    if (!args || PyTuple_SetItem(args.get(), 0, list.release()) != 0 ||
+        dp_tuple_set_text(args.get(), 1, ecosystem) != 0) {
         return -1;
     }
     dp_clear_error();
-    PyObject *sorted = dp_call_named(module, "sort_versions", args);
-    dp_release(args);
-    if (sorted == NULL) {
+    dp_owned_ref sorted(dp_call_named(module, "sort_versions", args.get()));
+    if (!sorted) {
         return -1;
     }
-    Py_ssize_t count = PyList_Size(sorted);
+    Py_ssize_t count = PyList_Size(sorted.get());
     if (count < 0) {
-        dp_release(sorted);
         return -1;
     }
     size_t offset = 0;
     dp_result_text[offset++] = '[';
     dp_result_text[offset] = '\0';
     for (Py_ssize_t index = 0; index < count; index++) {
-        const char *text = PyUnicode_AsUTF8AndSize(PyList_GetItem(sorted, index), NULL);
+        const char *text = PyUnicode_AsUTF8AndSize(PyList_GetItem(sorted.get(), index), NULL);
         if (text == NULL || (index > 0 && offset + 1U >= sizeof(dp_result_text))) {
-            dp_release(sorted);
             return -1;
         }
         if (index > 0) {
             dp_result_text[offset++] = ',';
         }
         if (dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, text) != 0) {
-            dp_release(sorted);
             dp_set_error_text(PyExc_ValueError, "Anyver sort result exceeds the bridge limit");
             return -1;
         }
     }
     if (offset + 2U > sizeof(dp_result_text)) {
-        dp_release(sorted);
         dp_set_error_text(PyExc_ValueError, "Anyver sort result exceeds the bridge limit");
         return -1;
     }
     dp_result_text[offset++] = ']';
     dp_result_text[offset] = '\0';
-    dp_release(sorted);
     *result_json = dp_result_text;
     return 0;
 }
@@ -2106,6 +2318,9 @@ DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
     const char *ecosystem,
     const char **result_json
 ) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     if (version == NULL || ecosystem == NULL || result_json == NULL) {
         dp_set_error_text(PyExc_TypeError, "Anyver Version inputs are invalid");
         return -1;
@@ -2211,6 +2426,9 @@ DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
 }
 
 DP_ABI3_EXPORT void dp_abi3_module_destroy(PyObject *module) {
+    if (!dp_require_owner_thread()) {
+        return;
+    }
     dp_clear_error();
     dp_metadata *entry = dp_find(module);
     if (entry != NULL && entry->kind == DP_OBJECT_MODULE) {
@@ -2243,5 +2461,8 @@ DP_ABI3_EXPORT const char *dp_abi3_error_message(void) {
 }
 
 DP_ABI3_EXPORT int64_t dp_abi3_active_object_count(void) {
+    if (!dp_require_owner_thread()) {
+        return -1;
+    }
     return dp_active_objects;
 }

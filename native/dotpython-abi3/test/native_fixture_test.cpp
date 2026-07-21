@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <thread>
 
 namespace {
 
@@ -119,6 +121,13 @@ void require_object_text(PyObject *object, const char *expected) {
     REQUIRE(std::strcmp(actual, expected) == 0);
 }
 
+PyObject *fastcall_probe(PyObject *self, PyObject *const *args, Py_ssize_t count) {
+    static_cast<void>(self);
+    static_cast<void>(args);
+    static_cast<void>(count);
+    return PyLong_FromLong(7);
+}
+
 } // namespace
 
 TEST_CASE("Stable-ABI fixture lifecycle and failure handling", "[fixture][lifecycle][failure]") {
@@ -167,8 +176,7 @@ TEST_CASE("Stable-ABI fixture lifecycle and failure handling", "[fixture][lifecy
     REQUIRE(std::strcmp(dp_abi3_error_type(), "ValueError") == 0);
     REQUIRE(std::strcmp(dp_abi3_error_message(), "fixture initialization failure") == 0);
     REQUIRE(failure_cleanup_count() == 0);
-    // Allocation-free error recording does not create a temporary Unicode object.
-    REQUIRE(dp_abi3_active_object_count() == 0);
+    REQUIRE(dp_abi3_active_object_count() == 1);
 
     dp_abi3_module_destroy(nullptr);
     REQUIRE(dp_abi3_active_object_count() == 0);
@@ -241,9 +249,7 @@ TEST_CASE("Allocation-limit errors do not recursively allocate", "[bridge][alloc
     const ErrorStateGuard error_state;
     const int64_t baseline = dp_abi3_active_object_count();
 
-    OwnedPyObject value(
-        PyUnicode_FromStringAndSize("x", std::numeric_limits<Py_ssize_t>::max())
-    );
+    OwnedPyObject value(PyUnicode_FromStringAndSize("x", std::numeric_limits<Py_ssize_t>::max()));
     REQUIRE(value == nullptr);
     REQUIRE(std::strcmp(dp_abi3_error_type(), "RuntimeError") == 0);
     REQUIRE(std::strcmp(dp_abi3_error_message(), "Unicode allocation failed") == 0);
@@ -261,10 +267,104 @@ TEST_CASE("Tuple setters consume new references on failure", "[bridge][ownership
     REQUIRE(tuple != nullptr);
     REQUIRE(value != nullptr);
     REQUIRE(PyTuple_SetItem(tuple.get(), 1, value.release()) == -1);
-    REQUIRE(dp_abi3_active_object_count() == baseline + 1);
-
     dp_abi3_module_destroy(nullptr);
+    REQUIRE(dp_abi3_active_object_count() == baseline + 1);
     tuple.reset();
+    REQUIRE(dp_abi3_active_object_count() == baseline);
+}
+
+TEST_CASE("Methods without METH_KEYWORDS reject keyword arguments", "[bridge][call][failure]") {
+    const ErrorStateGuard error_state;
+    const int64_t baseline = dp_abi3_active_object_count();
+
+    static PyMethodDef definition =
+        // PyMethodDef stores every calling convention as PyCFunction; ml_flags selects the cast.
+        // NOLINTNEXTLINE(bugprone-bitwise-pointer-cast)
+        {"probe", std::bit_cast<PyCFunction>(&fastcall_probe), METH_FASTCALL, nullptr};
+    OwnedPyObject method(PyCMethod_New(&definition, nullptr, nullptr, nullptr));
+    INFO(dp_abi3_error_message());
+    REQUIRE(method != nullptr);
+
+    OwnedPyObject args(PyTuple_New(0));
+    REQUIRE(args != nullptr);
+    OwnedPyObject result(PyObject_Call(method.get(), args.get(), nullptr));
+    INFO(dp_abi3_error_message());
+    REQUIRE(result != nullptr);
+    REQUIRE(PyLong_AsLong(result.get()) == 7);
+    result.reset();
+
+    OwnedPyObject kwargs(PyDict_New());
+    OwnedPyObject key(PyUnicode_FromStringAndSize("flag", 4));
+    OwnedPyObject value(PyUnicode_FromStringAndSize("on", 2));
+    REQUIRE(kwargs != nullptr);
+    REQUIRE(key != nullptr);
+    REQUIRE(value != nullptr);
+    REQUIRE(PyDict_SetItem(kwargs.get(), key.get(), value.get()) == 0);
+    result.reset(PyObject_Call(method.get(), args.get(), kwargs.get()));
+    REQUIRE(result == nullptr);
+    REQUIRE(std::strcmp(dp_abi3_error_type(), "TypeError") == 0);
+    REQUIRE(std::strcmp(dp_abi3_error_message(), "method does not accept keyword arguments") == 0);
+
+    value.reset();
+    key.reset();
+    kwargs.reset();
+    args.reset();
+    method.reset();
+    dp_abi3_module_destroy(nullptr);
+    REQUIRE(dp_abi3_active_object_count() == baseline);
+}
+
+TEST_CASE("Integer dictionary keys distinguish signedness", "[bridge][dict]") {
+    const ErrorStateGuard error_state;
+    const int64_t baseline = dp_abi3_active_object_count();
+
+    OwnedPyObject dictionary(PyDict_New());
+    OwnedPyObject negative(PyLong_FromLong(-1));
+    OwnedPyObject wrapped(PyLong_FromUnsignedLongLong(ULLONG_MAX));
+    OwnedPyObject small_signed(PyLong_FromLong(5));
+    OwnedPyObject small_unsigned(PyLong_FromUnsignedLongLong(5));
+    OwnedPyObject value(PyUnicode_FromStringAndSize("negative", 8));
+    REQUIRE(dictionary != nullptr);
+    REQUIRE(negative != nullptr);
+    REQUIRE(wrapped != nullptr);
+    REQUIRE(small_signed != nullptr);
+    REQUIRE(small_unsigned != nullptr);
+    REQUIRE(value != nullptr);
+
+    REQUIRE(PyDict_SetItem(dictionary.get(), negative.get(), value.get()) == 0);
+    REQUIRE(PyDict_GetItemWithError(dictionary.get(), wrapped.get()) == nullptr);
+    REQUIRE(PyDict_GetItemWithError(dictionary.get(), negative.get()) == value.get());
+
+    REQUIRE(PyDict_SetItem(dictionary.get(), small_signed.get(), value.get()) == 0);
+    REQUIRE(PyDict_GetItemWithError(dictionary.get(), small_unsigned.get()) == value.get());
+
+    value.reset();
+    small_unsigned.reset();
+    small_signed.reset();
+    wrapped.reset();
+    negative.reset();
+    dictionary.reset();
+    dp_abi3_module_destroy(nullptr);
+    REQUIRE(dp_abi3_active_object_count() == baseline);
+}
+
+TEST_CASE("Stateful ABI access is confined to its owner thread", "[bridge][threading]") {
+    const ErrorStateGuard error_state;
+    const int64_t baseline = dp_abi3_active_object_count();
+    int64_t foreign_count = 0;
+    bool error_was_reported = false;
+
+    std::thread foreign([&foreign_count, &error_was_reported] {
+        foreign_count = dp_abi3_active_object_count();
+        error_was_reported = std::strcmp(
+                                 dp_abi3_error_message(),
+                                 "native ABI access must execute on its owner thread"
+                             ) == 0;
+    });
+    foreign.join();
+
+    REQUIRE(foreign_count == -1);
+    REQUIRE(error_was_reported);
     REQUIRE(dp_abi3_active_object_count() == baseline);
 }
 

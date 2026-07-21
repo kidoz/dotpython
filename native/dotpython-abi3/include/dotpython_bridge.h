@@ -9,6 +9,12 @@ extern "C" {
 
 #define DP_ABI3_BRIDGE_VERSION 2
 
+/*
+ * Stateful calls, native callbacks, and object release must stay on the thread that first
+ * activates the bridge. Returned text points to thread-local bridge storage and remains valid
+ * only until the next bridge/C-API call on that thread. PyObject results follow CPython's
+ * documented new/borrowed/stolen reference conventions.
+ */
 DP_ABI3_EXPORT int dp_abi3_bridge_version(void);
 DP_ABI3_EXPORT int
 dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, int *multi_phase);
@@ -20,7 +26,8 @@ DP_ABI3_EXPORT int dp_abi3_module_call_long(
     int64_t argument,
     int64_t *result
 );
-/* All Anyver bridge functions return owned managed values, never native object addresses. */
+/* Anyver scalar outputs are copied values. result_json uses the temporary storage described above.
+ */
 DP_ABI3_EXPORT int dp_abi3_anyver_compare(
     PyObject *module,
     const char *left,

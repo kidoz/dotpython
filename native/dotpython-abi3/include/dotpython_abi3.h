@@ -217,6 +217,7 @@ DP_ABI3_EXPORT PyObject *PyIter_Next(PyObject *iterator);
 DP_ABI3_EXPORT int PyList_Append(PyObject *list, PyObject *value);
 DP_ABI3_EXPORT PyObject *PyList_GetItem(PyObject *list, Py_ssize_t index);
 DP_ABI3_EXPORT PyObject *PyList_New(Py_ssize_t size);
+/* Steals value on success and failure, matching CPython's Stable-ABI contract. */
 DP_ABI3_EXPORT int PyList_SetItem(PyObject *list, Py_ssize_t index, PyObject *value);
 DP_ABI3_EXPORT Py_ssize_t PyList_Size(PyObject *list);
 DP_ABI3_EXPORT long PyLong_AsLong(PyObject *value);
@@ -229,6 +230,8 @@ DP_ABI3_EXPORT PyObject *PyModule_GetNameObject(PyObject *module);
 DP_ABI3_EXPORT PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObject *kwargs);
 DP_ABI3_EXPORT PyObject *PyObject_CallNoArgs(PyObject *callable);
 DP_ABI3_EXPORT int PyObject_DelItem(PyObject *object, PyObject *key);
+/* The experimental subset is reference-counted only; cyclic-GC-dependent packages are unsupported.
+ */
 DP_ABI3_EXPORT void PyObject_GC_UnTrack(void *object);
 DP_ABI3_EXPORT PyObject *PyObject_GenericGetDict(PyObject *object, void *context);
 DP_ABI3_EXPORT int PyObject_GenericSetDict(PyObject *object, PyObject *value, void *context);
@@ -245,6 +248,7 @@ DP_ABI3_EXPORT int PySequence_Check(PyObject *object);
 DP_ABI3_EXPORT int PyTraceBack_Print(PyObject *traceback, PyObject *file);
 DP_ABI3_EXPORT PyObject *PyTuple_GetItem(PyObject *tuple, Py_ssize_t index);
 DP_ABI3_EXPORT PyObject *PyTuple_New(Py_ssize_t size);
+/* Steals value on success and failure, matching CPython's Stable-ABI contract. */
 DP_ABI3_EXPORT int PyTuple_SetItem(PyObject *tuple, Py_ssize_t index, PyObject *value);
 DP_ABI3_EXPORT Py_ssize_t PyTuple_Size(PyObject *tuple);
 DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification);
