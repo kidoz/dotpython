@@ -14,7 +14,10 @@ public sealed class WorkerProcessPool : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
-        _options = options;
+        _options = options with
+        {
+            StableAbiModules = Array.AsReadOnly(options.StableAbiModules.ToArray()),
+        };
         Key = new WorkerPoolKey(
             options.ProviderId,
             options.RuntimeId,

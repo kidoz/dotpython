@@ -138,7 +138,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         if (
             !_sessions.TryAdd(
                 request.SessionId,
-                new WorkerSessionState(options.PackageRoots, options.StableAbiModule)
+                new WorkerSessionState(options.PackageRoots, options.StableAbiModules)
             )
         )
         {

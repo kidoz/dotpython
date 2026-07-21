@@ -8,29 +8,25 @@ internal sealed class WorkerSessionState : IAsyncDisposable
     private readonly NativeExecutionLane _nativeLane = new();
     private readonly Dictionary<long, StableAbiModule> _nativeModules = [];
     private readonly List<long> _nativeOrder = [];
-    private readonly StableAbiModuleConfiguration? _stableAbiModuleConfiguration;
-    private readonly StableAbiSymbolManifest? _stableAbiManifest;
-    private long _boundNativeObjectId;
+    private readonly Dictionary<string, StableAbiModuleCatalogEntry> _stableAbiModules;
+    private readonly Dictionary<string, long> _boundNativeObjectIds = new(StringComparer.Ordinal);
     private long _nextObjectId;
     private int _disposed;
 
     internal WorkerSessionState(
         IReadOnlyList<string> packageRoots,
-        StableAbiModuleConfiguration? stableAbiModuleConfiguration
+        IReadOnlyList<StableAbiModuleCatalogEntry> stableAbiModules
     )
     {
         ArgumentNullException.ThrowIfNull(packageRoots);
-        _stableAbiModuleConfiguration = stableAbiModuleConfiguration;
-        _stableAbiManifest = stableAbiModuleConfiguration is null
-            ? null
-            : StableAbiSymbolManifest.Load(stableAbiModuleConfiguration.ManifestPath);
-        if (stableAbiModuleConfiguration is not null && _stableAbiManifest is not null)
+        ArgumentNullException.ThrowIfNull(stableAbiModules);
+        _stableAbiModules = stableAbiModules.ToDictionary(
+            entry => entry.Manifest.ModuleName,
+            StringComparer.Ordinal
+        );
+        foreach (var entry in stableAbiModules)
         {
-            ValidateQualifiedPackage(
-                packageRoots,
-                stableAbiModuleConfiguration,
-                _stableAbiManifest
-            );
+            ValidateQualifiedPackage(packageRoots, entry.Configuration, entry.Manifest);
         }
         Engine =
             packageRoots.Count == 0
@@ -110,11 +106,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     private Action<PythonGlobalNamespace>? ResolveNativeExtension(string name, string path)
     {
-        if (
-            _stableAbiModuleConfiguration is null
-            || _stableAbiManifest is null
-            || !string.Equals(name, _stableAbiManifest.ModuleName, StringComparison.Ordinal)
-        )
+        if (!_stableAbiModules.TryGetValue(name, out var entry))
         {
             return null;
         }
@@ -125,7 +117,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
         if (
             !string.Equals(
                 Path.GetFullPath(path),
-                Path.GetFullPath(_stableAbiModuleConfiguration.ModulePath),
+                Path.GetFullPath(entry.Configuration.ModulePath),
                 comparison
             )
         )
@@ -135,12 +127,15 @@ internal sealed class WorkerSessionState : IAsyncDisposable
             );
         }
 
-        return InitializeNativeExtension;
+        return globals => InitializeNativeExtension(entry, globals);
     }
 
-    private void InitializeNativeExtension(PythonGlobalNamespace globals)
+    private void InitializeNativeExtension(
+        StableAbiModuleCatalogEntry entry,
+        PythonGlobalNamespace globals
+    )
     {
-        if (_stableAbiModuleConfiguration is null || _boundNativeObjectId != 0)
+        if (_boundNativeObjectIds.ContainsKey(entry.Manifest.ModuleName))
         {
             throw new PythonRuntimeException(
                 "DPY4029",
@@ -153,19 +148,19 @@ internal sealed class WorkerSessionState : IAsyncDisposable
         try
         {
             var objectId = LoadStableAbiModuleAsync(
-                    _stableAbiModuleConfiguration,
+                    entry.Configuration,
                     CancellationToken.None
                 )
                 .GetAwaiter()
                 .GetResult();
-            _boundNativeObjectId = objectId;
+            _boundNativeObjectIds.Add(entry.Manifest.ModuleName, objectId);
             var exports = InvokeNative(() =>
             {
                 var module = GetModule(objectId);
                 return module
                     .GetAttributeNames()
                     .Where(name =>
-                        _stableAbiManifest!.AllowedMethods.Contains(name, StringComparer.Ordinal)
+                        entry.Manifest.AllowedMethods.Contains(name, StringComparer.Ordinal)
                     )
                     .Select(name => new KeyValuePair<string, PythonValue>(
                         name,

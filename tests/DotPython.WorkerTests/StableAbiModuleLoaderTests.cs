@@ -8,6 +8,34 @@ namespace DotPython.WorkerTests;
 public sealed class StableAbiModuleLoaderTests
 {
     [Fact]
+    public void ProcessCache_PinsMultipleNativeEntriesAgainstOneBridge()
+    {
+        SkipUnsupportedPlatform();
+        var bridge = FixturePath(
+            OperatingSystem.IsMacOS() ? "libdotpython_abi3.dylib" : "libdotpython_abi3.so"
+        );
+        var primary = FixturePath("dotpython_fixture.abi3.so");
+        var secondary = FixturePath("dotpython_fixture_secondary.abi3.so");
+
+        var first = StableAbiProcessLibraryCache.Load(
+            bridge,
+            StableAbiModuleLoader.ComputeSha256(bridge),
+            primary,
+            StableAbiModuleLoader.ComputeSha256(primary)
+        );
+        var second = StableAbiProcessLibraryCache.Load(
+            bridge,
+            StableAbiModuleLoader.ComputeSha256(bridge),
+            secondary,
+            StableAbiModuleLoader.ComputeSha256(secondary)
+        );
+
+        Assert.NotEqual(0, first.Bridge);
+        Assert.Equal(first.Bridge, second.Bridge);
+        Assert.NotEqual(first.Module, second.Module);
+    }
+
+    [Fact]
     public void Load_InitializesInvokesFailsAndCleansUpFixture()
     {
         SkipUnsupportedPlatform();

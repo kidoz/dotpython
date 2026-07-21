@@ -49,6 +49,92 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_ImportsIndependentStableAbiModulesFromQualifiedCatalog()
+    {
+        SkipNativeFixtureOnWindows();
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(stableAbiModule: true, secondaryStableAbiModule: true)
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        var result = await session.ExecuteAsync(
+            """
+            import dotpython_fixture
+            import dotpython_fixture_secondary
+            print(dotpython_fixture.increment(41))
+            print(dotpython_fixture_secondary.double(21))
+            """,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var secondaryFailure = await session.ExecuteAsync(
+            "import dotpython_fixture_secondary\ndotpython_fixture_secondary.fail()",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var primaryAfterFailure = await session.ExecuteAsync(
+            "import dotpython_fixture\nprint(dotpython_fixture.increment(9))",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal($"42{Environment.NewLine}42{Environment.NewLine}", result.StandardOutput);
+        Assert.False(secondaryFailure.Success);
+        Assert.Contains(
+            secondaryFailure.Diagnostics,
+            diagnostic => diagnostic.Message.Contains("secondary fixture failure", StringComparison.Ordinal)
+        );
+        Assert.True(
+            primaryAfterFailure.Success,
+            string.Join(Environment.NewLine, primaryAfterFailure.Diagnostics)
+        );
+        Assert.Equal($"10{Environment.NewLine}", primaryAfterFailure.StandardOutput);
+        Assert.Contains("managed-stable-abi-fixture-v3", session.WorkerIdentity.Features);
+        Assert.Contains(
+            "managed-stable-abi-fixture-secondary-v1",
+            session.WorkerIdentity.Features
+        );
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public void Worker_RejectsDuplicateStableAbiCatalogArtifactsBeforeStartup()
+    {
+        SkipNativeFixtureOnWindows();
+        var options = CreateOptions(stableAbiModule: true);
+        var module = options.StableAbiModules.Single();
+        var invalid = options with { StableAbiModules = [module, module] };
+
+        var exception = Assert.Throws<ArgumentException>(() => new WorkerProcessPool(invalid));
+
+        Assert.Equal("StableAbiModules", exception.ParamName);
+        Assert.Contains("must be unique", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Worker_FreezesStableAbiCatalogAtPoolConstruction()
+    {
+        SkipNativeFixtureOnWindows();
+        var options = CreateOptions(stableAbiModule: true);
+        var mutableCatalog = options.StableAbiModules.ToList();
+        await using var pool = new WorkerProcessPool(
+            options with { StableAbiModules = mutableCatalog }
+        );
+        mutableCatalog.Clear();
+
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        var result = await session.ExecuteAsync(
+            "import dotpython_fixture\nprint(dotpython_fixture.increment(4))",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal($"5{Environment.NewLine}", result.StandardOutput);
+    }
+
+    [Fact]
     public async Task Worker_ImportsUnchangedAnyverWheelThroughGenericStableAbiObjects()
     {
         SkipAnyverPackageWhenUnavailable();
@@ -234,10 +320,13 @@ public sealed class WorkerProcessPoolTests
         var invalidHashOptions = CreateOptions(stableAbiModule: true);
         invalidHashOptions = invalidHashOptions with
         {
-            StableAbiModule = invalidHashOptions.StableAbiModule! with
-            {
-                ModuleSha256 = new string('0', 64),
-            },
+            StableAbiModules =
+            [
+                invalidHashOptions.StableAbiModules.Single() with
+                {
+                    ModuleSha256 = new string('0', 64),
+                },
+            ],
         };
         await using var hashPool = new WorkerProcessPool(invalidHashOptions);
         await using var hashSession = await hashPool.OpenSessionAsync(
@@ -570,6 +659,7 @@ public sealed class WorkerProcessPoolTests
         WorkerResourcePolicy? policy = null,
         bool enableTestFaultInjection = false,
         bool stableAbiModule = false,
+        bool secondaryStableAbiModule = false,
         string nativeModuleFileName = "dotpython_fixture.abi3.so",
         string nativeManifestFileName = "symbol-manifest.json",
         string? nativeModulePath = null,
@@ -585,7 +675,7 @@ public sealed class WorkerProcessPoolTests
             dotnetRoot.FullName,
             OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"
         );
-        WorkerStableAbiModuleOptions? nativeOptions = null;
+        var nativeOptions = new List<WorkerStableAbiModuleOptions>();
         if (stableAbiModule)
         {
             var bridge = NativeFixturePath(
@@ -593,15 +683,17 @@ public sealed class WorkerProcessPoolTests
             );
             var module = nativeModulePath ?? NativeFixturePath(nativeModuleFileName);
             var manifest = NativeFixturePath(nativeManifestFileName);
-            nativeOptions = new WorkerStableAbiModuleOptions
+            nativeOptions.Add(CreateStableAbiModuleOptions(bridge, module, manifest));
+            if (secondaryStableAbiModule)
             {
-                BridgePath = bridge,
-                ModulePath = module,
-                ManifestPath = manifest,
-                BridgeSha256 = StableAbiModuleLoader.ComputeSha256(bridge),
-                ModuleSha256 = StableAbiModuleLoader.ComputeSha256(module),
-                ManifestSha256 = StableAbiModuleLoader.ComputeSha256(manifest),
-            };
+                nativeOptions.Add(
+                    CreateStableAbiModuleOptions(
+                        bridge,
+                        NativeFixturePath("dotpython_fixture_secondary.abi3.so"),
+                        NativeFixturePath("secondary-symbol-manifest.json")
+                    )
+                );
+            }
         }
 
         return new WorkerProcessOptions
@@ -612,24 +704,61 @@ public sealed class WorkerProcessPoolTests
             EnvironmentHash = "sha256:worker-tests",
             Policy = policy ?? new WorkerResourcePolicy(),
             EnableTestFaultInjection = enableTestFaultInjection,
-            StableAbiModule = nativeOptions,
+            StableAbiModules = nativeOptions,
             PackageRoots =
                 packageRoots
                 ?? (
-                    nativeOptions is null
+                    nativeOptions.Count == 0
                         ? Array.Empty<string>()
-                        : [Path.GetDirectoryName(nativeOptions.ModulePath)!]
+                        : [Path.GetDirectoryName(nativeOptions[0].ModulePath)!]
                 ),
-            RequiredFeatures = stableAbiModule
-                ?
-                [
-                    "managed-execution",
-                    nativeManifestFileName == "anyver-symbol-manifest.json"
-                        ? "managed-stable-abi-qualified-v1"
-                        : "managed-stable-abi-fixture-v3",
-                ]
-                : ["managed-execution"],
+            RequiredFeatures = RequiredStableAbiFeatures(
+                stableAbiModule,
+                secondaryStableAbiModule,
+                nativeManifestFileName
+            ),
         };
+    }
+
+    private static WorkerStableAbiModuleOptions CreateStableAbiModuleOptions(
+        string bridge,
+        string module,
+        string manifest
+    ) =>
+        new()
+        {
+            BridgePath = bridge,
+            ModulePath = module,
+            ManifestPath = manifest,
+            BridgeSha256 = StableAbiModuleLoader.ComputeSha256(bridge),
+            ModuleSha256 = StableAbiModuleLoader.ComputeSha256(module),
+            ManifestSha256 = StableAbiModuleLoader.ComputeSha256(manifest),
+        };
+
+    private static List<string> RequiredStableAbiFeatures(
+        bool stableAbiModule,
+        bool secondaryStableAbiModule,
+        string manifestFileName
+    )
+    {
+        if (!stableAbiModule)
+        {
+            return ["managed-execution"];
+        }
+
+        var features = new List<string>
+        {
+            "managed-execution",
+            manifestFileName == "anyver-symbol-manifest.json"
+                ? "managed-stable-abi-qualified-v1"
+                : "managed-stable-abi-fixture-v3",
+        };
+        if (secondaryStableAbiModule)
+        {
+            features.Add("managed-stable-abi-fixture-secondary-v1");
+        }
+
+        return features;
     }
 
     private static WorkerProcessOptions CreateQualifiedAnyverOptions()

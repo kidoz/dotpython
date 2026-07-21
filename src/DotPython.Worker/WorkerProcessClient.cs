@@ -863,14 +863,18 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
             AddArgument(startInfo, "--package-root", packageRoot);
         }
 
-        if (options.StableAbiModule is { } nativeModule)
+        if (options.StableAbiModules.Count > 0)
         {
-            AddArgument(startInfo, "--abi3-bridge", nativeModule.BridgePath);
-            AddArgument(startInfo, "--abi3-module", nativeModule.ModulePath);
-            AddArgument(startInfo, "--abi3-manifest", nativeModule.ManifestPath);
-            AddArgument(startInfo, "--abi3-bridge-sha256", nativeModule.BridgeSha256);
-            AddArgument(startInfo, "--abi3-module-sha256", nativeModule.ModuleSha256);
-            AddArgument(startInfo, "--abi3-manifest-sha256", nativeModule.ManifestSha256);
+            var bridge = options.StableAbiModules[0];
+            AddArgument(startInfo, "--abi3-bridge", bridge.BridgePath);
+            AddArgument(startInfo, "--abi3-bridge-sha256", bridge.BridgeSha256);
+            foreach (var nativeModule in options.StableAbiModules)
+            {
+                AddArgument(startInfo, "--abi3-module", nativeModule.ModulePath);
+                AddArgument(startInfo, "--abi3-manifest", nativeModule.ManifestPath);
+                AddArgument(startInfo, "--abi3-module-sha256", nativeModule.ModuleSha256);
+                AddArgument(startInfo, "--abi3-manifest-sha256", nativeModule.ManifestSha256);
+            }
         }
 
         if (options.EnableTestFaultInjection)

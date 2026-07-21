@@ -206,11 +206,13 @@ implicitly.
 
 ## Managed Stable-ABI experiments
 
-`DotPython.Runtime.Native` loads the checked-in conformance fixture or the exact pinned Anyver 1.1.0
-macOS ARM64 native entry through an explicitly configured worker. The parent supplies absolute
-bridge, module, and manifest paths plus their SHA-256 values. Before execution, the worker validates
-bounded regular files, platform and architecture, the versioned manifest, `PyInit_*`, and every
-required bridge and module export. Native addresses remain inside the dedicated native-owner lane.
+`DotPython.Runtime.Native` loads checked-in conformance fixtures or exact pinned native entries
+through an explicitly configured worker. The parent supplies a bounded catalog of absolute module
+and manifest paths plus their SHA-256 values; every entry shares one pinned bridge identity. Before
+execution, the worker freezes the catalog, rejects duplicate module names and artifact paths, and
+validates bounded regular files, platform and architecture, the versioned manifest, `PyInit_*`, and
+every required bridge and module export. Imports select entries by qualified module name and exact
+path. Native addresses remain inside the dedicated native-owner lane.
 
 The Anyver manifest records the immutable wheel and native-entry hashes and exactly 90 imported
 Stable-ABI symbols. `inspect-anyver-wheel.sh` rejects wheel, entry-point, or import-surface drift.
@@ -220,7 +222,8 @@ explicit owner-thread release. The legacy scalar module query/call helpers have 
 worker can therefore import the unchanged Anyver Python wrapper
 from the staged wheel and use its native exports without Anyver-specific native exports, worker
 messages, or managed call methods. Package identity and process-pinned lifetime are manifest data;
-the runtime path is package-neutral. The acceptance path covers comparisons, sorting, `Version`
+the runtime path is package-neutral. Two independent conformance modules verify catalog routing and
+failure isolation in one worker. The Anyver acceptance path covers comparisons, sorting, `Version`
 construction/display/properties/indexing, and dictionary results. PyO3 heap-type and intern caches
 are retained for the worker lifetime; transient module objects are released on logical-module
 disposal and all remaining native state is reclaimed by worker termination.

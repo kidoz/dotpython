@@ -32,7 +32,8 @@ public sealed record WorkerProcessOptions
 
     public WorkerResourcePolicy Policy { get; init; } = new();
 
-    public WorkerStableAbiModuleOptions? StableAbiModule { get; init; }
+    public IReadOnlyList<WorkerStableAbiModuleOptions> StableAbiModules { get; init; } =
+        Array.Empty<WorkerStableAbiModuleOptions>();
 
     public bool EnableTestFaultInjection { get; init; }
 
@@ -52,7 +53,22 @@ public sealed record WorkerProcessOptions
         ArgumentNullException.ThrowIfNull(EnvironmentVariables);
         ArgumentNullException.ThrowIfNull(Policy);
         Policy.Validate();
-        StableAbiModule?.Validate();
+        ArgumentNullException.ThrowIfNull(StableAbiModules);
+        if (StableAbiModules.Count > 64)
+        {
+            throw new ArgumentException(
+                "A worker can qualify at most 64 Stable-ABI modules.",
+                nameof(StableAbiModules)
+            );
+        }
+
+        foreach (var module in StableAbiModules)
+        {
+            ArgumentNullException.ThrowIfNull(module);
+            module.Validate();
+        }
+
+        ValidateStableAbiCatalog();
 
         foreach (var feature in RequiredFeatures)
         {
@@ -80,6 +96,52 @@ public sealed record WorkerProcessOptions
                 throw new ArgumentException(
                     "Environment variable names cannot contain '='.",
                     nameof(EnvironmentVariables)
+                );
+            }
+        }
+    }
+
+    private void ValidateStableAbiCatalog()
+    {
+        if (StableAbiModules.Count == 0)
+        {
+            return;
+        }
+
+        var first = StableAbiModules[0];
+        var pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        var modulePaths = new HashSet<string>(pathComparer);
+        var manifestPaths = new HashSet<string>(pathComparer);
+        foreach (var module in StableAbiModules)
+        {
+            if (
+                !pathComparer.Equals(
+                    Path.GetFullPath(module.BridgePath),
+                    Path.GetFullPath(first.BridgePath)
+                )
+                || !string.Equals(
+                    module.BridgeSha256,
+                    first.BridgeSha256,
+                    StringComparison.Ordinal
+                )
+            )
+            {
+                throw new ArgumentException(
+                    "Every Stable-ABI module in a worker must use the same pinned bridge identity.",
+                    nameof(StableAbiModules)
+                );
+            }
+
+            if (
+                !modulePaths.Add(Path.GetFullPath(module.ModulePath))
+                || !manifestPaths.Add(Path.GetFullPath(module.ManifestPath))
+            )
+            {
+                throw new ArgumentException(
+                    "Stable-ABI module and manifest paths must be unique within a worker catalog.",
+                    nameof(StableAbiModules)
                 );
             }
         }

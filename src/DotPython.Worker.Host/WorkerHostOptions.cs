@@ -8,7 +8,7 @@ internal sealed record WorkerHostOptions(
     WorkerIdentity Identity,
     WorkerProtocolLimits Limits,
     IReadOnlyList<string> PackageRoots,
-    StableAbiModuleConfiguration? StableAbiModule,
+    IReadOnlyList<StableAbiModuleCatalogEntry> StableAbiModules,
     bool TestFaultInjection,
     WorkerProtocolVersion ProtocolVersion
 )
@@ -61,20 +61,47 @@ internal sealed record WorkerHostOptions(
             features.Add("test-fault-injection");
         }
 
-        StableAbiModuleConfiguration? stableAbiModule = null;
+        IReadOnlyList<StableAbiModuleCatalogEntry> stableAbiModules = [];
         var hasNativeModule = values.ContainsKey("--abi3-module");
         if (hasNativeModule)
         {
-            stableAbiModule = new StableAbiModuleConfiguration(
-                Required(values, "--abi3-bridge"),
-                Required(values, "--abi3-module"),
-                Required(values, "--abi3-manifest"),
-                Required(values, "--abi3-bridge-sha256"),
-                Required(values, "--abi3-module-sha256"),
-                Required(values, "--abi3-manifest-sha256")
+            var bridgePath = Required(values, "--abi3-bridge");
+            var bridgeSha256 = Required(values, "--abi3-bridge-sha256");
+            var modulePaths = RequiredMany(values, "--abi3-module");
+            var manifestPaths = RequiredMany(values, "--abi3-manifest");
+            var moduleHashes = RequiredMany(values, "--abi3-module-sha256");
+            var manifestHashes = RequiredMany(values, "--abi3-manifest-sha256");
+            if (
+                modulePaths.Count > 64
+                || manifestPaths.Count != modulePaths.Count
+                || moduleHashes.Count != modulePaths.Count
+                || manifestHashes.Count != modulePaths.Count
+            )
+            {
+                throw new ArgumentException(
+                    "The Stable-ABI module catalog is misaligned or exceeds its 64-module bound."
+                );
+            }
+
+            var entries = new List<StableAbiModuleCatalogEntry>(modulePaths.Count);
+            for (var index = 0; index < modulePaths.Count; index++)
+            {
+                var configuration = new StableAbiModuleConfiguration(
+                    bridgePath,
+                    modulePaths[index],
+                    manifestPaths[index],
+                    bridgeSha256,
+                    moduleHashes[index],
+                    manifestHashes[index]
+                );
+                var manifest = StableAbiSymbolManifest.Load(configuration.ManifestPath);
+                entries.Add(new StableAbiModuleCatalogEntry(configuration, manifest));
+            }
+
+            stableAbiModules = StableAbiModuleCatalog.ValidateAndFreeze(entries);
+            features.AddRange(
+                stableAbiModules.Select(entry => entry.Manifest.CapabilityId).Distinct()
             );
-            var manifest = StableAbiSymbolManifest.Load(stableAbiModule.ManifestPath);
-            features.Add(manifest.CapabilityId);
         }
         else if (values.Keys.Any(key => key.StartsWith("--abi3-", StringComparison.Ordinal)))
         {
@@ -103,10 +130,23 @@ internal sealed record WorkerHostOptions(
                 ParsePositive(Required(values, "--max-sessions"), "--max-sessions")
             ),
             packageRoots,
-            stableAbiModule,
+            stableAbiModules,
             testFaultInjection,
             new WorkerProtocolVersion(protocolMajor, WorkerProtocolVersion.Current.Minor)
         );
+    }
+
+    private static List<string> RequiredMany(
+        Dictionary<string, List<string>> values,
+        string name
+    )
+    {
+        if (!values.TryGetValue(name, out var entries) || entries.Count == 0)
+        {
+            throw new ArgumentException($"Worker argument '{name}' must occur at least once.");
+        }
+
+        return entries;
     }
 
     private static string Required(Dictionary<string, List<string>> values, string name)
