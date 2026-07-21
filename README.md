@@ -40,8 +40,7 @@ compatibility is qualified yet.
 ## Requirements
 
 - [.NET SDK **10.0.301**](https://dotnet.microsoft.com/download) or later (pinned in `global.json`).
-- Meson 1.9 or later and Ninja for the experimental Stable-ABI native build.
-- LLVM `clang-format` and `clang-tidy` for native development and `just lint`.
+- Rust 1.85 or later with Cargo, rustfmt, and Clippy for the experimental Stable-ABI native build.
 - Optionally [`just`](https://github.com/casey/just) for the developer task shortcuts below.
 
 ## Getting started
@@ -305,27 +304,29 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 
 ```sh
 just            # list available tasks
-just format     # format C#, project files, and native C sources
-just native-format # format only the native Stable-ABI sources with clang-format
-just native-lint   # check native formatting and run clang-tidy
+just format     # format C#, project files, and native Rust sources
+just native-format # format only the native Stable-ABI workspace with rustfmt
+just native-lint   # check native formatting and run Clippy
+just native-test   # build, verify, test, and stage native artifacts
 just parser-generate # regenerate the checked-in parser from the pinned PEG subset
 just parser-check    # verify deterministic parser regeneration has no drift
 just lint       # check managed/native formatting and analyzers, then build Release
 just run -- ... # run the CLI
 ```
 
-Meson is the authoritative native build graph:
+Cargo is the authoritative native build graph:
 
 ```sh
-meson setup build/native-abi3 native/dotpython-abi3
-meson compile -C build/native-abi3
-meson test -C build/native-abi3 --print-errorlogs
+cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all -- --check
+cargo clippy --manifest-path native/dotpython-abi3/Cargo.toml --workspace --all-targets -- -D warnings
+cargo test --manifest-path native/dotpython-abi3/Cargo.toml --workspace
+native/dotpython-abi3/build.sh build/native-abi3
 ```
 
-Use a separate `build/native-abi3-sanitize` directory with
-`-Db_sanitize=address,undefined -Db_lundef=false` for AddressSanitizer and
-UndefinedBehaviorSanitizer. The checked-in `build.sh` remains a compatibility and explicit-staging
-wrapper for MSBuild.
+The checked-in `build.sh` is the authoritative verification and explicit-staging wrapper used by
+MSBuild. AddressSanitizer and UndefinedBehaviorSanitizer require a separate nightly Rust workflow;
+the stable workflow relies on Rust checks, Clippy, symbol-boundary checks, and harness leak
+accounting.
 
 Build settings (`Directory.Build.props`) enforce C# 14, nullable reference types,
 `TreatWarningsAsErrors`, all analyzers enabled, and deterministic builds.

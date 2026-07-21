@@ -5,30 +5,21 @@ native_build_dir := "build/native-abi3"
 default:
     @just --list
 
-# Format the native Stable-ABI sources with clang-format.
+# Format the native Stable-ABI Rust workspace.
 native-format:
-    #!/bin/sh
-    set -eu
-    if [ -f "{{native_build_dir}}/meson-private/coredata.dat" ]; then
-        meson setup --reconfigure "{{native_build_dir}}" native/dotpython-abi3
-    else
-        meson setup "{{native_build_dir}}" native/dotpython-abi3
-    fi
-    meson compile -C "{{native_build_dir}}" --ninja-args=clang-format
+    cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all
 
-# Check native formatting and run clang-tidy with warnings as errors.
+# Check native formatting and run Clippy with warnings as errors.
 native-lint:
-    #!/bin/sh
-    set -eu
-    if [ -f "{{native_build_dir}}/meson-private/coredata.dat" ]; then
-        meson setup --reconfigure "{{native_build_dir}}" native/dotpython-abi3
-    else
-        meson setup "{{native_build_dir}}" native/dotpython-abi3
-    fi
-    meson compile -C "{{native_build_dir}}" --ninja-args=clang-format-check
-    meson compile -C "{{native_build_dir}}" --ninja-args=clang-tidy
+    cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all -- --check
+    cargo clippy --manifest-path native/dotpython-abi3/Cargo.toml --workspace --all-targets -- -D warnings
 
-# Format C#, project files, and native sources with the configured tools.
+# Build, verify, test, and stage the native Stable-ABI artifacts.
+native-test:
+    cargo test --manifest-path native/dotpython-abi3/Cargo.toml --workspace
+    native/dotpython-abi3/build.sh "{{native_build_dir}}"
+
+# Format C#, project files, and native Rust sources with the configured tools.
 format: native-format
     dotnet tool restore
     dotnet csharpier format .

@@ -15,7 +15,6 @@ concurrency:
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_NOLOGO: 'true'
-  MESON_VERSION: '1.11.2'
 
 jobs:
   build-and-test:
@@ -41,25 +40,10 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v6
 
-      - name: Install Linux native tools
-        if: runner.os == 'Linux'
+      - name: Install Rust toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang clang-format clang-tidy ninja-build python3-venv
-
-      - name: Install macOS native tools
-        if: runner.os == 'macOS'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
-        run: |
-          brew install llvm ninja
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-
-      - name: Install Meson
-        run: |
-          python3 -m venv "$RUNNER_TEMP/meson"
-          "$RUNNER_TEMP/meson/bin/python" -m pip install --disable-pip-version-check "meson==$MESON_VERSION"
-          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v5
@@ -73,39 +57,29 @@ jobs:
         run: |
           test "$(uname -s)" = "$EXPECTED_KERNEL"
           test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
-          meson --version
-          ninja --version
-          clang --version
-          clang-format --version
-          clang-tidy --version
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
           dotnet --info
 
-      - name: Configure the native ABI build
-        run: meson setup build/native-abi3 native/dotpython-abi3
-
-      - name: Build the native ABI targets
-        run: meson compile -C build/native-abi3
-
-      - name: Test the native ABI targets
-        run: meson test -C build/native-abi3 --print-errorlogs
-
       - name: Check native formatting
-        run: meson compile -C build/native-abi3 --ninja-args=clang-format-check
+        run: cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all -- --check
 
-      - name: Run clang-tidy
-        run: meson compile -C build/native-abi3 --ninja-args=clang-tidy
-
-      - name: Configure the sanitized native ABI build
+      - name: Run Clippy
         run: >-
-          meson setup build/native-abi3-sanitize native/dotpython-abi3
-          -Db_sanitize=address,undefined
-          -Db_lundef=false
+          cargo clippy
+          --manifest-path native/dotpython-abi3/Cargo.toml
+          --workspace
+          --all-targets
+          --
+          -D warnings
 
-      - name: Build the sanitized native ABI targets
-        run: meson compile -C build/native-abi3-sanitize
+      - name: Test the Cargo workspace
+        run: cargo test --manifest-path native/dotpython-abi3/Cargo.toml --workspace
 
-      - name: Test the sanitized native ABI targets
-        run: meson test -C build/native-abi3-sanitize --print-errorlogs
+      - name: Build, verify, and stage the native ABI targets
+        run: native/dotpython-abi3/build.sh build/native-abi3
 
       - name: Build the worker tests and staged native artifacts
         run: dotnet build tests/DotPython.WorkerTests/DotPython.WorkerTests.csproj --configuration Release
