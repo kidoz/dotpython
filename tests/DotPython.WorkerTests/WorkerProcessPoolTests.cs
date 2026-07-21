@@ -53,6 +53,91 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_ExecutesPinnedAnyverModuleThroughTypedProtocol()
+    {
+        SkipAnyverWhenUnavailable();
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(
+                stableAbiFixture: true,
+                nativeFixtureFileName: "anyver._anyver.abi3.so",
+                nativeManifestFileName: "anyver-symbol-manifest.json"
+            )
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        await using var module = await session.LoadStableAbiModuleAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal("anyver._anyver", module.ModuleName);
+        Assert.Equal(
+            "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
+            module.ArtifactSha256
+        );
+        Assert.Equal(
+            StableAbiFixtureLoader.ComputeSha256(NativeFixturePath("anyver._anyver.abi3.so")),
+            module.NativeEntrySha256
+        );
+        Assert.Equal(
+            -1,
+            await module.CompareAnyverAsync(
+                "1.0",
+                "2.0",
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Equal(
+            ["1.0-alpha", "1.0", "2.0"],
+            await module.SortAnyverAsync(
+                ["2.0", "1.0-alpha", "1.0"],
+                cancellationToken: TestContext.Current.CancellationToken
+            )
+        );
+        var version = await module.DescribeAnyverVersionAsync(
+            "1.2.3",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.Equal("1.2.3", version.Raw);
+        Assert.Equal(1, version.Major);
+        Assert.False(version.IsPrerelease);
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public async Task Worker_ReusesPinnedAnyverCachesAcrossLogicalModuleLoads()
+    {
+        SkipAnyverWhenUnavailable();
+        await using var pool = new WorkerProcessPool(
+            CreateOptions(
+                stableAbiFixture: true,
+                nativeFixtureFileName: "anyver._anyver.abi3.so",
+                nativeManifestFileName: "anyver-symbol-manifest.json"
+            )
+        );
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            await using var module = await session.LoadStableAbiModuleAsync(
+                TestContext.Current.CancellationToken
+            );
+            Assert.Equal(
+                0,
+                await module.CompareAnyverAsync(
+                    "2.0",
+                    "2.0",
+                    cancellationToken: TestContext.Current.CancellationToken
+                )
+            );
+        }
+
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
     public async Task Worker_RejectsUnconfiguredStableAbiCapabilityWithoutFallback()
     {
         await using var pool = new WorkerProcessPool(CreateOptions());
@@ -462,6 +547,7 @@ public sealed class WorkerProcessPoolTests
         bool enableTestFaultInjection = false,
         bool stableAbiFixture = false,
         string nativeFixtureFileName = "dotpython_fixture.abi3.so",
+        string nativeManifestFileName = "symbol-manifest.json",
         string? nativeFixturePath = null
     )
     {
@@ -481,7 +567,7 @@ public sealed class WorkerProcessPoolTests
                 OperatingSystem.IsMacOS() ? "libdotpython_abi3.dylib" : "libdotpython_abi3.so"
             );
             var fixture = nativeFixturePath ?? NativeFixturePath(nativeFixtureFileName);
-            var manifest = NativeFixturePath("symbol-manifest.json");
+            var manifest = NativeFixturePath(nativeManifestFileName);
             nativeOptions = new WorkerStableAbiFixtureOptions
             {
                 BridgePath = bridge,
@@ -503,7 +589,13 @@ public sealed class WorkerProcessPoolTests
             EnableTestFaultInjection = enableTestFaultInjection,
             StableAbiFixture = nativeOptions,
             RequiredFeatures = stableAbiFixture
-                ? ["managed-execution", "managed-stable-abi-fixture-v1"]
+                ?
+                [
+                    "managed-execution",
+                    nativeManifestFileName == "anyver-symbol-manifest.json"
+                        ? "managed-stable-abi-anyver-1.1.0"
+                        : "managed-stable-abi-fixture-v1",
+                ]
                 : ["managed-execution"],
         };
     }
@@ -516,6 +608,14 @@ public sealed class WorkerProcessPoolTests
         if (OperatingSystem.IsWindows())
         {
             Assert.Skip("The initial Stable-ABI experiment supports osx-arm64 and linux-x64.");
+        }
+    }
+
+    private static void SkipAnyverWhenUnavailable()
+    {
+        if (!OperatingSystem.IsMacOS() || !File.Exists(NativeFixturePath("anyver._anyver.abi3.so")))
+        {
+            Assert.Skip("Set DOTPYTHON_ANYVER_WHEEL to the pinned macOS ARM64 Anyver 1.1.0 wheel.");
         }
     }
 

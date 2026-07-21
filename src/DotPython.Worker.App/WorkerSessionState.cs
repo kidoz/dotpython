@@ -33,7 +33,8 @@ internal sealed class WorkerSessionState : IAsyncDisposable
                     objectId,
                     module.ModuleName,
                     module.ManifestVersion,
-                    configuration.FixtureSha256,
+                    module.ArtifactSha256 ?? configuration.FixtureSha256,
+                    module.NativeEntrySha256 ?? configuration.FixtureSha256,
                     module.MultiPhase,
                     module.ReadyValue
                 );
@@ -49,6 +50,40 @@ internal sealed class WorkerSessionState : IAsyncDisposable
     ) =>
         _nativeLane.InvokeAsync(
             () => GetModule(objectId).InvokeLong(method, argument),
+            cancellationToken
+        );
+
+    internal Task<long> CompareAnyverAsync(
+        long objectId,
+        string left,
+        string right,
+        string ecosystem,
+        CancellationToken cancellationToken
+    ) =>
+        _nativeLane.InvokeAsync(
+            () => GetModule(objectId).CompareAnyver(left, right, ecosystem),
+            cancellationToken
+        );
+
+    internal Task<IReadOnlyList<string>> SortAnyverAsync(
+        long objectId,
+        IReadOnlyList<string> versions,
+        string ecosystem,
+        CancellationToken cancellationToken
+    ) =>
+        _nativeLane.InvokeAsync(
+            () => GetModule(objectId).SortAnyver(versions, ecosystem),
+            cancellationToken
+        );
+
+    internal Task<StableAbiAnyverVersionInfo> DescribeAnyverVersionAsync(
+        long objectId,
+        string version,
+        string ecosystem,
+        CancellationToken cancellationToken
+    ) =>
+        _nativeLane.InvokeAsync(
+            () => GetModule(objectId).DescribeAnyverVersion(version, ecosystem),
             cancellationToken
         );
 
@@ -120,6 +155,7 @@ internal sealed record LoadedStableAbiModule(
     string ModuleName,
     string ManifestVersion,
     string ArtifactSha256,
+    string NativeEntrySha256,
     bool MultiPhase,
     long ReadyValue
 );

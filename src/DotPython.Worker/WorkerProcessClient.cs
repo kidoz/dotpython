@@ -435,6 +435,126 @@ internal sealed class WorkerProcessClient : IAsyncDisposable
             when (exception.Fault.Code == WorkerProtocolFaultCodes.StaleHandle) { }
     }
 
+    internal async Task<long> CompareAnyverAsync(
+        WorkerObjectHandle handle,
+        string left,
+        string right,
+        string ecosystem,
+        CancellationToken cancellationToken
+    )
+    {
+        var response = await SendNativeRequestAsync<
+            WorkerCompareAnyverRequest,
+            WorkerCompareAnyverResponse
+        >(
+                handle,
+                WorkerMessageType.CompareAnyverRequest,
+                WorkerMessageType.CompareAnyverResponse,
+                new WorkerCompareAnyverRequest(
+                    handle.SessionId,
+                    handle.ObjectId,
+                    left,
+                    right,
+                    ecosystem
+                ),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
+        ValidateNativeResponse(handle, response.SessionId, response.ObjectId);
+        return response.Result;
+    }
+
+    internal async Task<IReadOnlyList<string>> SortAnyverAsync(
+        WorkerObjectHandle handle,
+        IReadOnlyList<string> versions,
+        string ecosystem,
+        CancellationToken cancellationToken
+    )
+    {
+        var response = await SendNativeRequestAsync<
+            WorkerSortAnyverRequest,
+            WorkerSortAnyverResponse
+        >(
+                handle,
+                WorkerMessageType.SortAnyverRequest,
+                WorkerMessageType.SortAnyverResponse,
+                new WorkerSortAnyverRequest(handle.SessionId, handle.ObjectId, versions, ecosystem),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
+        ValidateNativeResponse(handle, response.SessionId, response.ObjectId);
+        return response.Versions;
+    }
+
+    internal async Task<WorkerAnyverVersionInfo> DescribeAnyverVersionAsync(
+        WorkerObjectHandle handle,
+        string version,
+        string ecosystem,
+        CancellationToken cancellationToken
+    )
+    {
+        var response = await SendNativeRequestAsync<
+            WorkerDescribeAnyverVersionRequest,
+            WorkerDescribeAnyverVersionResponse
+        >(
+                handle,
+                WorkerMessageType.DescribeAnyverVersionRequest,
+                WorkerMessageType.DescribeAnyverVersionResponse,
+                new WorkerDescribeAnyverVersionRequest(
+                    handle.SessionId,
+                    handle.ObjectId,
+                    version,
+                    ecosystem
+                ),
+                cancellationToken
+            )
+            .ConfigureAwait(false);
+        ValidateNativeResponse(handle, response.SessionId, response.ObjectId);
+        return response.Version;
+    }
+
+    private async Task<TResponse> SendNativeRequestAsync<TRequest, TResponse>(
+        WorkerObjectHandle handle,
+        WorkerMessageType requestType,
+        WorkerMessageType responseType,
+        TRequest request,
+        CancellationToken cancellationToken
+    )
+        where TRequest : notnull
+        where TResponse : notnull
+    {
+        _generationScope.Validate(handle, handle.SessionId);
+        await _admissionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Increment(ref _requestCount);
+            return await SendRequestAsync<TRequest, TResponse>(
+                    requestType,
+                    responseType,
+                    request,
+                    DateTimeOffset.UtcNow + _options.Policy.ExecutionTimeout,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _admissionGate.Release();
+        }
+    }
+
+    private static void ValidateNativeResponse(
+        WorkerObjectHandle handle,
+        Guid sessionId,
+        long objectId
+    )
+    {
+        if (sessionId != handle.SessionId || objectId != handle.ObjectId)
+        {
+            throw ProtocolFailure("The worker returned a mismatched native module handle.");
+        }
+    }
+
     internal async Task InjectTestFaultAsync(
         WorkerTestFault fault,
         CancellationToken cancellationToken

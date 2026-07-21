@@ -23,6 +23,12 @@ public enum WorkerMessageType
     InvokeStableAbiModuleResponse = 16,
     ReleaseStableAbiModuleRequest = 17,
     ReleaseStableAbiModuleResponse = 18,
+    CompareAnyverRequest = 19,
+    CompareAnyverResponse = 20,
+    SortAnyverRequest = 21,
+    SortAnyverResponse = 22,
+    DescribeAnyverVersionRequest = 23,
+    DescribeAnyverVersionResponse = 24,
     TestControlRequest = 100,
     TestControlResponse = 101,
 }
@@ -127,6 +133,7 @@ public sealed record WorkerLoadStableAbiModuleResponse(
     string ModuleName,
     string ManifestVersion,
     string ArtifactSha256,
+    string NativeEntrySha256,
     bool MultiPhase,
     long ReadyValue
 );
@@ -147,6 +154,54 @@ public sealed record WorkerInvokeStableAbiModuleResponse(
 public sealed record WorkerReleaseStableAbiModuleRequest(Guid SessionId, long ObjectId);
 
 public sealed record WorkerReleaseStableAbiModuleResponse(Guid SessionId, long ObjectId);
+
+public sealed record WorkerCompareAnyverRequest(
+    Guid SessionId,
+    long ObjectId,
+    string Left,
+    string Right,
+    string Ecosystem
+);
+
+public sealed record WorkerCompareAnyverResponse(Guid SessionId, long ObjectId, long Result);
+
+public sealed record WorkerSortAnyverRequest(
+    Guid SessionId,
+    long ObjectId,
+    IReadOnlyList<string> Versions,
+    string Ecosystem
+);
+
+public sealed record WorkerSortAnyverResponse(
+    Guid SessionId,
+    long ObjectId,
+    IReadOnlyList<string> Versions
+);
+
+public sealed record WorkerDescribeAnyverVersionRequest(
+    Guid SessionId,
+    long ObjectId,
+    string Version,
+    string Ecosystem
+);
+
+public sealed record WorkerAnyverVersionInfo(
+    string Raw,
+    string Ecosystem,
+    long Epoch,
+    long Major,
+    long Minor,
+    long Patch,
+    string Build,
+    bool IsPrerelease,
+    bool IsPostrelease
+);
+
+public sealed record WorkerDescribeAnyverVersionResponse(
+    Guid SessionId,
+    long ObjectId,
+    WorkerAnyverVersionInfo Version
+);
 
 public enum WorkerFaultPhase
 {

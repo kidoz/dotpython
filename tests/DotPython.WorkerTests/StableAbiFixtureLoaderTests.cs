@@ -31,6 +31,46 @@ public sealed class StableAbiFixtureLoaderTests
     }
 
     [Fact]
+    public void Load_ExecutesPinnedAnyverModuleWithoutChangingTheWheelBinary()
+    {
+        SkipAnyverWhenUnavailable();
+        var configuration = CreateAnyverConfiguration();
+        using var module = StableAbiFixtureLoader.Load(configuration);
+
+        Assert.Equal("anyver._anyver", module.ModuleName);
+        Assert.Equal("dotpython-abi3-anyver-1.1.0-v1", module.ManifestVersion);
+        Assert.Equal(
+            "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
+            module.ArtifactSha256
+        );
+        Assert.Equal(configuration.FixtureSha256, module.NativeEntrySha256);
+        Assert.True(module.MultiPhase);
+        Assert.Equal(-1, module.CompareAnyver("1.0", "2.0", "generic"));
+        Assert.Equal(
+            ["1.0-alpha", "1.0", "2.0"],
+            module.SortAnyver(["2.0", "1.0-alpha", "1.0"], "generic")
+        );
+
+        var version = module.DescribeAnyverVersion("1.2.3", "auto");
+        Assert.Equal("1.2.3", version.Raw);
+        Assert.Equal(1, version.Major);
+        Assert.False(version.IsPrerelease);
+    }
+
+    [Fact]
+    public void Load_RepeatedlyInitializesAndReleasesPinnedAnyverModule()
+    {
+        SkipAnyverWhenUnavailable();
+        var configuration = CreateAnyverConfiguration();
+
+        for (var iteration = 0; iteration < 25; iteration++)
+        {
+            using var module = StableAbiFixtureLoader.Load(configuration);
+            Assert.Equal(0, module.CompareAnyver("2.0", "2.0", "generic"));
+        }
+    }
+
+    [Fact]
     public void Load_RejectsArtifactHashMismatchBeforeLoading()
     {
         SkipUnsupportedPlatform();
@@ -181,6 +221,21 @@ public sealed class StableAbiFixtureLoaderTests
         );
     }
 
+    private static StableAbiFixtureConfiguration CreateAnyverConfiguration()
+    {
+        var bridge = FixturePath(BridgeFileName);
+        var fixture = FixturePath("anyver._anyver.abi3.so");
+        var manifest = FixturePath("anyver-symbol-manifest.json");
+        return new StableAbiFixtureConfiguration(
+            bridge,
+            fixture,
+            manifest,
+            StableAbiFixtureLoader.ComputeSha256(bridge),
+            StableAbiFixtureLoader.ComputeSha256(fixture),
+            StableAbiFixtureLoader.ComputeSha256(manifest)
+        );
+    }
+
     private static string BridgeFileName =>
         OperatingSystem.IsMacOS() ? "libdotpython_abi3.dylib" : "libdotpython_abi3.so";
 
@@ -192,6 +247,14 @@ public sealed class StableAbiFixtureLoaderTests
         if (OperatingSystem.IsWindows())
         {
             Assert.Skip("The initial Stable-ABI experiment supports osx-arm64 and linux-x64.");
+        }
+    }
+
+    private static void SkipAnyverWhenUnavailable()
+    {
+        if (!OperatingSystem.IsMacOS() || !File.Exists(FixturePath("anyver._anyver.abi3.so")))
+        {
+            Assert.Skip("Set DOTPYTHON_ANYVER_WHEEL to the pinned macOS ARM64 Anyver 1.1.0 wheel.");
         }
     }
 

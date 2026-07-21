@@ -23,12 +23,72 @@ internal static class StableAbiFixtureLoader
             .Read(configuration.FixturePath)
             .ValidateCurrentPlatform(configuration.FixturePath);
         var manifest = StableAbiSymbolManifest.Load(configuration.ManifestPath);
+        if (
+            manifest.NativeEntrySha256 is not null
+            && !string.Equals(manifest.NativeEntrySha256, fixtureHash, StringComparison.Ordinal)
+        )
+        {
+            throw new StableAbiLoadException(
+                "DPY8001",
+                StableAbiLoadPhase.Policy,
+                "The configured native entry does not match the pinned manifest SHA-256.",
+                configuration.FixturePath,
+                fixtureHash,
+                missingSymbol: null
+            );
+        }
+
+        if (manifest.IsAnyver)
+        {
+            var cached = StableAbiAnyverLibraryCache.Load(
+                configuration.BridgePath,
+                bridgeHash,
+                configuration.FixturePath,
+                fixtureHash
+            );
+            ValidateExports(
+                cached.Bridge,
+                manifest.RequiredBridgeExports,
+                configuration.BridgePath,
+                bridgeHash
+            );
+            ValidateExports(
+                cached.Fixture,
+                manifest.RequiredFixtureExports,
+                configuration.FixturePath,
+                fixtureHash
+            );
+            try
+            {
+                return StableAbiFixtureModule.Initialize(
+                    cached.Bridge,
+                    cached.Fixture,
+                    manifest,
+                    configuration.FixturePath,
+                    fixtureHash,
+                    releaseLibraries: false
+                );
+            }
+            catch (StableAbiLoadException exception)
+                when (exception.Phase == StableAbiLoadPhase.ModuleInitialization)
+            {
+                throw new StableAbiLoadException(
+                    "DPY8004",
+                    StableAbiLoadPhase.ModuleInitialization,
+                    $"Pinned Anyver initialization left process-lifetime native caches in an unknown state: {exception.Message}",
+                    configuration.FixturePath,
+                    fixtureHash,
+                    missingSymbol: null,
+                    exception
+                );
+            }
+        }
 
         nint bridge = 0;
         nint fixture = 0;
         try
         {
-            bridge = LoadLibrary(
+            bridge = LoadBridgeLibrary(
                 configuration.BridgePath,
                 bridgeHash,
                 StableAbiLoadPhase.BridgeLoad
@@ -55,7 +115,8 @@ internal static class StableAbiFixtureLoader
                 fixture,
                 manifest,
                 configuration.FixturePath,
-                fixtureHash
+                fixtureHash,
+                releaseLibraries: true
             );
         }
         catch
@@ -67,7 +128,7 @@ internal static class StableAbiFixtureLoader
 
             if (bridge != 0)
             {
-                NativeLibrary.Free(bridge);
+                NativeLibraryGlobalLoader.Free(bridge);
             }
 
             throw;
@@ -141,7 +202,7 @@ internal static class StableAbiFixtureLoader
         return actual;
     }
 
-    private static nint LoadLibrary(string path, string hash, StableAbiLoadPhase phase)
+    internal static nint LoadLibrary(string path, string hash, StableAbiLoadPhase phase)
     {
         try
         {
@@ -154,6 +215,27 @@ internal static class StableAbiFixtureLoader
                 "DPY8004",
                 phase,
                 $"Native artifact '{Path.GetFileName(path)}' could not be loaded: {exception.Message}",
+                path,
+                hash,
+                missingSymbol: null,
+                exception
+            );
+        }
+    }
+
+    internal static nint LoadBridgeLibrary(string path, string hash, StableAbiLoadPhase phase)
+    {
+        try
+        {
+            return NativeLibraryGlobalLoader.Load(path);
+        }
+        catch (Exception exception)
+            when (exception is DllNotFoundException or BadImageFormatException)
+        {
+            throw new StableAbiLoadException(
+                "DPY8004",
+                phase,
+                $"Native artifact '{Path.GetFileName(path)}' could not be loaded globally: {exception.Message}",
                 path,
                 hash,
                 missingSymbol: null,

@@ -38,6 +38,10 @@ public sealed class WorkerSession : IAsyncDisposable
 
     public async Task<WorkerStableAbiModule> LoadStableAbiFixtureAsync(
         CancellationToken cancellationToken = default
+    ) => await LoadStableAbiModuleAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<WorkerStableAbiModule> LoadStableAbiModuleAsync(
+        CancellationToken cancellationToken = default
     )
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -64,6 +68,7 @@ public sealed class WorkerSession : IAsyncDisposable
             response.ModuleName,
             response.ManifestVersion,
             response.ArtifactSha256,
+            response.NativeEntrySha256,
             response.MultiPhase,
             response.ReadyValue
         );

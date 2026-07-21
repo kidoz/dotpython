@@ -73,7 +73,12 @@ internal sealed record WorkerHostOptions(
                 Required(values, "--abi3-fixture-sha256"),
                 Required(values, "--abi3-manifest-sha256")
             );
-            features.Add("managed-stable-abi-fixture-v1");
+            var manifest = StableAbiSymbolManifest.Load(stableAbiFixture.ManifestPath);
+            features.Add(
+                manifest.IsAnyver
+                    ? "managed-stable-abi-anyver-1.1.0"
+                    : "managed-stable-abi-fixture-v1"
+            );
         }
         else if (values.Keys.Any(key => key.StartsWith("--abi3-", StringComparison.Ordinal)))
         {

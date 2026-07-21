@@ -40,6 +40,7 @@ compatibility is qualified yet.
 ## Requirements
 
 - [.NET SDK **10.0.301**](https://dotnet.microsoft.com/download) or later (pinned in `global.json`).
+- LLVM `clang-format` and `clang-tidy` for native development and `just lint`.
 - Optionally [`just`](https://github.com/casey/just) for the developer task shortcuts below.
 
 ## Getting started
@@ -199,21 +200,25 @@ contains crashes and enables hard termination, but it is not by itself a complet
 sandbox; platform OS resource and network enforcement remain separate work. No provider is selected
 implicitly.
 
-## Stable-ABI fixture experiment
+## Managed Stable-ABI experiments
 
-`DotPython.Runtime.Native` loads only the checked-in `native/dotpython-abi3` conformance fixture.
-The parent must explicitly configure absolute bridge, fixture, and manifest paths plus the exact
-SHA-256 of each artifact. The worker validates bounded regular files, platform and architecture,
-the generated manifest, the `PyInit_dotpython_fixture` entry point, and every bridge export before
-running multi-phase initialization on a dedicated native-owner thread.
+`DotPython.Runtime.Native` loads the checked-in conformance fixture or the exact pinned Anyver 1.1.0
+macOS ARM64 native entry through an explicitly configured worker. The parent supplies absolute
+bridge, module, and manifest paths plus their SHA-256 values. Before execution, the worker validates
+bounded regular files, platform and architecture, the versioned manifest, `PyInit_*`, and every
+required bridge and module export. Native addresses remain inside the dedicated native-owner lane.
 
-The fixture proves module initialization, one integer call, a deliberate native exception, logical
-worker handles, and exactly-once cleanup. Its seven-symbol Stable-ABI import surface and native
-exports are checked against canonical lists during the native build. Loader failures include the
-artifact identity, native entry, architecture, missing symbol, and phase; failures that make the
-native loader unsafe invalidate and recycle the worker. This experiment does not import wheels,
-does not expose native pointers to managed callers, and does not claim Anyver, NumPy, HPy, or general
-`abi3` compatibility.
+The Anyver manifest records the immutable wheel and native-entry hashes and exactly 90 imported
+Stable-ABI symbols. `inspect-anyver-wheel.sh` rejects wheel, entry-point, or import-surface drift.
+The unchanged `_anyver.abi3.so` can perform comparisons and sorting and construct the PyO3 `Version`
+heap type through typed worker protocol calls. PyO3 heap-type and intern caches are retained for the
+worker lifetime; transient module objects are released on logical-module disposal and all remaining
+native state is reclaimed by worker termination.
+
+Set `DOTPYTHON_ANYVER_WHEEL` to the pinned wheel when building `DotPython.WorkerTests` to enable the
+hash-verified Anyver acceptance tests. This is a package- and artifact-specific experiment. The
+pure-Python wrapper and upstream suite are not yet qualified, and this does not claim NumPy, HPy, or
+general `abi3` compatibility.
 
 ## Typed module contracts
 
@@ -299,12 +304,17 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 
 ```sh
 just            # list available tasks
-just format     # format C# and project files with the pinned CSharpier version
+just format     # format C#, project files, and native C sources
+just native-format # format only the native Stable-ABI sources with clang-format
+just native-lint   # check native formatting and run clang-tidy
 just parser-generate # regenerate the checked-in parser from the pinned PEG subset
 just parser-check    # verify deterministic parser regeneration has no drift
-just lint       # check formatting + build Release with analyzers as errors
+just lint       # check managed/native formatting and analyzers, then build Release
 just run -- ... # run the CLI
 ```
+
+The native scripts resolve LLVM tools from `PATH` or Homebrew. Set `CLANG_FORMAT` and
+`CLANG_TIDY` to explicit executables when using another installation.
 
 Build settings (`Directory.Build.props`) enforce C# 14, nullable reference types,
 `TreatWarningsAsErrors`, all analyzers enabled, and deterministic builds.

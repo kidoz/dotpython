@@ -27,6 +27,10 @@
             <_NativeFixtureOutput>$(IntermediateOutputPath)dotpython-abi3</_NativeFixtureOutput>
         </PropertyGroup>
         <Exec Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/build.sh&quot; &quot;$(_NativeFixtureOutput)&quot;" />
+        <Exec
+            Condition="Exists('$(DOTPYTHON_ANYVER_WHEEL)')"
+            Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/prepare-anyver-acceptance.sh&quot; &quot;$(DOTPYTHON_ANYVER_WHEEL)&quot; &quot;$(_NativeFixtureOutput)&quot;"
+        />
         <ItemGroup>
             <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/*" />
         </ItemGroup>

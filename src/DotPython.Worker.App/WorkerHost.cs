@@ -111,6 +111,15 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
                 case WorkerMessageType.ReleaseStableAbiModuleRequest:
                     await ReleaseStableAbiModuleAsync(envelope).ConfigureAwait(false);
                     break;
+                case WorkerMessageType.CompareAnyverRequest:
+                    await CompareAnyverAsync(envelope).ConfigureAwait(false);
+                    break;
+                case WorkerMessageType.SortAnyverRequest:
+                    await SortAnyverAsync(envelope).ConfigureAwait(false);
+                    break;
+                case WorkerMessageType.DescribeAnyverVersionRequest:
+                    await DescribeAnyverVersionAsync(envelope).ConfigureAwait(false);
+                    break;
                 case WorkerMessageType.CancelRequest:
                     await CancelAsync(envelope).ConfigureAwait(false);
                     break;
@@ -373,6 +382,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
                             loaded.ModuleName,
                             loaded.ManifestVersion,
                             loaded.ArtifactSha256,
+                            loaded.NativeEntrySha256,
                             loaded.MultiPhase,
                             loaded.ReadyValue
                         ),
@@ -462,6 +472,138 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
                         new WorkerReleaseStableAbiModuleResponse(
                             request.SessionId,
                             request.ObjectId
+                        ),
+                        options.ProtocolVersion
+                    ),
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+        }
+        catch (StableAbiLoadException exception)
+        {
+            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CompareAnyverAsync(WorkerEnvelope envelope)
+    {
+        var request = WorkerProtocolSerializer.ReadPayload<WorkerCompareAnyverRequest>(envelope);
+        if (!_sessions.TryGetValue(request.SessionId, out var session))
+        {
+            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var result = await session
+                .CompareAnyverAsync(
+                    request.ObjectId,
+                    request.Left,
+                    request.Right,
+                    request.Ecosystem,
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+            await SendAsync(
+                    WorkerProtocolSerializer.CreateEnvelope(
+                        WorkerMessageType.CompareAnyverResponse,
+                        envelope.CorrelationId,
+                        deadlineUtc: null,
+                        new WorkerCompareAnyverResponse(
+                            request.SessionId,
+                            request.ObjectId,
+                            result
+                        ),
+                        options.ProtocolVersion
+                    ),
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+        }
+        catch (StableAbiLoadException exception)
+        {
+            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SortAnyverAsync(WorkerEnvelope envelope)
+    {
+        var request = WorkerProtocolSerializer.ReadPayload<WorkerSortAnyverRequest>(envelope);
+        if (!_sessions.TryGetValue(request.SessionId, out var session))
+        {
+            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var result = await session
+                .SortAnyverAsync(
+                    request.ObjectId,
+                    request.Versions,
+                    request.Ecosystem,
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+            await SendAsync(
+                    WorkerProtocolSerializer.CreateEnvelope(
+                        WorkerMessageType.SortAnyverResponse,
+                        envelope.CorrelationId,
+                        deadlineUtc: null,
+                        new WorkerSortAnyverResponse(request.SessionId, request.ObjectId, result),
+                        options.ProtocolVersion
+                    ),
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+        }
+        catch (StableAbiLoadException exception)
+        {
+            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DescribeAnyverVersionAsync(WorkerEnvelope envelope)
+    {
+        var request = WorkerProtocolSerializer.ReadPayload<WorkerDescribeAnyverVersionRequest>(
+            envelope
+        );
+        if (!_sessions.TryGetValue(request.SessionId, out var session))
+        {
+            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var value = await session
+                .DescribeAnyverVersionAsync(
+                    request.ObjectId,
+                    request.Version,
+                    request.Ecosystem,
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+            await SendAsync(
+                    WorkerProtocolSerializer.CreateEnvelope(
+                        WorkerMessageType.DescribeAnyverVersionResponse,
+                        envelope.CorrelationId,
+                        deadlineUtc: null,
+                        new WorkerDescribeAnyverVersionResponse(
+                            request.SessionId,
+                            request.ObjectId,
+                            new WorkerAnyverVersionInfo(
+                                value.Raw,
+                                value.Ecosystem,
+                                value.Epoch,
+                                value.Major,
+                                value.Minor,
+                                value.Patch,
+                                value.Build,
+                                value.IsPrerelease,
+                                value.IsPostrelease
+                            )
                         ),
                         options.ProtocolVersion
                     ),
