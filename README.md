@@ -40,6 +40,7 @@ compatibility is qualified yet.
 ## Requirements
 
 - [.NET SDK **10.0.301**](https://dotnet.microsoft.com/download) or later (pinned in `global.json`).
+- Meson 1.9 or later and Ninja for the experimental Stable-ABI native build.
 - LLVM `clang-format` and `clang-tidy` for native development and `just lint`.
 - Optionally [`just`](https://github.com/casey/just) for the developer task shortcuts below.
 
@@ -313,8 +314,18 @@ just lint       # check managed/native formatting and analyzers, then build Rele
 just run -- ... # run the CLI
 ```
 
-The native scripts resolve LLVM tools from `PATH` or Homebrew. Set `CLANG_FORMAT` and
-`CLANG_TIDY` to explicit executables when using another installation.
+Meson is the authoritative native build graph:
+
+```sh
+meson setup build/native-abi3 native/dotpython-abi3
+meson compile -C build/native-abi3
+meson test -C build/native-abi3 --print-errorlogs
+```
+
+Use a separate `build/native-abi3-sanitize` directory with
+`-Db_sanitize=address,undefined -Db_lundef=false` for AddressSanitizer and
+UndefinedBehaviorSanitizer. The checked-in `build.sh` remains a compatibility and explicit-staging
+wrapper for MSBuild.
 
 Build settings (`Directory.Build.props`) enforce C# 14, nullable reference types,
 `TreatWarningsAsErrors`, all analyzers enabled, and deterministic builds.
