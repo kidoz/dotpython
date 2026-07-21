@@ -24,15 +24,24 @@
         Condition="$([MSBuild]::IsOSPlatform('Windows')) != 'true'"
     >
         <PropertyGroup>
+            <_NativeFixtureBuild>$(IntermediateOutputPath)dotpython-abi3-build</_NativeFixtureBuild>
             <_NativeFixtureOutput>$(IntermediateOutputPath)dotpython-abi3</_NativeFixtureOutput>
         </PropertyGroup>
-        <Exec Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/build.sh&quot; &quot;$(_NativeFixtureOutput)&quot;" />
+        <Exec Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/build.sh&quot; &quot;$(_NativeFixtureOutput)&quot; &quot;$(_NativeFixtureBuild)&quot;" />
         <Exec
             Condition="Exists('$(DOTPYTHON_ANYVER_WHEEL)')"
             Command="&quot;$(MSBuildProjectDirectory)/../../native/dotpython-abi3/prepare-anyver-acceptance.sh&quot; &quot;$(DOTPYTHON_ANYVER_WHEEL)&quot; &quot;$(_NativeFixtureOutput)&quot;"
         />
         <ItemGroup>
-            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/*" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/libdotpython_abi3.dylib" Condition="Exists('$(_NativeFixtureOutput)/libdotpython_abi3.dylib')" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/libdotpython_abi3.so" Condition="Exists('$(_NativeFixtureOutput)/libdotpython_abi3.so')" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/dotpython_fixture.abi3.so" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/dotpython_fixture_failure.abi3.so" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/native_fixture_test" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/native_anyver_test" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/symbol-manifest.json" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/anyver-symbol-manifest.json" />
+            <_NativeFixtureFiles Include="$(_NativeFixtureOutput)/anyver._anyver.abi3.so" Condition="Exists('$(_NativeFixtureOutput)/anyver._anyver.abi3.so')" />
         </ItemGroup>
         <Copy
             SourceFiles="@(_NativeFixtureFiles)"
