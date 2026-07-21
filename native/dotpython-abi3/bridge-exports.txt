@@ -1,0 +1,15 @@
+PyErr_Occurred
+PyErr_SetString
+PyExc_ValueError
+PyLong_AsLong
+PyLong_FromLong
+PyModuleDef_Init
+PyModule_AddIntConstant
+dp_abi3_active_object_count
+dp_abi3_bridge_version
+dp_abi3_error_message
+dp_abi3_error_type
+dp_abi3_module_call_long
+dp_abi3_module_destroy
+dp_abi3_module_get_int
+dp_abi3_module_initialize
