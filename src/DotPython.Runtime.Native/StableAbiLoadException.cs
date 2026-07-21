@@ -6,7 +6,7 @@ public enum StableAbiLoadPhase
     Manifest,
     Architecture,
     BridgeLoad,
-    FixtureLoad,
+    ModuleLoad,
     SymbolResolution,
     ModuleInitialization,
     Invocation,
@@ -18,7 +18,7 @@ public sealed class StableAbiLoadException : Exception
     public StableAbiLoadException()
         : this(
             "DPY8004",
-            StableAbiLoadPhase.FixtureLoad,
+            StableAbiLoadPhase.ModuleLoad,
             "A Stable-ABI load failure occurred.",
             null,
             null,
@@ -26,10 +26,10 @@ public sealed class StableAbiLoadException : Exception
         ) { }
 
     public StableAbiLoadException(string message)
-        : this("DPY8004", StableAbiLoadPhase.FixtureLoad, message, null, null, null) { }
+        : this("DPY8004", StableAbiLoadPhase.ModuleLoad, message, null, null, null) { }
 
     public StableAbiLoadException(string message, Exception innerException)
-        : this("DPY8004", StableAbiLoadPhase.FixtureLoad, message, null, null, null, innerException)
+        : this("DPY8004", StableAbiLoadPhase.ModuleLoad, message, null, null, null, innerException)
     { }
 
     internal StableAbiLoadException(

@@ -44,7 +44,7 @@ public sealed class WorkerHandshakeNegotiatorTests
                 Identity = response.Identity with { EnvironmentHash = "unexpected" },
             },
             "feature" => response with { Features = [] },
-            "version" => response with { SelectedVersion = new WorkerProtocolVersion(3, 0) },
+            "version" => response with { SelectedVersion = new WorkerProtocolVersion(4, 0) },
             "limits" => response with { Limits = response.Limits with { MaxOutputBytes = 2048 } },
             _ => throw new ArgumentOutOfRangeException(nameof(field)),
         };

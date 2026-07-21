@@ -187,8 +187,9 @@ and an explicit worker generation before accepting work. Four-byte little-endian
 bound source-generated JSON envelopes carrying correlation IDs, deadlines, cancellation, and
 structured faults.
 
-Worker protocol v2.0 removes the experimental package-specific Anyver request/response messages;
-qualified packages execute only through managed source imports and the generic native-object path.
+Worker protocol v3.0 reserves the retired experimental Stable-ABI request/response message IDs.
+Qualified native modules execute only through ordinary managed source imports and the generic
+native-object path; there is no direct module load/invoke/release RPC or worker module handle API.
 
 The parent starts an explicitly configured executable without a shell, clears inherited environment
 variables, and passes only allowlisted values and package roots. Sessions and logical object handles
@@ -213,9 +214,10 @@ required bridge and module export. Native addresses remain inside the dedicated 
 
 The Anyver manifest records the immutable wheel and native-entry hashes and exactly 90 imported
 Stable-ABI symbols. `inspect-anyver-wheel.sh` rejects wheel, entry-point, or import-surface drift.
-Bridge ABI v4 exposes a generic opaque-object surface for qualified modules: attribute discovery,
+Bridge ABI v5 exposes only the generic opaque-object surface for qualified modules: attribute discovery,
 positional calls, primitive and sequence conversion, attribute/item access, string conversion, and
-explicit owner-thread release. The worker can therefore import the unchanged Anyver Python wrapper
+explicit owner-thread release. The legacy scalar module query/call helpers have been removed. The
+worker can therefore import the unchanged Anyver Python wrapper
 from the staged wheel and use its native exports without Anyver-specific native exports, worker
 messages, or managed call methods. Package identity and process-pinned lifetime are manifest data;
 the runtime path is package-neutral. The acceptance path covers comparisons, sorting, `Version`

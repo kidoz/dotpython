@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define DP_ABI3_BRIDGE_VERSION 4
+#define DP_ABI3_BRIDGE_VERSION 5
 
 typedef enum dp_abi3_object_kind {
     DP_ABI3_OBJECT_INVALID = 0,
@@ -34,14 +34,6 @@ typedef enum dp_abi3_object_kind {
 DP_ABI3_EXPORT int dp_abi3_bridge_version(void);
 DP_ABI3_EXPORT int
 dp_abi3_module_initialize(PyObject *initialization_result, PyObject **module, int *multi_phase);
-DP_ABI3_EXPORT int dp_abi3_module_get_int(PyObject *module, const char *name, int64_t *value);
-DP_ABI3_EXPORT int dp_abi3_module_call_long(
-    PyObject *module,
-    const char *method,
-    int has_argument,
-    int64_t argument,
-    int64_t *result
-);
 /*
  * Generic qualified-object surface. Every PyObject output is a new reference owned by the caller
  * and must be released with dp_abi3_object_release on the owner thread. Input object arrays contain

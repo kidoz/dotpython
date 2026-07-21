@@ -1,10 +1,10 @@
 {
-  "schemaVersion": 2,
-  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v2",
+  "schemaVersion": 3,
+  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v3",
   "providerId": "dotpython-managed-abi3",
   "abiFamily": "abi3",
   "minimumAbiVersion": "3.11",
-  "bridgeAbiVersion": 4,
+  "bridgeAbiVersion": 5,
   "capabilityId": "managed-stable-abi-qualified-v1",
   "libraryLifetime": "process",
   "moduleName": "anyver._anyver",
@@ -110,7 +110,7 @@
     "_Py_NotImplementedStruct",
     "_Py_TrueStruct"
   ],
-  "requiredFixtureExports": [
+  "requiredModuleExports": [
     "PyInit__anyver"
   ],
   "requiredBridgeExports": [
@@ -210,9 +210,7 @@
     "dp_abi3_error_message",
     "dp_abi3_error_type",
     "dp_abi3_module_attribute_names",
-    "dp_abi3_module_call_long",
     "dp_abi3_module_destroy",
-    "dp_abi3_module_get_int",
     "dp_abi3_module_initialize",
     "dp_abi3_object_as_bool",
     "dp_abi3_object_as_int64",

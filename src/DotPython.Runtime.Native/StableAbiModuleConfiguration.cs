@@ -1,10 +1,10 @@
 namespace DotPython.Runtime.Native;
 
-internal sealed record StableAbiFixtureConfiguration(
+internal sealed record StableAbiModuleConfiguration(
     string BridgePath,
-    string FixturePath,
+    string ModulePath,
     string ManifestPath,
     string BridgeSha256,
-    string FixtureSha256,
+    string ModuleSha256,
     string ManifestSha256
 );

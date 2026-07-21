@@ -102,15 +102,6 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
                     var task = ExecuteAsync(envelope);
                     _executionTasks.Add(task);
                     break;
-                case WorkerMessageType.LoadStableAbiModuleRequest:
-                    await LoadStableAbiModuleAsync(envelope).ConfigureAwait(false);
-                    break;
-                case WorkerMessageType.InvokeStableAbiModuleRequest:
-                    await InvokeStableAbiModuleAsync(envelope).ConfigureAwait(false);
-                    break;
-                case WorkerMessageType.ReleaseStableAbiModuleRequest:
-                    await ReleaseStableAbiModuleAsync(envelope).ConfigureAwait(false);
-                    break;
                 case WorkerMessageType.CancelRequest:
                     await CancelAsync(envelope).ConfigureAwait(false);
                     break;
@@ -147,7 +138,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         if (
             !_sessions.TryAdd(
                 request.SessionId,
-                new WorkerSessionState(options.PackageRoots, options.StableAbiFixture)
+                new WorkerSessionState(options.PackageRoots, options.StableAbiModule)
             )
         )
         {
@@ -219,6 +210,21 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         }
 
         CancellationTokenSource? execution = null;
+        var executionCompleted = false;
+        void CompleteExecution()
+        {
+            if (executionCompleted)
+            {
+                return;
+            }
+
+            executionCompleted = true;
+            _activeRequests.TryRemove(envelope.CorrelationId, out _);
+            execution?.Dispose();
+            execution = null;
+            _executionGate.Release();
+        }
+
         try
         {
             var request = WorkerProtocolSerializer.ReadPayload<WorkerExecuteRequest>(envelope);
@@ -282,6 +288,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
                     ))
                     .ToArray()
             );
+            CompleteExecution();
             await SendAsync(
                     WorkerProtocolSerializer.CreateEnvelope(
                         WorkerMessageType.ExecuteResponse,
@@ -296,6 +303,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         }
         catch (WorkerOutputLimitException)
         {
+            CompleteExecution();
             await SendLimitFaultAsync(
                     envelope.CorrelationId,
                     "Worker standard output exceeded the configured output limit."
@@ -304,6 +312,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            CompleteExecution();
             await SendFaultAsync(
                     envelope.CorrelationId,
                     WorkerProtocolFaultCodes.RequestCanceled,
@@ -315,6 +324,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not IOException)
         {
+            CompleteExecution();
             await SendFaultAsync(
                     envelope.CorrelationId,
                     WorkerProtocolFaultCodes.WorkerTerminated,
@@ -326,152 +336,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         }
         finally
         {
-            _activeRequests.TryRemove(envelope.CorrelationId, out _);
-            execution?.Dispose();
-            _executionGate.Release();
-        }
-    }
-
-    private async Task LoadStableAbiModuleAsync(WorkerEnvelope envelope)
-    {
-        var request = WorkerProtocolSerializer.ReadPayload<WorkerLoadStableAbiModuleRequest>(
-            envelope
-        );
-        if (options.StableAbiFixture is null)
-        {
-            await SendFaultAsync(
-                    envelope.CorrelationId,
-                    "DPY8000",
-                    WorkerFaultPhase.Admission,
-                    "The managed Stable-ABI fixture capability is not configured for this worker.",
-                    workerUsable: true
-                )
-                .ConfigureAwait(false);
-            return;
-        }
-
-        if (!_sessions.TryGetValue(request.SessionId, out var session))
-        {
-            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            var loaded = await session
-                .LoadStableAbiModuleAsync(options.StableAbiFixture, CancellationToken.None)
-                .ConfigureAwait(false);
-            await SendAsync(
-                    WorkerProtocolSerializer.CreateEnvelope(
-                        WorkerMessageType.LoadStableAbiModuleResponse,
-                        envelope.CorrelationId,
-                        deadlineUtc: null,
-                        new WorkerLoadStableAbiModuleResponse(
-                            request.SessionId,
-                            loaded.ObjectId,
-                            loaded.ModuleName,
-                            loaded.ManifestVersion,
-                            loaded.ArtifactSha256,
-                            loaded.NativeEntrySha256,
-                            loaded.MultiPhase,
-                            loaded.ReadyValue
-                        ),
-                        options.ProtocolVersion
-                    ),
-                    CancellationToken.None
-                )
-                .ConfigureAwait(false);
-        }
-        catch (StableAbiLoadException exception)
-        {
-            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
-        }
-    }
-
-    private async Task InvokeStableAbiModuleAsync(WorkerEnvelope envelope)
-    {
-        var request = WorkerProtocolSerializer.ReadPayload<WorkerInvokeStableAbiModuleRequest>(
-            envelope
-        );
-        if (!_sessions.TryGetValue(request.SessionId, out var session))
-        {
-            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            var result = await session
-                .InvokeStableAbiModuleAsync(
-                    request.ObjectId,
-                    request.Method,
-                    request.Argument,
-                    CancellationToken.None
-                )
-                .ConfigureAwait(false);
-            await SendAsync(
-                    WorkerProtocolSerializer.CreateEnvelope(
-                        WorkerMessageType.InvokeStableAbiModuleResponse,
-                        envelope.CorrelationId,
-                        deadlineUtc: null,
-                        new WorkerInvokeStableAbiModuleResponse(
-                            request.SessionId,
-                            request.ObjectId,
-                            result
-                        ),
-                        options.ProtocolVersion
-                    ),
-                    CancellationToken.None
-                )
-                .ConfigureAwait(false);
-        }
-        catch (StableAbiLoadException exception)
-        {
-            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
-        }
-    }
-
-    private async Task ReleaseStableAbiModuleAsync(WorkerEnvelope envelope)
-    {
-        var request = WorkerProtocolSerializer.ReadPayload<WorkerReleaseStableAbiModuleRequest>(
-            envelope
-        );
-        if (!_sessions.TryGetValue(request.SessionId, out var session))
-        {
-            await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            if (
-                !await session
-                    .ReleaseStableAbiModuleAsync(request.ObjectId, CancellationToken.None)
-                    .ConfigureAwait(false)
-            )
-            {
-                await SendStaleNativeHandleAsync(envelope.CorrelationId).ConfigureAwait(false);
-                return;
-            }
-
-            await SendAsync(
-                    WorkerProtocolSerializer.CreateEnvelope(
-                        WorkerMessageType.ReleaseStableAbiModuleResponse,
-                        envelope.CorrelationId,
-                        deadlineUtc: null,
-                        new WorkerReleaseStableAbiModuleResponse(
-                            request.SessionId,
-                            request.ObjectId
-                        ),
-                        options.ProtocolVersion
-                    ),
-                    CancellationToken.None
-                )
-                .ConfigureAwait(false);
-        }
-        catch (StableAbiLoadException exception)
-        {
-            await SendNativeFaultAsync(envelope.CorrelationId, exception).ConfigureAwait(false);
+            CompleteExecution();
         }
     }
 
@@ -584,56 +449,6 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
             message,
             workerUsable: true
         );
-
-    private Task SendStaleNativeHandleAsync(Guid correlationId) =>
-        SendFaultAsync(
-            correlationId,
-            WorkerProtocolFaultCodes.StaleHandle,
-            WorkerFaultPhase.Admission,
-            "The native module handle or session is not active in this worker generation.",
-            workerUsable: true
-        );
-
-    private Task SendNativeFaultAsync(Guid correlationId, StableAbiLoadException exception)
-    {
-        var details = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["nativePhase"] = exception.Phase.ToString(),
-            ["architecture"] =
-                System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
-        };
-        if (exception.ArtifactPath is not null)
-        {
-            details["nativeEntry"] = Path.GetFileName(exception.ArtifactPath);
-        }
-        if (exception.ArtifactSha256 is not null)
-        {
-            details["artifactSha256"] = exception.ArtifactSha256;
-        }
-        if (exception.MissingSymbol is not null)
-        {
-            details["missingSymbol"] = exception.MissingSymbol;
-        }
-
-        return SendAsync(
-            WorkerProtocolSerializer.CreateEnvelope(
-                WorkerMessageType.Fault,
-                correlationId,
-                deadlineUtc: null,
-                new WorkerFault(
-                    exception.Code,
-                    WorkerFaultPhase.Execution,
-                    exception.Message,
-                    WorkerUsable(exception.Code),
-                    details
-                ),
-                options.ProtocolVersion
-            ),
-            CancellationToken.None
-        );
-    }
-
-    private static bool WorkerUsable(string code) => code is not ("DPY8004" or "DPY8006");
 
     private Task SendFaultAsync(
         Guid correlationId,

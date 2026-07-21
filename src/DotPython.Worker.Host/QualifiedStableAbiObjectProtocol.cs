@@ -218,7 +218,7 @@ internal sealed class QualifiedStableAbiObjectProtocol(
         return GetModule().CreateSequence(kind, items);
     }
 
-    private StableAbiFixtureModule GetModule()
+    private StableAbiModule GetModule()
     {
         // Every object operation validates that the object belongs to this module; this lightweight
         // factory access is obtained by creating values through the object's owning module methods.

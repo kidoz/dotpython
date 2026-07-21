@@ -8,7 +8,7 @@ internal sealed record WorkerHostOptions(
     WorkerIdentity Identity,
     WorkerProtocolLimits Limits,
     IReadOnlyList<string> PackageRoots,
-    StableAbiFixtureConfiguration? StableAbiFixture,
+    StableAbiModuleConfiguration? StableAbiModule,
     bool TestFaultInjection,
     WorkerProtocolVersion ProtocolVersion
 )
@@ -61,24 +61,24 @@ internal sealed record WorkerHostOptions(
             features.Add("test-fault-injection");
         }
 
-        StableAbiFixtureConfiguration? stableAbiFixture = null;
-        var hasNativeFixture = values.ContainsKey("--abi3-fixture");
-        if (hasNativeFixture)
+        StableAbiModuleConfiguration? stableAbiModule = null;
+        var hasNativeModule = values.ContainsKey("--abi3-module");
+        if (hasNativeModule)
         {
-            stableAbiFixture = new StableAbiFixtureConfiguration(
+            stableAbiModule = new StableAbiModuleConfiguration(
                 Required(values, "--abi3-bridge"),
-                Required(values, "--abi3-fixture"),
+                Required(values, "--abi3-module"),
                 Required(values, "--abi3-manifest"),
                 Required(values, "--abi3-bridge-sha256"),
-                Required(values, "--abi3-fixture-sha256"),
+                Required(values, "--abi3-module-sha256"),
                 Required(values, "--abi3-manifest-sha256")
             );
-            var manifest = StableAbiSymbolManifest.Load(stableAbiFixture.ManifestPath);
+            var manifest = StableAbiSymbolManifest.Load(stableAbiModule.ManifestPath);
             features.Add(manifest.CapabilityId);
         }
         else if (values.Keys.Any(key => key.StartsWith("--abi3-", StringComparison.Ordinal)))
         {
-            throw new ArgumentException("The Stable-ABI fixture configuration is incomplete.");
+            throw new ArgumentException("The Stable-ABI module configuration is incomplete.");
         }
 
         var protocolMajor = values.TryGetValue("--protocol-major", out var majorValues)
@@ -103,7 +103,7 @@ internal sealed record WorkerHostOptions(
                 ParsePositive(Required(values, "--max-sessions"), "--max-sessions")
             ),
             packageRoots,
-            stableAbiFixture,
+            stableAbiModule,
             testFaultInjection,
             new WorkerProtocolVersion(protocolMajor, WorkerProtocolVersion.Current.Minor)
         );

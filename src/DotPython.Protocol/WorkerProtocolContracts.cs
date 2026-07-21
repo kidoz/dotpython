@@ -17,14 +17,8 @@ public enum WorkerMessageType
     ShutdownRequest = 10,
     ShutdownResponse = 11,
     Fault = 12,
-    LoadStableAbiModuleRequest = 13,
-    LoadStableAbiModuleResponse = 14,
-    InvokeStableAbiModuleRequest = 15,
-    InvokeStableAbiModuleResponse = 16,
-    ReleaseStableAbiModuleRequest = 17,
-    ReleaseStableAbiModuleResponse = 18,
 
-    // Values 19-24 were experimental package-specific messages and remain reserved.
+    // Values 13-24 were experimental Stable-ABI messages and remain reserved.
     TestControlRequest = 100,
     TestControlResponse = 101,
 }
@@ -120,36 +114,6 @@ public sealed record WorkerCancelRequest(Guid RequestId);
 public sealed record WorkerShutdownRequest(string Reason);
 
 public sealed record WorkerShutdownResponse(string Reason);
-
-public sealed record WorkerLoadStableAbiModuleRequest(Guid SessionId);
-
-public sealed record WorkerLoadStableAbiModuleResponse(
-    Guid SessionId,
-    long ObjectId,
-    string ModuleName,
-    string ManifestVersion,
-    string ArtifactSha256,
-    string NativeEntrySha256,
-    bool MultiPhase,
-    long ReadyValue
-);
-
-public sealed record WorkerInvokeStableAbiModuleRequest(
-    Guid SessionId,
-    long ObjectId,
-    string Method,
-    long? Argument
-);
-
-public sealed record WorkerInvokeStableAbiModuleResponse(
-    Guid SessionId,
-    long ObjectId,
-    long Result
-);
-
-public sealed record WorkerReleaseStableAbiModuleRequest(Guid SessionId, long ObjectId);
-
-public sealed record WorkerReleaseStableAbiModuleResponse(Guid SessionId, long ObjectId);
 
 public enum WorkerFaultPhase
 {

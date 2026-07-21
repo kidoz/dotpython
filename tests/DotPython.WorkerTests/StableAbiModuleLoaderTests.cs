@@ -5,23 +5,26 @@ using Xunit;
 
 namespace DotPython.WorkerTests;
 
-public sealed class StableAbiFixtureLoaderTests
+public sealed class StableAbiModuleLoaderTests
 {
     [Fact]
     public void Load_InitializesInvokesFailsAndCleansUpFixture()
     {
         SkipUnsupportedPlatform();
         var configuration = CreateConfiguration(FixturePath("dotpython_fixture.abi3.so"));
-        var module = StableAbiFixtureLoader.Load(configuration);
+        var module = StableAbiModuleLoader.Load(configuration);
 
         Assert.Equal("dotpython_fixture", module.ModuleName);
-        Assert.Equal("dotpython-abi3-fixture-v2", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-fixture-v3", module.ManifestVersion);
         Assert.True(module.MultiPhase);
-        Assert.Equal(1, module.ReadyValue);
-        Assert.Equal(42, module.InvokeLong("increment", 41));
-        var exception = Assert.Throws<StableAbiLoadException>(() =>
-            module.InvokeLong("fail", argument: null)
-        );
+        using var ready = module.GetAttribute("fixture_ready");
+        Assert.Equal(1, ready.AsInt64());
+        using var increment = module.GetAttribute("increment");
+        using var argument = module.CreateInt64(41);
+        using var result = increment.Call([argument]);
+        Assert.Equal(42, result.AsInt64());
+        using var fail = module.GetAttribute("fail");
+        var exception = Assert.Throws<StableAbiLoadException>(() => fail.Call([]));
 
         Assert.Equal("DPY8005", exception.Code);
         Assert.Equal(StableAbiLoadPhase.Invocation, exception.Phase);
@@ -34,7 +37,7 @@ public sealed class StableAbiFixtureLoaderTests
     public void Load_UsesGenericObjectBridgeWithoutPackageSpecificCalls()
     {
         SkipUnsupportedPlatform();
-        using var module = StableAbiFixtureLoader.Load(
+        using var module = StableAbiModuleLoader.Load(
             CreateConfiguration(FixturePath("dotpython_fixture.abi3.so"))
         );
 
@@ -61,15 +64,15 @@ public sealed class StableAbiFixtureLoaderTests
     {
         SkipAnyverWhenUnavailable();
         var configuration = CreateAnyverConfiguration();
-        using var module = StableAbiFixtureLoader.Load(configuration);
+        using var module = StableAbiModuleLoader.Load(configuration);
 
         Assert.Equal("anyver._anyver", module.ModuleName);
-        Assert.Equal("dotpython-abi3-anyver-1.1.0-v2", module.ManifestVersion);
+        Assert.Equal("dotpython-abi3-anyver-1.1.0-v3", module.ManifestVersion);
         Assert.Equal(
             "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
             module.ArtifactSha256
         );
-        Assert.Equal(configuration.FixtureSha256, module.NativeEntrySha256);
+        Assert.Equal(configuration.ModuleSha256, module.NativeEntrySha256);
         Assert.True(module.MultiPhase);
 
         var names = module.GetAttributeNames();
@@ -102,7 +105,7 @@ public sealed class StableAbiFixtureLoaderTests
 
         for (var iteration = 0; iteration < 25; iteration++)
         {
-            using var module = StableAbiFixtureLoader.Load(configuration);
+            using var module = StableAbiModuleLoader.Load(configuration);
             Assert.Equal(0, InvokeQualifiedComparison(module, "2.0", "2.0", "generic"));
         }
     }
@@ -111,7 +114,7 @@ public sealed class StableAbiFixtureLoaderTests
     public void Load_SurvivesPinnedAnyverReferenceAndFailureChurn()
     {
         SkipAnyverWhenUnavailable();
-        using var module = StableAbiFixtureLoader.Load(CreateAnyverConfiguration());
+        using var module = StableAbiModuleLoader.Load(CreateAnyverConfiguration());
 
         for (var iteration = 0; iteration < 256; iteration++)
         {
@@ -145,11 +148,11 @@ public sealed class StableAbiFixtureLoaderTests
         SkipUnsupportedPlatform();
         var configuration = CreateConfiguration(FixturePath("dotpython_fixture.abi3.so")) with
         {
-            FixtureSha256 = new string('0', 64),
+            ModuleSha256 = new string('0', 64),
         };
 
         var exception = Assert.Throws<StableAbiLoadException>(() =>
-            StableAbiFixtureLoader.Load(configuration)
+            StableAbiModuleLoader.Load(configuration)
         );
 
         Assert.Equal("DPY8001", exception.Code);
@@ -177,7 +180,7 @@ public sealed class StableAbiFixtureLoaderTests
         var configuration = CreateConfiguration(wrongArchitecture);
 
         var exception = Assert.Throws<StableAbiLoadException>(() =>
-            StableAbiFixtureLoader.Load(configuration)
+            StableAbiModuleLoader.Load(configuration)
         );
 
         Assert.Equal("DPY8002", exception.Code);
@@ -192,7 +195,7 @@ public sealed class StableAbiFixtureLoaderTests
         var configuration = CreateConfiguration(bridge);
 
         var exception = Assert.Throws<StableAbiLoadException>(() =>
-            StableAbiFixtureLoader.Load(configuration)
+            StableAbiModuleLoader.Load(configuration)
         );
 
         Assert.Equal("DPY8003", exception.Code);
@@ -226,12 +229,12 @@ public sealed class StableAbiFixtureLoaderTests
         var configuration = CreateConfiguration(invalid);
 
         var exception = Assert.Throws<StableAbiLoadException>(() =>
-            StableAbiFixtureLoader.Load(configuration)
+            StableAbiModuleLoader.Load(configuration)
         );
 
         Assert.Equal("DPY8004", exception.Code);
-        Assert.Equal(StableAbiLoadPhase.FixtureLoad, exception.Phase);
-        Assert.Equal(StableAbiFixtureLoader.ComputeSha256(invalid), exception.ArtifactSha256);
+        Assert.Equal(StableAbiLoadPhase.ModuleLoad, exception.Phase);
+        Assert.Equal(StableAbiModuleLoader.ComputeSha256(invalid), exception.ArtifactSha256);
     }
 
     [Fact]
@@ -241,7 +244,7 @@ public sealed class StableAbiFixtureLoaderTests
         var configuration = CreateConfiguration(FixturePath("dotpython_fixture_failure.abi3.so"));
 
         var exception = Assert.Throws<StableAbiLoadException>(() =>
-            StableAbiFixtureLoader.Load(configuration)
+            StableAbiModuleLoader.Load(configuration)
         );
 
         Assert.Equal("DPY8005", exception.Code);
@@ -264,16 +267,19 @@ public sealed class StableAbiFixtureLoaderTests
         for (var iteration = 0; iteration < 64; iteration++)
         {
             var exception = Assert.Throws<StableAbiLoadException>(() =>
-                StableAbiFixtureLoader.Load(failureConfiguration)
+                StableAbiModuleLoader.Load(failureConfiguration)
             );
             Assert.Equal("DPY8005", exception.Code);
             Assert.Equal(StableAbiLoadPhase.ModuleInitialization, exception.Phase);
         }
 
-        using var module = StableAbiFixtureLoader.Load(
+        using var module = StableAbiModuleLoader.Load(
             CreateConfiguration(FixturePath("dotpython_fixture.abi3.so"))
         );
-        Assert.Equal(42, module.InvokeLong("increment", 41));
+        using var increment = module.GetAttribute("increment");
+        using var argument = module.CreateInt64(41);
+        using var result = increment.Call([argument]);
+        Assert.Equal(42, result.AsInt64());
     }
 
     [Fact]
@@ -330,7 +336,7 @@ public sealed class StableAbiFixtureLoaderTests
     }
 
     private static long InvokeQualifiedComparison(
-        StableAbiFixtureModule module,
+        StableAbiModule module,
         string left,
         string right,
         string ecosystem
@@ -344,7 +350,7 @@ public sealed class StableAbiFixtureLoaderTests
         return result.AsInt64();
     }
 
-    private static string ReadQualifiedVersionRaw(StableAbiFixtureModule module, string value)
+    private static string ReadQualifiedVersionRaw(StableAbiModule module, string value)
     {
         using var versionType = module.GetAttribute("Version");
         using var rawValue = module.CreateText(value);
@@ -354,32 +360,32 @@ public sealed class StableAbiFixtureLoaderTests
         return raw.AsText();
     }
 
-    private static StableAbiFixtureConfiguration CreateConfiguration(string fixturePath)
+    private static StableAbiModuleConfiguration CreateConfiguration(string modulePath)
     {
         var bridge = FixturePath(BridgeFileName);
         var manifest = FixturePath("symbol-manifest.json");
-        return new StableAbiFixtureConfiguration(
+        return new StableAbiModuleConfiguration(
             bridge,
-            fixturePath,
+            modulePath,
             manifest,
-            StableAbiFixtureLoader.ComputeSha256(bridge),
-            StableAbiFixtureLoader.ComputeSha256(fixturePath),
-            StableAbiFixtureLoader.ComputeSha256(manifest)
+            StableAbiModuleLoader.ComputeSha256(bridge),
+            StableAbiModuleLoader.ComputeSha256(modulePath),
+            StableAbiModuleLoader.ComputeSha256(manifest)
         );
     }
 
-    private static StableAbiFixtureConfiguration CreateAnyverConfiguration()
+    private static StableAbiModuleConfiguration CreateAnyverConfiguration()
     {
         var bridge = FixturePath(BridgeFileName);
-        var fixture = FixturePath("anyver._anyver.abi3.so");
+        var module = FixturePath("anyver._anyver.abi3.so");
         var manifest = FixturePath("anyver-symbol-manifest.json");
-        return new StableAbiFixtureConfiguration(
+        return new StableAbiModuleConfiguration(
             bridge,
-            fixture,
+            module,
             manifest,
-            StableAbiFixtureLoader.ComputeSha256(bridge),
-            StableAbiFixtureLoader.ComputeSha256(fixture),
-            StableAbiFixtureLoader.ComputeSha256(manifest)
+            StableAbiModuleLoader.ComputeSha256(bridge),
+            StableAbiModuleLoader.ComputeSha256(module),
+            StableAbiModuleLoader.ComputeSha256(manifest)
         );
     }
 

@@ -4,14 +4,12 @@ using System.Text.Json.Serialization;
 
 namespace DotPython.Runtime.Native;
 
-internal sealed class StableAbiFixtureModule : IDisposable
+internal sealed class StableAbiModule : IDisposable
 {
     private const int MaximumGenericObjects = 8192;
     private readonly nint _bridgeLibrary;
-    private readonly nint _fixtureLibrary;
+    private readonly nint _moduleLibrary;
     private readonly nint _module;
-    private readonly HashSet<string> _allowedMethods;
-    private readonly ModuleCallLong _callLong;
     private readonly ModuleDestroy _destroy;
     private readonly ErrorText _errorType;
     private readonly ErrorText _errorMessage;
@@ -26,14 +24,12 @@ internal sealed class StableAbiFixtureModule : IDisposable
     private readonly object _gate = new();
     private int _disposed;
 
-    private StableAbiFixtureModule(
+    private StableAbiModule(
         nint bridgeLibrary,
-        nint fixtureLibrary,
+        nint moduleLibrary,
         nint module,
         StableAbiSymbolManifest manifest,
         bool multiPhase,
-        long readyValue,
-        ModuleCallLong callLong,
         ModuleDestroy destroy,
         ErrorText errorType,
         ErrorText errorMessage,
@@ -47,10 +43,8 @@ internal sealed class StableAbiFixtureModule : IDisposable
     )
     {
         _bridgeLibrary = bridgeLibrary;
-        _fixtureLibrary = fixtureLibrary;
+        _moduleLibrary = moduleLibrary;
         _module = module;
-        _allowedMethods = manifest.AllowedMethods.ToHashSet(StringComparer.Ordinal);
-        _callLong = callLong;
         _destroy = destroy;
         _errorType = errorType;
         _errorMessage = errorMessage;
@@ -66,7 +60,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
         ArtifactSha256 = manifest.ArtifactSha256;
         NativeEntrySha256 = manifest.NativeEntrySha256;
         MultiPhase = multiPhase;
-        ReadyValue = readyValue;
     }
 
     internal string ManifestVersion { get; }
@@ -78,8 +71,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
     internal string? NativeEntrySha256 { get; }
 
     internal bool MultiPhase { get; }
-
-    internal long ReadyValue { get; }
 
     internal int CleanupCountAfterDispose { get; private set; }
 
@@ -218,28 +209,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
         }
     }
 
-    internal long InvokeLong(string method, long? argument)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(method);
-        lock (_gate)
-        {
-            EnsureUsable(method);
-            var status = _callLong(
-                _module,
-                method,
-                argument.HasValue ? 1 : 0,
-                argument.GetValueOrDefault(),
-                out var result
-            );
-            if (status != 0)
-            {
-                throw InvocationFailure();
-            }
-
-            return result;
-        }
-    }
-
     public void Dispose()
     {
         lock (_gate)
@@ -260,7 +229,7 @@ internal sealed class StableAbiFixtureModule : IDisposable
             var activeObjects = _activeObjectCount();
             if (_releaseLibraries)
             {
-                NativeLibrary.Free(_fixtureLibrary);
+                NativeLibrary.Free(_moduleLibrary);
                 NativeLibraryGlobalLoader.Free(_bridgeLibrary);
             }
 
@@ -283,12 +252,12 @@ internal sealed class StableAbiFixtureModule : IDisposable
         }
     }
 
-    internal static StableAbiFixtureModule Initialize(
+    internal static StableAbiModule Initialize(
         nint bridgeLibrary,
-        nint fixtureLibrary,
+        nint moduleLibrary,
         StableAbiSymbolManifest manifest,
-        string fixturePath,
-        string fixtureHash,
+        string modulePath,
+        string moduleHash,
         bool releaseLibraries
     )
     {
@@ -299,14 +268,12 @@ internal sealed class StableAbiFixtureModule : IDisposable
                 "DPY8003",
                 StableAbiLoadPhase.SymbolResolution,
                 "The native bridge ABI version does not match the symbol manifest.",
-                fixturePath,
-                fixtureHash
+                modulePath,
+                moduleHash
             );
         }
 
         var initialize = GetDelegate<ModuleInitialize>(bridgeLibrary, "dp_abi3_module_initialize");
-        var getInt = GetDelegate<ModuleGetInt>(bridgeLibrary, "dp_abi3_module_get_int");
-        var callLong = GetDelegate<ModuleCallLong>(bridgeLibrary, "dp_abi3_module_call_long");
         var destroy = GetDelegate<ModuleDestroy>(bridgeLibrary, "dp_abi3_module_destroy");
         var errorType = GetDelegate<ErrorText>(bridgeLibrary, "dp_abi3_error_type");
         var errorMessage = GetDelegate<ErrorText>(bridgeLibrary, "dp_abi3_error_message");
@@ -316,7 +283,7 @@ internal sealed class StableAbiFixtureModule : IDisposable
         );
         var generic = GenericBridgeApi.Load(bridgeLibrary);
         var moduleInitializer = GetDelegate<ModuleInitializer>(
-            fixtureLibrary,
+            moduleLibrary,
             manifest.InitializationSymbol
         );
         var activeObjectBaseline = activeObjectCount();
@@ -333,42 +300,28 @@ internal sealed class StableAbiFixtureModule : IDisposable
                 "DPY8005",
                 StableAbiLoadPhase.ModuleInitialization,
                 $"{errorTypeText}: {errorMessageText}",
-                fixturePath,
-                fixtureHash
+                modulePath,
+                moduleHash
             );
         }
 
-        long readyValue = 0;
         CleanupCount? cleanupCount = null;
         var expectedCleanupCount = 0;
         if (manifest.IsConformanceFixture)
         {
             cleanupCount = GetDelegate<CleanupCount>(
-                fixtureLibrary,
+                moduleLibrary,
                 "dotpython_fixture_cleanup_count"
             );
             expectedCleanupCount = checked(cleanupCount() + 1);
-            if (getInt(module, "fixture_ready", out readyValue) != 0)
-            {
-                destroy(module);
-                throw Failure(
-                    "DPY8005",
-                    StableAbiLoadPhase.ModuleInitialization,
-                    $"{ReadUtf8(errorType())}: {ReadUtf8(errorMessage())}",
-                    fixturePath,
-                    fixtureHash
-                );
-            }
         }
 
-        return new StableAbiFixtureModule(
+        return new StableAbiModule(
             bridgeLibrary,
-            fixtureLibrary,
+            moduleLibrary,
             module,
             manifest,
             multiPhase != 0,
-            readyValue,
-            callLong,
             destroy,
             errorType,
             errorMessage,
@@ -612,19 +565,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
 
     private void EnsureActive() => ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
-    private void EnsureUsable(string method)
-    {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        if (!_allowedMethods.Contains(method))
-        {
-            throw Failure(
-                "DPY8003",
-                StableAbiLoadPhase.Invocation,
-                $"Native module method '{method}' is not allowlisted."
-            );
-        }
-    }
-
     private StableAbiLoadException InvocationFailure() =>
         Failure(
             "DPY8005",
@@ -674,22 +614,6 @@ internal sealed class StableAbiFixtureModule : IDisposable
         nint initializationResult,
         out nint module,
         out int multiPhase
-    );
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int ModuleGetInt(
-        nint module,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
-        out long value
-    );
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int ModuleCallLong(
-        nint module,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string method,
-        int hasArgument,
-        long argument,
-        out long result
     );
 
     private delegate int ObjectArrayOperation(nint values, long count, out nint result);
@@ -818,10 +742,10 @@ internal enum StableAbiObjectKind
 
 internal sealed class StableAbiObject : IDisposable
 {
-    private StableAbiFixtureModule? _owner;
+    private StableAbiModule? _owner;
     private nint _handle;
 
-    internal StableAbiObject(StableAbiFixtureModule owner, nint handle)
+    internal StableAbiObject(StableAbiModule owner, nint handle)
     {
         _owner = owner;
         _handle = handle;
@@ -829,7 +753,7 @@ internal sealed class StableAbiObject : IDisposable
 
     internal StableAbiObjectKind Kind => RequireOwner().GetObjectKind(this);
 
-    internal StableAbiFixtureModule Owner => RequireOwner();
+    internal StableAbiModule Owner => RequireOwner();
 
     internal StableAbiObject GetAttribute(string name) =>
         RequireOwner().GetObjectAttribute(this, name);
@@ -856,7 +780,7 @@ internal sealed class StableAbiObject : IDisposable
         owner?.ReleaseObject(this);
     }
 
-    internal nint Detach(StableAbiFixtureModule owner)
+    internal nint Detach(StableAbiModule owner)
     {
         if (!ReferenceEquals(_owner, owner))
         {
@@ -867,13 +791,13 @@ internal sealed class StableAbiObject : IDisposable
         return Interlocked.Exchange(ref _handle, 0);
     }
 
-    internal nint GetHandle(StableAbiFixtureModule owner)
+    internal nint GetHandle(StableAbiModule owner)
     {
         ObjectDisposedException.ThrowIf(!ReferenceEquals(_owner, owner) || _handle == 0, this);
         return _handle;
     }
 
-    private StableAbiFixtureModule RequireOwner() =>
+    private StableAbiModule RequireOwner() =>
         _owner ?? throw new ObjectDisposedException(nameof(StableAbiObject));
 }
 

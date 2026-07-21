@@ -35,7 +35,7 @@ fn lifecycle(success: &str, failure: &str) {
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit_dotpython_fixture")) };
     let cleanup: CleanupFn = unsafe { transmute(lib.symbol("dotpython_fixture_cleanup_count")) };
 
-    check!(unsafe { dp_abi3_bridge_version() } == 4);
+    check!(unsafe { dp_abi3_bridge_version() } == 5);
 
     let mut module: *mut PyObject = ptr::null_mut();
     let mut multi_phase: c_int = 0;
@@ -46,26 +46,19 @@ fn lifecycle(success: &str, failure: &str) {
     );
     check!(multi_phase == 1);
 
-    let mut value: i64 = 0;
-    check!(
-        unsafe { dp_abi3_module_get_int(module, c("fixture_ready").as_ptr(), &mut value) } == 0,
-        "{}",
-        err_msg()
-    );
-    check!(value == 1);
-
-    check!(
-        unsafe { dp_abi3_module_call_long(module, c("increment").as_ptr(), 1, 41, &mut value) }
-            == 0,
-        "{}",
-        err_msg()
-    );
-    check!(value == 42, "got {value}");
-
     section("Generic object bridge owns values and invokes module exports");
     let mut names = ptr::null();
     check!(unsafe { dp_abi3_module_attribute_names(module, &mut names) } == 0);
     check!(unsafe { cstr(names) }.contains("\"increment\""));
+
+    let mut value: i64 = 0;
+    let mut ready = ptr::null_mut();
+    check!(
+        unsafe { dp_abi3_object_get_attr(module, c("fixture_ready").as_ptr(), &mut ready) } == 0
+    );
+    check!(unsafe { dp_abi3_object_as_int64(ready, &mut value) } == 0);
+    check!(value == 1);
+    unsafe { dp_abi3_object_release(ready) };
 
     let mut increment = ptr::null_mut();
     check!(
@@ -114,7 +107,12 @@ fn lifecycle(success: &str, failure: &str) {
         unsafe { dp_abi3_object_release(object) };
     }
 
-    check!(unsafe { dp_abi3_module_call_long(module, c("fail").as_ptr(), 0, 0, &mut value) } == -1);
+    let mut fail = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_get_attr(module, c("fail").as_ptr(), &mut fail) } == 0);
+    let mut failed_result = ptr::null_mut();
+    check!(unsafe { dp_abi3_object_call(fail, ptr::null(), 0, &mut failed_result) } == -1);
+    check!(failed_result.is_null());
+    unsafe { dp_abi3_object_release(fail) };
     check!(err_type() == "ValueError", "got {}", err_type());
     check!(err_msg() == "fixture failure", "got {}", err_msg());
 

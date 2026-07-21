@@ -233,7 +233,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     section("Pinned Anyver module satisfies the generic native ABI contract");
-    check!(unsafe { dp_abi3_bridge_version() } == 4);
+    check!(unsafe { dp_abi3_bridge_version() } == 5);
 
     let lib = Library::open(&args[1]);
     let init: InitFn = unsafe { transmute(lib.symbol("PyInit__anyver")) };

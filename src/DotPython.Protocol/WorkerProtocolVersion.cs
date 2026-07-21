@@ -3,7 +3,7 @@ namespace DotPython.Protocol;
 public readonly record struct WorkerProtocolVersion(int Major, int Minor)
     : IComparable<WorkerProtocolVersion>
 {
-    public static WorkerProtocolVersion Current { get; } = new(2, 0);
+    public static WorkerProtocolVersion Current { get; } = new(3, 0);
 
     public int CompareTo(WorkerProtocolVersion other)
     {

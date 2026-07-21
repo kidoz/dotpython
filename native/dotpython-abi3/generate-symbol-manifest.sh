@@ -18,19 +18,19 @@ emit_array() {
 }
 
 {
-    printf '{\n  "schemaVersion": 2,\n'
-    printf '  "manifestVersion": "dotpython-abi3-fixture-v2",\n'
+    printf '{\n  "schemaVersion": 3,\n'
+    printf '  "manifestVersion": "dotpython-abi3-fixture-v3",\n'
     printf '  "providerId": "dotpython-managed-abi3",\n'
     printf '  "abiFamily": "abi3",\n'
     printf '  "minimumAbiVersion": "3.11",\n'
-    printf '  "bridgeAbiVersion": 4,\n'
-    printf '  "capabilityId": "managed-stable-abi-fixture-v2",\n'
+    printf '  "bridgeAbiVersion": 5,\n'
+    printf '  "capabilityId": "managed-stable-abi-fixture-v3",\n'
     printf '  "libraryLifetime": "module",\n'
     printf '  "moduleName": "dotpython_fixture",\n'
     printf '  "initializationSymbol": "PyInit_dotpython_fixture",\n'
     printf '  "allowedStableAbiSymbols": [\n'
     emit_array "$root/stable-abi-symbols.txt"
-    printf '  ],\n  "requiredFixtureExports": [\n'
+    printf '  ],\n  "requiredModuleExports": [\n'
     emit_array "$root/fixture-exports.txt"
     printf '  ],\n  "requiredBridgeExports": [\n'
     emit_array "$root/bridge-exports.txt"

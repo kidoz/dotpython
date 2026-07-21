@@ -18,12 +18,12 @@ emit_array() {
 }
 
 {
-    printf '{\n  "schemaVersion": 2,\n'
-    printf '  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v2",\n'
+    printf '{\n  "schemaVersion": 3,\n'
+    printf '  "manifestVersion": "dotpython-abi3-anyver-1.1.0-v3",\n'
     printf '  "providerId": "dotpython-managed-abi3",\n'
     printf '  "abiFamily": "abi3",\n'
     printf '  "minimumAbiVersion": "3.11",\n'
-    printf '  "bridgeAbiVersion": 4,\n'
+    printf '  "bridgeAbiVersion": 5,\n'
     printf '  "capabilityId": "managed-stable-abi-qualified-v1",\n'
     printf '  "libraryLifetime": "process",\n'
     printf '  "moduleName": "anyver._anyver",\n'
@@ -39,7 +39,7 @@ emit_array() {
     printf '  "sourceRevision": "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",\n'
     printf '  "allowedStableAbiSymbols": [\n'
     emit_array "$root/anyver-stable-abi-symbols.txt"
-    printf '  ],\n  "requiredFixtureExports": [\n'
+    printf '  ],\n  "requiredModuleExports": [\n'
     emit_array "$root/anyver-exports.txt"
     printf '  ],\n  "requiredBridgeExports": [\n'
     emit_array "$root/bridge-exports.txt"

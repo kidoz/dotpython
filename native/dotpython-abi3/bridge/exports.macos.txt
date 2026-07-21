@@ -93,7 +93,5 @@ _dp_abi3_active_object_count
 _dp_abi3_bridge_version
 _dp_abi3_error_message
 _dp_abi3_error_type
-_dp_abi3_module_call_long
 _dp_abi3_module_destroy
-_dp_abi3_module_get_int
 _dp_abi3_module_initialize

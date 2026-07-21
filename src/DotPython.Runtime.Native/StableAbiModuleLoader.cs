@@ -3,37 +3,37 @@ using System.Security.Cryptography;
 
 namespace DotPython.Runtime.Native;
 
-internal static class StableAbiFixtureLoader
+internal static class StableAbiModuleLoader
 {
     private const long MaximumArtifactBytes = 16 * 1024 * 1024;
 
-    internal static StableAbiFixtureModule Load(StableAbiFixtureConfiguration configuration)
+    internal static StableAbiModule Load(StableAbiModuleConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ValidateFile(configuration.BridgePath, nameof(configuration.BridgePath));
-        ValidateFile(configuration.FixturePath, nameof(configuration.FixturePath));
+        ValidateFile(configuration.ModulePath, nameof(configuration.ModulePath));
         ValidateFile(configuration.ManifestPath, nameof(configuration.ManifestPath));
         var bridgeHash = ValidateHash(configuration.BridgePath, configuration.BridgeSha256);
-        var fixtureHash = ValidateHash(configuration.FixturePath, configuration.FixtureSha256);
+        var moduleHash = ValidateHash(configuration.ModulePath, configuration.ModuleSha256);
         _ = ValidateHash(configuration.ManifestPath, configuration.ManifestSha256);
         NativeBinaryIdentity
             .Read(configuration.BridgePath)
             .ValidateCurrentPlatform(configuration.BridgePath);
         NativeBinaryIdentity
-            .Read(configuration.FixturePath)
-            .ValidateCurrentPlatform(configuration.FixturePath);
+            .Read(configuration.ModulePath)
+            .ValidateCurrentPlatform(configuration.ModulePath);
         var manifest = StableAbiSymbolManifest.Load(configuration.ManifestPath);
         if (
             manifest.NativeEntrySha256 is not null
-            && !string.Equals(manifest.NativeEntrySha256, fixtureHash, StringComparison.Ordinal)
+            && !string.Equals(manifest.NativeEntrySha256, moduleHash, StringComparison.Ordinal)
         )
         {
             throw new StableAbiLoadException(
                 "DPY8001",
                 StableAbiLoadPhase.Policy,
                 "The configured native entry does not match the pinned manifest SHA-256.",
-                configuration.FixturePath,
-                fixtureHash,
+                configuration.ModulePath,
+                moduleHash,
                 missingSymbol: null
             );
         }
@@ -43,8 +43,8 @@ internal static class StableAbiFixtureLoader
             var cached = StableAbiProcessLibraryCache.Load(
                 configuration.BridgePath,
                 bridgeHash,
-                configuration.FixturePath,
-                fixtureHash
+                configuration.ModulePath,
+                moduleHash
             );
             ValidateExports(
                 cached.Bridge,
@@ -53,19 +53,19 @@ internal static class StableAbiFixtureLoader
                 bridgeHash
             );
             ValidateExports(
-                cached.Fixture,
-                manifest.RequiredFixtureExports,
-                configuration.FixturePath,
-                fixtureHash
+                cached.Module,
+                manifest.RequiredModuleExports,
+                configuration.ModulePath,
+                moduleHash
             );
             try
             {
-                return StableAbiFixtureModule.Initialize(
+                return StableAbiModule.Initialize(
                     cached.Bridge,
-                    cached.Fixture,
+                    cached.Module,
                     manifest,
-                    configuration.FixturePath,
-                    fixtureHash,
+                    configuration.ModulePath,
+                    moduleHash,
                     releaseLibraries: false
                 );
             }
@@ -76,8 +76,8 @@ internal static class StableAbiFixtureLoader
                     "DPY8004",
                     StableAbiLoadPhase.ModuleInitialization,
                     $"Pinned Stable-ABI initialization left process-lifetime native caches in an unknown state: {exception.Message}",
-                    configuration.FixturePath,
-                    fixtureHash,
+                    configuration.ModulePath,
+                    moduleHash,
                     missingSymbol: null,
                     exception
                 );
@@ -85,7 +85,7 @@ internal static class StableAbiFixtureLoader
         }
 
         nint bridge = 0;
-        nint fixture = 0;
+        nint module = 0;
         try
         {
             bridge = LoadBridgeLibrary(
@@ -99,31 +99,31 @@ internal static class StableAbiFixtureLoader
                 configuration.BridgePath,
                 bridgeHash
             );
-            fixture = LoadLibrary(
-                configuration.FixturePath,
-                fixtureHash,
-                StableAbiLoadPhase.FixtureLoad
+            module = LoadLibrary(
+                configuration.ModulePath,
+                moduleHash,
+                StableAbiLoadPhase.ModuleLoad
             );
             ValidateExports(
-                fixture,
-                manifest.RequiredFixtureExports,
-                configuration.FixturePath,
-                fixtureHash
+                module,
+                manifest.RequiredModuleExports,
+                configuration.ModulePath,
+                moduleHash
             );
-            return StableAbiFixtureModule.Initialize(
+            return StableAbiModule.Initialize(
                 bridge,
-                fixture,
+                module,
                 manifest,
-                configuration.FixturePath,
-                fixtureHash,
+                configuration.ModulePath,
+                moduleHash,
                 releaseLibraries: true
             );
         }
         catch
         {
-            if (fixture != 0)
+            if (module != 0)
             {
-                NativeLibrary.Free(fixture);
+                NativeLibrary.Free(module);
             }
 
             if (bridge != 0)

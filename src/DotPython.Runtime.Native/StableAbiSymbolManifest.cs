@@ -15,7 +15,7 @@ internal sealed record StableAbiSymbolManifest(
     string ModuleName,
     string InitializationSymbol,
     IReadOnlyList<string> AllowedStableAbiSymbols,
-    IReadOnlyList<string> RequiredFixtureExports,
+    IReadOnlyList<string> RequiredModuleExports,
     IReadOnlyList<string> RequiredBridgeExports,
     IReadOnlyList<string> AllowedMethods,
     string? ArtifactFileName,
@@ -29,9 +29,9 @@ internal sealed record StableAbiSymbolManifest(
     string? SourceRevision
 )
 {
-    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v2";
+    internal const string ExpectedManifestVersion = "dotpython-abi3-fixture-v3";
     internal const string ExpectedProviderId = "dotpython-managed-abi3";
-    internal const int ExpectedBridgeAbiVersion = 4;
+    internal const int ExpectedBridgeAbiVersion = 5;
 
     internal bool IsConformanceFixture =>
         string.Equals(ManifestVersion, ExpectedManifestVersion, StringComparison.Ordinal);
@@ -50,7 +50,7 @@ internal sealed record StableAbiSymbolManifest(
         "PyModule_AddIntConstant",
     ];
 
-    private static readonly string[] FixtureExports =
+    private static readonly string[] ConformanceModuleExports =
     [
         "PyInit_dotpython_fixture",
         "dotpython_fixture_cleanup_count",
@@ -156,9 +156,7 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_bridge_version",
         "dp_abi3_error_message",
         "dp_abi3_error_type",
-        "dp_abi3_module_call_long",
         "dp_abi3_module_destroy",
-        "dp_abi3_module_get_int",
         "dp_abi3_module_initialize",
         "dp_abi3_module_attribute_names",
         "dp_abi3_object_as_bool",
@@ -178,7 +176,7 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_object_string",
     ];
 
-    private static readonly string[] FixtureMethods = ["fail", "increment"];
+    private static readonly string[] ConformanceMethods = ["fail", "increment"];
 
     internal static StableAbiSymbolManifest Load(string path)
     {
@@ -204,7 +202,7 @@ internal sealed record StableAbiSymbolManifest(
     private void Validate()
     {
         if (
-            SchemaVersion != 2
+            SchemaVersion != 3
             || !string.Equals(ProviderId, ExpectedProviderId, StringComparison.Ordinal)
             || !string.Equals(AbiFamily, "abi3", StringComparison.Ordinal)
             || !string.Equals(MinimumAbiVersion, "3.11", StringComparison.Ordinal)
@@ -225,7 +223,7 @@ internal sealed record StableAbiSymbolManifest(
             "bridge exports"
         );
         ValidateSymbolList(AllowedStableAbiSymbols, "Stable-ABI imports", maximumCount: 512);
-        ValidateSymbolList(RequiredFixtureExports, "native module exports", maximumCount: 32);
+        ValidateSymbolList(RequiredModuleExports, "native module exports", maximumCount: 32);
         ValidateSymbolList(AllowedMethods, "module methods", maximumCount: 512);
         if (
             !AllowedStableAbiSymbols.All(symbol =>
@@ -259,7 +257,7 @@ internal sealed record StableAbiSymbolManifest(
             !string.Equals(ModuleName, "dotpython_fixture", StringComparison.Ordinal)
             || !string.Equals(
                 CapabilityId,
-                "managed-stable-abi-fixture-v2",
+                "managed-stable-abi-fixture-v3",
                 StringComparison.Ordinal
             )
             || !string.Equals(LibraryLifetime, "module", StringComparison.Ordinal)
@@ -283,8 +281,8 @@ internal sealed record StableAbiSymbolManifest(
         }
 
         RequireExact(AllowedStableAbiSymbols, StableAbiSymbols, "Stable-ABI imports");
-        RequireExact(RequiredFixtureExports, FixtureExports, "fixture exports");
-        RequireExact(AllowedMethods, FixtureMethods, "fixture methods");
+        RequireExact(RequiredModuleExports, ConformanceModuleExports, "conformance module exports");
+        RequireExact(AllowedMethods, ConformanceMethods, "conformance module methods");
     }
 
     private void ValidateQualifiedArtifact()
@@ -311,7 +309,7 @@ internal sealed record StableAbiSymbolManifest(
             throw Invalid("The qualified Stable-ABI artifact manifest is incomplete or unsafe.");
         }
 
-        RequireExact(RequiredFixtureExports, [InitializationSymbol], "native module exports");
+        RequireExact(RequiredModuleExports, [InitializationSymbol], "native module exports");
     }
 
     private static void ValidateSymbolList(

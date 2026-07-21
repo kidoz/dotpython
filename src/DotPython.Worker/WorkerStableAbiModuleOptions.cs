@@ -1,26 +1,26 @@
 namespace DotPython.Worker;
 
-public sealed record WorkerStableAbiFixtureOptions
+public sealed record WorkerStableAbiModuleOptions
 {
     public required string BridgePath { get; init; }
 
-    public required string FixturePath { get; init; }
+    public required string ModulePath { get; init; }
 
     public required string ManifestPath { get; init; }
 
     public required string BridgeSha256 { get; init; }
 
-    public required string FixtureSha256 { get; init; }
+    public required string ModuleSha256 { get; init; }
 
     public required string ManifestSha256 { get; init; }
 
     internal void Validate()
     {
         ValidateFile(BridgePath, nameof(BridgePath));
-        ValidateFile(FixturePath, nameof(FixturePath));
+        ValidateFile(ModulePath, nameof(ModulePath));
         ValidateFile(ManifestPath, nameof(ManifestPath));
         ValidateHash(BridgeSha256, nameof(BridgeSha256));
-        ValidateHash(FixtureSha256, nameof(FixtureSha256));
+        ValidateHash(ModuleSha256, nameof(ModuleSha256));
         ValidateHash(ManifestSha256, nameof(ManifestSha256));
     }
 

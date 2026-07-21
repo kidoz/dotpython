@@ -35,18 +35,6 @@ unsafe extern "C" {
         module: *mut *mut PyObject,
         multi_phase: *mut c_int,
     ) -> c_int;
-    pub fn dp_abi3_module_get_int(
-        module: *mut PyObject,
-        name: *const c_char,
-        value: *mut i64,
-    ) -> c_int;
-    pub fn dp_abi3_module_call_long(
-        module: *mut PyObject,
-        method: *const c_char,
-        has_arg: c_int,
-        arg: i64,
-        result: *mut i64,
-    ) -> c_int;
     pub fn dp_abi3_module_attribute_names(
         module: *mut PyObject,
         result_json: *mut *const c_char,

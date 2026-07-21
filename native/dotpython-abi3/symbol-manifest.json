@@ -1,11 +1,11 @@
 {
-  "schemaVersion": 2,
-  "manifestVersion": "dotpython-abi3-fixture-v2",
+  "schemaVersion": 3,
+  "manifestVersion": "dotpython-abi3-fixture-v3",
   "providerId": "dotpython-managed-abi3",
   "abiFamily": "abi3",
   "minimumAbiVersion": "3.11",
-  "bridgeAbiVersion": 4,
-  "capabilityId": "managed-stable-abi-fixture-v2",
+  "bridgeAbiVersion": 5,
+  "capabilityId": "managed-stable-abi-fixture-v3",
   "libraryLifetime": "module",
   "moduleName": "dotpython_fixture",
   "initializationSymbol": "PyInit_dotpython_fixture",
@@ -18,7 +18,7 @@
     "PyModuleDef_Init",
     "PyModule_AddIntConstant"
   ],
-  "requiredFixtureExports": [
+  "requiredModuleExports": [
     "PyInit_dotpython_fixture",
     "dotpython_fixture_cleanup_count"
   ],
@@ -119,9 +119,7 @@
     "dp_abi3_error_message",
     "dp_abi3_error_type",
     "dp_abi3_module_attribute_names",
-    "dp_abi3_module_call_long",
     "dp_abi3_module_destroy",
-    "dp_abi3_module_get_int",
     "dp_abi3_module_initialize",
     "dp_abi3_object_as_bool",
     "dp_abi3_object_as_int64",

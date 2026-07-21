@@ -6,9 +6,9 @@ namespace DotPython.Worker.Host;
 internal sealed class WorkerSessionState : IAsyncDisposable
 {
     private readonly NativeExecutionLane _nativeLane = new();
-    private readonly Dictionary<long, StableAbiFixtureModule> _nativeModules = [];
+    private readonly Dictionary<long, StableAbiModule> _nativeModules = [];
     private readonly List<long> _nativeOrder = [];
-    private readonly StableAbiFixtureConfiguration? _stableAbiFixture;
+    private readonly StableAbiModuleConfiguration? _stableAbiModuleConfiguration;
     private readonly StableAbiSymbolManifest? _stableAbiManifest;
     private long _boundNativeObjectId;
     private long _nextObjectId;
@@ -16,17 +16,21 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     internal WorkerSessionState(
         IReadOnlyList<string> packageRoots,
-        StableAbiFixtureConfiguration? stableAbiFixture
+        StableAbiModuleConfiguration? stableAbiModuleConfiguration
     )
     {
         ArgumentNullException.ThrowIfNull(packageRoots);
-        _stableAbiFixture = stableAbiFixture;
-        _stableAbiManifest = stableAbiFixture is null
+        _stableAbiModuleConfiguration = stableAbiModuleConfiguration;
+        _stableAbiManifest = stableAbiModuleConfiguration is null
             ? null
-            : StableAbiSymbolManifest.Load(stableAbiFixture.ManifestPath);
-        if (stableAbiFixture is not null && _stableAbiManifest is not null)
+            : StableAbiSymbolManifest.Load(stableAbiModuleConfiguration.ManifestPath);
+        if (stableAbiModuleConfiguration is not null && _stableAbiManifest is not null)
         {
-            ValidateQualifiedPackage(packageRoots, stableAbiFixture, _stableAbiManifest);
+            ValidateQualifiedPackage(
+                packageRoots,
+                stableAbiModuleConfiguration,
+                _stableAbiManifest
+            );
         }
         Engine =
             packageRoots.Count == 0
@@ -42,56 +46,18 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     internal ManagedPythonEngine Engine { get; }
 
-    internal Task<LoadedStableAbiModule> LoadStableAbiModuleAsync(
-        StableAbiFixtureConfiguration configuration,
+    private Task<long> LoadStableAbiModuleAsync(
+        StableAbiModuleConfiguration configuration,
         CancellationToken cancellationToken
     ) =>
         _nativeLane.InvokeAsync(
             () =>
             {
-                var module = StableAbiFixtureLoader.Load(configuration);
+                var module = StableAbiModuleLoader.Load(configuration);
                 var objectId = checked(++_nextObjectId);
                 _nativeModules.Add(objectId, module);
                 _nativeOrder.Add(objectId);
-                return new LoadedStableAbiModule(
-                    objectId,
-                    module.ModuleName,
-                    module.ManifestVersion,
-                    module.ArtifactSha256 ?? configuration.FixtureSha256,
-                    module.NativeEntrySha256 ?? configuration.FixtureSha256,
-                    module.MultiPhase,
-                    module.ReadyValue
-                );
-            },
-            cancellationToken
-        );
-
-    internal Task<long> InvokeStableAbiModuleAsync(
-        long objectId,
-        string method,
-        long? argument,
-        CancellationToken cancellationToken
-    ) =>
-        _nativeLane.InvokeAsync(
-            () => GetModule(objectId).InvokeLong(method, argument),
-            cancellationToken
-        );
-
-    internal Task<bool> ReleaseStableAbiModuleAsync(
-        long objectId,
-        CancellationToken cancellationToken
-    ) =>
-        _nativeLane.InvokeAsync(
-            () =>
-            {
-                if (!_nativeModules.Remove(objectId, out var module))
-                {
-                    return false;
-                }
-
-                _nativeOrder.Remove(objectId);
-                module.Dispose();
-                return true;
+                return objectId;
             },
             cancellationToken
         );
@@ -122,7 +88,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
         await _nativeLane.DisposeAsync().ConfigureAwait(false);
     }
 
-    private StableAbiFixtureModule GetModule(long objectId)
+    private StableAbiModule GetModule(long objectId)
     {
         if (!_nativeModules.TryGetValue(objectId, out var module))
         {
@@ -145,7 +111,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
     private Action<PythonGlobalNamespace>? ResolveNativeExtension(string name, string path)
     {
         if (
-            _stableAbiFixture is null
+            _stableAbiModuleConfiguration is null
             || _stableAbiManifest is null
             || !string.Equals(name, _stableAbiManifest.ModuleName, StringComparison.Ordinal)
         )
@@ -159,7 +125,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
         if (
             !string.Equals(
                 Path.GetFullPath(path),
-                Path.GetFullPath(_stableAbiFixture.FixturePath),
+                Path.GetFullPath(_stableAbiModuleConfiguration.ModulePath),
                 comparison
             )
         )
@@ -174,7 +140,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     private void InitializeNativeExtension(PythonGlobalNamespace globals)
     {
-        if (_stableAbiFixture is null || _boundNativeObjectId != 0)
+        if (_stableAbiModuleConfiguration is null || _boundNativeObjectId != 0)
         {
             throw new PythonRuntimeException(
                 "DPY4029",
@@ -186,13 +152,16 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
         try
         {
-            var loaded = LoadStableAbiModuleAsync(_stableAbiFixture, CancellationToken.None)
+            var objectId = LoadStableAbiModuleAsync(
+                    _stableAbiModuleConfiguration,
+                    CancellationToken.None
+                )
                 .GetAwaiter()
                 .GetResult();
-            _boundNativeObjectId = loaded.ObjectId;
+            _boundNativeObjectId = objectId;
             var exports = InvokeNative(() =>
             {
-                var module = GetModule(loaded.ObjectId);
+                var module = GetModule(objectId);
                 return module
                     .GetAttributeNames()
                     .Where(name =>
@@ -222,7 +191,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     private static void ValidateQualifiedPackage(
         IReadOnlyList<string> packageRoots,
-        StableAbiFixtureConfiguration configuration,
+        StableAbiModuleConfiguration configuration,
         StableAbiSymbolManifest manifest
     )
     {
@@ -243,7 +212,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
         var packageRoot = packageRoots.FirstOrDefault(root =>
             string.Equals(
                 Path.GetFullPath(Path.Combine(root, manifest.NativeEntry)),
-                Path.GetFullPath(configuration.FixturePath),
+                Path.GetFullPath(configuration.ModulePath),
                 comparison
             )
         );
@@ -281,7 +250,7 @@ internal sealed class WorkerSessionState : IAsyncDisposable
             file.LinkTarget is not null
             || (file.Attributes & FileAttributes.ReparsePoint) != 0
             || !string.Equals(
-                StableAbiFixtureLoader.ComputeSha256(path),
+                StableAbiModuleLoader.ComputeSha256(path),
                 expectedSha256,
                 StringComparison.Ordinal
             )
@@ -304,13 +273,3 @@ internal sealed class WorkerSessionState : IAsyncDisposable
             missingSymbol: null
         );
 }
-
-internal sealed record LoadedStableAbiModule(
-    long ObjectId,
-    string ModuleName,
-    string ManifestVersion,
-    string ArtifactSha256,
-    string NativeEntrySha256,
-    bool MultiPhase,
-    long ReadyValue
-);

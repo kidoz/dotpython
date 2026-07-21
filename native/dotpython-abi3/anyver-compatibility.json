@@ -7,7 +7,7 @@
   "wheel": "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
   "wheelSha256": "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
   "sourceRevision": "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",
-  "bridgeAbiVersion": 4,
+  "bridgeAbiVersion": 5,
   "packageSpecificExecutionGlue": false,
   "unchangedPackage": {
     "importsPassed": 1,

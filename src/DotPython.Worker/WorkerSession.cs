@@ -36,44 +36,6 @@ public sealed class WorkerSession : IAsyncDisposable
         _client.ValidateHandle(handle, SessionId);
     }
 
-    public async Task<WorkerStableAbiModule> LoadStableAbiFixtureAsync(
-        CancellationToken cancellationToken = default
-    ) => await LoadStableAbiModuleAsync(cancellationToken).ConfigureAwait(false);
-
-    public async Task<WorkerStableAbiModule> LoadStableAbiModuleAsync(
-        CancellationToken cancellationToken = default
-    )
-    {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var response = await _client
-            .LoadStableAbiModuleAsync(SessionId, cancellationToken)
-            .ConfigureAwait(false);
-        if (response.SessionId != SessionId || response.ObjectId <= 0)
-        {
-            throw new InvalidDataException(
-                "The worker returned an invalid native module identity."
-            );
-        }
-
-        var identity = _scope.Identity;
-        return new WorkerStableAbiModule(
-            _client,
-            new WorkerObjectHandle(
-                identity.ProviderId,
-                identity.WorkerId,
-                identity.Generation,
-                SessionId,
-                response.ObjectId
-            ),
-            response.ModuleName,
-            response.ManifestVersion,
-            response.ArtifactSha256,
-            response.NativeEntrySha256,
-            response.MultiPhase,
-            response.ReadyValue
-        );
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
