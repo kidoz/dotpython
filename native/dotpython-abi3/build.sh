@@ -6,9 +6,9 @@ output=${1:?output directory is required}
 build=${2:-"$output-build"}
 
 if [ "${SANITIZE:-0}" = "1" ]; then
-    setup_options="-Db_sanitize=address,undefined -Db_lundef=false"
+    setup_options="-Dcpp_std=c++20 -Db_sanitize=address,undefined -Db_lundef=false"
 else
-    setup_options="-Db_sanitize= -Db_lundef=true"
+    setup_options="-Dcpp_std=c++20 -Db_sanitize= -Db_lundef=true"
 fi
 
 if [ -f "$build/meson-private/coredata.dat" ]; then

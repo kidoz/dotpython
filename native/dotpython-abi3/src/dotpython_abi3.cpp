@@ -1,10 +1,15 @@
 #define DOTPYTHON_ABI3_BUILD
 #include "dotpython_bridge.h"
 
+#include <algorithm>
+#include <array>
+#include <charconv>
 #include <limits.h>
+#include <limits>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string_view>
 
 enum dp_object_kind {
     DP_OBJECT_BYTES = 1,
@@ -139,31 +144,97 @@ DP_ABI3_EXPORT PyObject *PyExc_SystemError = (PyObject *)&dp_system_error_type;
 DP_ABI3_EXPORT PyObject *PyExc_TypeError = (PyObject *)&dp_type_error_type;
 DP_ABI3_EXPORT PyObject *PyExc_ValueError = (PyObject *)&dp_value_error_type;
 
-static _Thread_local PyModuleDef *dp_last_definition;
-static _Thread_local PyObject *dp_error_type;
-static _Thread_local PyObject *dp_error_value;
-static _Thread_local PyObject *dp_error_traceback;
-static _Thread_local char dp_error_text[1024];
-static _Thread_local char dp_result_text[16384];
+static thread_local PyModuleDef *dp_last_definition;
+static thread_local PyObject *dp_error_type;
+static thread_local PyObject *dp_error_value;
+static thread_local PyObject *dp_error_traceback;
+static thread_local char dp_error_text[1024];
+static thread_local char dp_result_text[16384];
 static char dp_thread_state_token;
 static dp_metadata *dp_objects;
 static int64_t dp_active_objects;
 static int dp_initialized;
+
+template <typename T>
+[[nodiscard]] static bool dp_copy_items(
+    T *destination,
+    size_t destination_count,
+    const T *source,
+    size_t source_count
+) noexcept {
+    if (source_count > destination_count ||
+        (source_count > 0U && (destination == nullptr || source == nullptr))) {
+        return false;
+    }
+    if (source_count > 0U) {
+        std::copy_n(source, source_count, destination);
+    }
+    return true;
+}
+
+static size_t
+dp_copy_truncated_text(char *destination, size_t capacity, const char *source) noexcept {
+    if (destination == nullptr || capacity == 0U) {
+        return 0U;
+    }
+    const std::string_view text = source == nullptr ? std::string_view{} : source;
+    const size_t length = std::min(text.size(), capacity - 1U);
+    if (!dp_copy_items(destination, capacity, source, length)) {
+        destination[0] = '\0';
+        return 0U;
+    }
+    destination[length] = '\0';
+    return length;
+}
+
+static int
+dp_append_text(char *buffer, size_t capacity, size_t *offset, std::string_view text) noexcept {
+    if (buffer == nullptr || offset == nullptr || *offset >= capacity ||
+        text.size() >= capacity - *offset) {
+        return -1;
+    }
+    if (!dp_copy_items(buffer + *offset, capacity - *offset, text.data(), text.size())) {
+        return -1;
+    }
+    *offset += text.size();
+    buffer[*offset] = '\0';
+    return 0;
+}
+
+template <typename T>
+static int dp_append_integer(char *buffer, size_t capacity, size_t *offset, T value) noexcept {
+    std::array<char, std::numeric_limits<T>::digits10 + 3> text{};
+    const auto conversion = std::to_chars(text.data(), text.data() + text.size(), value);
+    if (conversion.ec != std::errc{}) {
+        return -1;
+    }
+    return dp_append_text(
+        buffer,
+        capacity,
+        offset,
+        std::string_view(text.data(), (size_t)(conversion.ptr - text.data()))
+    );
+}
 
 static char *dp_copy_text(const char *text, Py_ssize_t size) {
     if (text == NULL || size < 0) {
         return NULL;
     }
 
-    char *copy = (char *)malloc((size_t)size + 1U);
+    const size_t text_size = (size_t)size;
+    if (text_size == std::numeric_limits<size_t>::max()) {
+        return NULL;
+    }
+    char *copy = (char *)malloc(text_size + 1U);
     if (copy == NULL) {
         return NULL;
     }
 
-    if (size > 0) {
-        memcpy(copy, text, (size_t)size);
+    if (!dp_copy_items(copy, text_size + 1U, text, text_size)) {
+        free(copy);
+        return NULL;
     }
-    copy[size] = '\0';
+    copy[text_size] = '\0';
     return copy;
 }
 
@@ -304,14 +375,7 @@ static void dp_clear_error(void) {
 static void dp_set_error_text(PyObject *type, const char *message) {
     dp_clear_error();
     dp_error_type = Py_NewRef(type == NULL ? PyExc_RuntimeError : type);
-    size_t length = message == NULL ? 0U : strlen(message);
-    if (length >= sizeof(dp_error_text)) {
-        length = sizeof(dp_error_text) - 1U;
-    }
-    if (length > 0U) {
-        memcpy(dp_error_text, message, length);
-    }
-    dp_error_text[length] = '\0';
+    const size_t length = dp_copy_truncated_text(dp_error_text, sizeof(dp_error_text), message);
     dp_error_value = dp_new_unicode(dp_error_text, (Py_ssize_t)length);
 }
 
@@ -1019,7 +1083,17 @@ DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification) {
     type->flags = specification->flags | (1UL << 9) | (1UL << 12);
     size_t slot_count = 0;
     while (specification->slots != NULL && specification->slots[slot_count].slot != 0) {
+        if (slot_count == std::numeric_limits<size_t>::max() - 1U) {
+            dp_release((PyObject *)type);
+            dp_set_error_text(PyExc_RuntimeError, "type slot count exceeds the bridge limit");
+            return NULL;
+        }
         slot_count++;
+    }
+    if (slot_count + 1U > std::numeric_limits<size_t>::max() / sizeof(PyType_Slot)) {
+        dp_release((PyObject *)type);
+        dp_set_error_text(PyExc_RuntimeError, "type slot allocation exceeds the bridge limit");
+        return NULL;
     }
     type->slots = (PyType_Slot *)calloc(slot_count + 1U, sizeof(PyType_Slot));
     if (type->slots == NULL) {
@@ -1027,8 +1101,10 @@ DP_ABI3_EXPORT PyObject *PyType_FromSpec(PyType_Spec *specification) {
         dp_set_error_text(PyExc_RuntimeError, "type slot allocation failed");
         return NULL;
     }
-    if (slot_count > 0U) {
-        memcpy(type->slots, specification->slots, slot_count * sizeof(PyType_Slot));
+    if (!dp_copy_items(type->slots, slot_count + 1U, specification->slots, slot_count)) {
+        dp_release((PyObject *)type);
+        dp_set_error_text(PyExc_RuntimeError, "type slot copy failed");
+        return NULL;
     }
     type->base_type = &PyBaseObject_Type;
     type->dynamic = 1;
@@ -1404,6 +1480,45 @@ DP_ABI3_EXPORT PyObject *PyIter_Next(PyObject *iterator) {
     return next(iterator);
 }
 
+template <typename T> static PyObject *dp_new_integer_text(T value) noexcept {
+    std::array<char, std::numeric_limits<T>::digits10 + 3> buffer{};
+    const auto conversion = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    if (conversion.ec != std::errc{}) {
+        dp_set_error_text(PyExc_RuntimeError, "integer formatting failed");
+        return NULL;
+    }
+    return dp_new_unicode(buffer.data(), (Py_ssize_t)(conversion.ptr - buffer.data()));
+}
+
+static PyObject *dp_new_type_description(PyTypeObject *type) noexcept {
+    constexpr std::string_view prefix = "<";
+    constexpr std::string_view suffix = " object>";
+    const std::string_view name = dp_short_type_name(type);
+    const size_t fixed_size = prefix.size() + suffix.size();
+    if (name.size() > std::numeric_limits<size_t>::max() - fixed_size - 1U ||
+        name.size() + fixed_size > (size_t)std::numeric_limits<Py_ssize_t>::max()) {
+        dp_set_error_text(PyExc_ValueError, "type name exceeds the bridge limit");
+        return NULL;
+    }
+    const size_t length = name.size() + fixed_size;
+    char *buffer = (char *)malloc(length + 1U);
+    if (buffer == NULL) {
+        dp_set_error_text(PyExc_RuntimeError, "type description allocation failed");
+        return NULL;
+    }
+    size_t offset = 0U;
+    if (dp_append_text(buffer, length + 1U, &offset, prefix) != 0 ||
+        dp_append_text(buffer, length + 1U, &offset, name) != 0 ||
+        dp_append_text(buffer, length + 1U, &offset, suffix) != 0) {
+        free(buffer);
+        dp_set_error_text(PyExc_RuntimeError, "type description formatting failed");
+        return NULL;
+    }
+    PyObject *result = dp_new_unicode(buffer, (Py_ssize_t)length);
+    free(buffer);
+    return result;
+}
+
 DP_ABI3_EXPORT PyObject *PyObject_Str(PyObject *object) {
     if (object == NULL) {
         return dp_new_unicode("<NULL>", 6);
@@ -1420,21 +1535,15 @@ DP_ABI3_EXPORT PyObject *PyObject_Str(PyObject *object) {
         return Py_NewRef(object);
     }
     if (entry != NULL && entry->kind == DP_OBJECT_LONG) {
-        char buffer[64];
-        int length =
-            entry->value.number.is_unsigned
-                ? snprintf(buffer, sizeof(buffer), "%llu", entry->value.number.value)
-                : snprintf(buffer, sizeof(buffer), "%lld", (long long)entry->value.number.value);
-        return dp_new_unicode(buffer, (Py_ssize_t)length);
+        return entry->value.number.is_unsigned
+                   ? dp_new_integer_text(entry->value.number.value)
+                   : dp_new_integer_text((long long)entry->value.number.value);
     }
     reprfunc string = (reprfunc)dp_slot(object->ob_type, Py_tp_str);
     if (string != NULL) {
         return string(object);
     }
-    char buffer[256];
-    int length =
-        snprintf(buffer, sizeof(buffer), "<%s object>", dp_short_type_name(object->ob_type));
-    return dp_new_unicode(buffer, (Py_ssize_t)length);
+    return dp_new_type_description(object->ob_type);
 }
 
 DP_ABI3_EXPORT PyObject *PyObject_Repr(PyObject *object) {
@@ -1445,14 +1554,26 @@ DP_ABI3_EXPORT PyObject *PyObject_Repr(PyObject *object) {
         }
         dp_metadata *entry = dp_find(object);
         if (entry != NULL && entry->kind == DP_OBJECT_UNICODE) {
+            if (entry->value.text.size < 0) {
+                dp_set_error_text(PyExc_RuntimeError, "representation size is invalid");
+                return NULL;
+            }
             size_t size = (size_t)entry->value.text.size;
+            if (size > std::numeric_limits<size_t>::max() - 3U) {
+                dp_set_error_text(PyExc_RuntimeError, "representation exceeds the bridge limit");
+                return NULL;
+            }
             char *buffer = (char *)malloc(size + 3U);
             if (buffer == NULL) {
                 dp_set_error_text(PyExc_RuntimeError, "representation allocation failed");
                 return NULL;
             }
             buffer[0] = '\'';
-            memcpy(buffer + 1, entry->value.text.data, size);
+            if (!dp_copy_items(buffer + 1, size + 2U, entry->value.text.data, size)) {
+                free(buffer);
+                dp_set_error_text(PyExc_RuntimeError, "representation copy failed");
+                return NULL;
+            }
             buffer[size + 1U] = '\'';
             buffer[size + 2U] = '\0';
             PyObject *result = dp_new_unicode(buffer, (Py_ssize_t)(size + 2U));
@@ -1545,12 +1666,7 @@ DP_ABI3_EXPORT void PyErr_SetObject(PyObject *exception, PyObject *value) {
     if (text != NULL) {
         const char *message = PyUnicode_AsUTF8AndSize(text, NULL);
         if (message != NULL) {
-            size_t length = strlen(message);
-            if (length >= sizeof(dp_error_text)) {
-                length = sizeof(dp_error_text) - 1U;
-            }
-            memcpy(dp_error_text, message, length);
-            dp_error_text[length] = '\0';
+            (void)dp_copy_truncated_text(dp_error_text, sizeof(dp_error_text), message);
         }
         dp_release(text);
     }
@@ -1592,12 +1708,7 @@ DP_ABI3_EXPORT void PyErr_Restore(PyObject *type, PyObject *value, PyObject *tra
         if (text != NULL) {
             const char *message = PyUnicode_AsUTF8AndSize(text, NULL);
             if (message != NULL) {
-                size_t length = strlen(message);
-                if (length >= sizeof(dp_error_text)) {
-                    length = sizeof(dp_error_text) - 1U;
-                }
-                memcpy(dp_error_text, message, length);
-                dp_error_text[length] = '\0';
+                (void)dp_copy_truncated_text(dp_error_text, sizeof(dp_error_text), message);
             }
             dp_release(text);
         }
@@ -1883,12 +1994,9 @@ static int dp_append_json_string(char *buffer, size_t capacity, size_t *offset, 
             escape = "\\t";
         }
         if (escape != NULL) {
-            size_t length = strlen(escape);
-            if (capacity - *offset <= length) {
+            if (dp_append_text(buffer, capacity, offset, escape) != 0) {
                 return -1;
             }
-            memcpy(buffer + *offset, escape, length);
-            *offset += length;
         } else {
             if (capacity - *offset <= 1U) {
                 return -1;
@@ -2051,47 +2159,50 @@ DP_ABI3_EXPORT int dp_abi3_anyver_version_to_json(
         return -1;
     }
     size_t offset = 0;
-    const char *raw_prefix = "{\"raw\":";
-    memcpy(dp_result_text, raw_prefix, strlen(raw_prefix));
-    offset = strlen(raw_prefix);
-    if (dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, raw_text) != 0) {
+    if (dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, "{\"raw\":") != 0 ||
+        dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, raw_text) != 0) {
         dp_release(dictionary);
+        dp_set_error_text(PyExc_ValueError, "Anyver Version result exceeds the bridge limit");
         return -1;
     }
-    const char *eco_prefix = ",\"ecosystem\":";
-    memcpy(dp_result_text + offset, eco_prefix, strlen(eco_prefix));
-    offset += strlen(eco_prefix);
-    if (dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, eco_text) != 0) {
+    if (dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"ecosystem\":") != 0 ||
+        dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, eco_text) != 0 ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"epoch\":") != 0 ||
+        dp_append_integer(dp_result_text, sizeof(dp_result_text), &offset, epoch_value) != 0 ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"major\":") != 0 ||
+        dp_append_integer(dp_result_text, sizeof(dp_result_text), &offset, major_value) != 0 ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"minor\":") != 0 ||
+        dp_append_integer(dp_result_text, sizeof(dp_result_text), &offset, minor_value) != 0 ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"patch\":") != 0 ||
+        dp_append_integer(dp_result_text, sizeof(dp_result_text), &offset, patch_value) != 0 ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"build\":") != 0) {
         dp_release(dictionary);
+        dp_set_error_text(PyExc_ValueError, "Anyver Version result exceeds the bridge limit");
         return -1;
     }
-    int written = snprintf(
-        dp_result_text + offset,
-        sizeof(dp_result_text) - offset,
-        ",\"epoch\":%ld,\"major\":%ld,\"minor\":%ld,\"patch\":%ld,\"build\":",
-        epoch_value,
-        major_value,
-        minor_value,
-        patch_value
-    );
-    if (written < 0 || (size_t)written >= sizeof(dp_result_text) - offset) {
-        dp_release(dictionary);
-        return -1;
-    }
-    offset += (size_t)written;
     if (dp_append_json_string(dp_result_text, sizeof(dp_result_text), &offset, build_text) != 0) {
         dp_release(dictionary);
+        dp_set_error_text(PyExc_ValueError, "Anyver Version result exceeds the bridge limit");
         return -1;
     }
-    written = snprintf(
-        dp_result_text + offset,
-        sizeof(dp_result_text) - offset,
-        ",\"is_prerelease\":%s,\"is_postrelease\":%s}",
-        prerelease == &_Py_TrueStruct ? "true" : "false",
-        postrelease == &_Py_TrueStruct ? "true" : "false"
-    );
+    const int append_result =
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"is_prerelease\":") ||
+        dp_append_text(
+            dp_result_text,
+            sizeof(dp_result_text),
+            &offset,
+            prerelease == &_Py_TrueStruct ? "true" : "false"
+        ) ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, ",\"is_postrelease\":") ||
+        dp_append_text(
+            dp_result_text,
+            sizeof(dp_result_text),
+            &offset,
+            postrelease == &_Py_TrueStruct ? "true" : "false"
+        ) ||
+        dp_append_text(dp_result_text, sizeof(dp_result_text), &offset, "}");
     dp_release(dictionary);
-    if (written < 0 || (size_t)written >= sizeof(dp_result_text) - offset) {
+    if (append_result != 0) {
         dp_set_error_text(PyExc_ValueError, "Anyver Version result exceeds the bridge limit");
         return -1;
     }

@@ -1,6 +1,7 @@
 ---
 # CPython-compatible names are ABI contracts, and fixture entry points are resolved dynamically.
 # Those boundaries intentionally violate the generic reserved-name and internal-linkage checks.
+# The bridge implementation remains C-shaped at its exported ABI and callback boundaries.
 Checks: >
   -*,
   clang-analyzer-*,
@@ -11,15 +12,20 @@ Checks: >
   misc-*,
   -misc-include-cleaner,
   -misc-no-recursion,
+  -misc-const-correctness,
   -misc-use-internal-linkage,
+  -misc-use-anonymous-namespace,
   performance-*,
+  -performance-enum-size,
   portability-*,
   readability-*,
   -readability-function-cognitive-complexity,
   -readability-function-size,
   -readability-identifier-length,
   -readability-identifier-naming,
-  -readability-magic-numbers
+  -readability-implicit-bool-conversion,
+  -readability-magic-numbers,
+  -readability-use-std-min-max,
 WarningsAsErrors: '*'
 HeaderFilterRegex: '.*dotpython-abi3/.*'
 FormatStyle: file

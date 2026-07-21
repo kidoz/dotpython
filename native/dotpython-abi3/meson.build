@@ -1,10 +1,11 @@
 project(
   'dotpython-abi3',
-  'c',
+  ['c', 'cpp'],
   version: '0.1.0',
   meson_version: '>=1.9.0',
   default_options: [
     'c_std=c11',
+    'cpp_std=c++20',
     # CPython slots and POSIX dlsym require function/object pointer interop that is not ISO C.
     'warning_level=2',
     'werror=true',
@@ -24,11 +25,11 @@ if host_system == 'darwin'
     '--show-sdk-path',
     check: true,
   ).stdout().strip()
-  add_project_arguments('-isysroot', macos_sdk_path, language: 'c')
+  add_project_arguments('-isysroot', macos_sdk_path, language: ['c', 'cpp'])
 endif
 
 if get_option('b_sanitize') != 'none'
-  add_project_arguments('-fno-omit-frame-pointer', language: 'c')
+  add_project_arguments('-fno-omit-frame-pointer', language: ['c', 'cpp'])
 endif
 
 loader_rpath = host_system == 'darwin' ? '@loader_path' : '$ORIGIN'
@@ -38,10 +39,20 @@ dynamic_loader_dependency = c_compiler.find_library(
   'dl',
   required: host_system == 'linux',
 )
+catch2_project = subproject(
+  'catch2',
+  default_options: [
+    'install=false',
+    'tests=false',
+    'werror=false',
+  ],
+)
+catch2_dependency = catch2_project.get_variable('catch2_dep').as_system('system')
 
 bridge = shared_library(
   'dotpython_abi3',
-  'src/dotpython_abi3.c',
+  'src/dotpython_abi3.cpp',
+  cpp_args: ['-fno-exceptions', '-fno-rtti'],
   include_directories: include_directory,
   gnu_symbol_visibility: 'hidden',
   build_rpath: loader_rpath,
@@ -77,10 +88,10 @@ failure_fixture = shared_module(
 
 native_fixture_test = executable(
   'native_fixture_test',
-  'test/native_fixture_test.c',
+  'test/native_fixture_test.cpp',
   include_directories: include_directory,
   link_with: bridge,
-  dependencies: dynamic_loader_dependency,
+  dependencies: [dynamic_loader_dependency, catch2_dependency],
   gnu_symbol_visibility: 'hidden',
   build_rpath: loader_rpath,
   install_rpath: loader_rpath,
@@ -89,10 +100,10 @@ native_fixture_test = executable(
 
 native_anyver_test = executable(
   'native_anyver_test',
-  'test/native_anyver_test.c',
+  'test/native_anyver_test.cpp',
   include_directories: include_directory,
   link_with: bridge,
-  dependencies: dynamic_loader_dependency,
+  dependencies: [dynamic_loader_dependency, catch2_dependency],
   gnu_symbol_visibility: 'hidden',
   build_rpath: loader_rpath,
   install_rpath: loader_rpath,
