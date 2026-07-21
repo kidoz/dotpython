@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 
-namespace DotPython.Worker.App;
+namespace DotPython.Worker.Host;
 
 [SuppressMessage(
     "Design",

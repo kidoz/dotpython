@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace DotPython.Worker.App;
+namespace DotPython.Worker.Host;
 
 internal sealed class BoundedTextWriter(int maxBytes) : TextWriter
 {

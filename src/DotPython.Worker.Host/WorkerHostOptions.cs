@@ -2,7 +2,7 @@ using System.Globalization;
 using DotPython.Protocol;
 using DotPython.Runtime.Native;
 
-namespace DotPython.Worker.App;
+namespace DotPython.Worker.Host;
 
 internal sealed record WorkerHostOptions(
     WorkerIdentity Identity,

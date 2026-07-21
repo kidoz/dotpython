@@ -1,7 +1,7 @@
 using DotPython.Runtime.Managed.Execution;
 using DotPython.Runtime.Native;
 
-namespace DotPython.Worker.App;
+namespace DotPython.Worker.Host;
 
 internal sealed class WorkerSessionState : IAsyncDisposable
 {

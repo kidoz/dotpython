@@ -180,7 +180,7 @@ CPython ABI, HPy, Anyver, or NumPy execution support is enabled.
 
 ## Worker protocol foundation
 
-`DotPython.Protocol`, `DotPython.Worker`, and `DotPython.Worker.App` establish the worker-first
+`DotPython.Protocol`, `DotPython.Worker`, and `DotPython.Worker.Host` establish the worker-first
 boundary required by the native-extension roadmap. The host and child negotiate protocol,
 provider/runtime/environment identity, feature flags, message/output/session/concurrency limits,
 and an explicit worker generation before accepting work. Four-byte little-endian length prefixes
@@ -305,7 +305,7 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 | `src/DotPython.Protocol` | Versioned, bounded worker envelopes, framing, handshake, and faults. |
 | `src/DotPython.Runtime.Native` | Experimental manifest-bound Stable-ABI fixture loader and logical module boundary. |
 | `src/DotPython.Worker` | Worker policy, process lifecycle, sessions, recycling, and logical handles. |
-| `src/DotPython.Worker.App` | Executable managed worker host and test-only failure injection. |
+| `src/DotPython.Worker.Host` | Executable managed worker host and test-only failure injection. |
 | `native/dotpython-abi3` | Minimal Stable-ABI bridge, pinned fixture, manifest generator, and native harness. |
 | `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
 

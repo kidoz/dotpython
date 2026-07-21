@@ -52,7 +52,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.WorkerTests", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.Worker", "src\DotPython.Worker\DotPython.Worker.csproj", "{9277403C-7236-401E-9FE0-4E01E8EE8B80}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.Worker.App", "src\DotPython.Worker.App\DotPython.Worker.App.csproj", "{9B3D6AFE-B75A-4C79-9B0B-24BA85C89A48}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.Worker.Host", "src\DotPython.Worker.Host\DotPython.Worker.Host.csproj", "{9B3D6AFE-B75A-4C79-9B0B-24BA85C89A48}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DotPython.Runtime.Native", "src\DotPython.Runtime.Native\DotPython.Runtime.Native.csproj", "{93A8EADD-4628-4DD9-B702-8EBB9BC5C49E}"
 EndProject

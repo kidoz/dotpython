@@ -685,7 +685,7 @@ public sealed class WorkerProcessPoolTests
         IReadOnlyList<string>? packageRoots = null
     )
     {
-        var appPath = Path.Combine(AppContext.BaseDirectory, "worker", "DotPython.Worker.App.dll");
+        var appPath = Path.Combine(AppContext.BaseDirectory, "worker", "DotPython.Worker.Host.dll");
         var runtimeDirectory = new DirectoryInfo(RuntimeEnvironment.GetRuntimeDirectory());
         var dotnetRoot =
             runtimeDirectory.Parent?.Parent?.Parent

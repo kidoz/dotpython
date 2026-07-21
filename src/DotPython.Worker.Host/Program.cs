@@ -1,6 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 
-namespace DotPython.Worker.App;
+namespace DotPython.Worker.Host;
 
 internal static class Program
 {

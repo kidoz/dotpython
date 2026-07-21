@@ -13,7 +13,7 @@
         <ProjectReference Include="../../src/DotPython.Runtime.Native/DotPython.Runtime.Native.csproj" />
         <ProjectReference Include="../../src/DotPython.Worker/DotPython.Worker.csproj" />
         <ProjectReference
-            Include="../../src/DotPython.Worker.App/DotPython.Worker.App.csproj"
+            Include="../../src/DotPython.Worker.Host/DotPython.Worker.Host.csproj"
             ReferenceOutputAssembly="false"
         />
     </ItemGroup>
@@ -68,12 +68,12 @@
         />
     </Target>
 
-    <Target Name="CopyWorkerApp" AfterTargets="Build">
+    <Target Name="CopyWorkerHost" AfterTargets="Build">
         <ItemGroup>
-            <_WorkerAppFiles Include="../../src/DotPython.Worker.App/bin/$(Configuration)/net10.0/*" />
+            <_WorkerHostFiles Include="../../src/DotPython.Worker.Host/bin/$(Configuration)/net10.0/*" />
         </ItemGroup>
         <Copy
-            SourceFiles="@(_WorkerAppFiles)"
+            SourceFiles="@(_WorkerHostFiles)"
             DestinationFolder="$(OutDir)worker"
             SkipUnchangedFiles="true"
         />
