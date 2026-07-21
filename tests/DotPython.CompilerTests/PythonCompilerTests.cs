@@ -542,4 +542,118 @@ public sealed class PythonCompilerTests
             instruction => Assert.InRange(instruction.Operand, 0, result.Code.Instructions.Count)
         );
     }
+
+    [Fact]
+    public void Compile_EmitsIteratorCleanupAndSkipsTheElseClauseForBreak()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("for value in [1]:\n    break\nelse:\n    print('else')\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(
+            [
+                PythonOpCode.LoadConstant,
+                PythonOpCode.BuildList,
+                PythonOpCode.GetIterator,
+                PythonOpCode.ForIter,
+                PythonOpCode.StoreName,
+                PythonOpCode.PopTop,
+                PythonOpCode.Jump,
+                PythonOpCode.Jump,
+                PythonOpCode.LoadName,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.Call,
+                PythonOpCode.PopTop,
+                PythonOpCode.ReturnNone,
+            ],
+            result.Code.Instructions.Select(instruction => instruction.OpCode)
+        );
+        var breakJump = result.Code.Instructions[6];
+        Assert.Equal(12, breakJump.Operand);
+        var loopJump = result.Code.Instructions[7];
+        Assert.Equal(3, loopJump.Operand);
+        Assert.Equal(8, result.Code.Instructions[3].Operand);
+    }
+
+    [Fact]
+    public void Compile_UnwindsProtectedBlocksBeforeLoopControlJumps()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "while True:\n"
+                    + "    try:\n"
+                    + "        break\n"
+                    + "    finally:\n"
+                    + "        print('cleanup')\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var instructions = result.Code.Instructions;
+        var breakIndex = instructions
+            .Select((instruction, index) => (instruction, index))
+            .First(entry =>
+                entry.instruction.OpCode == PythonOpCode.PopExceptionBlock
+                && instructions[entry.index + 1].OpCode == PythonOpCode.LoadName
+            )
+            .index;
+        Assert.Equal(
+            [
+                PythonOpCode.PopExceptionBlock,
+                PythonOpCode.LoadName,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.Call,
+                PythonOpCode.PopTop,
+                PythonOpCode.Jump,
+            ],
+            instructions.Skip(breakIndex).Take(6).Select(instruction => instruction.OpCode)
+        );
+    }
+
+    [Theory]
+    [InlineData("break", "DPY3104")]
+    [InlineData("continue", "DPY3105")]
+    [InlineData("def act():\n    break\n", "DPY3104")]
+    [InlineData("for value in [1]:\n    def act():\n        continue\n", "DPY3105")]
+    [InlineData("while True:\n    try:\n        pass\n    finally:\n        break\n", "DPY3106")]
+    [InlineData(
+        "for value in [1]:\n    try:\n        pass\n    finally:\n        continue\n",
+        "DPY3106"
+    )]
+    public void Compile_ReportsLoopControlDiagnostics(string code, string expectedCode)
+    {
+        var parseResult = PythonParser.Parse(new SourceText(code));
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == expectedCode);
+    }
+
+    [Fact]
+    public void Compile_AllowsLoopControlForLoopsInsideAFinallyClause()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "try:\n"
+                    + "    pass\n"
+                    + "finally:\n"
+                    + "    for value in [1, 2]:\n"
+                    + "        if value == 2:\n"
+                    + "            break\n"
+                    + "        continue\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+    }
 }

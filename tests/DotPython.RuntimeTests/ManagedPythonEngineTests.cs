@@ -1544,6 +1544,123 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_BreaksAndContinuesLoopsAndSkipsTheLoopElse()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "for value in [1, 2, 3, 4]:\n"
+                + "    if value == 3:\n"
+                + "        break\n"
+                + "    print('for', value)\n"
+                + "else:\n"
+                + "    print('for-else')\n"
+                + "count = 0\n"
+                + "while count < 5:\n"
+                + "    count = count + 1\n"
+                + "    if count == 2:\n"
+                + "        continue\n"
+                + "    if count == 4:\n"
+                + "        break\n"
+                + "    print('while', count)\n"
+                + "else:\n"
+                + "    print('while-else')\n"
+                + "for value in [1, 2]:\n"
+                + "    print('kept', value)\n"
+                + "else:\n"
+                + "    print('kept-else')\n",
+            "loops.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"for 1{Environment.NewLine}for 2{Environment.NewLine}"
+                + $"while 1{Environment.NewLine}while 3{Environment.NewLine}"
+                + $"kept 1{Environment.NewLine}kept 2{Environment.NewLine}"
+                + $"kept-else{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RunsFinallyBlocksWhenLoopControlLeavesATryStatement()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "for value in [1, 2, 3]:\n"
+                + "    try:\n"
+                + "        try:\n"
+                + "            if value == 2:\n"
+                + "                break\n"
+                + "            print('body', value)\n"
+                + "        finally:\n"
+                + "            print('inner', value)\n"
+                + "    finally:\n"
+                + "        print('outer', value)\n"
+                + "count = 0\n"
+                + "while count < 3:\n"
+                + "    count = count + 1\n"
+                + "    try:\n"
+                + "        if count == 2:\n"
+                + "            continue\n"
+                + "        print('kept', count)\n"
+                + "    finally:\n"
+                + "        print('cleanup', count)\n"
+                + "print('done', count)\n",
+            "loop-finally.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"body 1{Environment.NewLine}inner 1{Environment.NewLine}outer 1{Environment.NewLine}"
+                + $"inner 2{Environment.NewLine}outer 2{Environment.NewLine}"
+                + $"kept 1{Environment.NewLine}cleanup 1{Environment.NewLine}"
+                + $"cleanup 2{Environment.NewLine}"
+                + $"kept 3{Environment.NewLine}cleanup 3{Environment.NewLine}"
+                + $"done 3{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_BreaksOutOfAnExceptHandlerAndClearsTheActiveException()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "for value in [1, 2, 3]:\n"
+                + "    try:\n"
+                + "        raise ValueError('boom')\n"
+                + "    except ValueError as error:\n"
+                + "        print('caught', value)\n"
+                + "        if value == 2:\n"
+                + "            break\n"
+                + "    finally:\n"
+                + "        print('cleanup', value)\n"
+                + "try:\n"
+                + "    raise\n"
+                + "except RuntimeError as error:\n"
+                + "    print('no-active', error)\n",
+            "handler-break.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"caught 1{Environment.NewLine}cleanup 1{Environment.NewLine}"
+                + $"caught 2{Environment.NewLine}cleanup 2{Environment.NewLine}"
+                + $"no-active No active exception to reraise.{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(
