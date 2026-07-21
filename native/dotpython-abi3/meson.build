@@ -5,7 +5,8 @@ project(
   meson_version: '>=1.9.0',
   default_options: [
     'c_std=c11',
-    'warning_level=3',
+    # CPython slots and POSIX dlsym require function/object pointer interop that is not ISO C.
+    'warning_level=2',
     'werror=true',
     'b_lundef=true',
   ],
