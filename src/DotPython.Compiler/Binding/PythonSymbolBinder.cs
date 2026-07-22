@@ -382,6 +382,13 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonAugmentedAssignmentStatement augmented:
+                    if (augmented.Target is PythonNameExpression augmentedTarget)
+                    {
+                        AddLocal(augmentedTarget.Name, localNames, localNameSet, excludedNames);
+                    }
+
+                    break;
                 case PythonFunctionDefinitionStatement function:
                     AddLocal(function.Name.Name, localNames, localNameSet, excludedNames);
                     break;
@@ -485,6 +492,10 @@ public static class PythonSymbolBinder
                         CollectReferences(subscription.Index, references);
                     }
 
+                    break;
+                case PythonAugmentedAssignmentStatement augmented:
+                    CollectReferences(augmented.Target, references);
+                    CollectReferences(augmented.Value, references);
                     break;
                 case PythonExpressionStatement expression:
                     CollectReferences(expression.Expression, references);
@@ -629,6 +640,23 @@ public static class PythonSymbolBinder
             case PythonSubscriptionExpression subscription:
                 CollectReferences(subscription.Target, references);
                 CollectReferences(subscription.Index, references);
+                break;
+            case PythonSliceExpression slice:
+                if (slice.Start is not null)
+                {
+                    CollectReferences(slice.Start, references);
+                }
+
+                if (slice.Stop is not null)
+                {
+                    CollectReferences(slice.Stop, references);
+                }
+
+                if (slice.Step is not null)
+                {
+                    CollectReferences(slice.Step, references);
+                }
+
                 break;
             case PythonAttributeExpression attribute:
                 CollectReferences(attribute.Target, references);

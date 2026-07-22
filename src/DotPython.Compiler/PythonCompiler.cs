@@ -112,6 +112,9 @@ public static class PythonCompiler
                     CompileExpression(assignment.Value);
                     CompileAssignmentTarget(assignment.Target);
                     break;
+                case PythonAugmentedAssignmentStatement augmented:
+                    CompileAugmentedAssignment(augmented);
+                    break;
                 case PythonExpressionStatement expressionStatement:
                     CompileExpression(expressionStatement.Expression);
                     Emit(PythonOpCode.PopTop, 0, expressionStatement.Span);
@@ -266,6 +269,12 @@ public static class PythonCompiler
                     CompileExpression(subscription.Index);
                     Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
                     break;
+                case PythonSliceExpression slice:
+                    CompileOptionalSliceBound(slice.Start, slice.Span);
+                    CompileOptionalSliceBound(slice.Stop, slice.Span);
+                    CompileOptionalSliceBound(slice.Step, slice.Span);
+                    Emit(PythonOpCode.BuildSlice, 0, slice.Span);
+                    break;
                 case PythonAttributeExpression attribute:
                     CompileExpression(attribute.Target);
                     Emit(
@@ -295,6 +304,58 @@ public static class PythonCompiler
             {
                 CompileExpression(element);
             }
+        }
+
+        private void CompileOptionalSliceBound(PythonExpression? bound, TextSpan span)
+        {
+            if (bound is null)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                    span
+                );
+                return;
+            }
+
+            CompileExpression(bound);
+        }
+
+        private void CompileAugmentedAssignment(PythonAugmentedAssignmentStatement statement)
+        {
+            switch (statement.Target)
+            {
+                case PythonNameExpression name:
+                    EmitLoadName(name);
+                    CompileExpression(statement.Value);
+                    EmitAugmentedOperator(statement.Operator, statement.Span);
+                    EmitStoreName(name);
+                    break;
+                case PythonSubscriptionExpression subscription:
+                    CompileExpression(subscription.Target);
+                    CompileExpression(subscription.Index);
+                    Emit(PythonOpCode.CopyTopTwo, 0, statement.Span);
+                    Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
+                    CompileExpression(statement.Value);
+                    EmitAugmentedOperator(statement.Operator, statement.Span);
+                    Emit(PythonOpCode.RotateThree, 0, statement.Span);
+                    Emit(PythonOpCode.StoreSubscript, 0, statement.Span);
+                    break;
+                default:
+                    Report("DPY3003", "This expression cannot be assigned to.", statement.Span);
+                    break;
+            }
+        }
+
+        private void EmitAugmentedOperator(PythonBinaryOperator @operator, TextSpan span)
+        {
+            var opCode = @operator switch
+            {
+                PythonBinaryOperator.Add => PythonOpCode.InPlaceAdd,
+                PythonBinaryOperator.Multiply => PythonOpCode.InPlaceMultiply,
+                _ => GetBinaryOpCode(@operator),
+            };
+            Emit(opCode, 0, span);
         }
 
         private void CompileAssignmentTarget(PythonExpression target)
@@ -965,6 +1026,10 @@ public static class PythonCompiler
                 PythonComparisonOperator.GreaterThan => PythonOpCode.CompareGreaterThan,
                 PythonComparisonOperator.GreaterThanOrEqual =>
                     PythonOpCode.CompareGreaterThanOrEqual,
+                PythonComparisonOperator.In => PythonOpCode.CompareIn,
+                PythonComparisonOperator.NotIn => PythonOpCode.CompareNotIn,
+                PythonComparisonOperator.Is => PythonOpCode.CompareIs,
+                PythonComparisonOperator.IsNot => PythonOpCode.CompareIsNot,
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
             };
     }

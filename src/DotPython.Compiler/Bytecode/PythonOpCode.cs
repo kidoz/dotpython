@@ -61,4 +61,12 @@ public enum PythonOpCode
     Raise = 56,
     MakeFunctionWithDefaults = 57,
     CallKeyword = 58,
+    CompareIn = 59,
+    CompareNotIn = 60,
+    CompareIs = 61,
+    CompareIsNot = 62,
+    BuildSlice = 63,
+    CopyTopTwo = 64,
+    InPlaceAdd = 65,
+    InPlaceMultiply = 66,
 }

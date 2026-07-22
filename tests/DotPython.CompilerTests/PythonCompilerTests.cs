@@ -736,6 +736,64 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsMembershipIdentitySliceAndInPlaceBytecode()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "found = 2 in values\nsame = value is None\nother = value is not None\n"
+                    + "missing = 3 not in values\npart = values[1:5:2]\ntotal += 1\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        foreach (
+            var expected in (PythonOpCode[])
+                [
+                    PythonOpCode.CompareIn,
+                    PythonOpCode.CompareIs,
+                    PythonOpCode.CompareIsNot,
+                    PythonOpCode.CompareNotIn,
+                    PythonOpCode.BuildSlice,
+                    PythonOpCode.InPlaceAdd,
+                ]
+        )
+        {
+            Assert.Contains(
+                result.Code.Instructions,
+                instruction => instruction.OpCode == expected
+            );
+        }
+    }
+
+    [Fact]
+    public void Compile_EmitsSingleEvaluationAugmentedSubscriptBytecode()
+    {
+        var parseResult = PythonParser.Parse(new SourceText("counts['key'] += 1\n"));
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var opCodes = result.Code.Instructions.Select(instruction => instruction.OpCode).ToList();
+        var copyIndex = opCodes.IndexOf(PythonOpCode.CopyTopTwo);
+        Assert.True(copyIndex >= 0);
+        Assert.Equal(
+            [
+                PythonOpCode.CopyTopTwo,
+                PythonOpCode.LoadSubscript,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.InPlaceAdd,
+                PythonOpCode.RotateThree,
+                PythonOpCode.StoreSubscript,
+            ],
+            opCodes.Skip(copyIndex).Take(6)
+        );
+    }
+
+    [Fact]
     public void Compile_AllowsLoopControlForLoopsInsideAFinallyClause()
     {
         var parseResult = PythonParser.Parse(

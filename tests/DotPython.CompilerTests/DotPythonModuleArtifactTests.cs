@@ -60,7 +60,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":10,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":11,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -147,6 +147,41 @@ public sealed class DotPythonModuleArtifactTests
             restored.Code.Instructions,
             instruction => instruction is { OpCode: PythonOpCode.CallKeyword, Operand: 2 }
         );
+        Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
+    public void Deserialize_RoundTripsCollectionProtocolInstructions()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "collections",
+                Compile(
+                    "values = [1, 2, 3]\nvalues.append(4)\npart = values[1:3]\n"
+                        + "found = 2 in values\nsame = part is values\nvalues[0] += 1\n"
+                )
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+
+        foreach (
+            var expected in (PythonOpCode[])
+                [
+                    PythonOpCode.BuildSlice,
+                    PythonOpCode.CompareIn,
+                    PythonOpCode.CompareIs,
+                    PythonOpCode.CopyTopTwo,
+                    PythonOpCode.InPlaceAdd,
+                ]
+        )
+        {
+            Assert.Contains(
+                restored.Code.Instructions,
+                instruction => instruction.OpCode == expected
+            );
+        }
+
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
     }
 
@@ -316,10 +351,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":10,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":11,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":10,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":11,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
