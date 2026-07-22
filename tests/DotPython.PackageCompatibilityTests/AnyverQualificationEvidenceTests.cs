@@ -18,7 +18,7 @@ public sealed class AnyverQualificationEvidenceTests
         var evidenceRoot = evidence.RootElement;
 
         Assert.Equal(2, compatibilityRoot.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(2, evidenceRoot.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(3, evidenceRoot.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("partial", compatibilityRoot.GetProperty("qualificationStatus").GetString());
         Assert.False(compatibilityRoot.GetProperty("supportsCpythonAbi").GetBoolean());
         AssertIdentityMatches(compatibilityRoot, evidenceRoot, "package");
@@ -49,21 +49,19 @@ public sealed class AnyverQualificationEvidenceTests
         Assert.Equal("worker-process", execution.GetProperty("isolation").GetString());
         Assert.False(execution.GetProperty("sourceModified").GetBoolean());
         Assert.Equal(1, execution.GetProperty("suiteAdmissionAttempts").GetInt32());
-        Assert.Equal(0, execution.GetProperty("attemptedCases").GetInt32());
+
+        var shim = execution.GetProperty("pytestShim");
+        Assert.Equal("pytest.py", shim.GetProperty("file").GetString());
+        var shimSha = Assert.IsType<string>(shim.GetProperty("sha256").GetString());
+        Assert.Equal(64, shimSha.Length);
+
         var blockerIds = execution
             .GetProperty("blockers")
             .EnumerateArray()
             .Select(blocker => blocker.GetProperty("id").GetString())
             .ToHashSet(StringComparer.Ordinal);
-        Assert.Contains("managed-suite-admission", blockerIds);
-        Assert.DoesNotContain("managed-parser-assert-statement", blockerIds);
-        Assert.DoesNotContain("managed-parser-with-statement", blockerIds);
-        Assert.Contains(
-            blockerIds,
-            blocker =>
-                blocker is not null
-                && blocker.StartsWith("managed-dpy4020", StringComparison.Ordinal)
-        );
+        Assert.DoesNotContain("managed-suite-admission", blockerIds);
+        Assert.DoesNotContain("pytest-parametrize-not-attempted", blockerIds);
         Assert.All(
             execution.GetProperty("blockers").EnumerateArray(),
             blocker => Assert.True(blocker.GetProperty("occurrences").GetInt32() >= 1)
@@ -103,10 +101,11 @@ public sealed class AnyverQualificationEvidenceTests
         var summary = evidenceRoot.GetProperty("summary");
         AssertCounts(summary, cases.Length, passed, failed, skipped);
         AssertCounts(suite, cases.Length, passed, failed, skipped, collectedName: "collectedCases");
+        Assert.Equal(passed + failed, execution.GetProperty("attemptedCases").GetInt32());
         Assert.Equal(325, cases.Length);
-        Assert.Equal(0, passed);
-        Assert.Equal(0, failed);
-        Assert.Equal(325, skipped);
+        Assert.Equal(238, passed);
+        Assert.Equal(87, failed);
+        Assert.Equal(0, skipped);
     }
 
     private static void AssertIdentityMatches(

@@ -17,16 +17,16 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "078c3a2add97ab9e5d71773e791eb526386307d6d38d0134515d8d1ae16815d1",
+    "evidenceSha256": "d882edb6ad91493c01e53ce80707381217169e7739fe128422e848d6c69bb6cc",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
-    "passed": 0,
-    "failed": 0,
-    "skipped": 325,
-    "reason": "The unchanged suite now tokenizes, parses, and compiles completely ('assert', 'with', lambdas, set literals, decorators, and f-strings are all cleared). The sole remaining admission blocker is the module-level 'import pytest' (DPY4020): no managed pytest module is registered. All 325 upstream node IDs remain recorded as skipped; no skipped case is counted as passed."
+    "passed": 238,
+    "failed": 87,
+    "skipped": 0,
+    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 238 of 325 cases pass; 87 fail, led by keyword arguments on qualified callables (DPY4009, 59 cases). No skipped or failed case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",
