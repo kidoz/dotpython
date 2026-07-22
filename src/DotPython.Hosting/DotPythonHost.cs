@@ -41,9 +41,17 @@ public sealed class DotPythonHost : IAsyncDisposable
 
     /// <summary>Creates a typed client for a per-runtime module.</summary>
     public TService GetModule<TService>(PythonModuleRegistration<TService> registration)
+        where TService : class => GetModule(registration, static _ => { });
+
+    /// <summary>Creates a configured typed client for a per-runtime module.</summary>
+    public TService GetModule<TService>(
+        PythonModuleRegistration<TService> registration,
+        Action<DotPythonModuleHostingOptions> configure
+    )
         where TService : class
     {
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(configure);
         if (registration.StatePolicy != PythonModuleStatePolicy.PerRuntime)
         {
             throw new InvalidOperationException(
@@ -54,6 +62,7 @@ public sealed class DotPythonHost : IAsyncDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            ConfigureProvider(_provider, registration.Definition, configure);
             return registration.CreateClient(_provider);
         }
     }
@@ -63,9 +72,18 @@ public sealed class DotPythonHost : IAsyncDisposable
         PythonModuleRegistration<TService> registration,
         CancellationToken cancellationToken = default
     )
+        where TService : class => WarmUpAsync(registration, static _ => { }, cancellationToken);
+
+    /// <summary>Loads and validates a configured per-runtime module.</summary>
+    public ValueTask WarmUpAsync<TService>(
+        PythonModuleRegistration<TService> registration,
+        Action<DotPythonModuleHostingOptions> configure,
+        CancellationToken cancellationToken = default
+    )
         where TService : class
     {
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(configure);
         if (registration.StatePolicy != PythonModuleStatePolicy.PerRuntime)
         {
             throw new InvalidOperationException(
@@ -76,6 +94,7 @@ public sealed class DotPythonHost : IAsyncDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            ConfigureProvider(_provider, registration.Definition, configure);
             return _provider.WarmUpAsync(registration.Definition, cancellationToken);
         }
     }
@@ -138,5 +157,17 @@ public sealed class DotPythonHost : IAsyncDisposable
         {
             _sessions.Remove(session);
         }
+    }
+
+    internal static void ConfigureProvider(
+        DotPythonModuleProvider provider,
+        PythonModuleDefinition definition,
+        Action<DotPythonModuleHostingOptions> configure
+    )
+    {
+        var options = new DotPythonModuleHostingOptions();
+        configure(options);
+        options.Validate();
+        provider.ConfigureInitialization(definition, options.MaximumInitializationAttempts);
     }
 }

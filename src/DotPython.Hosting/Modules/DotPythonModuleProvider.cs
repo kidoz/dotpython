@@ -7,6 +7,9 @@ internal class DotPythonModuleProvider : IDotPythonModuleProvider
     private int _activeOperationCount;
     private readonly object _gate = new();
     private readonly List<ModuleEntry> _loadOrder = [];
+    private readonly Dictionary<string, int> _maximumInitializationAttempts = new(
+        StringComparer.Ordinal
+    );
     private readonly Dictionary<string, ModuleEntry> _modules = new(StringComparer.Ordinal);
     private readonly IDotPythonModuleRuntime _runtime;
     private readonly CancellationTokenSource _shutdown = new();
@@ -18,6 +21,43 @@ internal class DotPythonModuleProvider : IDotPythonModuleProvider
     {
         ArgumentNullException.ThrowIfNull(runtime);
         _runtime = runtime;
+    }
+
+    internal void ConfigureInitialization(
+        PythonModuleDefinition definition,
+        int maximumInitializationAttempts
+    )
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        if (
+            maximumInitializationAttempts
+            is < 1
+                or > DotPythonModuleHostingOptions.MaximumSupportedInitializationAttempts
+        )
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumInitializationAttempts),
+                maximumInitializationAttempts,
+                $"The maximum initialization attempt count must be between 1 and {DotPythonModuleHostingOptions.MaximumSupportedInitializationAttempts}."
+            );
+        }
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var moduleName = definition.Contract.ModuleName;
+            if (
+                _maximumInitializationAttempts.TryGetValue(moduleName, out var configuredAttempts)
+                && configuredAttempts != maximumInitializationAttempts
+            )
+            {
+                throw new InvalidOperationException(
+                    $"Module '{moduleName}' is already configured for {configuredAttempts} initialization attempt(s)."
+                );
+            }
+
+            _maximumInitializationAttempts[moduleName] = maximumInitializationAttempts;
+        }
     }
 
     public async ValueTask WarmUpAsync(
@@ -130,7 +170,12 @@ internal class DotPythonModuleProvider : IDotPythonModuleProvider
             }
             else
             {
-                loadTask = LoadModuleAsync(definition);
+                var maximumAttempts = _maximumInitializationAttempts.GetValueOrDefault(
+                    moduleName,
+                    1
+                );
+                _maximumInitializationAttempts[moduleName] = maximumAttempts;
+                loadTask = LoadModuleAsync(definition, maximumAttempts);
                 var entry = new ModuleEntry(definition, loadTask);
                 _modules.Add(moduleName, entry);
                 _loadOrder.Add(entry);
@@ -153,8 +198,48 @@ internal class DotPythonModuleProvider : IDotPythonModuleProvider
         }
     }
 
-    private async Task<IDotPythonModule> LoadModuleAsync(PythonModuleDefinition definition) =>
-        await _runtime.LoadModuleAsync(definition, _shutdown.Token).ConfigureAwait(false);
+    private async Task<IDotPythonModule> LoadModuleAsync(
+        PythonModuleDefinition definition,
+        int maximumAttempts
+    )
+    {
+        var moduleName = definition.Contract.ModuleName;
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            DotPythonHostingTelemetry.RecordInitializationAttempt(definition, attempt);
+            try
+            {
+                return await _runtime
+                    .LoadModuleAsync(definition, _shutdown.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (DotPythonException exception)
+            {
+                DotPythonHostingTelemetry.RecordInitializationFailure(
+                    definition,
+                    attempt,
+                    exception
+                );
+                if (attempt == maximumAttempts || _shutdown.IsCancellationRequested)
+                {
+                    throw;
+                }
+            }
+            catch (Exception exception)
+            {
+                DotPythonHostingTelemetry.RecordInitializationFailure(
+                    definition,
+                    attempt,
+                    exception
+                );
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Module '{moduleName}' initialization ended without a result."
+        );
+    }
 
     private async Task DisposeModulesAsync(
         IReadOnlyList<ModuleEntry> entries,

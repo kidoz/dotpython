@@ -1,8 +1,11 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
 using DotPython.Contracts;
 using DotPython.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace DotPython.HostingTests;
@@ -98,6 +101,56 @@ public sealed class DotPythonModuleProviderTests
 
         Assert.Same(failure, firstFailure);
         Assert.Same(failure, secondFailure);
+        Assert.Equal(1, runtime.LoadCount);
+    }
+
+    [Fact]
+    public async Task ConfiguredInitialization_RetriesDotPythonFailuresInsideSingleFlight()
+    {
+        var definition = CreateDefinition();
+        var module = new RecordingModule(definition.Contract, 42);
+        var runtime = new SequencedRuntime(
+            new DotPythonException(
+                "DPY6098",
+                "Transient module load failure.",
+                DotPythonFailurePhase.ModuleLoad,
+                definition.Contract.ModuleName
+            ),
+            new DotPythonException(
+                "DPY6098",
+                "Transient module load failure.",
+                DotPythonFailurePhase.ModuleLoad,
+                definition.Contract.ModuleName
+            ),
+            module
+        );
+        await using var provider = new DotPythonModuleProvider(runtime);
+        provider.ConfigureInitialization(definition, maximumInitializationAttempts: 3);
+
+        var result = await provider.InvokeAsync<int>(
+            definition,
+            new PythonFunctionInvocation("answer"),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(42, result);
+        Assert.Equal(3, runtime.LoadCount);
+    }
+
+    [Fact]
+    public async Task ConfiguredInitialization_DoesNotRetryCancellation()
+    {
+        var definition = CreateDefinition();
+        var failure = new TaskCanceledException("Module loading was canceled.");
+        var runtime = new SequencedRuntime(failure, new RecordingModule(definition.Contract, 42));
+        await using var provider = new DotPythonModuleProvider(runtime);
+        provider.ConfigureInitialization(definition, maximumInitializationAttempts: 3);
+
+        var exception = await Assert.ThrowsAsync<TaskCanceledException>(() =>
+            provider.WarmUpAsync(definition, TestContext.Current.CancellationToken).AsTask()
+        );
+
+        Assert.Same(failure, exception);
         Assert.Equal(1, runtime.LoadCount);
     }
 
@@ -249,8 +302,11 @@ public sealed class DotPythonModuleProviderTests
         var module = new RecordingModule(definition.Contract, 42);
         var runtime = new ControlledRuntime(module);
         var registration = CreateRegistration(definition);
+        var loggerProvider = new RecordingLoggerProvider();
+        using var measurements = new HostingMeasurementCollector();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton<IDotPythonModuleRuntime>(runtime);
+        builder.Logging.AddProvider(loggerProvider);
         builder
             .Services.AddDotPythonManaged()
             .AddDotPythonModule(registration, options => options.WarmUpOnHostStart = true);
@@ -263,6 +319,9 @@ public sealed class DotPythonModuleProviderTests
 
             Assert.Equal(1, runtime.LoadCount);
             Assert.Equal(0, module.InvocationCount);
+            Assert.Contains(new EventId(6000, "WarmupStarting"), loggerProvider.EventIds);
+            Assert.Contains(new EventId(6001, "WarmupSucceeded"), loggerProvider.EventIds);
+            Assert.Equal(1, measurements.GetTotal("dotpython.module.warmup.successes"));
             await host.StopAsync(TestContext.Current.CancellationToken);
         }
         finally
@@ -286,12 +345,17 @@ public sealed class DotPythonModuleProviderTests
             )
         );
         var builder = Host.CreateApplicationBuilder();
+        using var measurements = new HostingMeasurementCollector();
         builder.Services.AddSingleton<IDotPythonModuleRuntime>(runtime);
         builder
             .Services.AddDotPythonManaged()
             .AddDotPythonModule(
                 CreateRegistration(definition),
-                options => options.WarmUpOnHostStart = true
+                options =>
+                {
+                    options.WarmUpOnHostStart = true;
+                    options.MaximumInitializationAttempts = 3;
+                }
             );
         var host = builder.Build();
 
@@ -301,7 +365,10 @@ public sealed class DotPythonModuleProviderTests
                 host.StartAsync(TestContext.Current.CancellationToken)
             );
             Assert.Equal("DPY6001", exception.Code);
-            Assert.Equal(1, runtime.LoadCount);
+            Assert.Equal(3, runtime.LoadCount);
+            Assert.Equal(3, measurements.GetTotal("dotpython.module.initialization.attempts"));
+            Assert.Equal(3, measurements.GetTotal("dotpython.module.initialization.failures"));
+            Assert.Equal(1, measurements.GetTotal("dotpython.module.warmup.failures"));
         }
         finally
         {
@@ -323,6 +390,23 @@ public sealed class DotPythonModuleProviderTests
         );
 
         Assert.Contains("Per-session", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(11)]
+    public void ModuleRegistration_RejectsInvalidInitializationAttemptCount(int value)
+    {
+        var services = new ServiceCollection();
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            services.AddDotPythonModule(
+                CreateRegistration(CreateDefinition()),
+                options => options.MaximumInitializationAttempts = value
+            )
+        );
+
+        Assert.Equal("MaximumInitializationAttempts", exception.ParamName);
     }
 
     [Fact]
@@ -538,6 +622,89 @@ public sealed class DotPythonModuleProviderTests
         {
             DisposeCount++;
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class SequencedRuntime(params object[] outcomes) : IDotPythonModuleRuntime
+    {
+        private readonly Queue<object> _outcomes = new(outcomes);
+
+        internal int LoadCount { get; private set; }
+
+        public ValueTask<IDotPythonModule> LoadModuleAsync(
+            PythonModuleDefinition definition,
+            CancellationToken cancellationToken = default
+        )
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LoadCount++;
+            var outcome = _outcomes.Dequeue();
+            return outcome is Exception exception
+                ? ValueTask.FromException<IDotPythonModule>(exception)
+                : ValueTask.FromResult((IDotPythonModule)outcome);
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class HostingMeasurementCollector : IDisposable
+    {
+        private readonly ConcurrentDictionary<string, long> _totals = new(StringComparer.Ordinal);
+        private readonly MeterListener _listener = new();
+
+        internal HostingMeasurementCollector()
+        {
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (
+                    string.Equals(
+                        instrument.Meter.Name,
+                        DotPythonHostingTelemetry.MeterName,
+                        StringComparison.Ordinal
+                    )
+                )
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>(
+                (instrument, measurement, _, _) =>
+                    _totals.AddOrUpdate(
+                        instrument.Name,
+                        measurement,
+                        (_, total) => total + measurement
+                    )
+            );
+            _listener.Start();
+        }
+
+        internal long GetTotal(string instrumentName) => _totals.GetValueOrDefault(instrumentName);
+
+        public void Dispose() => _listener.Dispose();
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        internal ConcurrentBag<EventId> EventIds { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(EventIds);
+
+        public void Dispose() { }
+
+        private sealed class RecordingLogger(ConcurrentBag<EventId> eventIds) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter
+            ) => eventIds.Add(eventId);
         }
     }
 

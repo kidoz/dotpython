@@ -48,15 +48,27 @@ public static class DotPythonServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
         var options = new DotPythonModuleHostingOptions();
         configure(options);
+        options.Validate();
         services.TryAddSingleton(registration);
+        services.TryAddSingleton(
+            new DotPythonModuleHostingRegistration<TService>(
+                registration,
+                options.MaximumInitializationAttempts
+            )
+        );
         switch (registration.StatePolicy)
         {
             case PythonModuleStatePolicy.PerRuntime:
                 services.TryAddSingleton(provider =>
-                    registration.CreateClient(
-                        provider.GetRequiredService<PerRuntimePythonModuleProvider>()
-                    )
-                );
+                {
+                    var moduleProvider =
+                        provider.GetRequiredService<PerRuntimePythonModuleProvider>();
+                    moduleProvider.ConfigureInitialization(
+                        registration.Definition,
+                        options.MaximumInitializationAttempts
+                    );
+                    return registration.CreateClient(moduleProvider);
+                });
                 if (options.WarmUpOnHostStart)
                 {
                     services.TryAddEnumerable(
@@ -77,10 +89,15 @@ public static class DotPythonServiceCollectionExtensions
                 }
 
                 services.TryAddScoped(provider =>
-                    registration.CreateClient(
-                        provider.GetRequiredService<PerSessionPythonModuleProvider>()
-                    )
-                );
+                {
+                    var moduleProvider =
+                        provider.GetRequiredService<PerSessionPythonModuleProvider>();
+                    moduleProvider.ConfigureInitialization(
+                        registration.Definition,
+                        options.MaximumInitializationAttempts
+                    );
+                    return registration.CreateClient(moduleProvider);
+                });
                 break;
             default:
                 throw new NotSupportedException(

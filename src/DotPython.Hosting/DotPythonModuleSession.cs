@@ -24,9 +24,17 @@ public sealed class DotPythonModuleSession : IAsyncDisposable
 
     /// <summary>Creates a typed client whose module state belongs to this session.</summary>
     public TService GetModule<TService>(PythonModuleRegistration<TService> registration)
+        where TService : class => GetModule(registration, static _ => { });
+
+    /// <summary>Creates a configured typed client whose module state belongs to this session.</summary>
+    public TService GetModule<TService>(
+        PythonModuleRegistration<TService> registration,
+        Action<DotPythonModuleHostingOptions> configure
+    )
         where TService : class
     {
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(configure);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
@@ -37,6 +45,7 @@ public sealed class DotPythonModuleSession : IAsyncDisposable
                 );
             }
 
+            DotPythonHost.ConfigureProvider(_provider, registration.Definition, configure);
             return registration.CreateClient(_provider);
         }
     }
@@ -46,9 +55,18 @@ public sealed class DotPythonModuleSession : IAsyncDisposable
         PythonModuleRegistration<TService> registration,
         CancellationToken cancellationToken = default
     )
+        where TService : class => WarmUpAsync(registration, static _ => { }, cancellationToken);
+
+    /// <summary>Loads and validates a configured per-session module.</summary>
+    public ValueTask WarmUpAsync<TService>(
+        PythonModuleRegistration<TService> registration,
+        Action<DotPythonModuleHostingOptions> configure,
+        CancellationToken cancellationToken = default
+    )
         where TService : class
     {
         ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(configure);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposeTask is not null, this);
@@ -59,6 +77,7 @@ public sealed class DotPythonModuleSession : IAsyncDisposable
                 );
             }
 
+            DotPythonHost.ConfigureProvider(_provider, registration.Definition, configure);
             return _provider.WarmUpAsync(registration.Definition, cancellationToken);
         }
     }
