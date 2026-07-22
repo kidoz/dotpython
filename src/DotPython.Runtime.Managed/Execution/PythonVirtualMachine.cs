@@ -554,9 +554,9 @@ internal sealed class PythonVirtualMachine
             );
     }
 
-    private bool HandleExceptionalControlFlow(Exception exception)
+    private bool HandleExceptionalControlFlow(Exception exception, int stopFrameCount = 0)
     {
-        while (_frameCount != 0)
+        while (_frameCount > stopFrameCount)
         {
             ref var frame = ref CurrentFrame;
             if (exception is PythonRaisedException raised)
@@ -1647,6 +1647,31 @@ internal sealed class PythonVirtualMachine
         {
             function = userFunction;
         }
+        else if (target is PythonExternalObjectValue external)
+        {
+            _evaluationStack.Push(
+                external.Protocol.CallWithKeywords(
+                    positional,
+                    RequireKeywordNames(names, instruction.Span),
+                    keywordValues,
+                    instruction.Span
+                )
+            );
+            return;
+        }
+        else if (target is PythonBuiltinFunctionValue builtinFunction)
+        {
+            _evaluationStack.Push(
+                InvokeBuiltinWithKeywords(
+                    builtinFunction,
+                    positional,
+                    RequireKeywordNames(names, instruction.Span),
+                    keywordValues,
+                    instruction.Span
+                )
+            );
+            return;
+        }
         else
         {
             throw Fault(
@@ -1673,6 +1698,241 @@ internal sealed class PythonVirtualMachine
             instruction.Span
         );
         PushFunctionFrameWithArguments(function, arguments, instruction.Span);
+    }
+
+    private static string[] RequireKeywordNames(PythonTupleValue names, TextSpan span)
+    {
+        var keywordNames = new string[names.Elements.Length];
+        for (var index = 0; index < keywordNames.Length; index++)
+        {
+            if (names.Elements[index] is not PythonTextValue name)
+            {
+                throw Fault("DPY4007", "The keyword-argument name tuple is invalid.", span);
+            }
+
+            keywordNames[index] = name.Value;
+        }
+
+        return keywordNames;
+    }
+
+    private PythonValue InvokeBuiltinWithKeywords(
+        PythonBuiltinFunctionValue builtin,
+        PythonValue[] positional,
+        string[] keywordNames,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        switch (builtin.Name)
+        {
+            case "sorted":
+            {
+                PythonValue? key = null;
+                var reverse = false;
+                for (var index = 0; index < keywordNames.Length; index++)
+                {
+                    switch (keywordNames[index])
+                    {
+                        case "key":
+                            key = keywordValues[index];
+                            break;
+                        case "reverse":
+                            reverse = IsTruthy(keywordValues[index]);
+                            break;
+                        default:
+                            throw UnexpectedBuiltinKeyword(builtin, keywordNames[index], span);
+                    }
+                }
+
+                ValidateBuiltinArgumentCount("sorted", positional, span);
+                return SortedWithKeywords(positional[0], key, reverse, span);
+            }
+            case "print":
+            {
+                var separator = " ";
+                var end = "\n";
+                for (var index = 0; index < keywordNames.Length; index++)
+                {
+                    var value = keywordValues[index];
+                    switch (keywordNames[index])
+                    {
+                        case "sep":
+                            separator = RequirePrintText("sep", value, " ", span);
+                            break;
+                        case "end":
+                            end = RequirePrintText("end", value, "\n", span);
+                            break;
+                        default:
+                            throw UnexpectedBuiltinKeyword(builtin, keywordNames[index], span);
+                    }
+                }
+
+                _output.Write(
+                    string.Join(separator, positional.Select(value => value.ToDisplayString()))
+                );
+                _output.Write(end);
+                return PythonNoneValue.Instance;
+            }
+            default:
+                throw Fault(
+                    "DPY4009",
+                    "Keyword arguments are not supported for this callable in this runtime slice.",
+                    span
+                );
+        }
+    }
+
+    private static string RequirePrintText(
+        string name,
+        PythonValue value,
+        string fallback,
+        TextSpan span
+    ) =>
+        value switch
+        {
+            PythonNoneValue => fallback,
+            PythonTextValue text => text.Value,
+            _ => throw Fault(
+                "DPY4009",
+                $"{name} must be None or a string, not "
+                    + $"{ManagedObjectProtocols.GetTypeName(value)}.",
+                span,
+                "TypeError"
+            ),
+        };
+
+    private static PythonRuntimeException UnexpectedBuiltinKeyword(
+        PythonBuiltinFunctionValue builtin,
+        string keyword,
+        TextSpan span
+    ) =>
+        Fault(
+            "DPY4009",
+            $"'{keyword}' is an invalid keyword argument for {builtin.Name}().",
+            span,
+            "TypeError"
+        );
+
+    private PythonListValue SortedWithKeywords(
+        PythonValue iterable,
+        PythonValue? key,
+        bool reverse,
+        TextSpan span
+    )
+    {
+        var values = ManagedObjectProtocols.MaterializeValues(iterable, span);
+        var sortKeys = new PythonValue[values.Count];
+        if (key is null or PythonNoneValue)
+        {
+            for (var index = 0; index < sortKeys.Length; index++)
+            {
+                sortKeys[index] = values[index];
+            }
+        }
+        else
+        {
+            for (var index = 0; index < sortKeys.Length; index++)
+            {
+                sortKeys[index] = InvokeCallableNested(key, [values[index]], span);
+            }
+        }
+
+        try
+        {
+            var ordered = reverse
+                ? values
+                    .Select((value, index) => (value, index))
+                    .OrderByDescending(
+                        pair => sortKeys[pair.index],
+                        PythonOrderingComparer.Instance
+                    )
+                : values
+                    .Select((value, index) => (value, index))
+                    .OrderBy(pair => sortKeys[pair.index], PythonOrderingComparer.Instance);
+            return new PythonListValue([.. ordered.Select(pair => pair.value)]);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.InnerException is PythonRuntimeException fault)
+        {
+            throw fault;
+        }
+    }
+
+    private PythonValue InvokeCallableNested(
+        PythonValue callable,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        if (callable is PythonBoundUserMethodValue boundMethod)
+        {
+            return InvokeCallableNested(
+                boundMethod.Function,
+                PrependArgument(boundMethod.Target, arguments),
+                span
+            );
+        }
+
+        if (callable is not PythonFunctionValue function)
+        {
+            return ManagedObjectProtocols.Call(callable, arguments, span);
+        }
+
+        var bound = BindKeywordArguments(function, arguments, new PythonTupleValue([]), [], span);
+        var baseFrameCount = _frameCount;
+        PushFunctionFrameWithArguments(function, bound, span);
+        while (_frameCount > baseFrameCount)
+        {
+            try
+            {
+                if (_deferredControlFlowCount == 0)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                }
+                else if (_deferredCleanupInstructions++ >= MaximumDeferredCleanupInstructions)
+                {
+                    throw Fault(
+                        "DPY4032",
+                        $"Deferred cleanup exceeded the {MaximumDeferredCleanupInstructions} instruction limit.",
+                        GetCurrentSpan(CurrentFrame)
+                    );
+                }
+
+                ref var frame = ref CurrentFrame;
+                if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
+                {
+                    ReturnFromFrame(PythonNoneValue.Instance);
+                    continue;
+                }
+
+                var instructionIndex = frame.InstructionPointer;
+                var instruction = frame.Code.Definition.Instructions[instructionIndex];
+                frame.InstructionPointer++;
+                if (_deferredControlFlowCount == 0 && _instructionsExecuted++ >= _instructionLimit)
+                {
+                    throw Fault(
+                        "DPY4001",
+                        "The managed instruction limit was exceeded.",
+                        instruction.Span
+                    );
+                }
+
+                ExecuteInstruction(ref frame, instruction, instructionIndex);
+            }
+            catch (Exception exception) when (IsManagedControlFlowException(exception))
+            {
+                var dispatchException = PrepareExceptionalControlFlow(exception);
+                if (!HandleExceptionalControlFlow(dispatchException, baseFrameCount))
+                {
+                    System
+                        .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(dispatchException)
+                        .Throw();
+                }
+            }
+        }
+
+        return Pop(span);
     }
 
     private static PythonValue[] BindKeywordArguments(

@@ -198,6 +198,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def register(cls):\n    print('registered', cls.__name__)\n    return cls\n@register\nclass Widget:\n    def size(self):\n        return 3\nprint(Widget().size())"
     )]
+    [InlineData(
+        "versions = ['2.10', '2.2', '10.1']\nprint(sorted(versions), sorted(versions, key=lambda v: len(v)))\nprint(sorted(versions, key=lambda v: v, reverse=True), sorted([3, 1, 2], reverse=True))\npairs = [(2, 'b'), (1, 'a'), (2, 'a')]\nprint(sorted(pairs, key=lambda p: p[0]))\nprint(sorted([1, 2, 3], key=lambda v: 0))"
+    )]
+    [InlineData(
+        "def bad(v):\n    raise ValueError('boom')\ntry:\n    sorted([1, 2], key=bad)\nexcept ValueError as error:\n    print('caught', error)\ntry:\n    sorted([1], bad_kw=1)\nexcept TypeError:\n    print('bad-kw')\ntry:\n    print('x', sep=1)\nexcept TypeError:\n    print('bad-sep')"
+    )]
+    [InlineData(
+        "print(1, 2, 3, sep='-', end='!\\n')\nprint('x', 'y', sep='', end='')\nprint('tail')\nprint('a', 'b', sep=None, end=None)\nprint(sep='-')\nprint('solo', end='|')\nprint()"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

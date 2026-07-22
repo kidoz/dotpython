@@ -38,6 +38,45 @@ internal sealed class QualifiedStableAbiObjectProtocol(
             span
         );
 
+    public PythonValue CallWithKeywords(
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    ) =>
+        Invoke(
+            () =>
+                Session.InvokeNative(() =>
+                {
+                    var temporary = new List<StableAbiObject>();
+                    try
+                    {
+                        var nativeArguments = arguments
+                            .Select(value => ToNative(value, temporary, span))
+                            .ToArray();
+                        var nativeKeywordValues = keywordValues
+                            .Select(value => ToNative(value, temporary, span))
+                            .ToArray();
+                        return ToManaged(
+                            Session,
+                            NativeObject.CallWithKeywords(
+                                nativeArguments,
+                                keywordNames,
+                                nativeKeywordValues
+                            )
+                        );
+                    }
+                    finally
+                    {
+                        for (var index = temporary.Count - 1; index >= 0; index--)
+                        {
+                            temporary[index].Dispose();
+                        }
+                    }
+                }),
+            span
+        );
+
     public PythonValue GetAttribute(string name, TextSpan span) =>
         Invoke(
             () => Session.InvokeNative(() => ToManaged(Session, NativeObject.GetAttribute(name))),

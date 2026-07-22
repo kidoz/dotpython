@@ -3247,6 +3247,93 @@ pub extern "C" fn dp_abi3_object_call(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_call_kw(
+    callable: *mut PyObject,
+    arguments: *const *mut PyObject,
+    argument_count: i64,
+    keyword_names: *const *const c_char,
+    keyword_values: *const *mut PyObject,
+    keyword_count: i64,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result)
+        || callable.is_null()
+        || !(0..=MAX_BRIDGE_ARGUMENTS).contains(&argument_count)
+        || (argument_count != 0 && arguments.is_null())
+        || !(0..=MAX_BRIDGE_ARGUMENTS).contains(&keyword_count)
+        || (keyword_count != 0 && (keyword_names.is_null() || keyword_values.is_null()))
+    {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "object call inputs are invalid");
+        }
+        return -1;
+    }
+    let args = PyTuple_New(argument_count as Py_ssize_t);
+    if args.is_null() {
+        return -1;
+    }
+    for index in 0..argument_count {
+        let argument = unsafe { *arguments.add(index as usize) };
+        if argument.is_null() || PyTuple_SetItem(args, index as Py_ssize_t, newref(argument)) != 0 {
+            release(args);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "object call contains an invalid argument",
+            );
+            return -1;
+        }
+    }
+    let kwargs = PyDict_New();
+    if kwargs.is_null() {
+        release(args);
+        return -1;
+    }
+    for index in 0..keyword_count {
+        let name = unsafe { *keyword_names.add(index as usize) };
+        let value = unsafe { *keyword_values.add(index as usize) };
+        if name.is_null() || value.is_null() {
+            release(kwargs);
+            release(args);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "object call contains an invalid keyword argument",
+            );
+            return -1;
+        }
+        let text = unsafe { cstr_to_str(name) };
+        let key =
+            PyUnicode_FromStringAndSize(text.as_ptr() as *const c_char, text.len() as Py_ssize_t);
+        if key.is_null() || PyDict_SetItem(kwargs, key, value) != 0 {
+            release(key);
+            release(kwargs);
+            release(args);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "object call contains an invalid keyword argument",
+            );
+            return -1;
+        }
+        release(key);
+    }
+    clear_error();
+    let returned = PyObject_Call(callable, args, kwargs);
+    release(kwargs);
+    release(args);
+    if returned.is_null() {
+        if with_err(|error| error.etype).is_null() {
+            set_error(
+                unsafe { PyExc_RuntimeError },
+                "object call returned NULL without an error",
+            );
+        }
+        return -1;
+    }
+    unsafe { *result = returned };
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn dp_abi3_object_from_utf8(
     value: *const c_char,
     value_length: i64,

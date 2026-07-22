@@ -256,6 +256,13 @@ internal interface PythonExternalObjectProtocol
 {
     PythonValue Call(IReadOnlyList<PythonValue> arguments, TextSpan span);
 
+    PythonValue CallWithKeywords(
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    );
+
     PythonValue GetAttribute(string name, TextSpan span);
 
     PythonValue GetItem(PythonValue index, TextSpan span);

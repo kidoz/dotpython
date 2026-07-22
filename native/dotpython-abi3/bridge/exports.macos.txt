@@ -101,6 +101,7 @@ _dp_abi3_object_as_bool
 _dp_abi3_object_as_int64
 _dp_abi3_object_as_utf8
 _dp_abi3_object_call
+_dp_abi3_object_call_kw
 _dp_abi3_object_from_bool
 _dp_abi3_object_from_int64
 _dp_abi3_object_from_none

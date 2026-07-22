@@ -386,6 +386,99 @@ internal sealed class StableAbiModule : IDisposable
         }
     }
 
+    internal StableAbiObject CallObjectWithKeywords(
+        StableAbiObject callable,
+        IReadOnlyList<StableAbiObject> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<StableAbiObject> keywordValues
+    )
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(keywordNames);
+        ArgumentNullException.ThrowIfNull(keywordValues);
+        if (keywordNames.Count != keywordValues.Count)
+        {
+            throw InvalidArguments("The keyword-argument names and values are misaligned.");
+        }
+
+        lock (_gate)
+        {
+            var callableHandle = ValidateHandle(callable);
+            var handles = ValidateHandles(arguments);
+            var keywordHandles = ValidateHandles(keywordValues);
+            nint argumentPointer = 0;
+            nint namePointer = 0;
+            nint valuePointer = 0;
+            var nameBuffers = new nint[keywordNames.Count];
+            try
+            {
+                if (handles.Length != 0)
+                {
+                    argumentPointer = Marshal.AllocHGlobal(checked(handles.Length * IntPtr.Size));
+                    Marshal.Copy(handles, 0, argumentPointer, handles.Length);
+                }
+
+                if (keywordHandles.Length != 0)
+                {
+                    for (var index = 0; index < keywordNames.Count; index++)
+                    {
+                        nameBuffers[index] = Marshal.StringToCoTaskMemUTF8(keywordNames[index]);
+                    }
+
+                    namePointer = Marshal.AllocHGlobal(checked(nameBuffers.Length * IntPtr.Size));
+                    Marshal.Copy(nameBuffers, 0, namePointer, nameBuffers.Length);
+                    valuePointer = Marshal.AllocHGlobal(
+                        checked(keywordHandles.Length * IntPtr.Size)
+                    );
+                    Marshal.Copy(keywordHandles, 0, valuePointer, keywordHandles.Length);
+                }
+
+                if (
+                    _generic.ObjectCallKeywords(
+                        callableHandle,
+                        argumentPointer,
+                        handles.Length,
+                        namePointer,
+                        valuePointer,
+                        keywordHandles.Length,
+                        out var result
+                    ) != 0
+                    || result == 0
+                )
+                {
+                    throw InvocationFailure();
+                }
+
+                return Track(result);
+            }
+            finally
+            {
+                foreach (var buffer in nameBuffers)
+                {
+                    if (buffer != 0)
+                    {
+                        Marshal.FreeCoTaskMem(buffer);
+                    }
+                }
+
+                if (argumentPointer != 0)
+                {
+                    Marshal.FreeHGlobal(argumentPointer);
+                }
+
+                if (namePointer != 0)
+                {
+                    Marshal.FreeHGlobal(namePointer);
+                }
+
+                if (valuePointer != 0)
+                {
+                    Marshal.FreeHGlobal(valuePointer);
+                }
+            }
+        }
+    }
+
     internal long GetObjectInt64(StableAbiObject value)
     {
         lock (_gate)
@@ -673,6 +766,17 @@ internal sealed class StableAbiModule : IDisposable
     private delegate int ObjectCall(nint callable, nint arguments, long count, out nint result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectCallKeywords(
+        nint callable,
+        nint arguments,
+        long count,
+        nint keywordNames,
+        nint keywordValues,
+        long keywordCount,
+        out nint result
+    );
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int ObjectFromUtf8(nint value, long length, out nint result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -733,6 +837,7 @@ internal sealed class StableAbiModule : IDisposable
         ModuleAttributeNames ModuleAttributeNames,
         ObjectGetAttribute ObjectGetAttribute,
         ObjectCall ObjectCall,
+        ObjectCallKeywords ObjectCallKeywords,
         ObjectFromUtf8 ObjectFromUtf8,
         ObjectFromInt64 ObjectFromInt64,
         ObjectFromBool ObjectFromBool,
@@ -755,6 +860,7 @@ internal sealed class StableAbiModule : IDisposable
                 GetDelegate<ModuleAttributeNames>(library, "dp_abi3_module_attribute_names"),
                 GetDelegate<ObjectGetAttribute>(library, "dp_abi3_object_get_attr"),
                 GetDelegate<ObjectCall>(library, "dp_abi3_object_call"),
+                GetDelegate<ObjectCallKeywords>(library, "dp_abi3_object_call_kw"),
                 GetDelegate<ObjectFromUtf8>(library, "dp_abi3_object_from_utf8"),
                 GetDelegate<ObjectFromInt64>(library, "dp_abi3_object_from_int64"),
                 GetDelegate<ObjectFromBool>(library, "dp_abi3_object_from_bool"),
@@ -821,6 +927,12 @@ internal sealed class StableAbiObject : IDisposable
 
     internal StableAbiObject Call(IReadOnlyList<StableAbiObject> arguments) =>
         RequireOwner().CallObject(this, arguments);
+
+    internal StableAbiObject CallWithKeywords(
+        IReadOnlyList<StableAbiObject> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<StableAbiObject> keywordValues
+    ) => RequireOwner().CallObjectWithKeywords(this, arguments, keywordNames, keywordValues);
 
     internal long AsInt64() => RequireOwner().GetObjectInt64(this);
 

@@ -176,6 +176,7 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_object_as_int64",
         "dp_abi3_object_as_utf8",
         "dp_abi3_object_call",
+        "dp_abi3_object_call_kw",
         "dp_abi3_object_from_bool",
         "dp_abi3_object_from_int64",
         "dp_abi3_object_from_none",
