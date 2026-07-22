@@ -291,6 +291,15 @@ public static class PythonCompiler
                 case PythonLambdaExpression lambdaExpression:
                     CompileLambdaExpression(lambdaExpression);
                     break;
+                case PythonConditionalExpression conditional:
+                    CompileExpression(conditional.Condition);
+                    var falseJump = Emit(PythonOpCode.JumpIfFalse, 0, conditional.Condition.Span);
+                    CompileExpression(conditional.TrueResult);
+                    var endJump = Emit(PythonOpCode.Jump, 0, conditional.Span);
+                    PatchJump(falseJump, _instructions.Count);
+                    CompileExpression(conditional.FalseResult);
+                    PatchJump(endJump, _instructions.Count);
+                    break;
                 case PythonSliceExpression slice:
                     CompileOptionalSliceBound(slice.Start, slice.Span);
                     CompileOptionalSliceBound(slice.Stop, slice.Span);

@@ -1329,8 +1329,57 @@ public static class PythonParser
                 _ => false,
             };
 
-        private PythonExpression? ParseExpression() =>
-            IsKeyword("lambda") ? ParseLambdaExpression() : ParseDisjunction();
+        private PythonExpression? ParseExpression()
+        {
+            if (IsKeyword("lambda"))
+            {
+                return ParseLambdaExpression();
+            }
+
+            var expression = ParseDisjunction();
+            if (expression is null || !IsKeyword("if"))
+            {
+                return expression;
+            }
+
+            Advance();
+            var condition = ParseDisjunction();
+            if (condition is null)
+            {
+                ReportExpected("a condition in the conditional expression", Current.Span);
+                return expression;
+            }
+
+            if (!MatchKeyword("else", out _))
+            {
+                ReportExpected("'else' in the conditional expression", Current.Span);
+                return expression;
+            }
+
+            var falseResult = ParseRequiredExpression("an expression after 'else'");
+            return new PythonConditionalExpression(
+                condition,
+                expression,
+                falseResult,
+                TextSpan.FromBounds(expression.Span.Start, falseResult.Span.End)
+            );
+        }
+
+        private PythonExpression ParseRequiredDisjunction(string expected)
+        {
+            var expression = ParseDisjunction();
+            if (expression is not null)
+            {
+                return expression;
+            }
+
+            ReportExpected(expected, Current.Span);
+            return new PythonConstantExpression(
+                PythonConstantKind.BooleanLiteral,
+                "False",
+                Current.Span
+            );
+        }
 
         private PythonLambdaExpression ParseLambdaExpression()
         {
@@ -2369,7 +2418,7 @@ public static class PythonParser
                         ReportExpected("'in' after the comprehension target", Current.Span);
                     }
 
-                    var iterable = ParseRequiredExpression("an iterable after 'in'");
+                    var iterable = ParseRequiredDisjunction("an iterable after 'in'");
                     clauses.Add(
                         new PythonComprehensionForClause(
                             target,
@@ -2382,7 +2431,7 @@ public static class PythonParser
 
                 if (MatchKeyword("if", out var ifToken))
                 {
-                    var condition = ParseRequiredExpression("a condition after 'if'");
+                    var condition = ParseRequiredDisjunction("a condition after 'if'");
                     clauses.Add(
                         new PythonComprehensionIfClause(
                             condition,

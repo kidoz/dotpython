@@ -199,6 +199,13 @@ public sealed record PythonLambdaExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonConditionalExpression(
+    PythonExpression Condition,
+    PythonExpression TrueResult,
+    PythonExpression FalseResult,
+    TextSpan Span
+) : PythonExpression(Span);
+
 public sealed record PythonFormattedStringExpression(
     IReadOnlyList<PythonFormattedStringPart> Parts,
     bool IsRaw,

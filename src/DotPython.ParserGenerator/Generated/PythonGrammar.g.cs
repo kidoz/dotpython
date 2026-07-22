@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "a5dbefb0560466390f9bf79a0dbd500b8b614e89eba352b712c625dd688e4e7b";
-    internal const int RuleCount = 68;
+    internal const string SourceSha256 = "7b8749a3b820231595960368c9dd8dc3230857ced55f4706ef90055539843495";
+    internal const int RuleCount = 69;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -50,7 +50,8 @@ internal static class GeneratedPythonGrammar
         parameters: ','.parameter+ [',']
         parameter: NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
-        expression: lambda_expression | disjunction
+        expression: lambda_expression | conditional_expression
+        conditional_expression: disjunction ['if' disjunction 'else' expression]
         lambda_expression: 'lambda' [parameters] ':' expression
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
@@ -72,8 +73,8 @@ internal static class GeneratedPythonGrammar
         tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
         dict_display: '{' expression ':' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
         comp_clauses: comp_for (comp_for | comp_if)*
-        comp_for: 'for' for_targets 'in' expression
-        comp_if: 'if' expression
+        comp_for: 'for' for_targets 'in' disjunction
+        comp_if: 'if' disjunction
         dict_items: ','.dict_item+ [',']
         dict_item: expression ':' expression
         group: '(' expression ')'

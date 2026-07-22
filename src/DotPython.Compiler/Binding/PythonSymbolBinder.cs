@@ -954,6 +954,11 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonConditionalExpression conditional:
+                CollectReferences(conditional.Condition, references);
+                CollectReferences(conditional.TrueResult, references);
+                CollectReferences(conditional.FalseResult, references);
+                break;
             case PythonListComprehensionExpression listComprehension:
                 CollectFirstIterableReferences(listComprehension.Clauses, references);
                 break;
@@ -1343,6 +1348,19 @@ public static class PythonSymbolBinder
                 }
 
                 yield return lambdaExpression;
+                break;
+            case PythonConditionalExpression conditional:
+                foreach (
+                    var branch in (PythonExpression[])
+                        [conditional.Condition, conditional.TrueResult, conditional.FalseResult]
+                )
+                {
+                    foreach (var nested in EnumerateComprehensions(branch))
+                    {
+                        yield return nested;
+                    }
+                }
+
                 break;
             case PythonTupleExpression tuple:
                 foreach (var element in tuple.Elements)

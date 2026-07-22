@@ -216,6 +216,9 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print(hash(5), hash(-5), hash(0), hash(True), hash(False), hash(-1), hash(-2))\nprint(hash(2**61 - 1), hash(2**61), hash(10**30))\nprint(hash('a') == hash('a'), hash((1, 2)) == hash((1, 2)), hash(1) == hash(True))\ntry:\n    hash([1])\nexcept TypeError:\n    print('unhashable-list')\ntry:\n    hash({})\nexcept TypeError:\n    print('unhashable-dict')"
     )]
+    [InlineData(
+        "print(1 if True else 2, 'a' if [] else 'b')\nprint([x if x > 1 else 0 for x in [1, 2, 3]], [x for x in [1, 2, 3] if x > 1])\nf = lambda v: 'big' if v > 5 else 'small'\nprint(f(9), f(1), (1 if False else 2) if True else 3)\ndef side(tag):\n    print('eval', tag)\n    return tag\nprint(side('yes') if True else side('no'))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

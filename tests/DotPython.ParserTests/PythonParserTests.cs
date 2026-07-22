@@ -283,6 +283,38 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsConditionalExpressionsWithComprehensionDisambiguation()
+    {
+        var result = Parse("value = left if check else right\n");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var conditional = Assert.IsType<PythonConditionalExpression>(assignment.Value);
+        Assert.Equal("check", Assert.IsType<PythonNameExpression>(conditional.Condition).Name);
+        Assert.Equal("left", Assert.IsType<PythonNameExpression>(conditional.TrueResult).Name);
+        Assert.Equal("right", Assert.IsType<PythonNameExpression>(conditional.FalseResult).Name);
+
+        var comprehension = Parse("values = [x for x in source if x]\n");
+        Assert.Empty(comprehension.Diagnostics);
+        var target = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(comprehension.Module.Statements)
+        );
+        var listComprehension = Assert.IsType<PythonListComprehensionExpression>(target.Value);
+        Assert.Equal(2, listComprehension.Clauses.Count);
+        Assert.IsType<PythonComprehensionIfClause>(listComprehension.Clauses[1]);
+    }
+
+    [Fact]
+    public void Parse_ReportsConditionalExpressionsWithoutElse()
+    {
+        var result = Parse("value = left if check\n");
+
+        Assert.NotEmpty(result.Diagnostics);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");
