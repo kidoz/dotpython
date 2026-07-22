@@ -219,6 +219,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print(1 if True else 2, 'a' if [] else 'b')\nprint([x if x > 1 else 0 for x in [1, 2, 3]], [x for x in [1, 2, 3] if x > 1])\nf = lambda v: 'big' if v > 5 else 'small'\nprint(f(9), f(1), (1 if False else 2) if True else 3)\ndef side(tag):\n    print('eval', tag)\n    return tag\nprint(side('yes') if True else side('no'))"
     )]
+    [InlineData(
+        "print(any([0, 0, 1]), any([]), any([0]), all([1, 2]), all([]), all([1, 0]))\nprint(chr(65), chr(0x10437), chr(955), ord('A'), ord('\U0001F40D'), ord('λ'))\ntry:\n    chr(0x110000)\nexcept ValueError:\n    print('chr-range')\ntry:\n    ord('ab')\nexcept TypeError:\n    print('ord-len')"
+    )]
+    [InlineData(
+        "print(divmod(7, 2), divmod(-7, 2), divmod(7, -2), divmod(7.5, 2), divmod(-7.5, 2))\ntry:\n    divmod(1, 0)\nexcept ZeroDivisionError:\n    print('divmod-zero')\nprint(round(2.5), round(3.5), round(-2.5), round(2.675, 2), round(1234, -2), round(1250, -2))\nprint(round(2.5, 0), round(1.005, 2), round(123.456, -1), round(7), round(True), round(0.125, 2))"
+    )]
+    [InlineData(
+        "print(list(map(str, [1, 2])), list(map(lambda a, b: a + b, [1, 2], [10, 20, 30])))\nprint(list(filter(None, [0, 1, '', 'x'])), list(filter(lambda v: v > 1, [1, 2, 3])))\nfor pair in map(lambda v: (v, v * 2), [1, 2]):\n    print(pair)\nprint(sorted(map(len, ['aaa', 'b', 'cc'])), any(map(lambda v: v > 2, [1, 3])))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

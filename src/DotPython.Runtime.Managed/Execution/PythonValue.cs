@@ -441,6 +441,22 @@ internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : Pyth
     internal override string ToDisplayString() => "<zip>";
 }
 
+internal sealed record PythonMapSourceValue(
+    Func<PythonValue[], PythonValue> Apply,
+    PythonIteratorValue[] Inners
+) : PythonValue
+{
+    internal override string ToDisplayString() => "<map>";
+}
+
+internal sealed record PythonFilterSourceValue(
+    Func<PythonValue, bool> Keep,
+    PythonIteratorValue Inner
+) : PythonValue
+{
+    internal override string ToDisplayString() => "<filter>";
+}
+
 internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
 {
     internal override string ToDisplayString()

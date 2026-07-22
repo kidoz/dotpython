@@ -88,6 +88,14 @@ internal sealed class PythonVirtualMachine
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
             ["sorted"] = new PythonBuiltinFunctionValue("sorted", Sorted),
             ["hash"] = new PythonBuiltinFunctionValue("hash", HashValue),
+            ["any"] = new PythonBuiltinFunctionValue("any", AnyTruthy),
+            ["all"] = new PythonBuiltinFunctionValue("all", AllTruthy),
+            ["chr"] = new PythonBuiltinFunctionValue("chr", CharacterFromOrdinal),
+            ["ord"] = new PythonBuiltinFunctionValue("ord", OrdinalFromCharacter),
+            ["divmod"] = new PythonBuiltinFunctionValue("divmod", DivideModulo),
+            ["round"] = new PythonBuiltinFunctionValue("round", Round),
+            ["map"] = new PythonBuiltinFunctionValue("map", Map),
+            ["filter"] = new PythonBuiltinFunctionValue("filter", Filter),
             ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
@@ -3033,6 +3041,352 @@ internal sealed class PythonVirtualMachine
         return PythonWholeNumberValue.Create(
             ManagedObjectProtocols.ComputePythonHash(arguments[0], span)
         );
+    }
+
+    private static PythonTruthValue AnyTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("any", arguments, span);
+        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
+        {
+            if (IsTruthy(value))
+            {
+                return PythonTruthValue.True;
+            }
+        }
+
+        return PythonTruthValue.False;
+    }
+
+    private static PythonTruthValue AllTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("all", arguments, span);
+        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
+        {
+            if (!IsTruthy(value))
+            {
+                return PythonTruthValue.False;
+            }
+        }
+
+        return PythonTruthValue.True;
+    }
+
+    private static PythonTextValue CharacterFromOrdinal(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        ValidateBuiltinArgumentCount("chr", arguments, span);
+        var ordinal = arguments[0] switch
+        {
+            PythonWholeNumberValue whole => whole.Value,
+            PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+            var other => throw Fault(
+                "DPY4003",
+                "'"
+                    + ManagedObjectProtocols.GetTypeName(other)
+                    + "' object cannot be interpreted as an integer.",
+                span,
+                "TypeError"
+            ),
+        };
+        if (ordinal < 0 || ordinal > 0x10FFFF)
+        {
+            throw Fault("DPY4012", "chr() arg not in range(0x110000)", span, "ValueError");
+        }
+
+        var codePoint = (int)ordinal;
+        return new PythonTextValue(
+            codePoint is >= 0xD800 and <= 0xDFFF or < 0x10000
+                ? ((char)codePoint).ToString()
+                : char.ConvertFromUtf32(codePoint)
+        );
+    }
+
+    private static PythonWholeNumberValue OrdinalFromCharacter(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        ValidateBuiltinArgumentCount("ord", arguments, span);
+        if (arguments[0] is not PythonTextValue text)
+        {
+            throw Fault(
+                "DPY4003",
+                "ord() expected string of length 1, but "
+                    + ManagedObjectProtocols.GetTypeName(arguments[0])
+                    + " found",
+                span,
+                "TypeError"
+            );
+        }
+
+        var value = text.Value;
+        if (value.Length == 1)
+        {
+            return PythonWholeNumberValue.Create(value[0]);
+        }
+
+        if (value.Length == 2 && char.IsSurrogatePair(value[0], value[1]))
+        {
+            return PythonWholeNumberValue.Create(char.ConvertToUtf32(value[0], value[1]));
+        }
+
+        throw Fault(
+            "DPY4003",
+            "ord() expected a character, but string of length "
+                + value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " found",
+            span,
+            "TypeError"
+        );
+    }
+
+    private static PythonTupleValue DivideModulo(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 2)
+        {
+            throw Fault(
+                "DPY4003",
+                "divmod expected 2 arguments, got "
+                    + arguments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                span,
+                "TypeError"
+            );
+        }
+
+        var left = PromoteTruthValue(arguments[0]);
+        var right = PromoteTruthValue(arguments[1]);
+        if (left is PythonWholeNumberValue leftWhole && right is PythonWholeNumberValue rightWhole)
+        {
+            if (rightWhole.Value.IsZero)
+            {
+                throw Fault("DPY4004", "Division by zero.", span);
+            }
+
+            var quotient = FloorDivide(leftWhole.Value, rightWhole.Value);
+            return new PythonTupleValue([
+                PythonWholeNumberValue.Create(quotient),
+                PythonWholeNumberValue.Create(leftWhole.Value - quotient * rightWhole.Value),
+            ]);
+        }
+
+        if (
+            left is PythonWholeNumberValue or PythonFloatingPointValue
+            && right is PythonWholeNumberValue or PythonFloatingPointValue
+        )
+        {
+            var leftDouble = ToDouble(left);
+            var rightDouble = ToDouble(right);
+            if (rightDouble == 0)
+            {
+                throw Fault("DPY4004", "Division by zero.", span);
+            }
+
+            var quotient = Math.Floor(leftDouble / rightDouble);
+            return new PythonTupleValue([
+                new PythonFloatingPointValue(quotient),
+                new PythonFloatingPointValue(leftDouble - quotient * rightDouble),
+            ]);
+        }
+
+        throw Fault(
+            "DPY4003",
+            "unsupported operand type(s) for divmod(): '"
+                + ManagedObjectProtocols.GetTypeName(arguments[0])
+                + "' and '"
+                + ManagedObjectProtocols.GetTypeName(arguments[1])
+                + "'",
+            span,
+            "TypeError"
+        );
+    }
+
+    private static PythonValue Round(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count is not (1 or 2))
+        {
+            throw Fault(
+                "DPY4003",
+                "round() takes 1 or 2 arguments ("
+                    + arguments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        BigInteger? digits = null;
+        if (arguments.Count == 2 && arguments[1] is not PythonNoneValue)
+        {
+            digits = arguments[1] switch
+            {
+                PythonWholeNumberValue whole => whole.Value,
+                PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+                var other => throw Fault(
+                    "DPY4003",
+                    "'"
+                        + ManagedObjectProtocols.GetTypeName(other)
+                        + "' object cannot be interpreted as an integer.",
+                    span,
+                    "TypeError"
+                ),
+            };
+        }
+
+        var number = PromoteTruthValue(arguments[0]);
+        switch (number)
+        {
+            case PythonWholeNumberValue whole:
+                if (digits is null || digits >= 0)
+                {
+                    return PythonWholeNumberValue.Create(whole.Value);
+                }
+
+                var scale = BigInteger.Pow(10, (int)BigInteger.Min(-digits.Value, 64));
+                return PythonWholeNumberValue.Create(RoundHalfToEven(whole.Value, scale) * scale);
+            case PythonFloatingPointValue floating when digits is null:
+                return PythonWholeNumberValue.Create(
+                    new BigInteger(Math.Round(floating.Value, MidpointRounding.ToEven))
+                );
+            case PythonFloatingPointValue floating:
+                return new PythonFloatingPointValue(
+                    RoundDoubleToDigits(
+                        floating.Value,
+                        (int)BigInteger.Clamp(digits.Value, -323, 323)
+                    )
+                );
+            default:
+                throw Fault(
+                    "DPY4003",
+                    "type "
+                        + ManagedObjectProtocols.GetTypeName(number)
+                        + " doesn't define __round__ method",
+                    span,
+                    "TypeError"
+                );
+        }
+    }
+
+    private static double RoundDoubleToDigits(double value, int digits)
+    {
+        if (!double.IsFinite(value) || value == 0)
+        {
+            return value;
+        }
+
+        // Round the double's exact binary value at the requested decimal digit
+        // (CPython semantics), not a decimal re-interpretation of its shortest form.
+        var bits = BitConverter.DoubleToInt64Bits(value);
+        var mantissa = bits & 0xF_FFFF_FFFF_FFFF;
+        var exponent = (int)((bits >> 52) & 0x7FF);
+        if (exponent == 0)
+        {
+            exponent = -1074;
+        }
+        else
+        {
+            mantissa |= 1L << 52;
+            exponent -= 1075;
+        }
+
+        var numerator = new BigInteger(mantissa);
+        var denominator = BigInteger.One;
+        if (digits > 0)
+        {
+            numerator *= BigInteger.Pow(10, digits);
+        }
+        else if (digits < 0)
+        {
+            denominator *= BigInteger.Pow(10, -digits);
+        }
+
+        if (exponent > 0)
+        {
+            numerator <<= exponent;
+        }
+        else if (exponent < 0)
+        {
+            denominator <<= -exponent;
+        }
+
+        var rounded = RoundHalfToEven(numerator, denominator);
+        var result = double.Parse(
+            rounded.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "E"
+                + (-digits).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            System.Globalization.CultureInfo.InvariantCulture
+        );
+        return value < 0 ? -result : result;
+    }
+
+    private static BigInteger RoundHalfToEven(BigInteger value, BigInteger scale)
+    {
+        var quotient = BigInteger.DivRem(value, scale, out var remainder);
+        if (remainder.IsZero)
+        {
+            return quotient;
+        }
+
+        if (value.Sign < 0)
+        {
+            return -RoundHalfToEven(-value, scale);
+        }
+
+        var doubled = remainder * 2;
+        if (doubled > scale || (doubled == scale && !quotient.IsEven))
+        {
+            return quotient + 1;
+        }
+
+        return quotient;
+    }
+
+    private PythonIteratorValue Map(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count < 2)
+        {
+            throw Fault("DPY4003", "map() must have at least two arguments.", span, "TypeError");
+        }
+
+        var callable = arguments[0];
+        var inners = new PythonIteratorValue[arguments.Count - 1];
+        for (var index = 1; index < arguments.Count; index++)
+        {
+            inners[index - 1] = ManagedObjectProtocols.GetIterator(arguments[index], span);
+        }
+
+        return new PythonIteratorValue(
+            new PythonMapSourceValue(row => InvokeCallableNested(callable, row, span), inners),
+            -1
+        );
+    }
+
+    private PythonIteratorValue Filter(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 2)
+        {
+            throw Fault(
+                "DPY4003",
+                "filter expected 2 arguments, got "
+                    + arguments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                span,
+                "TypeError"
+            );
+        }
+
+        var predicate = arguments[0];
+        var inner = ManagedObjectProtocols.GetIterator(arguments[1], span);
+        Func<PythonValue, bool> keep =
+            predicate is PythonNoneValue
+                ? IsTruthy
+                : value => IsTruthy(InvokeCallableNested(predicate, [value], span));
+        return new PythonIteratorValue(new PythonFilterSourceValue(keep, inner), -1);
     }
 
     private static PythonListValue Sorted(IReadOnlyList<PythonValue> arguments, TextSpan span)

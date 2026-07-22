@@ -379,6 +379,38 @@ internal static class ManagedObjectProtocols
 
                 break;
             }
+            case PythonMapSourceValue mapSource:
+            {
+                var row = new PythonValue[mapSource.Inners.Length];
+                var complete = true;
+                for (var index = 0; index < mapSource.Inners.Length; index++)
+                {
+                    if (!TryGetNext(mapSource.Inners[index], out row[index], span))
+                    {
+                        complete = false;
+                        break;
+                    }
+                }
+
+                if (complete)
+                {
+                    value = mapSource.Apply(row);
+                    return true;
+                }
+
+                break;
+            }
+            case PythonFilterSourceValue filterSource:
+                while (TryGetNext(filterSource.Inner, out var candidate, span))
+                {
+                    if (filterSource.Keep(candidate))
+                    {
+                        value = candidate;
+                        return true;
+                    }
+                }
+
+                break;
         }
 
         value = PythonNoneValue.Instance;
@@ -998,6 +1030,8 @@ internal static class ManagedObjectProtocols
             PythonRangeValue => "range",
             PythonEnumerateSourceValue => "enumerate",
             PythonZipSourceValue => "zip",
+            PythonMapSourceValue => "map",
+            PythonFilterSourceValue => "filter",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue => "type",
