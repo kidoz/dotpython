@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 285,
-    "failed": 40,
+    "passed": 312,
+    "failed": 13,
     "skipped": 0
   },
   "cases": [
@@ -53,8 +53,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_non_string_raises_typeerror",
-      "outcome": "failed",
-      "detail": "DPY8005: TypeError: \u0027int\u0027 object is not an instance of \u0027str\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestProperties::test_epoch_default",
@@ -154,8 +153,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestIndexing::test_out_of_range",
-      "outcome": "failed",
-      "detail": "DPY8005: IndexError: segment index 100 out of range (version has 5 segments)"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSequence::test_len_3",
@@ -378,8 +376,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_invalid_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_compare_default_generic",
@@ -411,13 +408,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_ecosystem_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: unsupported ecosystem \u0027unknown\u0027; expected one of: generic, semver, pep440, debian, rpm, ruby, maven, go, npm, nuget, composer, crates, hex, swift, calver, alpine, docker, conda, arch, gentoo, cran, spack, dart, julia, terraform, helm, cpan, nix, homebrew, freebsd"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_semver_in_semver_ecosystem_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0a1-1.0a2--1]",
@@ -641,13 +636,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestMinMax::test_max_empty",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: empty sequence"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMinMax::test_min_empty",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: empty sequence"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_gt",
@@ -688,18 +681,15 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_simple",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_prerelease",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_sort_key_structure",
@@ -711,13 +701,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_pep440_local_label_key_ordered",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440_local",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestTransitivity::test_trailing_zero_post_release",
@@ -758,33 +746,27 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_major",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: leading zero in major: \u002701\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_minor",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: leading zero in minor: \u002701\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_patch",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: leading zero in patch: \u002701\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_prerelease",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: leading zero in numeric prerelease identifier: \u002701\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_empty_prerelease",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: empty prerelease"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_empty_prerelease_ident",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: empty identifier in prerelease"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_valid_prerelease_with_hyphen",
@@ -897,13 +879,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_constraint_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: invalid comparator: \u00271.0.0\u0027; expected operator (\u003E=, \u003C=, \u003E, \u003C, ==, !=) followed by version"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_version_for_ecosystem_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestStableVersions::test_filters_prereleases",
@@ -935,8 +915,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestStableVersions::test_ecosystem_validation_rejects_invalid",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_picks_latest_stable",
@@ -956,13 +935,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_empty_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: empty sequence"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_all_prerelease_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: no stable versions found"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_semver_ecosystem",
@@ -1101,8 +1078,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestStrComparison::test_ordering_with_other_type_raises",
-      "outcome": "failed",
-      "detail": "DPY8005: TypeError: objects do not support the requested ordering"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse",
@@ -1114,8 +1090,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse_raises_on_invalid",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Expected 3 parts, got 1"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_try_parse_valid",
@@ -1285,13 +1260,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_go_requires_lowercase_v",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: Go version must start with a lowercase \u0027v\u0027 prefix: \u00271.0.0\u0027"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_pep440_local_sort_key_isomorphic",
-      "outcome": "failed",
-      "detail": "DPY4005: Values of these types cannot be ordered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRangeCore::test_range_contains_basic",

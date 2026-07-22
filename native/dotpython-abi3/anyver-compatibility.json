@@ -17,16 +17,16 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "c5ba1d020cba445828a9d91819eaf0716c8b85d414e5b9c9993bd27a24ed0221",
+    "evidenceSha256": "b9187973ad5ed65c7acb69a910cb0c95a1a6f0399a3274b862f96008e9f3eb60",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
-    "passed": 285,
-    "failed": 40,
+    "passed": 312,
+    "failed": 13,
     "skipped": 0,
-    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 285 of 325 cases pass; 40 fail, led by ordering of Stable-ABI values inside managed sorts (DPY4005, 6 cases) and native exceptions surfacing as RuntimeError instead of their declared Python type (DPY8005, 13 cases). No skipped or failed case is counted as passed."
+    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 312 of 325 cases pass. The 13 failures are a measured tail: 3 semantic assertion mismatches, 4 stdlib module imports (pickle, copy, os), 2 values that cannot cross the Stable-ABI boundary, and singletons (dict-key miss, isinstance with a native type, 64-bit integer overflow at the boundary, missing hash builtin). No skipped or failed case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",
