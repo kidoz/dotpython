@@ -15,6 +15,8 @@ namespace DotPython.BuildIntegrationTests;
 )]
 public sealed class DotPythonProjectReferenceTests
 {
+    private const string IntegrationPackageVersion = "0.1.0";
+
     [Fact]
     public async Task CSharpProjectReference_BuildsRunsIncrementallyAndRebuildsDeterministically()
     {
@@ -167,6 +169,64 @@ public sealed class DotPythonProjectReferenceTests
         }
     }
 
+    [Fact]
+    public async Task NuGetPackageReferences_RestoreBuildAndRunWithoutRepositoryReferences()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "dotpython-package-integration-" + Guid.NewGuid().ToString("N")
+        );
+        var fixtureRoot = Path.Combine(temporaryRoot, "fixture");
+        var packageFeed = Path.Combine(temporaryRoot, "feed");
+        Directory.CreateDirectory(packageFeed);
+
+        try
+        {
+            CopyDirectory(
+                Path.Combine(AppContext.BaseDirectory, "Fixtures", "PackageReference"),
+                fixtureRoot
+            );
+            await PackDotPythonPackagesAsync(repositoryRoot, temporaryRoot, packageFeed);
+            WriteNuGetConfiguration(fixtureRoot, packageFeed, includeNuGetOrg: true);
+            await RunDotNetAsync(
+                fixtureRoot,
+                temporaryRoot,
+                "pack",
+                Path.Combine(fixtureRoot, "PricingRules", "PricingRules.dpyproj"),
+                "--configuration",
+                "Release",
+                "--output",
+                packageFeed,
+                "-p:PackageVersion=" + IntegrationPackageVersion
+            );
+
+            var result = await RunDotNetAsync(
+                fixtureRoot,
+                temporaryRoot,
+                "run",
+                "--project",
+                Path.Combine(fixtureRoot, "Consumer", "Consumer.csproj"),
+                "--configuration",
+                "Release"
+            );
+
+            Assert.Equal("42", result.StandardOutput.Trim());
+            Assert.DoesNotContain(
+                repositoryRoot,
+                await File.ReadAllTextAsync(
+                    Path.Combine(fixtureRoot, "Consumer", "obj", "project.assets.json"),
+                    TestContext.Current.CancellationToken
+                ),
+                StringComparison.Ordinal
+            );
+        }
+        finally
+        {
+            Directory.Delete(temporaryRoot, recursive: true);
+        }
+    }
+
     private static string[] HashOutputs(params string[] paths) =>
         paths
             .Select(path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))))
@@ -237,9 +297,51 @@ public sealed class DotPythonProjectReferenceTests
         return result;
     }
 
-    private static void WriteNuGetConfiguration(string fixtureRoot, string packageFeed)
+    private static async Task PackDotPythonPackagesAsync(
+        string repositoryRoot,
+        string temporaryRoot,
+        string packageFeed
+    )
+    {
+        foreach (
+            var projectName in new[]
+            {
+                "DotPython.Abstractions",
+                "DotPython.Language",
+                "DotPython.ParserGenerator",
+                "DotPython.Compiler",
+                "DotPython.Interop",
+                "DotPython.Runtime.Managed",
+                "DotPython.StdLib",
+                "DotPython.Hosting",
+                "DotPython.Sdk",
+            }
+        )
+        {
+            await RunDotNetAsync(
+                repositoryRoot,
+                temporaryRoot,
+                "pack",
+                Path.Combine(repositoryRoot, "src", projectName, projectName + ".csproj"),
+                "--configuration",
+                "Release",
+                "--output",
+                packageFeed,
+                "-p:PackageVersion=" + IntegrationPackageVersion
+            );
+        }
+    }
+
+    private static void WriteNuGetConfiguration(
+        string fixtureRoot,
+        string packageFeed,
+        bool includeNuGetOrg = false
+    )
     {
         var escapedFeed = SecurityElement.Escape(packageFeed);
+        var nuGetOrg = includeNuGetOrg
+            ? "\n    <add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" />"
+            : string.Empty;
         File.WriteAllText(
             Path.Combine(fixtureRoot, "NuGet.Config"),
             $"""
@@ -248,6 +350,7 @@ public sealed class DotPythonProjectReferenceTests
               <packageSources>
                 <clear />
                 <add key="DotPython integration feed" value="{escapedFeed}" />
+            {nuGetOrg}
               </packageSources>
             </configuration>
             """

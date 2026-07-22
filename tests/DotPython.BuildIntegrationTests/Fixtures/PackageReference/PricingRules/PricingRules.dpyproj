@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Sdk Name="DotPython.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Generated.Pricing</RootNamespace>
+    <DotPythonModuleName>pricing</DotPythonModuleName>
+    <DotPythonClrTypeName>PricingModule</DotPythonClrTypeName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PythonCompile Include="pricing.py" />
+    <PythonContract Include="pricing.pyi" />
+  </ItemGroup>
+</Project>
