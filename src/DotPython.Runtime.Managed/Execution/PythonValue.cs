@@ -410,6 +410,52 @@ internal sealed record PythonFunctionValue(
     internal override string ToDisplayString() => $"<function {Name}>";
 }
 
+internal sealed record PythonInterpolationValue(
+    PythonValue Value,
+    string Expression,
+    char? Conversion,
+    string FormatSpecification
+) : PythonValue
+{
+    internal override string ToDisplayString() =>
+        "Interpolation("
+        + Value.ToRepresentationString()
+        + ", "
+        + new PythonTextValue(Expression).ToRepresentationString()
+        + ", "
+        + (
+            Conversion is { } conversion
+                ? new PythonTextValue(conversion.ToString()).ToRepresentationString()
+                : "None"
+        )
+        + ", "
+        + new PythonTextValue(FormatSpecification).ToRepresentationString()
+        + ")";
+}
+
+internal sealed record PythonTemplateValue(
+    string[] Strings,
+    PythonInterpolationValue[] Interpolations
+) : PythonValue
+{
+    internal override string ToDisplayString()
+    {
+        var strings = new PythonTupleValue([
+            .. Strings.Select(text => (PythonValue)new PythonTextValue(text)),
+        ]);
+        var interpolations = new PythonTupleValue([.. Interpolations.Cast<PythonValue>()]);
+        return "Template(strings="
+            + strings.ToRepresentationString()
+            + ", interpolations="
+            + interpolations.ToRepresentationString()
+            + ")";
+    }
+
+    public bool Equals(PythonTemplateValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+}
+
 internal sealed record PythonSuperProxyValue(
     PythonManagedTypeValue DefiningType,
     PythonManagedObjectValue Instance

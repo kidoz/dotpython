@@ -122,6 +122,43 @@ internal static class ManagedObjectProtocols
                 return external.Protocol.GetAttribute(name, span);
             case PythonFunctionValue function when name == "__name__":
                 return new PythonTextValue(function.Name);
+            case PythonBuiltinTypeValue builtinTypeValue when name == "__name__":
+                return new PythonTextValue(builtinTypeValue.Name);
+            case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
+                return new PythonTextValue(exceptionTypeValue.Name);
+            case PythonTemplateValue template when name == "strings":
+                return new PythonTupleValue([
+                    .. template.Strings.Select(text => (PythonValue)new PythonTextValue(text)),
+                ]);
+            case PythonTemplateValue template when name == "interpolations":
+                return new PythonTupleValue([.. template.Interpolations.Cast<PythonValue>()]);
+            case PythonTemplateValue template when name == "values":
+                return new PythonTupleValue([
+                    .. template.Interpolations.Select(interpolation => interpolation.Value),
+                ]);
+            case PythonTemplateValue:
+                throw Fault(
+                    "DPY4023",
+                    $"'Template' object has no attribute '{name}'.",
+                    span,
+                    "AttributeError"
+                );
+            case PythonInterpolationValue interpolation:
+                return name switch
+                {
+                    "value" => interpolation.Value,
+                    "expression" => new PythonTextValue(interpolation.Expression),
+                    "conversion" => interpolation.Conversion is { } conversion
+                        ? new PythonTextValue(conversion.ToString())
+                        : PythonNoneValue.Instance,
+                    "format_spec" => new PythonTextValue(interpolation.FormatSpecification),
+                    _ => throw Fault(
+                        "DPY4023",
+                        $"'Interpolation' object has no attribute '{name}'.",
+                        span,
+                        "AttributeError"
+                    ),
+                };
             case var builtin when PythonBuiltinMethods.SupportsMethods(builtin):
                 if (PythonBuiltinMethods.TryGet(builtin, name, out var method))
                 {
@@ -272,6 +309,25 @@ internal static class ManagedObjectProtocols
         if (value is PythonIteratorValue iterator)
         {
             return iterator;
+        }
+
+        if (value is PythonTemplateValue template)
+        {
+            var items = new List<PythonValue>();
+            for (var index = 0; index < template.Strings.Length; index++)
+            {
+                if (template.Strings[index].Length != 0)
+                {
+                    items.Add(new PythonTextValue(template.Strings[index]));
+                }
+
+                if (index < template.Interpolations.Length)
+                {
+                    items.Add(template.Interpolations[index]);
+                }
+            }
+
+            return new PythonIteratorValue(new PythonTupleValue([.. items]), -1);
         }
 
         if (value is PythonDictionaryViewValue view)
@@ -1049,6 +1105,8 @@ internal static class ManagedObjectProtocols
             PythonZipSourceValue => "zip",
             PythonMapSourceValue => "map",
             PythonFilterSourceValue => "filter",
+            PythonTemplateValue => "Template",
+            PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue => "type",

@@ -1970,7 +1970,7 @@ public static class PythonParser
             return expression;
         }
 
-        private PythonFormattedStringExpression ParseFormattedString(SyntaxToken token)
+        private PythonExpression ParseFormattedString(SyntaxToken token, bool isTemplate = false)
         {
             var quoteIndex = token.Text.IndexOfAny(['\'', '"']);
             var quote = token.Text[quoteIndex];
@@ -2044,13 +2044,14 @@ public static class PythonParser
                     break;
                 }
 
-                var expressionEnd =
-                    specIndex >= 0 ? specIndex : (conversionIndex >= 0 ? conversionIndex : end);
                 if (conversionIndex >= 0 && specIndex >= 0 && conversionIndex > specIndex)
                 {
-                    expressionEnd = specIndex;
+                    // The '!' sits inside the format specification, not before it.
                     conversionIndex = -1;
                 }
+
+                var expressionEnd =
+                    conversionIndex >= 0 ? conversionIndex : (specIndex >= 0 ? specIndex : end);
 
                 var expressionText = content[holeStart..expressionEnd];
                 char? conversion = conversionIndex >= 0 ? content[conversionIndex + 1] : null;
@@ -2091,7 +2092,8 @@ public static class PythonParser
                                 expression,
                                 conversion,
                                 specification,
-                                holeSpan
+                                holeSpan,
+                                expressionText
                             )
                         );
                     }
@@ -2101,7 +2103,9 @@ public static class PythonParser
             }
 
             FlushFormattedLiteral(parts, literal, contentOffset, position);
-            return new PythonFormattedStringExpression(parts.AsReadOnly(), isRaw, token.Span);
+            return isTemplate
+                ? new PythonTemplateStringExpression(parts.AsReadOnly(), isRaw, token.Span)
+                : new PythonFormattedStringExpression(parts.AsReadOnly(), isRaw, token.Span);
         }
 
         private static void FlushFormattedLiteral(
@@ -2328,6 +2332,11 @@ public static class PythonParser
             if (Current.Kind == SyntaxTokenKind.FormattedStringLiteral)
             {
                 return ParseFormattedString(Advance());
+            }
+
+            if (Current.Kind == SyntaxTokenKind.TemplateStringLiteral)
+            {
+                return ParseFormattedString(Advance(), isTemplate: true);
             }
 
             return constantKind is null ? null : Constant(Advance(), constantKind.Value);

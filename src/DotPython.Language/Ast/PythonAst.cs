@@ -228,6 +228,12 @@ public sealed record PythonConditionalExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonTemplateStringExpression(
+    IReadOnlyList<PythonFormattedStringPart> Parts,
+    bool IsRaw,
+    TextSpan Span
+) : PythonExpression(Span);
+
 public sealed record PythonFormattedStringExpression(
     IReadOnlyList<PythonFormattedStringPart> Parts,
     bool IsRaw,
@@ -243,7 +249,8 @@ public sealed record PythonFormattedStringInterpolationPart(
     PythonExpression Expression,
     char? Conversion,
     string? FormatSpecification,
-    TextSpan Span
+    TextSpan Span,
+    string? RawExpression = null
 ) : PythonFormattedStringPart(Span);
 
 public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Span);

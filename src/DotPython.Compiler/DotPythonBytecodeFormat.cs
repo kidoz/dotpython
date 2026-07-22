@@ -4,5 +4,5 @@ namespace DotPython.Compiler;
 public static class DotPythonBytecodeFormat
 {
     /// <summary>Gets the current bytecode format version.</summary>
-    public const int CurrentVersion = 17;
+    public const int CurrentVersion = 18;
 }

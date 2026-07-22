@@ -390,6 +390,25 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsTemplateStringsWithRawExpressionText()
+    {
+        var result = Parse("value = t'a {item!r:>4} b'\n");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var template = Assert.IsType<PythonTemplateStringExpression>(assignment.Value);
+        Assert.Equal(3, template.Parts.Count);
+        var interpolation = Assert.IsType<PythonFormattedStringInterpolationPart>(
+            template.Parts[1]
+        );
+        Assert.Equal("item", interpolation.RawExpression);
+        Assert.Equal('r', interpolation.Conversion);
+        Assert.Equal(">4", interpolation.FormatSpecification);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

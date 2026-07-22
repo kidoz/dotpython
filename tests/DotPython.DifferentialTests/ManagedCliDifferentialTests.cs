@@ -270,6 +270,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "class MyError(ValueError):\n    pass\nclass DeepError(MyError):\n    pass\ntry:\n    raise MyError('boom')\nexcept MyError as e:\n    print('caught-mine', e)\ntry:\n    raise DeepError('deep')\nexcept ValueError:\n    print('caught-deep')\ntry:\n    raise ValueError('plain')\nexcept MyError:\n    print('never')\nexcept ValueError:\n    print('plain-not-mine')\ne = MyError('inst')\nprint(isinstance(e, MyError), isinstance(e, ValueError), isinstance(e, Exception), isinstance(e, KeyError))\ntry:\n    raise DeepError\nexcept MyError:\n    print('bare-raise-type')"
     )]
+    [InlineData(
+        "name = 'world'\nv = 42\nt = t'hello {name} num {v:>5} end'\nprint(type(t).__name__)\nprint(t.strings, len(t.interpolations), t.values)\ni = t.interpolations[0]\nprint(type(i).__name__, repr(i.value), repr(i.expression), repr(i.conversion), repr(i.format_spec))\nprint(repr(t.interpolations[1].expression), repr(t.interpolations[1].format_spec))\nfor item in t:\n    print('item:', type(item).__name__, repr(item) if isinstance(item, str) else repr(item.value))"
+    )]
+    [InlineData(
+        "v = 42\nprint(repr(t'{v!r}'.interpolations[0].conversion))\nt2 = t'a' + t'{v}'\nprint(type(t2).__name__, t2.strings)\ntry:\n    t'x' + 'y'\nexcept TypeError:\n    print('concat-str-error')\nprint(t''.strings, t'{v}'.strings)\nprint(repr(t'{v}'), str(t'plain'))\nparts = [x for x in t'{1}mid{2}']\nprint(len(parts), parts[1])"
+    )]
+    [InlineData(
+        "v = 'ab'\nprint(f'{v!r:>8}|', f'{v!s:^7}|')\nt = t'{v!r:>6}'\nprint(t.interpolations[0].conversion, t.interpolations[0].format_spec)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

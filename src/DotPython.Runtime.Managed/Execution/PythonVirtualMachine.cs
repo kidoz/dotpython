@@ -459,6 +459,12 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.MakeClassWithBases:
                 MakeClass(instruction, Pop(instruction.Span));
                 break;
+            case PythonOpCode.MakeInterpolation:
+                MakeInterpolation(instruction.Span);
+                break;
+            case PythonOpCode.MakeTemplate:
+                MakeTemplate(instruction.Operand, instruction.Span);
+                break;
             case PythonOpCode.CallKeyword:
                 ApplyKeywordCall(instruction);
                 break;
@@ -2992,6 +2998,59 @@ internal sealed class PythonVirtualMachine
         );
     }
 
+    private void MakeInterpolation(TextSpan span)
+    {
+        var specification = Pop(span) as PythonTextValue;
+        var conversion = Pop(span);
+        var expression = Pop(span) as PythonTextValue;
+        var value = Pop(span);
+        if (specification is null || expression is null)
+        {
+            throw Fault("DPY4007", "The interpolation layout is invalid.", span);
+        }
+
+        _evaluationStack.Push(
+            new PythonInterpolationValue(
+                value,
+                expression.Value,
+                conversion is PythonTextValue { Value.Length: 1 } text ? text.Value[0] : null,
+                specification.Value
+            )
+        );
+    }
+
+    private void MakeTemplate(int interpolationCount, TextSpan span)
+    {
+        if (interpolationCount < 0)
+        {
+            throw Fault("DPY4007", "The template layout is invalid.", span);
+        }
+
+        var interpolations = new PythonInterpolationValue[interpolationCount];
+        for (var index = interpolationCount - 1; index >= 0; index--)
+        {
+            if (Pop(span) is not PythonInterpolationValue interpolation)
+            {
+                throw Fault("DPY4007", "The template layout is invalid.", span);
+            }
+
+            interpolations[index] = interpolation;
+        }
+
+        var strings = new string[interpolationCount + 1];
+        for (var index = interpolationCount; index >= 0; index--)
+        {
+            if (Pop(span) is not PythonTextValue text)
+            {
+                throw Fault("DPY4007", "The template layout is invalid.", span);
+            }
+
+            strings[index] = text.Value;
+        }
+
+        _evaluationStack.Push(new PythonTemplateValue(strings, interpolations));
+    }
+
     private void MakeClass(PythonInstruction instruction, PythonValue? baseValue = null)
     {
         PreparedPythonCode code;
@@ -4427,6 +4486,25 @@ internal sealed class PythonVirtualMachine
 
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
+
+        if (
+            opCode == PythonOpCode.BinaryAdd
+            && left is PythonTemplateValue leftTemplate
+            && right is PythonTemplateValue rightTemplate
+        )
+        {
+            var strings = new string[
+                leftTemplate.Strings.Length + rightTemplate.Strings.Length - 1
+            ];
+            leftTemplate.Strings.CopyTo(strings, 0);
+            strings[leftTemplate.Strings.Length - 1] =
+                leftTemplate.Strings[^1] + rightTemplate.Strings[0];
+            rightTemplate.Strings.AsSpan(1).CopyTo(strings.AsSpan(leftTemplate.Strings.Length));
+            return new PythonTemplateValue(
+                strings,
+                [.. leftTemplate.Interpolations, .. rightTemplate.Interpolations]
+            );
+        }
 
         if (
             opCode == PythonOpCode.BinaryAdd

@@ -155,14 +155,21 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
-    public void Compile_RejectsTemplateStringsUntilComponentParsingExists()
+    public void Compile_LowersTemplateStringsToTemplateInstructions()
     {
         var parseResult = PythonParser.Parse(new SourceText("print(t'{40 + 2}')"));
 
         var result = PythonCompiler.Compile(parseResult.Module);
 
-        var diagnostic = Assert.Single(result.Diagnostics);
-        Assert.Equal("DPY3004", diagnostic.Code);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeInterpolation
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeTemplate
+        );
     }
 
     [Fact]

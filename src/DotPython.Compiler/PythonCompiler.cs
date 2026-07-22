@@ -345,6 +345,9 @@ public static class PythonCompiler
                 case PythonFormattedStringExpression formatted:
                     CompileFormattedString(formatted);
                     break;
+                case PythonTemplateStringExpression template:
+                    CompileTemplateString(template);
+                    break;
                 case PythonLambdaExpression lambdaExpression:
                     CompileLambdaExpression(lambdaExpression);
                     break;
@@ -422,6 +425,81 @@ public static class PythonCompiler
             {
                 CompileExpression(element);
             }
+        }
+
+        private void CompileTemplateString(PythonTemplateStringExpression template)
+        {
+            var statics = new List<string>();
+            var interpolations = new List<PythonFormattedStringInterpolationPart>();
+            var current = new System.Text.StringBuilder();
+            foreach (var part in template.Parts)
+            {
+                switch (part)
+                {
+                    case PythonFormattedStringLiteralPart literal:
+                        current.Append(
+                            template.IsRaw
+                                ? literal.RawText
+                                : PythonLiteralDecoder.DecodeEscapes(literal.RawText)
+                        );
+                        break;
+                    case PythonFormattedStringInterpolationPart interpolation:
+                        statics.Add(current.ToString());
+                        current.Clear();
+                        interpolations.Add(interpolation);
+                        break;
+                }
+            }
+
+            statics.Add(current.ToString());
+            foreach (var text in statics)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.TextValue, text)),
+                    template.Span
+                );
+            }
+
+            foreach (var interpolation in interpolations)
+            {
+                CompileExpression(interpolation.Expression);
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        new PythonConstant(
+                            PythonConstantType.TextValue,
+                            interpolation.RawExpression ?? string.Empty
+                        )
+                    ),
+                    interpolation.Span
+                );
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        interpolation.Conversion is { } conversion
+                            ? new PythonConstant(
+                                PythonConstantType.TextValue,
+                                conversion.ToString()
+                            )
+                            : new PythonConstant(PythonConstantType.NoneValue, null)
+                    ),
+                    interpolation.Span
+                );
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        new PythonConstant(
+                            PythonConstantType.TextValue,
+                            interpolation.FormatSpecification ?? string.Empty
+                        )
+                    ),
+                    interpolation.Span
+                );
+                Emit(PythonOpCode.MakeInterpolation, 0, interpolation.Span);
+            }
+
+            Emit(PythonOpCode.MakeTemplate, interpolations.Count, template.Span);
         }
 
         private void CompileFormattedString(PythonFormattedStringExpression formatted)

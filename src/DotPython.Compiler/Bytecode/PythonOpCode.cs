@@ -91,4 +91,6 @@ public enum PythonOpCode
     UnpackSequenceStarred = 86,
     SetAdd = 87,
     MakeClassWithBases = 88,
+    MakeInterpolation = 89,
+    MakeTemplate = 90,
 }
