@@ -18,7 +18,7 @@ public sealed class AnyverQualificationEvidenceTests
         var evidenceRoot = evidence.RootElement;
 
         Assert.Equal(2, compatibilityRoot.GetProperty("schemaVersion").GetInt32());
-        Assert.Equal(1, evidenceRoot.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(2, evidenceRoot.GetProperty("schemaVersion").GetInt32());
         Assert.Equal("partial", compatibilityRoot.GetProperty("qualificationStatus").GetString());
         Assert.False(compatibilityRoot.GetProperty("supportsCpythonAbi").GetBoolean());
         AssertIdentityMatches(compatibilityRoot, evidenceRoot, "package");
@@ -55,7 +55,13 @@ public sealed class AnyverQualificationEvidenceTests
             .EnumerateArray()
             .Select(blocker => blocker.GetProperty("id").GetString())
             .ToHashSet(StringComparer.Ordinal);
-        Assert.Contains("managed-parser-assert-statement", blockerIds);
+        Assert.Contains("managed-suite-admission", blockerIds);
+        Assert.Contains("managed-parser-with-statement", blockerIds);
+        Assert.DoesNotContain("managed-parser-assert-statement", blockerIds);
+        Assert.All(
+            execution.GetProperty("blockers").EnumerateArray(),
+            blocker => Assert.True(blocker.GetProperty("occurrences").GetInt32() >= 1)
+        );
 
         var cases = evidenceRoot.GetProperty("cases").EnumerateArray().ToArray();
         var nodeIds = new HashSet<string>(StringComparer.Ordinal);

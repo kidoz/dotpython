@@ -272,19 +272,18 @@ public sealed class WorkerProcessPoolTests
         await using var session = await pool.OpenSessionAsync(
             TestContext.Current.CancellationToken
         );
-        var execution = await session.ExecuteAsync(
+        var run = await QualificationSuiteRunner.RunAsync(
+            session,
             testSource,
             fileName: "tests/test_anyver.py",
-            cancellationToken: TestContext.Current.CancellationToken
+            nodeIds,
+            TestContext.Current.CancellationToken
         );
-        Assert.False(execution.Success);
-        var blocker = Assert.IsType<WorkerDiagnostic>(execution.Diagnostics[0]);
-        Assert.Equal("DPY2004", blocker.Code);
-        Assert.Equal("The 'assert' statement is not supported in this position.", blocker.Message);
+        Assert.Equal(nodeIds.Length, run.Cases.Count);
 
         var evidence = new AnyverQualificationEvidence
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             Package = "anyver",
             PackageVersion = "1.1.0",
             Wheel = "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
@@ -309,32 +308,17 @@ public sealed class WorkerProcessPoolTests
                 Isolation = "worker-process",
                 SourceModified = false,
                 SuiteAdmissionAttempts = 1,
-                AttemptedCases = 0,
-                Blockers =
-                [
-                    new AnyverQualificationBlocker
-                    {
-                        Id = "managed-parser-assert-statement",
-                        DiagnosticCode = blocker.Code,
-                        Message = blocker.Message,
-                    },
-                ],
+                AttemptedCases = run.AttemptedCases,
+                Blockers = run.Blockers,
             },
             Summary = new AnyverQualificationSummary
             {
                 Collected = nodeIds.Length,
-                Passed = 0,
-                Failed = 0,
-                Skipped = nodeIds.Length,
+                Passed = run.Cases.Count(item => item.Outcome == "passed"),
+                Failed = run.Cases.Count(item => item.Outcome == "failed"),
+                Skipped = run.Cases.Count(item => item.Outcome == "skipped"),
             },
-            Cases = nodeIds
-                .Select(nodeId => new AnyverQualificationCase
-                {
-                    NodeId = nodeId,
-                    Outcome = "skipped",
-                    Blocker = "managed-parser-assert-statement",
-                })
-                .ToArray(),
+            Cases = run.Cases,
         };
         var generated =
             JsonSerializer.Serialize(
@@ -371,6 +355,46 @@ public sealed class WorkerProcessPoolTests
                 ).ReplaceLineEndings("\n")
             );
         }
+    }
+
+    [Fact]
+    public async Task Worker_AttemptsQualificationCasesWhenTheSuiteIsAdmitted()
+    {
+        await using var pool = new WorkerProcessPool(CreateOptions());
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        var run = await QualificationSuiteRunner.RunAsync(
+            session,
+            "class TestMath:\n"
+                + "    def test_ok(self):\n"
+                + "        assert 1 + 1 == 2\n"
+                + "    def test_bad(self):\n"
+                + "        assert 1 == 2, 'broken math'\n"
+                + "def test_top():\n"
+                + "    assert True\n",
+            fileName: "tests/test_synthetic.py",
+            [
+                "tests/test_synthetic.py::TestMath::test_ok",
+                "tests/test_synthetic.py::TestMath::test_bad",
+                "tests/test_synthetic.py::test_top",
+                "tests/test_synthetic.py::TestMath::test_param[1-2]",
+            ],
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.True(run.SuiteAdmitted);
+        Assert.Equal(3, run.AttemptedCases);
+        Assert.Equal(
+            ["passed", "failed", "passed", "skipped"],
+            run.Cases.Select(item => item.Outcome)
+        );
+        Assert.Contains("broken math", run.Cases[1].Detail, StringComparison.Ordinal);
+        Assert.Equal(QualificationSuiteRunner.ParametrizeBlockerId, run.Cases[3].Blocker);
+        var blocker = Assert.Single(run.Blockers);
+        Assert.Equal(QualificationSuiteRunner.ParametrizeBlockerId, blocker.Id);
+        Assert.Equal(1, blocker.Occurrences);
     }
 
     [Fact]
@@ -1152,6 +1176,8 @@ internal sealed class AnyverQualificationBlocker
     public required string DiagnosticCode { get; init; }
 
     public required string Message { get; init; }
+
+    public required int Occurrences { get; init; }
 }
 
 internal sealed class AnyverQualificationSummary
@@ -1171,7 +1197,11 @@ internal sealed class AnyverQualificationCase
 
     public required string Outcome { get; init; }
 
-    public required string Blocker { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Blocker { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; init; }
 }
 
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web, WriteIndented = true)]

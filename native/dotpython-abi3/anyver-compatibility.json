@@ -17,7 +17,7 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "f13e2a085290bc78bc4b1f5b5e931da06276cd7b882c15037809efc6e7e255b7",
+    "evidenceSha256": "6a8f4a570580aa2e9b960787003a51b6a2b92d93be29146b60879c72b21985ec",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
@@ -26,7 +26,7 @@
     "passed": 0,
     "failed": 0,
     "skipped": 325,
-    "reason": "The unchanged suite is blocked at worker admission by DPY2004 because managed class statements are not yet supported. All 325 upstream node IDs are recorded as skipped; no skipped case is counted as passed."
+    "reason": "The unchanged suite is still blocked at worker admission: the previous 'assert' blocker is cleared, and the remaining parse blockers are 22 'with' statements (DPY2004), 5 lambda expressions, and 1 set literal. All 325 upstream node IDs remain recorded as skipped; no skipped case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",
