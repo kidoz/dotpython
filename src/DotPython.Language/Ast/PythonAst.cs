@@ -26,12 +26,20 @@ public sealed record PythonAugmentedAssignmentStatement(
 public sealed record PythonExpressionStatement(PythonExpression Expression, TextSpan Span)
     : PythonStatement(Span);
 
+public sealed record PythonAnnotatedAssignmentStatement(
+    PythonExpression Target,
+    PythonExpression Annotation,
+    PythonExpression? Value,
+    TextSpan Span
+) : PythonStatement(Span);
+
 public sealed record PythonFunctionDefinitionStatement(
     IReadOnlyList<PythonExpression> Decorators,
     PythonNameExpression Name,
     IReadOnlyList<PythonParameter> Parameters,
     IReadOnlyList<PythonStatement> Body,
-    TextSpan Span
+    TextSpan Span,
+    PythonExpression? ReturnAnnotation = null
 ) : PythonStatement(Span);
 
 public sealed record PythonClassDefinitionStatement(
@@ -54,7 +62,8 @@ public sealed record PythonParameter(
     string Name,
     PythonExpression? Default,
     TextSpan Span,
-    PythonParameterKind Kind = PythonParameterKind.Positional
+    PythonParameterKind Kind = PythonParameterKind.Positional,
+    PythonExpression? Annotation = null
 ) : PythonNode(Span);
 
 public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)

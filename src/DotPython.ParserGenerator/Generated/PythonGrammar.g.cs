@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "3bbeb24477c94778bf93b1620537d7e2f870a94a1c69f832d2a68aa74f837c26";
-    internal const int RuleCount = 71;
+    internal const string SourceSha256 = "2457e1e8c88e659a0f506c4f8d3693e8cc6d1e8b65e07a6ee208a1b81d11e16f";
+    internal const int RuleCount = 74;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -16,8 +16,9 @@ internal static class GeneratedPythonGrammar
         decorated: decorators (function_def | class_def)
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
+        simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
         assignment: expression_list '=' expression_list
+        annotated_assignment: primary ':' expression ['=' expression_list]
         augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression_list
         return_stmt: 'return' [expression_list]
         break_stmt: 'break'
@@ -45,15 +46,17 @@ internal static class GeneratedPythonGrammar
         with_item: expression ['as' primary]
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
-        function_def: 'def' NAME '(' [parameters] ')' ':' block
+        function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
         class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
         parameters: ','.parameter+ [',']
-        parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
+        parameter: '**' NAME [':' expression] | '*' [NAME [':' expression]] | NAME [':' expression] ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
         expression: lambda_expression | assignment_expression | conditional_expression
         assignment_expression: NAME ':=' expression
         conditional_expression: disjunction ['if' disjunction 'else' expression]
-        lambda_expression: 'lambda' [parameters] ':' expression
+        lambda_expression: 'lambda' [lambda_parameters] ':' expression
+        lambda_parameters: ','.lambda_parameter+ [',']
+        lambda_parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
         inversion: 'not' inversion | comparison

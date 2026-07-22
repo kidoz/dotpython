@@ -409,6 +409,31 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsAnnotationsWithoutEvaluationSemantics()
+    {
+        var result = Parse(
+            "def f(x: int, y: str = 'a') -> bool:\n    return True\ncount: int = 0\nbare: float\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.NotNull(function.ReturnAnnotation);
+        Assert.Equal(
+            "int",
+            Assert.IsType<PythonNameExpression>(function.Parameters[0].Annotation).Name
+        );
+        Assert.NotNull(function.Parameters[1].Default);
+        var annotated = Assert.IsType<PythonAnnotatedAssignmentStatement>(
+            result.Module.Statements[1]
+        );
+        Assert.NotNull(annotated.Value);
+        var bare = Assert.IsType<PythonAnnotatedAssignmentStatement>(result.Module.Statements[2]);
+        Assert.Null(bare.Value);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

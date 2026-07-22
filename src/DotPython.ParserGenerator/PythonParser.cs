@@ -527,6 +527,16 @@ public static class PythonParser
             Expect(SyntaxTokenKind.LeftParenthesis, "'(' after the function name");
             var parameters = ParseParameters(SyntaxTokenKind.RightParenthesis);
             Expect(SyntaxTokenKind.RightParenthesis, "')' after the parameters");
+            PythonExpression? returnAnnotation = null;
+            if (Match(SyntaxTokenKind.Arrow))
+            {
+                returnAnnotation = ParseExpression();
+                if (returnAnnotation is null)
+                {
+                    ReportExpected("a return annotation after '->'", Current.Span);
+                }
+            }
+
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the function signature");
             _functionDepth++;
             IReadOnlyList<PythonStatement> body;
@@ -542,9 +552,10 @@ public static class PythonParser
             return new PythonFunctionDefinitionStatement(
                 decorators,
                 name,
-                parameters.AsReadOnly(),
+                parameters,
                 body,
-                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
+                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End)),
+                returnAnnotation
             );
         }
 
@@ -774,6 +785,37 @@ public static class PythonParser
             if (expression is null)
             {
                 return null;
+            }
+
+            if (
+                Current.Kind == SyntaxTokenKind.Colon
+                && expression
+                    is PythonNameExpression
+                        or PythonAttributeExpression
+                        or PythonSubscriptionExpression
+            )
+            {
+                Advance();
+                var annotation = ParseRequiredExpression("an annotation after ':'");
+                PythonExpression? annotatedValue = null;
+                if (Match(SyntaxTokenKind.Equal))
+                {
+                    annotatedValue = ParseExpressionListValue();
+                    if (annotatedValue is null)
+                    {
+                        ReportExpected("an expression after '='", Current.Span);
+                    }
+                }
+
+                return new PythonAnnotatedAssignmentStatement(
+                    expression,
+                    annotation,
+                    annotatedValue,
+                    TextSpan.FromBounds(
+                        expression.Span.Start,
+                        (annotatedValue ?? annotation).Span.End
+                    )
+                );
             }
 
             if (Current.Kind == SyntaxTokenKind.Comma)
@@ -1392,6 +1434,7 @@ public static class PythonParser
 
         private ReadOnlyCollection<PythonParameter> ParseParameters(SyntaxTokenKind terminator)
         {
+            var allowAnnotations = terminator == SyntaxTokenKind.RightParenthesis;
             var parameters = new List<PythonParameter>();
             var parameterNames = new HashSet<string>(StringComparer.Ordinal);
             var sawDefault = false;
@@ -1420,12 +1463,14 @@ public static class PythonParser
                         "a parameter name after '**'"
                     );
                     sawDoubleStar = true;
+                    var doubleStarAnnotation = ParseParameterAnnotation(allowAnnotations);
                     AddParameter(
                         parameters,
                         parameterNames,
                         nameToken,
                         null,
-                        PythonParameterKind.VariadicKeywords
+                        PythonParameterKind.VariadicKeywords,
+                        doubleStarAnnotation
                     );
                 }
                 else if (Current.Kind == SyntaxTokenKind.Star)
@@ -1442,12 +1487,15 @@ public static class PythonParser
                         && !IsExpressionKeyword(Current.Text)
                     )
                     {
+                        var starName = Advance();
+                        var starAnnotation = ParseParameterAnnotation(allowAnnotations);
                         AddParameter(
                             parameters,
                             parameterNames,
-                            Advance(),
+                            starName,
                             null,
-                            PythonParameterKind.VariadicPositional
+                            PythonParameterKind.VariadicPositional,
+                            starAnnotation
                         );
                     }
                     else
@@ -1458,6 +1506,7 @@ public static class PythonParser
                 else
                 {
                     var nameToken = Advance();
+                    var annotation = ParseParameterAnnotation(allowAnnotations);
                     PythonExpression? defaultValue = null;
                     if (Match(SyntaxTokenKind.Equal))
                     {
@@ -1488,7 +1537,14 @@ public static class PythonParser
                         );
                     }
 
-                    AddParameter(parameters, parameterNames, nameToken, defaultValue, kind);
+                    AddParameter(
+                        parameters,
+                        parameterNames,
+                        nameToken,
+                        defaultValue,
+                        kind,
+                        annotation
+                    );
                 }
 
                 if (!Match(SyntaxTokenKind.Comma))
@@ -1514,12 +1570,32 @@ public static class PythonParser
             return parameters.AsReadOnly();
         }
 
+        private PythonExpression? ParseParameterAnnotation(bool allowAnnotations)
+        {
+            if (Current.Kind != SyntaxTokenKind.Colon || !allowAnnotations)
+            {
+                // Lambda parameter lists cannot carry annotations; there the ':' ends the list.
+                return null;
+            }
+
+            Advance();
+            // PEP 649 semantics: annotations are recorded syntax, never evaluated.
+            var annotation = ParseExpression();
+            if (annotation is null)
+            {
+                ReportExpected("an annotation after ':'", Current.Span);
+            }
+
+            return annotation;
+        }
+
         private void AddParameter(
             List<PythonParameter> parameters,
             HashSet<string> parameterNames,
             SyntaxToken nameToken,
             PythonExpression? defaultValue,
-            PythonParameterKind kind
+            PythonParameterKind kind,
+            PythonExpression? annotation = null
         )
         {
             if (string.IsNullOrEmpty(nameToken.Text))
@@ -1550,7 +1626,8 @@ public static class PythonParser
                     defaultValue is null
                         ? nameToken.Span
                         : TextSpan.FromBounds(nameToken.Span.Start, defaultValue.Span.End),
-                    kind
+                    kind,
+                    annotation
                 )
             );
         }

@@ -613,6 +613,13 @@ public static class PythonSymbolBinder
                 case PythonAssignmentStatement assignment:
                     CollectTargetNames(assignment.Target, localNames, localNameSet, excludedNames);
                     break;
+                case PythonAnnotatedAssignmentStatement annotated:
+                    if (annotated.Target is PythonNameExpression annotatedName)
+                    {
+                        AddLocal(annotatedName.Name, localNames, localNameSet, excludedNames);
+                    }
+
+                    break;
                 case PythonAugmentedAssignmentStatement augmented:
                     if (augmented.Target is PythonNameExpression augmentedTarget)
                     {
@@ -744,6 +751,18 @@ public static class PythonSymbolBinder
         {
             switch (statement)
             {
+                case PythonAnnotatedAssignmentStatement annotated:
+                    if (annotated.Value is not null)
+                    {
+                        CollectReferences(annotated.Value, references);
+                    }
+
+                    if (annotated.Target is not PythonNameExpression)
+                    {
+                        CollectTargetReferences(annotated.Target, references);
+                    }
+
+                    break;
                 case PythonAssignmentStatement assignment:
                     CollectReferences(assignment.Value, references);
                     CollectTargetReferences(assignment.Target, references);
@@ -1085,6 +1104,16 @@ public static class PythonSymbolBinder
                     }
 
                     yield return @class;
+                    break;
+                case PythonAnnotatedAssignmentStatement annotated:
+                    if (annotated.Value is not null)
+                    {
+                        foreach (var nested in EnumerateComprehensions(annotated.Value))
+                        {
+                            yield return nested;
+                        }
+                    }
+
                     break;
                 case PythonAssignmentStatement assignment:
                     foreach (var nested in EnumerateComprehensions(assignment.Value))

@@ -146,6 +146,16 @@ public static class PythonCompiler
                 case PythonAugmentedAssignmentStatement augmented:
                     CompileAugmentedAssignment(augmented);
                     break;
+                case PythonAnnotatedAssignmentStatement annotated:
+                    // PEP 649 default: the annotation is never evaluated. A bare
+                    // annotation binds nothing; one with a value assigns normally.
+                    if (annotated.Value is not null)
+                    {
+                        CompileExpression(annotated.Value);
+                        CompileAssignmentTarget(annotated.Target);
+                    }
+
+                    break;
                 case PythonExpressionStatement expressionStatement:
                     CompileExpression(expressionStatement.Expression);
                     Emit(PythonOpCode.PopTop, 0, expressionStatement.Span);

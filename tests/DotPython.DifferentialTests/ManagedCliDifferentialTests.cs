@@ -288,6 +288,12 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print('{a}-{b}'.format_map({'a': 1, 'b': 2}))\ntry:\n    '{missing}'.format_map({'a': 1})\nexcept KeyError:\n    print('map-missing')\npairs = [(1, 2, 3), (4, 5, 6)]\nfor first, *rest in pairs:\n    print(first, rest)\nfor *init, last in [(1, 2, 3)]:\n    print(init, last)"
     )]
+    [InlineData(
+        "def greet(name: str, count: int = 2, *args: int, sep: str = '-', **extra: str) -> str:\n    return sep.join([name] * count)\nprint(greet('hi'), greet('a', 3, sep='+'))\ntotal: int = 10\nlabel: str = 'x'\nprint(total, label)\ndef undefined_ann(x: NotDefinedAnywhere) -> AlsoMissing:\n    return x\nprint(undefined_ann(7))\nitems: list = [v * 2 for v in range(3)]\nprint(items)"
+    )]
+    [InlineData(
+        "bare: float\ntry:\n    print(bare)\nexcept UnboundLocalError:\n    print('unbound')\nexcept NameError:\n    print('name-error')\ndef scoped():\n    inner: int\n    try:\n        return inner\n    except UnboundLocalError:\n        return 'inner-unbound'\nprint(scoped())\nclass Config:\n    retries: int = 3\n    timeout: float\n    def __init__(self, url: str) -> None:\n        self.url: str = url\nc = Config('http://x')\nprint(c.retries, c.url)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
