@@ -60,7 +60,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":13,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":14,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -394,10 +394,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":13,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":14,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":13,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":14,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
@@ -467,6 +467,11 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Equal(54, (int)PythonOpCode.MatchException);
         Assert.Equal(55, (int)PythonOpCode.ClearException);
         Assert.Equal(56, (int)PythonOpCode.Raise);
+        Assert.Equal(72, (int)PythonOpCode.DeleteName);
+        Assert.Equal(73, (int)PythonOpCode.DeleteLocal);
+        Assert.Equal(74, (int)PythonOpCode.DeleteSubscript);
+        Assert.Equal(75, (int)PythonOpCode.DeleteCell);
+        Assert.Equal(76, (int)PythonOpCode.DeleteAttribute);
         Assert.Equal(0, (int)PythonConstantType.NoneValue);
         Assert.Equal(7, (int)PythonConstantType.CodeObject);
     }

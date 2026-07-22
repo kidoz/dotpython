@@ -709,12 +709,4 @@ internal static class PythonBuiltinMethods
 
     private static PythonRuntimeException Fault(string message, string pythonType) =>
         ManagedObjectProtocols.Fault("DPY4009", message, default, pythonType);
-
-    private sealed class PythonOrderingComparer : IComparer<PythonValue>
-    {
-        internal static readonly PythonOrderingComparer Instance = new();
-
-        public int Compare(PythonValue? left, PythonValue? right) =>
-            ManagedObjectProtocols.CompareOrdered(left!, right!, default);
-    }
 }

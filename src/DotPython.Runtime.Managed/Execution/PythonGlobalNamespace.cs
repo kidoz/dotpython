@@ -21,6 +21,17 @@ internal sealed class PythonGlobalNamespace
     internal bool TryGetSlot(string name, out PythonGlobalSlot slot) =>
         _slots.TryGetValue(name, out slot!);
 
+    internal bool Remove(string name)
+    {
+        if (!_slots.Remove(name))
+        {
+            return false;
+        }
+
+        KeysVersion = unchecked(KeysVersion + 1);
+        return true;
+    }
+
     internal bool TryGetValue(string name, out PythonValue value)
     {
         if (_slots.TryGetValue(name, out var slot))

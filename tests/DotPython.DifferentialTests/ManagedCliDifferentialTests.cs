@@ -135,6 +135,24 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "factor = 3\nprint([n * factor for n in [1, 2]])\ndef scale(values, factor):\n    return [v * factor for v in values]\nprint(scale([1, 2, 3], 5))\nwords = ['hello', 'world', 'hi']\nprint([w.upper() for w in words if len(w) > 2])\nprint([x for x in [y * 2 for y in range(3)]])"
     )]
+    [InlineData(
+        "assert True\ntry:\n    assert 1 == 2, 'one is not two'\nexcept AssertionError as error:\n    print('caught', error)\ntry:\n    assert False\nexcept AssertionError:\n    print('bare')"
+    )]
+    [InlineData(
+        "values = [1, 2, 3, 4, 5]\ndel values[0]\ndel values[-1]\nprint(values)\ndel values[::2]\nprint(values)\nd = {'a': 1, 'b': 2}\ndel d['a']\nprint(d)\nname = 'temp'\ndel name\ntry:\n    print(name)\nexcept NameError:\n    print('deleted')\nclass Sample:\n    pass\ninstance = Sample()\ninstance.value = 42\ndel instance.value\ntry:\n    print(instance.value)\nexcept AttributeError:\n    print('attribute-deleted')\ndef capture_error():\n    try:\n        raise ValueError('captured')\n    except ValueError as captured:\n        def read():\n            return captured\n    return read\nread_error = capture_error()\ntry:\n    read_error()\nexcept NameError:\n    print('captured-target-deleted')"
+    )]
+    [InlineData(
+        "try:\n    raise ValueError('boom')\nexcept ValueError as error:\n    print('handled', error)\ntry:\n    print(error)\nexcept NameError:\n    print('target-deleted')"
+    )]
+    [InlineData(
+        "print([1, 2] + [3], (1,) + (2, 3), [0] * 3, 2 * (1, 2), [1] * 0)\ntry:\n    print([] * (10 ** 100))\nexcept OverflowError:\n    print('repeat-overflow')\nprint(int(), int('42'), int('  -7 '), int(3.9), int(-3.9), int(True))\nprint(float('2.5'), float(3), str(42), str([1, 2]), bool([]), bool('x'))\nprint(list('abc'), list(range(3)), tuple([1, 2]), dict([('a', 1), ('b', 2)]))"
+    )]
+    [InlineData(
+        "print(isinstance(1, int), isinstance(True, int), isinstance(True, bool), isinstance(1, bool))\nprint(isinstance('x', str), isinstance([1], (int, list)), isinstance(1.5, (int, str)))\nprint(type(1), type('x'), type([]), type(1) is int, type('a') is type('b'))\nprint(isinstance(ValueError('v'), Exception), isinstance(ValueError('v'), LookupError))\nclass Animal:\n    pass\nprint(isinstance(Animal(), Animal), type(Animal()) is Animal)"
+    )]
+    [InlineData(
+        "print(sum([1, 2, 3]), sum(range(5), 100), sum([0.5, 0.25]))\nprint(min([3, 1, 2]), max([3, 1, 2]), min(4, 2, 9), max('a', 'c', 'b'))\nprint(sorted([3, 1, 2]), sorted(['b', 'a']), sorted((5, 4)), abs(-5), abs(-2.5), abs(-3 + 4j))\ntry:\n    int('abc')\nexcept ValueError:\n    print('bad-int')\ntry:\n    min([])\nexcept ValueError:\n    print('empty-min')"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

@@ -650,6 +650,16 @@ public static class PythonParser
                 return new PythonPassStatement(Advance().Span);
             }
 
+            if (IsKeyword("assert"))
+            {
+                return ParseAssertStatement();
+            }
+
+            if (IsKeyword("del"))
+            {
+                return ParseDeleteStatement();
+            }
+
             if (IsKeyword("global"))
             {
                 return ParseScopeDeclarationStatement(isGlobal: true);
@@ -920,6 +930,75 @@ public static class PythonParser
             }
 
             return token;
+        }
+
+        private PythonAssertStatement ParseAssertStatement()
+        {
+            var assertToken = Advance();
+            var condition = ParseRequiredExpression("a condition after 'assert'");
+            PythonExpression? message = null;
+            if (Match(SyntaxTokenKind.Comma))
+            {
+                message = ParseExpression();
+                if (message is null)
+                {
+                    ReportExpected("a message after ','", Current.Span);
+                }
+            }
+
+            var end = message?.Span.End ?? condition.Span.End;
+            return new PythonAssertStatement(
+                condition,
+                message,
+                TextSpan.FromBounds(assertToken.Span.Start, end)
+            );
+        }
+
+        private PythonDeleteStatement ParseDeleteStatement()
+        {
+            var deleteToken = Advance();
+            var targets = new List<PythonExpression>();
+            while (true)
+            {
+                var target = ParseExpression();
+                if (target is null)
+                {
+                    ReportExpected("a target after 'del'", Current.Span);
+                    break;
+                }
+
+                if (
+                    target
+                    is not (
+                        PythonNameExpression
+                        or PythonSubscriptionExpression
+                        or PythonAttributeExpression
+                    )
+                )
+                {
+                    Report("DPY2005", "This expression cannot be deleted.", target.Span);
+                }
+                else
+                {
+                    targets.Add(target);
+                }
+
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+
+                if (!StartsExpression())
+                {
+                    break;
+                }
+            }
+
+            var end = targets.Count == 0 ? deleteToken.Span.End : targets[^1].Span.End;
+            return new PythonDeleteStatement(
+                targets.AsReadOnly(),
+                TextSpan.FromBounds(deleteToken.Span.Start, end)
+            );
         }
 
         private PythonStatement ParseScopeDeclarationStatement(bool isGlobal)
@@ -2042,15 +2121,15 @@ public static class PythonParser
                     or "continue"
                     or "pass"
                     or "global"
-                    or "nonlocal";
+                    or "nonlocal"
+                    or "assert"
+                    or "del";
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value
-                is "assert"
-                    or "async"
+                is "async"
                     or "class"
                     or "def"
-                    or "del"
                     or "elif"
                     or "else"
                     or "from"

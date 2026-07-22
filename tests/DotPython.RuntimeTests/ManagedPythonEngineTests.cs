@@ -2071,6 +2071,137 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_RaisesCatchableAssertionErrorsAndDeletesBindings()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "assert True\n"
+                + "try:\n"
+                + "    assert 1 == 2, 'one is not two'\n"
+                + "except AssertionError as error:\n"
+                + "    print('caught', error)\n"
+                + "values = [1, 2, 3, 4, 5]\n"
+                + "del values[0]\n"
+                + "del values[::2]\n"
+                + "print(values)\n"
+                + "mapping = {'a': 1, 'b': 2}\n"
+                + "del mapping['a']\n"
+                + "print(mapping)\n"
+                + "name = 'temp'\n"
+                + "del name\n"
+                + "try:\n"
+                + "    print(name)\n"
+                + "except NameError:\n"
+                + "    print('deleted-global')\n"
+                + "try:\n"
+                + "    raise ValueError('boom')\n"
+                + "except ValueError as error:\n"
+                + "    print('handled', error)\n"
+                + "try:\n"
+                + "    print(error)\n"
+                + "except NameError:\n"
+                + "    print('target-deleted')\n"
+                + "class Sample:\n"
+                + "    pass\n"
+                + "instance = Sample()\n"
+                + "instance.value = 42\n"
+                + "del instance.value\n"
+                + "try:\n"
+                + "    print(instance.value)\n"
+                + "except AttributeError:\n"
+                + "    print('attribute-deleted')\n"
+                + "def capture_error():\n"
+                + "    try:\n"
+                + "        raise ValueError('captured')\n"
+                + "    except ValueError as captured:\n"
+                + "        def read():\n"
+                + "            return captured\n"
+                + "    return read\n"
+                + "read_error = capture_error()\n"
+                + "try:\n"
+                + "    read_error()\n"
+                + "except NameError:\n"
+                + "    print('captured-target-deleted')\n"
+                + "def delete_cell():\n"
+                + "    value = 1\n"
+                + "    def read():\n"
+                + "        return value\n"
+                + "    del value\n"
+                + "    return read\n"
+                + "read_cell = delete_cell()\n"
+                + "try:\n"
+                + "    read_cell()\n"
+                + "except NameError:\n"
+                + "    print('cell-deleted')\n",
+            "assert-delete.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"caught one is not two{Environment.NewLine}"
+                + $"[3, 5]{Environment.NewLine}"
+                + $"{{'b': 2}}{Environment.NewLine}"
+                + $"deleted-global{Environment.NewLine}"
+                + $"handled boom{Environment.NewLine}"
+                + $"target-deleted{Environment.NewLine}"
+                + $"attribute-deleted{Environment.NewLine}"
+                + $"captured-target-deleted{Environment.NewLine}"
+                + $"cell-deleted{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_ConstructsAndClassifiesBuiltinTypes()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "print(int('42'), int(3.9), int(True), float('2.5'), str(42), bool([]))\n"
+                + "print(list('abc'), tuple([1, 2]), dict([('a', 1)]))\n"
+                + "print(isinstance(1, int), isinstance(True, int), isinstance(1, bool))\n"
+                + "print(isinstance([1], (int, list)), isinstance(ValueError('v'), Exception))\n"
+                + "print(type(1), type('x'), type(1) is int)\n"
+                + "print([1, 2] + [3], (1,) + (2,), [0] * 3, 2 * (1, 2))\n"
+                + "try:\n"
+                + "    print([] * (10 ** 100))\n"
+                + "except OverflowError:\n"
+                + "    print('repeat-overflow')\n"
+                + "print(sum([1, 2, 3]), sum(range(5), 100))\n"
+                + "print(min([3, 1, 2]), max(4, 2, 9), sorted([3, 1, 2]), abs(-5), abs(-2.5))\n"
+                + "try:\n"
+                + "    int('abc')\n"
+                + "except ValueError:\n"
+                + "    print('bad-int')\n"
+                + "try:\n"
+                + "    min([])\n"
+                + "except ValueError:\n"
+                + "    print('empty-min')\n",
+            "types.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"42 3 1 2.5 42 False{Environment.NewLine}"
+                + $"['a', 'b', 'c'] (1, 2) {{'a': 1}}{Environment.NewLine}"
+                + $"True True False{Environment.NewLine}"
+                + $"True True{Environment.NewLine}"
+                + $"<class 'int'> <class 'str'> True{Environment.NewLine}"
+                + $"[1, 2, 3] (1, 2) [0, 0, 0] (1, 2, 1, 2){Environment.NewLine}"
+                + $"repeat-overflow{Environment.NewLine}"
+                + $"6 110{Environment.NewLine}"
+                + $"1 9 [1, 2, 3] 5 2.5{Environment.NewLine}"
+                + $"bad-int{Environment.NewLine}empty-min{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(

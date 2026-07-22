@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "2b67d0987d8a89883dee013af9aafbadf187d442805644a47c06a5a192933a6f";
-    internal const int RuleCount = 61;
+    internal const string SourceSha256 = "bd6b35e61a1e66d28c84dff7e0dbc4a0f8dfadc2cbe51cad92c713f0027d030a";
+    internal const int RuleCount = 63;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -14,13 +14,15 @@ internal static class GeneratedPythonGrammar
         statement: compound_stmt | simple_stmts
         compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def | class_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
+        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
         assignment: expression_list '=' expression_list
         augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression_list
         return_stmt: 'return' [expression_list]
         break_stmt: 'break'
         continue_stmt: 'continue'
         pass_stmt: 'pass'
+        assert_stmt: 'assert' expression [',' expression]
+        del_stmt: 'del' ','.primary+ [',']
         global_stmt: 'global' ','.NAME+
         nonlocal_stmt: 'nonlocal' ','.NAME+
         raise_stmt: 'raise' [expression ['from' expression]]

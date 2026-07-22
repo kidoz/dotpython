@@ -244,6 +244,14 @@ internal sealed record PythonBuiltinFunctionValue(
     internal override string ToDisplayString() => $"<built-in function {Name}>";
 }
 
+internal sealed record PythonBuiltinTypeValue(
+    string Name,
+    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Construct
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<class '{Name}'>";
+}
+
 internal interface PythonExternalObjectProtocol
 {
     PythonValue Call(IReadOnlyList<PythonValue> arguments, TextSpan span);

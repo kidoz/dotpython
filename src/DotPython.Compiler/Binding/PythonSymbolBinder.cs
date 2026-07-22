@@ -504,6 +504,16 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonDeleteStatement deleteStatement:
+                    foreach (var target in deleteStatement.Targets)
+                    {
+                        if (target is PythonNameExpression deletedName)
+                        {
+                            AddLocal(deletedName.Name, localNames, localNameSet, excludedNames);
+                        }
+                    }
+
+                    break;
                 case PythonFunctionDefinitionStatement function:
                     AddLocal(function.Name.Name, localNames, localNameSet, excludedNames);
                     break;
@@ -609,6 +619,21 @@ public static class PythonSymbolBinder
                 case PythonAugmentedAssignmentStatement augmented:
                     CollectReferences(augmented.Target, references);
                     CollectReferences(augmented.Value, references);
+                    break;
+                case PythonAssertStatement assertStatement:
+                    CollectReferences(assertStatement.Condition, references);
+                    if (assertStatement.Message is not null)
+                    {
+                        CollectReferences(assertStatement.Message, references);
+                    }
+
+                    break;
+                case PythonDeleteStatement deleteStatement:
+                    foreach (var target in deleteStatement.Targets)
+                    {
+                        CollectTargetReferences(target, references);
+                    }
+
                     break;
                 case PythonExpressionStatement expression:
                     CollectReferences(expression.Expression, references);
@@ -845,6 +870,28 @@ public static class PythonSymbolBinder
                     foreach (var nested in EnumerateComprehensions(augmented.Value))
                     {
                         yield return nested;
+                    }
+
+                    break;
+                case PythonAssertStatement assertStatement:
+                    foreach (var nested in EnumerateComprehensions(assertStatement.Condition))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateOptionalComprehensions(assertStatement.Message))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonDeleteStatement deleteStatement:
+                    foreach (var target in deleteStatement.Targets)
+                    {
+                        foreach (var nested in EnumerateComprehensions(target))
+                        {
+                            yield return nested;
+                        }
                     }
 
                     break;

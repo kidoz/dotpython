@@ -914,6 +914,87 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_EmitsAssertAndDeleteBytecode()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "assert flag, 'message'\n"
+                    + "del mapping['key']\n"
+                    + "del instance.value\n"
+                    + "del name\n"
+                    + "def act():\n"
+                    + "    local = 1\n"
+                    + "    del local\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains("AssertionError", result.Code.Names);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.Raise, Operand: 1 }
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.DeleteSubscript
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.DeleteName
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.DeleteAttribute
+        );
+        var function = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Contains(
+            function.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.DeleteLocal
+        );
+    }
+
+    [Fact]
+    public void Compile_EmitsCapturedVariableDeletion()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "def outer():\n"
+                    + "    value = 1\n"
+                    + "    def inner():\n"
+                    + "        return value\n"
+                    + "    del value\n"
+                    + "    return inner\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(result.Diagnostics);
+        var outer = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Contains(
+            outer.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.DeleteCell
+        );
+    }
+
+    [Fact]
     public void Compile_AllowsLoopControlForLoopsInsideAFinallyClause()
     {
         var parseResult = PythonParser.Parse(

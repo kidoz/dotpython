@@ -470,6 +470,25 @@ public sealed class PythonParserTests
         Assert.Equal(2, Assert.IsType<PythonTupleExpression>(pairClause.Target).Elements.Count);
     }
 
+    [Fact]
+    public void Parse_BuildsAssertAndDeleteStatements()
+    {
+        var result = Parse(
+            "assert value > 0, 'must be positive'\ndel items[0], mapping, instance.value\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var assertStatement = Assert.IsType<PythonAssertStatement>(result.Module.Statements[0]);
+        Assert.IsType<PythonComparisonExpression>(assertStatement.Condition);
+        Assert.IsType<PythonConstantExpression>(assertStatement.Message);
+
+        var deleteStatement = Assert.IsType<PythonDeleteStatement>(result.Module.Statements[1]);
+        Assert.Equal(3, deleteStatement.Targets.Count);
+        Assert.IsType<PythonSubscriptionExpression>(deleteStatement.Targets[0]);
+        Assert.IsType<PythonNameExpression>(deleteStatement.Targets[1]);
+        Assert.IsType<PythonAttributeExpression>(deleteStatement.Targets[2]);
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]

@@ -74,4 +74,9 @@ public enum PythonOpCode
     DictionaryAdd = 69,
     StoreAttribute = 70,
     MakeClass = 71,
+    DeleteName = 72,
+    DeleteLocal = 73,
+    DeleteSubscript = 74,
+    DeleteCell = 75,
+    DeleteAttribute = 76,
 }

@@ -5,6 +5,14 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
+internal sealed class PythonOrderingComparer : IComparer<PythonValue>
+{
+    internal static readonly PythonOrderingComparer Instance = new();
+
+    public int Compare(PythonValue? left, PythonValue? right) =>
+        ManagedObjectProtocols.CompareOrdered(left!, right!, default);
+}
+
 internal enum PythonRichComparison
 {
     Equal,
@@ -32,6 +40,7 @@ internal static class ManagedObjectProtocols
         return callable switch
         {
             PythonBuiltinFunctionValue builtin => builtin.Invoke(arguments, span),
+            PythonBuiltinTypeValue builtinType => builtinType.Construct(arguments, span),
             PythonProtocolFunctionValue function => function.Invoke(null, arguments),
             PythonBoundMethodValue method => method.Function.Invoke(method.Target, arguments),
             PythonExternalObjectValue external => external.Protocol.Call(arguments, span),
@@ -159,6 +168,56 @@ internal static class ManagedObjectProtocols
                 throw Fault(
                     "DPY4023",
                     "This value does not expose writable managed attributes.",
+                    span,
+                    "AttributeError"
+                );
+        }
+    }
+
+    internal static void DeleteAttribute(PythonValue target, string name, TextSpan span = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        switch (target)
+        {
+            case PythonModuleValue module when module.Globals.Remove(name):
+                return;
+            case PythonModuleValue module:
+                throw Fault(
+                    "DPY4022",
+                    $"Module '{module.Name}' has no attribute '{name}'.",
+                    span,
+                    "AttributeError"
+                );
+            case PythonManagedObjectValue instance:
+                if (
+                    TryGetTypeAttribute(instance.Type, name, out var typeValue)
+                    && typeValue is PythonDescriptorValue { IsDataDescriptor: true }
+                )
+                {
+                    throw Fault(
+                        "DPY4023",
+                        $"Attribute '{name}' cannot be deleted.",
+                        span,
+                        "AttributeError"
+                    );
+                }
+
+                if (instance.Attributes.Remove(name))
+                {
+                    return;
+                }
+
+                throw MissingAttribute(instance.Type.Name, name, span);
+            case PythonManagedTypeValue type when type.Attributes.Remove(name):
+                return;
+            case PythonManagedTypeValue type:
+                throw MissingAttribute(type.Name, name, span);
+            default:
+                throw Fault(
+                    "DPY4023",
+                    "This value does not expose deletable managed attributes.",
                     span,
                     "AttributeError"
                 );
@@ -656,6 +715,44 @@ internal static class ManagedObjectProtocols
         for (var position = 0; position < indices.Count; position++)
         {
             list.Elements[indices[position]] = values[position];
+        }
+    }
+
+    internal static void DeleteItem(PythonValue target, PythonValue index, TextSpan span = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(index);
+
+        switch (target)
+        {
+            case PythonListValue list when index is PythonSliceValue slice:
+            {
+                var indices = EnumerateSliceIndices(slice, list.Elements.Count, span).ToList();
+                indices.Sort();
+                for (var position = indices.Count - 1; position >= 0; position--)
+                {
+                    list.Elements.RemoveAt(indices[position]);
+                }
+
+                return;
+            }
+            case PythonListValue list:
+                list.Elements.RemoveAt(GetSequenceIndex(index, list.Elements.Count, span));
+                return;
+            case PythonDictionaryValue dictionary
+                when TryFindDictionaryItem(dictionary, index, out var item):
+                dictionary.Items.Remove(item);
+                dictionary.SizeVersion++;
+                return;
+            case PythonDictionaryValue:
+                throw Fault("DPY4013", "The dictionary key was not found.", span, "KeyError");
+            default:
+                throw Fault(
+                    "DPY4011",
+                    "This value does not support item deletion.",
+                    span,
+                    "TypeError"
+                );
         }
     }
 

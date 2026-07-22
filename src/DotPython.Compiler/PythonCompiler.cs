@@ -147,6 +147,12 @@ public static class PythonCompiler
                 case PythonGlobalStatement:
                 case PythonNonlocalStatement:
                     break;
+                case PythonAssertStatement assertStatement:
+                    CompileAssertStatement(assertStatement);
+                    break;
+                case PythonDeleteStatement deleteStatement:
+                    CompileDeleteStatement(deleteStatement);
+                    break;
                 case PythonRaiseStatement raiseStatement:
                     CompileRaiseStatement(raiseStatement);
                     break;
@@ -689,6 +695,77 @@ public static class PythonCompiler
             Emit(PythonOpCode.ReturnValue, 0, statement.Span);
         }
 
+        private void CompileAssertStatement(PythonAssertStatement statement)
+        {
+            CompileExpression(statement.Condition);
+            var raiseJump = Emit(PythonOpCode.JumpIfFalse, 0, statement.Condition.Span);
+            var endJump = Emit(PythonOpCode.Jump, 0, statement.Span);
+            PatchJump(raiseJump, _instructions.Count);
+            Emit(PythonOpCode.LoadName, GetNameIndex("AssertionError"), statement.Span);
+            if (statement.Message is not null)
+            {
+                CompileExpression(statement.Message);
+                Emit(PythonOpCode.Call, 1, statement.Span);
+            }
+
+            Emit(PythonOpCode.Raise, 1, statement.Span);
+            PatchJump(endJump, _instructions.Count);
+        }
+
+        private void CompileDeleteStatement(PythonDeleteStatement statement)
+        {
+            foreach (var target in statement.Targets)
+            {
+                switch (target)
+                {
+                    case PythonNameExpression name:
+                        EmitDeleteName(name);
+                        break;
+                    case PythonSubscriptionExpression subscription:
+                        CompileExpression(subscription.Target);
+                        CompileExpression(subscription.Index);
+                        Emit(PythonOpCode.DeleteSubscript, 0, subscription.Span);
+                        break;
+                    case PythonAttributeExpression attribute:
+                        CompileExpression(attribute.Target);
+                        Emit(
+                            PythonOpCode.DeleteAttribute,
+                            GetNameIndex(attribute.AttributeName),
+                            attribute.Span
+                        );
+                        break;
+                    default:
+                        Report("DPY3003", "This expression cannot be deleted.", target.Span);
+                        break;
+                }
+            }
+        }
+
+        private void EmitDeleteName(PythonNameExpression name)
+        {
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
+            {
+                Emit(
+                    _scope.IsCellVariable(name.Name)
+                        ? PythonOpCode.DeleteCell
+                        : PythonOpCode.DeleteLocal,
+                    _scope.IsCellVariable(name.Name)
+                        ? GetCellIndex(name.Name)
+                        : GetVariableIndex(name.Name),
+                    name.Span
+                );
+                return;
+            }
+
+            if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            {
+                Emit(PythonOpCode.DeleteCell, GetCellIndex(name.Name), name.Span);
+                return;
+            }
+
+            Emit(PythonOpCode.DeleteName, GetNameIndex(name.Name), name.Span);
+        }
+
         private void CompileRaiseStatement(PythonRaiseStatement statement)
         {
             if (statement.Exception is null)
@@ -777,6 +854,7 @@ public static class PythonCompiler
                         handler.Target.Span
                     );
                     EmitStoreName(handler.Target);
+                    EmitDeleteName(handler.Target);
                 }
 
                 Emit(PythonOpCode.ClearException, 0, handler.Span);
@@ -989,6 +1067,7 @@ public static class PythonCompiler
                                 span
                             );
                             EmitStoreName(cleanup.Target);
+                            EmitDeleteName(cleanup.Target);
                         }
 
                         Emit(PythonOpCode.ClearException, 0, span);

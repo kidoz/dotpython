@@ -413,20 +413,24 @@ public static class DotPythonModuleArtifactSerializer
                 break;
             case PythonOpCode.LoadName:
             case PythonOpCode.StoreName:
+            case PythonOpCode.DeleteName:
             case PythonOpCode.ImportName:
             case PythonOpCode.LoadAttribute:
             case PythonOpCode.StoreAttribute:
+            case PythonOpCode.DeleteAttribute:
             case PythonOpCode.ImportFrom:
                 ValidateIndex(instruction.Operand, code.Names.Count, instructionIndex);
                 break;
             case PythonOpCode.LoadLocal:
             case PythonOpCode.StoreLocal:
+            case PythonOpCode.DeleteLocal:
             case PythonOpCode.ReturnLocal:
             case PythonOpCode.CallLocal:
                 ValidateIndex(instruction.Operand, code.VariableNames.Count, instructionIndex);
                 break;
             case PythonOpCode.LoadCell:
             case PythonOpCode.StoreCell:
+            case PythonOpCode.DeleteCell:
                 ValidateIndex(
                     instruction.Operand,
                     code.CellVariableNames.Count + code.FreeVariableNames.Count,

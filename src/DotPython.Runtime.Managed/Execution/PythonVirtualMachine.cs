@@ -29,6 +29,7 @@ internal sealed class PythonVirtualMachine
             ["NameError"] = "Exception",
             ["UnboundLocalError"] = "NameError",
             ["AttributeError"] = "Exception",
+            ["AssertionError"] = "Exception",
             ["ImportError"] = "Exception",
             ["ModuleNotFoundError"] = "ImportError",
             ["SyntaxError"] = "Exception",
@@ -80,7 +81,18 @@ internal sealed class PythonVirtualMachine
             ["range"] = new PythonBuiltinFunctionValue("range", Range),
             ["enumerate"] = new PythonBuiltinFunctionValue("enumerate", Enumerate),
             ["zip"] = new PythonBuiltinFunctionValue("zip", Zip),
+            ["isinstance"] = new PythonBuiltinFunctionValue("isinstance", IsInstance),
+            ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
+            ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
+            ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
+            ["sorted"] = new PythonBuiltinFunctionValue("sorted", Sorted),
+            ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
         };
+        _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
+        foreach (var builtinType in PythonBuiltinTypes.All)
+        {
+            _builtins.Add(builtinType.Name, builtinType);
+        }
         foreach (var name in ExceptionBaseNames.Keys)
         {
             _builtins.Add(name, new PythonExceptionTypeValue(name));
@@ -248,6 +260,22 @@ internal sealed class PythonVirtualMachine
                     frame.ClassNamespace.Attributes[storedName] = storedValue;
                 }
                 break;
+            case PythonOpCode.DeleteName:
+                DeleteName(ref frame, instruction);
+                break;
+            case PythonOpCode.DeleteLocal:
+                DeleteLocal(instruction.Operand, instruction.Span);
+                break;
+            case PythonOpCode.DeleteCell:
+                DeleteCell(instruction.Operand, instruction.Span);
+                break;
+            case PythonOpCode.DeleteSubscript:
+            {
+                var deletedIndex = Pop(instruction.Span);
+                var deletedTarget = Pop(instruction.Span);
+                ManagedObjectProtocols.DeleteItem(deletedTarget, deletedIndex, instruction.Span);
+                break;
+            }
             case PythonOpCode.LoadLocal:
                 _evaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
                 break;
@@ -271,6 +299,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.StoreAttribute:
                 StoreAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
+                break;
+            case PythonOpCode.DeleteAttribute:
+                DeleteAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
                 break;
             case PythonOpCode.PopTop:
                 Pop(instruction.Span);
@@ -946,6 +977,12 @@ internal sealed class PythonVirtualMachine
         ManagedObjectProtocols.SetAttribute(target, name, value, span);
     }
 
+    private void DeleteAttribute(string name, TextSpan span)
+    {
+        var target = Pop(span);
+        ManagedObjectProtocols.DeleteAttribute(target, name, span);
+    }
+
     private void BuildDictionary(int itemCount, TextSpan span)
     {
         if (
@@ -1099,6 +1136,72 @@ internal sealed class PythonVirtualMachine
         }
 
         throw Fault("DPY4002", $"Name '{name}' is not defined.", span);
+    }
+
+    private static void DeleteName(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        var name = frame.Code.Definition.Names[instruction.Operand];
+        if (frame.ClassNamespace is not null)
+        {
+            if (frame.ClassNamespace.Attributes.Remove(name))
+            {
+                return;
+            }
+        }
+        else if (frame.Globals.Remove(name))
+        {
+            return;
+        }
+
+        throw Fault("DPY4002", $"Name '{name}' is not defined.", instruction.Span, "NameError");
+    }
+
+    private void DeleteLocal(int index, TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.LocalsCount)
+        {
+            throw Fault("DPY4007", "The DotPython local index is invalid.", span);
+        }
+
+        if (_locals[frame.LocalsBase + index] is null)
+        {
+            var name = frame.Code.Definition.VariableNames[index];
+            throw Fault(
+                "DPY4002",
+                $"Local variable '{name}' referenced before assignment.",
+                span,
+                "UnboundLocalError"
+            );
+        }
+
+        _locals[frame.LocalsBase + index] = null!;
+    }
+
+    private void DeleteCell(int index, TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        if ((uint)index >= (uint)frame.Cells.Length)
+        {
+            throw Fault("DPY4007", "The DotPython closure-cell index is invalid.", span);
+        }
+
+        if (frame.Cells[index].Value is null)
+        {
+            var definition = frame.Code.Definition;
+            var name =
+                index < definition.CellVariableNames.Count
+                    ? definition.CellVariableNames[index]
+                    : definition.FreeVariableNames[index - definition.CellVariableNames.Count];
+            throw Fault(
+                "DPY4002",
+                $"Variable '{name}' referenced before assignment.",
+                span,
+                index < definition.CellVariableNames.Count ? "UnboundLocalError" : "NameError"
+            );
+        }
+
+        frame.Cells[index].Value = null;
     }
 
     private PythonValue LoadLocal(int index, TextSpan span)
@@ -1379,6 +1482,15 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (target is PythonBuiltinTypeValue builtinType)
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            _evaluationStack.Push(builtinType.Construct(arguments, instruction.Span));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
         if (target is PythonExceptionTypeValue exceptionType)
         {
             var arguments = PopArguments(instruction.Operand, instruction.Span);
@@ -1472,6 +1584,7 @@ internal sealed class PythonVirtualMachine
                 "DPY4009",
                 target
                     is PythonBuiltinFunctionValue
+                        or PythonBuiltinTypeValue
                         or PythonExceptionTypeValue
                         or PythonProtocolFunctionValue
                         or PythonBoundMethodValue
@@ -1646,6 +1759,13 @@ internal sealed class PythonVirtualMachine
         if (target is PythonBuiltinFunctionValue builtin)
         {
             _evaluationStack.Push(builtin.Invoke(Array.Empty<PythonValue>(), span));
+            code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
+        if (target is PythonBuiltinTypeValue builtinType)
+        {
+            _evaluationStack.Push(builtinType.Construct(Array.Empty<PythonValue>(), span));
             code.RecordBuiltinCall(instructionIndex);
             return;
         }
@@ -2401,6 +2521,219 @@ internal sealed class PythonVirtualMachine
             ),
         };
 
+    private static PythonTruthValue IsInstance(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 2)
+        {
+            throw Fault(
+                "DPY4003",
+                $"isinstance() takes exactly 2 arguments ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        return PythonTruthValue.FromBoolean(MatchesClassInfo(arguments[0], arguments[1], span));
+    }
+
+    private static bool MatchesClassInfo(PythonValue value, PythonValue classInfo, TextSpan span)
+    {
+        switch (classInfo)
+        {
+            case PythonTupleValue tuple:
+                return tuple.Elements.Any(element => MatchesClassInfo(value, element, span));
+            case PythonBuiltinTypeValue builtinType:
+                return PythonBuiltinTypes.IsInstance(value, builtinType);
+            case PythonExceptionTypeValue exceptionType:
+            {
+                if (value is not PythonExceptionValue exception)
+                {
+                    return false;
+                }
+
+                for (
+                    var current = exception.TypeName;
+                    current is not null;
+                    current = ExceptionBaseNames.GetValueOrDefault(current)
+                )
+                {
+                    if (string.Equals(current, exceptionType.Name, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            case PythonManagedTypeValue managedType:
+            {
+                if (value is not PythonManagedObjectValue instance)
+                {
+                    return false;
+                }
+
+                for (var current = instance.Type; current is not null; current = current.BaseType)
+                {
+                    if (ReferenceEquals(current, managedType))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            default:
+                throw Fault(
+                    "DPY4003",
+                    "isinstance() arg 2 must be a type or tuple of types.",
+                    span,
+                    "TypeError"
+                );
+        }
+    }
+
+    private PythonValue TypeOf(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("type", arguments, span);
+        return arguments[0] switch
+        {
+            PythonTruthValue => PythonBuiltinTypes.Bool,
+            PythonWholeNumberValue => PythonBuiltinTypes.Int,
+            PythonFloatingPointValue => PythonBuiltinTypes.Float,
+            PythonTextValue => PythonBuiltinTypes.Str,
+            PythonListValue => PythonBuiltinTypes.List,
+            PythonTupleValue => PythonBuiltinTypes.Tuple,
+            PythonDictionaryValue => PythonBuiltinTypes.Dict,
+            PythonManagedObjectValue instance => instance.Type,
+            PythonExceptionValue exception => _builtins.TryGetValue(
+                exception.TypeName,
+                out var exceptionType
+            )
+                ? exceptionType
+                : new PythonExceptionTypeValue(exception.TypeName),
+            var other => PythonBuiltinTypes.CreateOpaque(ManagedObjectProtocols.GetTypeName(other)),
+        };
+    }
+
+    private static PythonValue Sum(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count is < 1 or > 2)
+        {
+            throw Fault(
+                "DPY4003",
+                $"sum() expected 1 to 2 arguments ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        var accumulator =
+            arguments.Count == 2 ? arguments[1] : PythonWholeNumberValue.Create(BigInteger.Zero);
+        if (accumulator is PythonTextValue)
+        {
+            throw Fault(
+                "DPY4003",
+                "sum() cannot sum strings; use ''.join(sequence) instead.",
+                span,
+                "TypeError"
+            );
+        }
+
+        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
+        {
+            accumulator = ApplyBinary(PythonOpCode.BinaryAdd, accumulator, value, span);
+        }
+
+        return accumulator;
+    }
+
+    private static PythonValue Minimum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        SelectExtremum("min", arguments, span, greater: false);
+
+    private static PythonValue Maximum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        SelectExtremum("max", arguments, span, greater: true);
+
+    private static PythonValue SelectExtremum(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span,
+        bool greater
+    )
+    {
+        if (arguments.Count == 0)
+        {
+            throw Fault(
+                "DPY4003",
+                $"{name}() expected at least 1 argument (0 given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        var candidates =
+            arguments.Count == 1
+                ? ManagedObjectProtocols.MaterializeValues(arguments[0], span)
+                : [.. arguments];
+        if (candidates.Count == 0)
+        {
+            throw Fault("DPY4012", $"{name}() arg is an empty sequence.", span, "ValueError");
+        }
+
+        var best = candidates[0];
+        for (var index = 1; index < candidates.Count; index++)
+        {
+            var comparison = ManagedObjectProtocols.CompareOrdered(candidates[index], best, span);
+            if (greater ? comparison > 0 : comparison < 0)
+            {
+                best = candidates[index];
+            }
+        }
+
+        return best;
+    }
+
+    private static PythonListValue Sorted(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("sorted", arguments, span);
+        var values = ManagedObjectProtocols.MaterializeValues(arguments[0], span);
+        try
+        {
+            return new PythonListValue([
+                .. values.OrderBy(value => value, PythonOrderingComparer.Instance),
+            ]);
+        }
+        catch (InvalidOperationException exception)
+            when (exception.InnerException is PythonRuntimeException fault)
+        {
+            throw fault;
+        }
+    }
+
+    private static PythonValue Absolute(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("abs", arguments, span);
+        return arguments[0] switch
+        {
+            PythonWholeNumberValue wholeNumber => PythonWholeNumberValue.Create(
+                BigInteger.Abs(wholeNumber.Value)
+            ),
+            PythonTruthValue truth => PythonWholeNumberValue.Create(
+                truth.Value ? BigInteger.One : BigInteger.Zero
+            ),
+            PythonFloatingPointValue floatingPoint => new PythonFloatingPointValue(
+                Math.Abs(floatingPoint.Value)
+            ),
+            PythonComplexValue complex => new PythonFloatingPointValue(complex.Value.Magnitude),
+            var other => throw Fault(
+                "DPY4003",
+                $"Bad operand type for abs(): " + $"'{ManagedObjectProtocols.GetTypeName(other)}'.",
+                span,
+                "TypeError"
+            ),
+        };
+    }
+
     private static void ValidateBuiltinArgumentCount(
         string name,
         IReadOnlyList<PythonValue> arguments,
@@ -2936,6 +3269,19 @@ internal sealed class PythonVirtualMachine
             return new PythonByteSequenceValue([.. leftBytes.Value, .. rightBytes.Value]);
         }
 
+        if (opCode == PythonOpCode.BinaryAdd)
+        {
+            if (left is PythonListValue leftList && right is PythonListValue rightList)
+            {
+                return new PythonListValue([.. leftList.Elements, .. rightList.Elements]);
+            }
+
+            if (left is PythonTupleValue leftTuple && right is PythonTupleValue rightTuple)
+            {
+                return new PythonTupleValue([.. leftTuple.Elements, .. rightTuple.Elements]);
+            }
+        }
+
         if (opCode == PythonOpCode.BinaryMultiply)
         {
             if (left is PythonTextValue text && right is PythonWholeNumberValue count)
@@ -2946,6 +3292,23 @@ internal sealed class PythonVirtualMachine
             if (right is PythonTextValue reverseText && left is PythonWholeNumberValue reverseCount)
             {
                 return Repeat(reverseText, reverseCount, span);
+            }
+
+            var (sequence, repetitions) = (left, right) switch
+            {
+                (PythonListValue or PythonTupleValue, PythonWholeNumberValue times) => (
+                    left,
+                    (BigInteger?)times.Value
+                ),
+                (PythonWholeNumberValue times, PythonListValue or PythonTupleValue) => (
+                    right,
+                    (BigInteger?)times.Value
+                ),
+                _ => (PythonNoneValue.Instance, null),
+            };
+            if (repetitions is { } sequenceCount)
+            {
+                return RepeatSequence(sequence, sequenceCount, span);
             }
         }
 
@@ -2970,6 +3333,59 @@ internal sealed class PythonVirtualMachine
             ((PythonWholeNumberValue)right).Value,
             span
         );
+    }
+
+    private static PythonValue RepeatSequence(
+        PythonValue sequence,
+        BigInteger repetitions,
+        TextSpan span
+    )
+    {
+        var source = sequence switch
+        {
+            PythonListValue list => (IReadOnlyList<PythonValue>)list.Elements,
+            PythonTupleValue tuple => tuple.Elements,
+            _ => throw Fault("DPY4005", "Unsupported operands for binary operator.", span),
+        };
+        var minimumIndex =
+            IntPtr.Size == sizeof(long) ? new BigInteger(long.MinValue) : int.MinValue;
+        var maximumIndex =
+            IntPtr.Size == sizeof(long) ? new BigInteger(long.MaxValue) : int.MaxValue;
+        if (repetitions < minimumIndex || repetitions > maximumIndex)
+        {
+            throw Fault(
+                "DPY4011",
+                "The repetition count does not fit an index-sized integer.",
+                span,
+                "OverflowError"
+            );
+        }
+
+        if (source.Count == 0 || repetitions <= 0)
+        {
+            return sequence is PythonListValue ? new PythonListValue([]) : new PythonTupleValue([]);
+        }
+
+        var count = repetitions <= int.MaxValue ? (int)repetitions : int.MaxValue;
+        if ((long)source.Count * count > 10_000_000)
+        {
+            throw Fault(
+                "DPY4011",
+                "The repeated sequence exceeds the supported size.",
+                span,
+                "OverflowError"
+            );
+        }
+
+        var elements = new List<PythonValue>(source.Count * count);
+        for (var repetition = 0; repetition < count; repetition++)
+        {
+            elements.AddRange(source);
+        }
+
+        return sequence is PythonListValue
+            ? new PythonListValue(elements)
+            : new PythonTupleValue([.. elements]);
     }
 
     private static PythonValue ApplyWholeNumber(

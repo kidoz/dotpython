@@ -51,6 +51,15 @@ public sealed record PythonContinueStatement(TextSpan Span) : PythonStatement(Sp
 
 public sealed record PythonPassStatement(TextSpan Span) : PythonStatement(Span);
 
+public sealed record PythonAssertStatement(
+    PythonExpression Condition,
+    PythonExpression? Message,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonDeleteStatement(IReadOnlyList<PythonExpression> Targets, TextSpan Span)
+    : PythonStatement(Span);
+
 public sealed record PythonGlobalStatement(IReadOnlyList<PythonNameExpression> Names, TextSpan Span)
     : PythonStatement(Span);
 
