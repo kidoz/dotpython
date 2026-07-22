@@ -51,6 +51,15 @@ internal static class PythonBuiltinMethods
         ),
         ["split"] = Text("split", 0, 1, SplitText),
         ["join"] = Text("join", 1, 1, JoinText),
+        ["format"] = Text(
+            "format",
+            0,
+            int.MaxValue,
+            (text, arguments) =>
+                new PythonTextValue(
+                    PythonTextFormatting.FormatTemplate(text, arguments, [], [], default)
+                )
+        ),
         ["replace"] = Text(
             "replace",
             2,

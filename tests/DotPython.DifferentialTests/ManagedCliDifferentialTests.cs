@@ -243,6 +243,21 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print({x % 3 for x in range(9)} == {0, 1, 2}, sorted({c for c in 'hello'}))\nprint({len(w) for w in ['a', 'bb', 'a']}, {(v, v * 2) for v in [1, 1, 2]} == {(1, 2), (2, 4)})\nprint(sorted({x * y for x in [1, 2] for y in [3, 4] if x != y}))"
     )]
+    [InlineData(
+        "print('%s and %s' % ('a', 'b'), '%s' % 'solo', '%s' % (1,))\nprint('%d|%5d|%-5d|%05d|%+d|% d' % (42, 42, 42, 42, 42, 42))\nprint('%x %X %#x %#X %o %#o' % (255, 255, 255, 255, 8, 8))\nprint('%r %s' % ('x', [1, 2]), '%.3s' % 'abcdef', '%%done')\nprint('%s' % {'a': 1}, '%d' % True, '%s' % None, '%d' % -7, '%i' % 3)"
+    )]
+    [InlineData(
+        "print('%f|%.2f|%10.3f|%-10.1f|%e|%.2E' % (3.14159, 3.14159, 3.14159, 3.14159, 12345.678, 12345.678))\nprint('%g %g %g %g %G' % (0.0001, 0.00001, 123456, 1234567, 1.5e-10))\nprint('%g %.3g %g' % (100.0, 3.14159, 1e20))\nprint('%c%c %c' % (72, 'i', 128013))\nprint('%(name)s is %(age)d' % {'name': 'Bob', 'age': 30})\nprint('%*d|%-*d|%.*f' % (6, 42, 6, 42, 2, 3.14159))"
+    )]
+    [InlineData(
+        "try:\n    '%d %d' % (1,)\nexcept TypeError:\n    print('not-enough')\ntry:\n    '%s' % (1, 2)\nexcept TypeError:\n    print('too-many')\ntry:\n    '%z' % 1\nexcept ValueError:\n    print('bad-char')"
+    )]
+    [InlineData(
+        "print('{} {} {}'.format(1, 'two', [3]))\nprint('{0} {1} {0}'.format('a', 'b'), '{1}{0}'.format('x', 'y'))\nprint('{name}: {value}'.format(name='k', value=42))\nprint('{:>8}|{:<8}|{:^8}|{:*^8}'.format('ab', 'ab', 'ab', 'ab'))\nprint('{:.3f} {:d} {:x} {:,}'.format(3.14159, 255, 255, 1234567))\nprint('{!r} {!s}'.format('q', 'q'), '{{literal}} {}'.format(1))"
+    )]
+    [InlineData(
+        "print('{0[1]} {0[0]}'.format(['a', 'b']), '{m[k]}'.format(m={'k': 'v'}))\nprint('{:{}}|'.format('ab', 6), '{:{}.{}f}'.format(3.14159, 8, 2))\ntry:\n    '{} {0}'.format(1, 2)\nexcept ValueError:\n    print('mixed-numbering')\ntry:\n    '{2}'.format(1, 2)\nexcept IndexError:\n    print('index-range')\ntry:\n    '{missing}'.format(x=1)\nexcept KeyError:\n    print('missing-key')"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

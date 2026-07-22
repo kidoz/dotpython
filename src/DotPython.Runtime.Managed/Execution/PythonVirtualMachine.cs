@@ -2039,6 +2039,19 @@ internal sealed class PythonVirtualMachine
                     )
                 );
                 return;
+            case PythonBoundMethodValue { Name: "format", Target: PythonTextValue template }:
+                _evaluationStack.Push(
+                    new PythonTextValue(
+                        PythonTextFormatting.FormatTemplate(
+                            template.Value,
+                            positional,
+                            keywordNames,
+                            keywordValues,
+                            span
+                        )
+                    )
+                );
+                return;
             default:
                 throw Fault(
                     "DPY4009",
@@ -4324,6 +4337,13 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        if (opCode == PythonOpCode.BinaryModulo && left is PythonTextValue formatTemplate)
+        {
+            return new PythonTextValue(
+                PythonTextFormatting.FormatPercent(formatTemplate.Value, right, span)
+            );
+        }
+
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 
