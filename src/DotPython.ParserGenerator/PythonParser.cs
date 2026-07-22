@@ -110,6 +110,10 @@ public static class PythonParser
                 {
                     statements.Add(ParseFunctionDefinition());
                 }
+                else if (IsKeyword("class"))
+                {
+                    statements.Add(ParseClassDefinition());
+                }
                 else
                 {
                     ParseSimpleStatements(statements);
@@ -195,22 +199,13 @@ public static class PythonParser
         private PythonForStatement ParseForStatement()
         {
             var start = Advance().Span.Start;
-            var targetToken = Expect(SyntaxTokenKind.Identifier, "a target after 'for'");
-            if (IsReservedKeyword(targetToken.Text))
-            {
-                Report(
-                    "DPY2010",
-                    $"The keyword '{targetToken.Text}' cannot be used as a loop target.",
-                    targetToken.Span
-                );
-            }
-
+            var target = ParseForTargets();
             if (!MatchKeyword("in", out _))
             {
                 ReportExpected("'in' after the loop target", Current.Span);
             }
 
-            var iterable = ParseRequiredExpression("an iterable after 'in'");
+            var iterable = ParseRequiredExpressionList("an iterable after 'in'");
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the iterable");
             var body = ParseSuite();
 
@@ -224,12 +219,68 @@ public static class PythonParser
             }
 
             return new PythonForStatement(
-                new PythonNameExpression(targetToken.Text, targetToken.Span),
+                target,
                 iterable,
                 body,
                 elseBody,
                 TextSpan.FromBounds(start, end)
             );
+        }
+
+        private PythonExpression ParseForTargets()
+        {
+            var first = ParseForTargetAtom();
+            if (Current.Kind != SyntaxTokenKind.Comma)
+            {
+                return first;
+            }
+
+            var elements = new List<PythonExpression> { first };
+            while (Match(SyntaxTokenKind.Comma))
+            {
+                if (IsKeyword("in") || Current.Kind == SyntaxTokenKind.Colon)
+                {
+                    break;
+                }
+
+                elements.Add(ParseForTargetAtom());
+            }
+
+            return new PythonTupleExpression(
+                elements.AsReadOnly(),
+                TextSpan.FromBounds(elements[0].Span.Start, elements[^1].Span.End)
+            );
+        }
+
+        private PythonExpression ParseForTargetAtom()
+        {
+            if (Match(SyntaxTokenKind.LeftParenthesis, out var leftParenthesis))
+            {
+                var inner = ParseForTargets();
+                var end = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightParenthesis,
+                    "')'",
+                    inner.Span.End
+                );
+                return inner is PythonTupleExpression tuple
+                    ? tuple with
+                    {
+                        Span = TextSpan.FromBounds(leftParenthesis.Span.Start, end),
+                    }
+                    : inner;
+            }
+
+            var targetToken = Expect(SyntaxTokenKind.Identifier, "a target after 'for'");
+            if (targetToken.Text.Length != 0 && IsReservedKeyword(targetToken.Text))
+            {
+                Report(
+                    "DPY2010",
+                    $"The keyword '{targetToken.Text}' cannot be used as a loop target.",
+                    targetToken.Span
+                );
+            }
+
+            return new PythonNameExpression(targetToken.Text, targetToken.Span);
         }
 
         private PythonTryStatement ParseTryStatement()
@@ -456,6 +507,40 @@ public static class PythonParser
             );
         }
 
+        private PythonClassDefinitionStatement ParseClassDefinition()
+        {
+            var start = Advance().Span.Start;
+            var nameToken = Expect(SyntaxTokenKind.Identifier, "a class name after 'class'");
+            if (IsReservedKeyword(nameToken.Text))
+            {
+                Report(
+                    "DPY2010",
+                    $"The keyword '{nameToken.Text}' cannot be used as a class name.",
+                    nameToken.Span
+                );
+            }
+
+            var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
+            var colon = Expect(SyntaxTokenKind.Colon, "':' after the class name");
+            var enclosingFunctionDepth = _functionDepth;
+            _functionDepth = 0;
+            IReadOnlyList<PythonStatement> body;
+            try
+            {
+                body = ParseSuite();
+            }
+            finally
+            {
+                _functionDepth = enclosingFunctionDepth;
+            }
+
+            return new PythonClassDefinitionStatement(
+                name,
+                body,
+                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
+            );
+        }
+
         private IReadOnlyList<PythonStatement> ParseSuite()
         {
             if (!Match(SyntaxTokenKind.NewLine))
@@ -609,16 +694,21 @@ public static class PythonParser
                 return null;
             }
 
+            if (Current.Kind == SyntaxTokenKind.Comma)
+            {
+                expression = ParseBareTupleTail(expression);
+            }
+
             if (Match(SyntaxTokenKind.Equal))
             {
-                var value = ParseExpression();
+                var value = ParseExpressionListValue();
                 if (value is null)
                 {
                     ReportExpected("an expression after '='", Current.Span);
                     return null;
                 }
 
-                if (expression is not (PythonNameExpression or PythonSubscriptionExpression))
+                if (!IsAssignableTarget(expression))
                 {
                     Report("DPY2005", "This expression cannot be assigned to.", expression.Span);
                     return null;
@@ -645,7 +735,7 @@ public static class PythonParser
             if (augmentedOperator is not null)
             {
                 Advance();
-                var value = ParseExpression();
+                var value = ParseExpressionListValue();
                 if (value is null)
                 {
                     ReportExpected(
@@ -655,7 +745,14 @@ public static class PythonParser
                     return null;
                 }
 
-                if (expression is not (PythonNameExpression or PythonSubscriptionExpression))
+                if (
+                    expression
+                    is not (
+                        PythonNameExpression
+                        or PythonSubscriptionExpression
+                        or PythonAttributeExpression
+                    )
+                )
                 {
                     Report("DPY2005", "This expression cannot be assigned to.", expression.Span);
                     return null;
@@ -883,7 +980,7 @@ public static class PythonParser
                 return new PythonReturnStatement(null, returnToken.Span);
             }
 
-            var value = ParseExpression();
+            var value = ParseExpressionListValue();
             if (value is null)
             {
                 ReportExpected("an expression after 'return'", Current.Span);
@@ -949,6 +1046,95 @@ public static class PythonParser
                 Current.Span
             );
         }
+
+        private PythonExpression ParseRequiredExpressionList(string expected)
+        {
+            var expression = ParseExpressionListValue();
+            if (expression is not null)
+            {
+                return expression;
+            }
+
+            ReportExpected(expected, Current.Span);
+            return new PythonConstantExpression(
+                PythonConstantKind.BooleanLiteral,
+                "False",
+                Current.Span
+            );
+        }
+
+        private PythonExpression? ParseExpressionListValue()
+        {
+            var first = ParseExpression();
+            if (first is null)
+            {
+                return null;
+            }
+
+            return Current.Kind == SyntaxTokenKind.Comma ? ParseBareTupleTail(first) : first;
+        }
+
+        private PythonTupleExpression ParseBareTupleTail(PythonExpression first)
+        {
+            var elements = new List<PythonExpression> { first };
+            var end = first.Span.End;
+            while (Match(SyntaxTokenKind.Comma, out var comma))
+            {
+                end = comma.Span.End;
+                if (!StartsExpression())
+                {
+                    break;
+                }
+
+                var element = ParseExpression();
+                if (element is null)
+                {
+                    break;
+                }
+
+                elements.Add(element);
+                end = element.Span.End;
+            }
+
+            return new PythonTupleExpression(
+                elements.AsReadOnly(),
+                TextSpan.FromBounds(first.Span.Start, end)
+            );
+        }
+
+        private bool StartsExpression() =>
+            Current.Kind switch
+            {
+                SyntaxTokenKind.Identifier => Current.Text == "not"
+                    || !IsExpressionKeyword(Current.Text),
+                SyntaxTokenKind.IntegerLiteral
+                or SyntaxTokenKind.FloatLiteral
+                or SyntaxTokenKind.ImaginaryLiteral
+                or SyntaxTokenKind.StringLiteral
+                or SyntaxTokenKind.BytesLiteral
+                or SyntaxTokenKind.FormattedStringLiteral
+                or SyntaxTokenKind.TemplateStringLiteral
+                or SyntaxTokenKind.LeftParenthesis
+                or SyntaxTokenKind.LeftBracket
+                or SyntaxTokenKind.LeftBrace
+                or SyntaxTokenKind.Plus
+                or SyntaxTokenKind.Minus
+                or SyntaxTokenKind.Tilde => true,
+                _ => false,
+            };
+
+        private static bool IsAssignableTarget(PythonExpression expression) =>
+            expression switch
+            {
+                PythonNameExpression or PythonSubscriptionExpression or PythonAttributeExpression =>
+                    true,
+                PythonParenthesizedExpression parenthesized => IsAssignableTarget(
+                    parenthesized.Expression
+                ),
+                PythonTupleExpression tuple => tuple.Elements.Count != 0
+                    && tuple.Elements.All(IsAssignableTarget),
+                _ => false,
+            };
 
         private PythonExpression? ParseExpression() => ParseDisjunction();
 
@@ -1491,7 +1677,7 @@ public static class PythonParser
             );
         }
 
-        private PythonListExpression ParseListDisplay(SyntaxToken leftBracket)
+        private PythonExpression ParseListDisplay(SyntaxToken leftBracket)
         {
             var elements = new List<PythonExpression>();
             while (Current.Kind != SyntaxTokenKind.RightBracket)
@@ -1501,6 +1687,21 @@ public static class PythonParser
                 {
                     ReportExpected("a list element", Current.Span);
                     break;
+                }
+
+                if (elements.Count == 0 && IsKeyword("for"))
+                {
+                    var clauses = ParseComprehensionClauses();
+                    var comprehensionEnd = ExpectClosingDelimiter(
+                        SyntaxTokenKind.RightBracket,
+                        "']'",
+                        clauses[^1].Span.End
+                    );
+                    return new PythonListComprehensionExpression(
+                        element,
+                        clauses,
+                        TextSpan.FromBounds(leftBracket.Span.Start, comprehensionEnd)
+                    );
                 }
 
                 elements.Add(element);
@@ -1518,7 +1719,7 @@ public static class PythonParser
             );
         }
 
-        private PythonDictionaryExpression ParseDictionaryDisplay(SyntaxToken leftBrace)
+        private PythonExpression ParseDictionaryDisplay(SyntaxToken leftBrace)
         {
             var items = new List<PythonDictionaryItem>();
             while (Current.Kind != SyntaxTokenKind.RightBrace)
@@ -1536,6 +1737,22 @@ public static class PythonParser
                 {
                     ReportExpected("a dictionary value", Current.Span);
                     break;
+                }
+
+                if (items.Count == 0 && IsKeyword("for"))
+                {
+                    var clauses = ParseComprehensionClauses();
+                    var comprehensionEnd = ExpectClosingDelimiter(
+                        SyntaxTokenKind.RightBrace,
+                        "'}'",
+                        clauses[^1].Span.End
+                    );
+                    return new PythonDictionaryComprehensionExpression(
+                        key,
+                        value,
+                        clauses,
+                        TextSpan.FromBounds(leftBrace.Span.Start, comprehensionEnd)
+                    );
                 }
 
                 items.Add(
@@ -1557,6 +1774,46 @@ public static class PythonParser
                 items.AsReadOnly(),
                 TextSpan.FromBounds(leftBrace.Span.Start, end)
             );
+        }
+
+        private ReadOnlyCollection<PythonComprehensionClause> ParseComprehensionClauses()
+        {
+            var clauses = new List<PythonComprehensionClause>();
+            while (true)
+            {
+                if (MatchKeyword("for", out var forToken))
+                {
+                    var target = ParseForTargets();
+                    if (!MatchKeyword("in", out _))
+                    {
+                        ReportExpected("'in' after the comprehension target", Current.Span);
+                    }
+
+                    var iterable = ParseRequiredExpression("an iterable after 'in'");
+                    clauses.Add(
+                        new PythonComprehensionForClause(
+                            target,
+                            iterable,
+                            TextSpan.FromBounds(forToken.Span.Start, iterable.Span.End)
+                        )
+                    );
+                    continue;
+                }
+
+                if (MatchKeyword("if", out var ifToken))
+                {
+                    var condition = ParseRequiredExpression("a condition after 'if'");
+                    clauses.Add(
+                        new PythonComprehensionIfClause(
+                            condition,
+                            TextSpan.FromBounds(ifToken.Span.Start, condition.Span.End)
+                        )
+                    );
+                    continue;
+                }
+
+                return clauses.AsReadOnly();
+            }
         }
 
         private int ExpectClosingDelimiter(

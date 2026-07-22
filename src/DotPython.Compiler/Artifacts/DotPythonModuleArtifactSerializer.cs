@@ -401,11 +401,12 @@ public static class DotPythonModuleArtifactSerializer
                 break;
             case PythonOpCode.MakeFunction:
             case PythonOpCode.MakeFunctionWithDefaults:
+            case PythonOpCode.MakeClass:
                 ValidateIndex(instruction.Operand, code.Constants.Count, instructionIndex);
                 if (code.Constants[instruction.Operand].Type != PythonConstantType.CodeObject)
                 {
                     throw new InvalidDataException(
-                        $"Instruction {instructionIndex} does not reference function code."
+                        $"Instruction {instructionIndex} does not reference a code object."
                     );
                 }
 
@@ -414,6 +415,7 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.StoreName:
             case PythonOpCode.ImportName:
             case PythonOpCode.LoadAttribute:
+            case PythonOpCode.StoreAttribute:
             case PythonOpCode.ImportFrom:
                 ValidateIndex(instruction.Operand, code.Names.Count, instructionIndex);
                 break;
@@ -456,6 +458,9 @@ public static class DotPythonModuleArtifactSerializer
                 break;
             case PythonOpCode.Call:
             case PythonOpCode.CallKeyword:
+            case PythonOpCode.UnpackSequence:
+            case PythonOpCode.ListAppend:
+            case PythonOpCode.DictionaryAdd:
                 if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(

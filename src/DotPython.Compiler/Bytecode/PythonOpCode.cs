@@ -69,4 +69,9 @@ public enum PythonOpCode
     CopyTopTwo = 64,
     InPlaceAdd = 65,
     InPlaceMultiply = 66,
+    UnpackSequence = 67,
+    ListAppend = 68,
+    DictionaryAdd = 69,
+    StoreAttribute = 70,
+    MakeClass = 71,
 }

@@ -99,7 +99,7 @@ public sealed class PythonParserTests
         Assert.IsType<PythonSubscriptionExpression>(mutation.Target);
         Assert.IsType<PythonSubscriptionExpression>(mutation.Value);
         var loop = Assert.IsType<PythonForStatement>(result.Module.Statements[2]);
-        Assert.Equal("key", loop.Target.Name);
+        Assert.Equal("key", Assert.IsType<PythonNameExpression>(loop.Target).Name);
         Assert.Single(loop.Body);
         Assert.Single(loop.ElseBody);
     }
@@ -214,6 +214,37 @@ public sealed class PythonParserTests
         Assert.IsType<PythonReturnStatement>(function.Body[^1]);
         var conditional = Assert.IsType<PythonIfStatement>(function.Body[1]);
         Assert.IsType<PythonReturnStatement>(Assert.Single(conditional.Clauses[0].Body));
+    }
+
+    [Fact]
+    public void Parse_BuildsClassMethodsAndAttributeAssignments()
+    {
+        var result = Parse(
+            "class Counter:\n"
+                + "    kind = 'counter'\n"
+                + "    def __init__(self, value):\n"
+                + "        self.value = value\n"
+                + "    def increment(self, amount=1):\n"
+                + "        self.value += amount\n"
+                + "        return self.value\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var @class = Assert.IsType<PythonClassDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.Equal("Counter", @class.Name.Name);
+        Assert.Equal(3, @class.Body.Count);
+        var initializer = Assert.IsType<PythonFunctionDefinitionStatement>(@class.Body[1]);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(Assert.Single(initializer.Body));
+        Assert.Equal(
+            "value",
+            Assert.IsType<PythonAttributeExpression>(assignment.Target).AttributeName
+        );
+        var increment = Assert.IsType<PythonFunctionDefinitionStatement>(@class.Body[2]);
+        Assert.IsType<PythonAttributeExpression>(
+            Assert.IsType<PythonAugmentedAssignmentStatement>(increment.Body[0]).Target
+        );
     }
 
     [Fact]
@@ -378,6 +409,65 @@ public sealed class PythonParserTests
             PythonComparisonOperator.NotIn,
             Assert.Single(membership.Comparisons).Operator
         );
+    }
+
+    [Fact]
+    public void Parse_BuildsTupleTargetsAndBareTupleDisplays()
+    {
+        var result = Parse(
+            "a, b = 1, 2\nx = 1,\nfor key, (left, right) in items:\n    pass\ndef act():\n    return 1, 2\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var swap = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        var targets = Assert.IsType<PythonTupleExpression>(swap.Target);
+        Assert.Equal(2, targets.Elements.Count);
+        Assert.Equal(2, Assert.IsType<PythonTupleExpression>(swap.Value).Elements.Count);
+
+        var single = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]);
+        Assert.Single(Assert.IsType<PythonTupleExpression>(single.Value).Elements);
+
+        var loop = Assert.IsType<PythonForStatement>(result.Module.Statements[2]);
+        var loopTargets = Assert.IsType<PythonTupleExpression>(loop.Target);
+        Assert.IsType<PythonNameExpression>(loopTargets.Elements[0]);
+        Assert.Equal(
+            2,
+            Assert.IsType<PythonTupleExpression>(loopTargets.Elements[1]).Elements.Count
+        );
+
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[3]
+        );
+        var returnStatement = Assert.IsType<PythonReturnStatement>(Assert.Single(function.Body));
+        Assert.Equal(2, Assert.IsType<PythonTupleExpression>(returnStatement.Value).Elements.Count);
+    }
+
+    [Fact]
+    public void Parse_BuildsListAndDictionaryComprehensions()
+    {
+        var result = Parse(
+            "values = [x * 2 for x in items if x]\nmapping = {k: v for k, v in pairs}\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var listComprehension = Assert.IsType<PythonListComprehensionExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]).Value
+        );
+        Assert.IsType<PythonBinaryExpression>(listComprehension.Element);
+        Assert.Equal(2, listComprehension.Clauses.Count);
+        var forClause = Assert.IsType<PythonComprehensionForClause>(listComprehension.Clauses[0]);
+        Assert.IsType<PythonNameExpression>(forClause.Target);
+        Assert.IsType<PythonComprehensionIfClause>(listComprehension.Clauses[1]);
+
+        var dictionaryComprehension = Assert.IsType<PythonDictionaryComprehensionExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]).Value
+        );
+        Assert.IsType<PythonNameExpression>(dictionaryComprehension.Key);
+        Assert.IsType<PythonNameExpression>(dictionaryComprehension.Value);
+        var pairClause = Assert.IsType<PythonComprehensionForClause>(
+            Assert.Single(dictionaryComprehension.Clauses)
+        );
+        Assert.Equal(2, Assert.IsType<PythonTupleExpression>(pairClause.Target).Elements.Count);
     }
 
     [Theory]

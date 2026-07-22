@@ -274,6 +274,53 @@ public sealed class PythonCompilerTests
         );
     }
 
+    [Fact]
+    public void Compile_EmitsClassBodyMethodsAndAttributeStores()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "class Counter:\n"
+                    + "    kind = 'counter'\n"
+                    + "    def __init__(self, value):\n"
+                    + "        self.value = value\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeClass
+        );
+        var classCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Equal("Counter", classCode.Name);
+        Assert.Contains(
+            classCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeFunction
+        );
+        var initializerCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    classCode.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Contains(
+            initializerCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreAttribute
+        );
+    }
+
     [Theory]
     [InlineData("return")]
     [InlineData("return None")]
@@ -790,6 +837,79 @@ public sealed class PythonCompilerTests
                 PythonOpCode.StoreSubscript,
             ],
             opCodes.Skip(copyIndex).Take(6)
+        );
+    }
+
+    [Fact]
+    public void Compile_EmitsUnpackSequenceForTupleTargets()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("a, b = b, a\nfor key, value in pairs:\n    print(key, value)\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction is { OpCode: PythonOpCode.UnpackSequence, Operand: 2 }
+            )
+        );
+        var buildTuple = result.Code.Instructions[2];
+        Assert.Equal(PythonOpCode.BuildTuple, buildTuple.OpCode);
+        Assert.Equal(2, buildTuple.Operand);
+    }
+
+    [Fact]
+    public void Compile_LowersComprehensionsToIsolatedFunctionScopes()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("squares = [x * x for x in values]\nlookup = {k: v for k, v in pairs}\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var comprehensions = result
+            .Code.Constants.Where(constant => constant.Type == PythonConstantType.CodeObject)
+            .Select(constant => Assert.IsType<PythonCodeObject>(constant.Value))
+            .ToList();
+        Assert.Equal(2, comprehensions.Count);
+
+        var listComprehension = Assert.Single(comprehensions, code => code.Name == "<listcomp>");
+        Assert.Equal(1, listComprehension.ArgumentCount);
+        Assert.Equal(".0", listComprehension.VariableNames[0]);
+        Assert.Contains(
+            listComprehension.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.ListAppend, Operand: 1 }
+        );
+        Assert.Contains(
+            listComprehension.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnValue
+        );
+
+        var dictionaryComprehension = Assert.Single(
+            comprehensions,
+            code => code.Name == "<dictcomp>"
+        );
+        Assert.Contains(
+            dictionaryComprehension.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.DictionaryAdd, Operand: 1 }
+        );
+        Assert.Contains(
+            dictionaryComprehension.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.UnpackSequence
+        );
+
+        Assert.DoesNotContain("x", result.Code.Names);
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction is { OpCode: PythonOpCode.Call, Operand: 1 }
+            )
         );
     }
 

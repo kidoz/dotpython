@@ -4,4 +4,5 @@ public enum PythonScopeKind
 {
     Module,
     Function,
+    Class,
 }

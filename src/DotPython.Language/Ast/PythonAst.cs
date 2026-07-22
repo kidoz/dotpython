@@ -33,6 +33,12 @@ public sealed record PythonFunctionDefinitionStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
+public sealed record PythonClassDefinitionStatement(
+    PythonNameExpression Name,
+    IReadOnlyList<PythonStatement> Body,
+    TextSpan Span
+) : PythonStatement(Span);
+
 public sealed record PythonParameter(string Name, PythonExpression? Default, TextSpan Span)
     : PythonNode(Span);
 
@@ -91,7 +97,7 @@ public sealed record PythonWhileStatement(
 ) : PythonStatement(Span);
 
 public sealed record PythonForStatement(
-    PythonNameExpression Target,
+    PythonExpression Target,
     PythonExpression Iterable,
     IReadOnlyList<PythonStatement> Body,
     IReadOnlyList<PythonStatement> ElseBody,
@@ -160,6 +166,30 @@ public sealed record PythonKeywordArgument(string Name, PythonExpression Value, 
 
 public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);
+
+public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Span);
+
+public sealed record PythonComprehensionForClause(
+    PythonExpression Target,
+    PythonExpression Iterable,
+    TextSpan Span
+) : PythonComprehensionClause(Span);
+
+public sealed record PythonComprehensionIfClause(PythonExpression Condition, TextSpan Span)
+    : PythonComprehensionClause(Span);
+
+public sealed record PythonListComprehensionExpression(
+    PythonExpression Element,
+    IReadOnlyList<PythonComprehensionClause> Clauses,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public sealed record PythonDictionaryComprehensionExpression(
+    PythonExpression Key,
+    PythonExpression Value,
+    IReadOnlyList<PythonComprehensionClause> Clauses,
+    TextSpan Span
+) : PythonExpression(Span);
 
 public sealed record PythonTupleExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);

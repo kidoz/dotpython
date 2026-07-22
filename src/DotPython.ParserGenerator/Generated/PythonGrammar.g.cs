@@ -5,19 +5,19 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "2731d8cb4773eef904545b7e03adb943038f80b1a70c1f80b39ae3cd926da3fe";
-    internal const int RuleCount = 55;
+    internal const string SourceSha256 = "2b67d0987d8a89883dee013af9aafbadf187d442805644a47c06a5a192933a6f";
+    internal const int RuleCount = 61;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def
+        compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def | class_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression
-        assignment: primary '=' expression
-        augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression
-        return_stmt: 'return' [expression]
+        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
+        assignment: expression_list '=' expression_list
+        augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression_list
+        return_stmt: 'return' [expression_list]
         break_stmt: 'break'
         continue_stmt: 'continue'
         pass_stmt: 'pass'
@@ -34,10 +34,13 @@ internal static class GeneratedPythonGrammar
         relative_dots: ('.' | '...')+
         if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' block]
         while_stmt: 'while' expression ':' block ['else' ':' block]
-        for_stmt: 'for' NAME 'in' expression ':' block ['else' ':' block]
+        for_stmt: 'for' for_targets 'in' expression_list ':' block ['else' ':' block]
+        for_targets: ','.for_target+ [',']
+        for_target: '(' for_targets ')' | NAME
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ':' block
+        class_def: 'class' NAME ':' block
         parameters: ','.parameter+ [',']
         parameter: NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
@@ -58,9 +61,12 @@ internal static class GeneratedPythonGrammar
         argument: NAME '=' expression | expression
         expression_list: ','.expression+ [',']
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
-        list_display: '[' [expression_list] ']'
+        list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
-        dict_display: '{' [dict_items] '}'
+        dict_display: '{' expression ':' expression comp_clauses '}' | '{' [dict_items] '}'
+        comp_clauses: comp_for (comp_for | comp_if)*
+        comp_for: 'for' for_targets 'in' expression
+        comp_if: 'if' expression
         dict_items: ','.dict_item+ [',']
         dict_item: expression ':' expression
         group: '(' expression ')'

@@ -9,7 +9,7 @@ public static class ParserGeneratorCapabilities
     public static bool SupportsParsingExpressionGrammars => true;
 
     /// <summary>Gets the version of the executable Python grammar subset.</summary>
-    public const int ExecutableSubsetVersion = 11;
+    public const int ExecutableSubsetVersion = 14;
 
     /// <summary>Gets the SHA-256 fingerprint of the pinned grammar input.</summary>
     public static string GeneratedGrammarFingerprint => GeneratedPythonGrammar.SourceSha256;

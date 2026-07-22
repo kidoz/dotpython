@@ -108,6 +108,33 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "try:\n    [1, 'a'].sort()\nexcept TypeError:\n    print('unorderable')\ntry:\n    [1, 2][::0]\nexcept ValueError:\n    print('zero-step')\ntry:\n    {'a': 1}.pop('zz')\nexcept KeyError:\n    print('pop-missing')\ntry:\n    'abc'.nope\nexcept AttributeError:\n    print('attr')"
     )]
+    [InlineData(
+        "total = 0\nfor value in range(2, 20, 3):\n    total += value\nprint(total, range(5), range(1, 7, 2), len(range(10)), len(range(10, 0, -3)))\nprint(range(10)[3], range(10)[-1], range(0, 20, 2)[2:5], range(5)[::-1])\nprint(3 in range(5), 7 in range(5), 4 in range(0, 10, 2))"
+    )]
+    [InlineData(
+        "for pair in enumerate(['a', 'b', 'c']):\n    print(pair)\nfor pair in enumerate('xy', 10):\n    print(pair)\nfor triple in zip([1, 2, 3], 'abcd', range(9)):\n    print(triple)\nfor nothing in zip():\n    print('never')\nprint('done')"
+    )]
+    [InlineData(
+        "a, b = 1, 2\na, b = b, a\nprint(a, b)\nx = 1,\nprint(x)\n(c, d), e = (5, 6), 7\nprint(c, d, e)\nm, n = [10, 20]\nprint(m, n)"
+    )]
+    [InlineData(
+        "data = {'a': 1, 'b': 2}\nfor key, value in data.items():\n    print(key, value)\nfor index, (key, value) in enumerate(data.items()):\n    print(index, key, value)\nfor left, right in zip('ab', range(2)):\n    print(left, right)"
+    )]
+    [InlineData(
+        "def swap(p, q):\n    return q, p\nr, s = swap(1, 2)\nprint(r, s)\nmatrix = [[1, 2], [3, 4]]\nmatrix[0][0], matrix[1][1] = 9, 8\nprint(matrix)\ntry:\n    r, s, t = swap(1, 2)\nexcept ValueError:\n    print('short')"
+    )]
+    [InlineData(
+        "class Counter:\n    kind = 'counter'\n    def __init__(self, value):\n        self.value = value\n    def increment(self, amount=1):\n        self.value += amount\n        return self.value\ncounter = Counter(value=40)\nprint(counter.increment(), counter.increment(amount=1), counter.value, Counter.kind)"
+    )]
+    [InlineData(
+        "x = 99\nprint([x * 2 for x in range(5)], x)\nprint([n for n in range(10) if n % 2 == 0])\nprint([a + b for a in range(3) for b in range(3) if a != b])"
+    )]
+    [InlineData(
+        "print({k: v * 10 for k, v in zip('abc', range(3))})\nprint({v: k for k, v in {'a': 1, 'b': 2}.items()})\nprint([[y for y in range(n)] for n in range(4)])\nprint([cell for row in [[1, 2], [3, 4]] for cell in row])"
+    )]
+    [InlineData(
+        "factor = 3\nprint([n * factor for n in [1, 2]])\ndef scale(values, factor):\n    return [v * factor for v in values]\nprint(scale([1, 2, 3], 5))\nwords = ['hello', 'world', 'hi']\nprint([w.upper() for w in words if len(w) > 2])\nprint([x for x in [y * 2 for y in range(3)]])"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

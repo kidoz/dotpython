@@ -27,7 +27,7 @@ public static class PythonSymbolBinder
     private static PythonBoundScope BindScope(
         PythonScopeKind kind,
         string name,
-        PythonFunctionDefinitionStatement? definition,
+        PythonNode? definition,
         IReadOnlyList<PythonParameter> parameters,
         IReadOnlyList<PythonStatement> statements,
         IReadOnlyList<PythonBoundScope> ancestors,
@@ -112,19 +112,135 @@ public static class PythonSymbolBinder
             declaredNonlocalNames
         );
         var childAncestors = ancestors.Append(scope).ToArray();
-        foreach (var function in EnumerateFunctions(statements))
+        foreach (var definitionNode in EnumerateScopeDefinitions(statements))
         {
             children.Add(
-                BindScope(
-                    PythonScopeKind.Function,
-                    function.Name.Name,
-                    function,
-                    function.Parameters,
-                    function.Body,
-                    childAncestors,
-                    diagnostics
-                )
+                definitionNode switch
+                {
+                    PythonFunctionDefinitionStatement function => BindScope(
+                        PythonScopeKind.Function,
+                        function.Name.Name,
+                        function,
+                        function.Parameters,
+                        function.Body,
+                        childAncestors,
+                        diagnostics
+                    ),
+                    PythonClassDefinitionStatement @class => BindScope(
+                        PythonScopeKind.Class,
+                        @class.Name.Name,
+                        @class,
+                        [],
+                        @class.Body,
+                        childAncestors,
+                        diagnostics
+                    ),
+                    PythonListComprehensionExpression or PythonDictionaryComprehensionExpression =>
+                        BindComprehensionScope(
+                            (PythonExpression)definitionNode,
+                            childAncestors,
+                            diagnostics
+                        ),
+                    _ => throw new InvalidOperationException(
+                        "The scope definition kind is invalid."
+                    ),
+                }
             );
+        }
+
+        return scope;
+    }
+
+    private static PythonBoundScope BindComprehensionScope(
+        PythonExpression comprehension,
+        IReadOnlyList<PythonBoundScope> ancestors,
+        List<Diagnostic> diagnostics
+    )
+    {
+        string name;
+        IReadOnlyList<PythonComprehensionClause> clauses;
+        var innerExpressions = new List<PythonExpression>();
+        switch (comprehension)
+        {
+            case PythonListComprehensionExpression listComprehension:
+                name = "<listcomp>";
+                clauses = listComprehension.Clauses;
+                innerExpressions.Add(listComprehension.Element);
+                break;
+            case PythonDictionaryComprehensionExpression dictionaryComprehension:
+                name = "<dictcomp>";
+                clauses = dictionaryComprehension.Clauses;
+                innerExpressions.Add(dictionaryComprehension.Key);
+                innerExpressions.Add(dictionaryComprehension.Value);
+                break;
+            default:
+                throw new InvalidOperationException("The comprehension kind is invalid.");
+        }
+
+        for (var index = 0; index < clauses.Count; index++)
+        {
+            switch (clauses[index])
+            {
+                case PythonComprehensionForClause forClause when index != 0:
+                    innerExpressions.Add(forClause.Iterable);
+                    break;
+                case PythonComprehensionIfClause ifClause:
+                    innerExpressions.Add(ifClause.Condition);
+                    break;
+            }
+        }
+
+        var localNames = new List<string> { ".0" };
+        var localNameSet = new HashSet<string>(StringComparer.Ordinal) { ".0" };
+        var excludedNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var clause in clauses)
+        {
+            if (clause is PythonComprehensionForClause forClause)
+            {
+                CollectTargetNames(forClause.Target, localNames, localNameSet, excludedNames);
+            }
+        }
+
+        var references = new List<NameReference>();
+        foreach (var expression in innerExpressions)
+        {
+            CollectReferences(expression, references);
+        }
+
+        foreach (var clause in clauses)
+        {
+            if (clause is PythonComprehensionForClause forClause)
+            {
+                CollectTargetReferences(forClause.Target, references);
+            }
+        }
+
+        var referencedNames = references
+            .Select(reference => reference.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var children = new List<PythonBoundScope>();
+        var scope = new PythonBoundScope(
+            PythonScopeKind.Function,
+            name,
+            comprehension,
+            [".0"],
+            localNames,
+            referencedNames,
+            [],
+            [],
+            children,
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal)
+        );
+        var childAncestors = ancestors.Append(scope).ToArray();
+        foreach (var expression in innerExpressions)
+        {
+            foreach (var nested in EnumerateComprehensions(expression))
+            {
+                children.Add(BindComprehensionScope(nested, childAncestors, diagnostics));
+            }
         }
 
         return scope;
@@ -285,22 +401,25 @@ public static class PythonSymbolBinder
         List<Diagnostic> diagnostics
     )
     {
-        if (scope.Kind == PythonScopeKind.Function)
+        if (scope.Kind is PythonScopeKind.Function or PythonScopeKind.Class)
         {
-            foreach (var (name, span) in scope.DeclaredNonlocalNames)
+            if (scope.Kind == PythonScopeKind.Function)
             {
-                if (FindClosureOwner(enclosingFunctions, name) is null)
+                foreach (var (name, span) in scope.DeclaredNonlocalNames)
                 {
-                    Report(
-                        diagnostics,
-                        "DPY3110",
-                        $"No binding for nonlocal '{name}' was found.",
-                        span
-                    );
-                    continue;
-                }
+                    if (FindClosureOwner(enclosingFunctions, name) is null)
+                    {
+                        Report(
+                            diagnostics,
+                            "DPY3110",
+                            $"No binding for nonlocal '{name}' was found.",
+                            span
+                        );
+                        continue;
+                    }
 
-                scope.AddFreeVariable(name);
+                    scope.AddFreeVariable(name);
+                }
             }
 
             foreach (var name in scope.ReferencedNames)
@@ -325,7 +444,7 @@ public static class PythonSymbolBinder
             ResolveClosureVariables(child, childEnclosingFunctions, diagnostics);
         }
 
-        if (scope.Kind != PythonScopeKind.Function)
+        if (scope.Kind is not (PythonScopeKind.Function or PythonScopeKind.Class))
         {
             return;
         }
@@ -334,7 +453,7 @@ public static class PythonSymbolBinder
         {
             foreach (var name in child.FreeVariableNames)
             {
-                if (scope.IsLocal(name))
+                if (scope.Kind == PythonScopeKind.Function && scope.IsLocal(name))
                 {
                     scope.AddCellVariable(name);
                 }
@@ -376,11 +495,7 @@ public static class PythonSymbolBinder
             switch (statement)
             {
                 case PythonAssignmentStatement assignment:
-                    if (assignment.Target is PythonNameExpression assignmentTarget)
-                    {
-                        AddLocal(assignmentTarget.Name, localNames, localNameSet, excludedNames);
-                    }
-
+                    CollectTargetNames(assignment.Target, localNames, localNameSet, excludedNames);
                     break;
                 case PythonAugmentedAssignmentStatement augmented:
                     if (augmented.Target is PythonNameExpression augmentedTarget)
@@ -391,6 +506,9 @@ public static class PythonSymbolBinder
                     break;
                 case PythonFunctionDefinitionStatement function:
                     AddLocal(function.Name.Name, localNames, localNameSet, excludedNames);
+                    break;
+                case PythonClassDefinitionStatement @class:
+                    AddLocal(@class.Name.Name, localNames, localNameSet, excludedNames);
                     break;
                 case PythonImportStatement importStatement:
                     foreach (var import in importStatement.Imports)
@@ -434,7 +552,7 @@ public static class PythonSymbolBinder
                     CollectBoundNames(loop.ElseBody, localNames, localNameSet, excludedNames);
                     break;
                 case PythonForStatement loop:
-                    AddLocal(loop.Target.Name, localNames, localNameSet, excludedNames);
+                    CollectTargetNames(loop.Target, localNames, localNameSet, excludedNames);
                     CollectBoundNames(loop.Body, localNames, localNameSet, excludedNames);
                     CollectBoundNames(loop.ElseBody, localNames, localNameSet, excludedNames);
                     break;
@@ -486,12 +604,7 @@ public static class PythonSymbolBinder
             {
                 case PythonAssignmentStatement assignment:
                     CollectReferences(assignment.Value, references);
-                    if (assignment.Target is PythonSubscriptionExpression subscription)
-                    {
-                        CollectReferences(subscription.Target, references);
-                        CollectReferences(subscription.Index, references);
-                    }
-
+                    CollectTargetReferences(assignment.Target, references);
                     break;
                 case PythonAugmentedAssignmentStatement augmented:
                     CollectReferences(augmented.Target, references);
@@ -664,10 +777,27 @@ public static class PythonSymbolBinder
             case PythonParenthesizedExpression parenthesized:
                 CollectReferences(parenthesized.Expression, references);
                 break;
+            case PythonListComprehensionExpression listComprehension:
+                CollectFirstIterableReferences(listComprehension.Clauses, references);
+                break;
+            case PythonDictionaryComprehensionExpression dictionaryComprehension:
+                CollectFirstIterableReferences(dictionaryComprehension.Clauses, references);
+                break;
         }
     }
 
-    private static IEnumerable<PythonFunctionDefinitionStatement> EnumerateFunctions(
+    private static void CollectFirstIterableReferences(
+        IReadOnlyList<PythonComprehensionClause> clauses,
+        List<NameReference> references
+    )
+    {
+        if (clauses.Count != 0 && clauses[0] is PythonComprehensionForClause firstClause)
+        {
+            CollectReferences(firstClause.Iterable, references);
+        }
+    }
+
+    private static IEnumerable<PythonNode> EnumerateScopeDefinitions(
         IReadOnlyList<PythonStatement> statements
     )
     {
@@ -676,73 +806,400 @@ public static class PythonSymbolBinder
             switch (statement)
             {
                 case PythonFunctionDefinitionStatement function:
-                    yield return function;
-                    break;
-                case PythonIfStatement conditional:
-                    foreach (var clause in conditional.Clauses)
+                    foreach (var parameter in function.Parameters)
                     {
-                        foreach (var nested in EnumerateFunctions(clause.Body))
+                        if (parameter.Default is null)
+                        {
+                            continue;
+                        }
+
+                        foreach (var nested in EnumerateComprehensions(parameter.Default))
                         {
                             yield return nested;
                         }
                     }
 
-                    foreach (var nested in EnumerateFunctions(conditional.ElseBody))
+                    yield return function;
+                    break;
+                case PythonClassDefinitionStatement @class:
+                    yield return @class;
+                    break;
+                case PythonAssignmentStatement assignment:
+                    foreach (var nested in EnumerateComprehensions(assignment.Value))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateComprehensions(assignment.Target))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonAugmentedAssignmentStatement augmented:
+                    foreach (var nested in EnumerateComprehensions(augmented.Target))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateComprehensions(augmented.Value))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonExpressionStatement expressionStatement:
+                    foreach (var nested in EnumerateComprehensions(expressionStatement.Expression))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonReturnStatement { Value: not null } returnStatement:
+                    foreach (var nested in EnumerateComprehensions(returnStatement.Value))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonRaiseStatement raiseStatement:
+                    foreach (
+                        var nested in EnumerateOptionalComprehensions(raiseStatement.Exception)
+                    )
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateOptionalComprehensions(raiseStatement.Cause))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
+                case PythonIfStatement conditional:
+                    foreach (var clause in conditional.Clauses)
+                    {
+                        foreach (var nested in EnumerateComprehensions(clause.Condition))
+                        {
+                            yield return nested;
+                        }
+
+                        foreach (var nested in EnumerateScopeDefinitions(clause.Body))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    foreach (var nested in EnumerateScopeDefinitions(conditional.ElseBody))
                     {
                         yield return nested;
                     }
 
                     break;
                 case PythonWhileStatement loop:
-                    foreach (var nested in EnumerateFunctions(loop.Body))
+                    foreach (var nested in EnumerateComprehensions(loop.Condition))
                     {
                         yield return nested;
                     }
 
-                    foreach (var nested in EnumerateFunctions(loop.ElseBody))
+                    foreach (var nested in EnumerateScopeDefinitions(loop.Body))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateScopeDefinitions(loop.ElseBody))
                     {
                         yield return nested;
                     }
 
                     break;
                 case PythonForStatement loop:
-                    foreach (var nested in EnumerateFunctions(loop.Body))
+                    foreach (var nested in EnumerateComprehensions(loop.Target))
                     {
                         yield return nested;
                     }
 
-                    foreach (var nested in EnumerateFunctions(loop.ElseBody))
+                    foreach (var nested in EnumerateComprehensions(loop.Iterable))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateScopeDefinitions(loop.Body))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateScopeDefinitions(loop.ElseBody))
                     {
                         yield return nested;
                     }
 
                     break;
                 case PythonTryStatement tryStatement:
-                    foreach (var nested in EnumerateFunctions(tryStatement.Body))
+                    foreach (var nested in EnumerateScopeDefinitions(tryStatement.Body))
                     {
                         yield return nested;
                     }
 
                     foreach (var handler in tryStatement.Handlers)
                     {
-                        foreach (var nested in EnumerateFunctions(handler.Body))
+                        foreach (var nested in EnumerateOptionalComprehensions(handler.Type))
+                        {
+                            yield return nested;
+                        }
+
+                        foreach (var nested in EnumerateScopeDefinitions(handler.Body))
                         {
                             yield return nested;
                         }
                     }
 
-                    foreach (var nested in EnumerateFunctions(tryStatement.ElseBody))
+                    foreach (var nested in EnumerateScopeDefinitions(tryStatement.ElseBody))
                     {
                         yield return nested;
                     }
 
-                    foreach (var nested in EnumerateFunctions(tryStatement.FinallyBody))
+                    foreach (var nested in EnumerateScopeDefinitions(tryStatement.FinallyBody))
                     {
                         yield return nested;
                     }
 
                     break;
             }
+        }
+    }
+
+    private static IEnumerable<PythonExpression> EnumerateOptionalComprehensions(
+        PythonExpression? expression
+    ) => expression is null ? [] : EnumerateComprehensions(expression);
+
+    private static IEnumerable<PythonExpression> EnumerateComprehensions(
+        PythonExpression expression
+    )
+    {
+        switch (expression)
+        {
+            case PythonListComprehensionExpression listComprehension:
+                yield return listComprehension;
+                foreach (
+                    var nested in EnumerateFirstIterableComprehensions(listComprehension.Clauses)
+                )
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonDictionaryComprehensionExpression dictionaryComprehension:
+                yield return dictionaryComprehension;
+                foreach (
+                    var nested in EnumerateFirstIterableComprehensions(
+                        dictionaryComprehension.Clauses
+                    )
+                )
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonUnaryExpression unary:
+                foreach (var nested in EnumerateComprehensions(unary.Operand))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonBinaryExpression binary:
+                foreach (var nested in EnumerateComprehensions(binary.Left))
+                {
+                    yield return nested;
+                }
+
+                foreach (var nested in EnumerateComprehensions(binary.Right))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonComparisonExpression comparison:
+                foreach (var nested in EnumerateComprehensions(comparison.Left))
+                {
+                    yield return nested;
+                }
+
+                foreach (var part in comparison.Comparisons)
+                {
+                    foreach (var nested in EnumerateComprehensions(part.Right))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonCallExpression call:
+                foreach (var nested in EnumerateComprehensions(call.Target))
+                {
+                    yield return nested;
+                }
+
+                foreach (var argument in call.Arguments)
+                {
+                    foreach (var nested in EnumerateComprehensions(argument))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                foreach (var keywordArgument in call.KeywordArguments)
+                {
+                    foreach (var nested in EnumerateComprehensions(keywordArgument.Value))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonListExpression list:
+                foreach (var element in list.Elements)
+                {
+                    foreach (var nested in EnumerateComprehensions(element))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonTupleExpression tuple:
+                foreach (var element in tuple.Elements)
+                {
+                    foreach (var nested in EnumerateComprehensions(element))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonDictionaryExpression dictionary:
+                foreach (var item in dictionary.Items)
+                {
+                    foreach (var nested in EnumerateComprehensions(item.Key))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var nested in EnumerateComprehensions(item.Value))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonSubscriptionExpression subscription:
+                foreach (var nested in EnumerateComprehensions(subscription.Target))
+                {
+                    yield return nested;
+                }
+
+                foreach (var nested in EnumerateComprehensions(subscription.Index))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonSliceExpression slice:
+                foreach (var nested in EnumerateOptionalComprehensions(slice.Start))
+                {
+                    yield return nested;
+                }
+
+                foreach (var nested in EnumerateOptionalComprehensions(slice.Stop))
+                {
+                    yield return nested;
+                }
+
+                foreach (var nested in EnumerateOptionalComprehensions(slice.Step))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonAttributeExpression attribute:
+                foreach (var nested in EnumerateComprehensions(attribute.Target))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonParenthesizedExpression parenthesized:
+                foreach (var nested in EnumerateComprehensions(parenthesized.Expression))
+                {
+                    yield return nested;
+                }
+
+                break;
+        }
+    }
+
+    private static IEnumerable<PythonExpression> EnumerateFirstIterableComprehensions(
+        IReadOnlyList<PythonComprehensionClause> clauses
+    ) =>
+        clauses.Count != 0 && clauses[0] is PythonComprehensionForClause firstClause
+            ? EnumerateComprehensions(firstClause.Iterable)
+            : [];
+
+    private static void CollectTargetNames(
+        PythonExpression target,
+        List<string> localNames,
+        HashSet<string> localNameSet,
+        HashSet<string> excludedNames
+    )
+    {
+        switch (target)
+        {
+            case PythonNameExpression name:
+                AddLocal(name.Name, localNames, localNameSet, excludedNames);
+                break;
+            case PythonParenthesizedExpression parenthesized:
+                CollectTargetNames(
+                    parenthesized.Expression,
+                    localNames,
+                    localNameSet,
+                    excludedNames
+                );
+                break;
+            case PythonTupleExpression tuple:
+                foreach (var element in tuple.Elements)
+                {
+                    CollectTargetNames(element, localNames, localNameSet, excludedNames);
+                }
+
+                break;
+        }
+    }
+
+    private static void CollectTargetReferences(
+        PythonExpression target,
+        List<NameReference> references
+    )
+    {
+        switch (target)
+        {
+            case PythonAttributeExpression attribute:
+                CollectReferences(attribute.Target, references);
+                break;
+            case PythonSubscriptionExpression subscription:
+                CollectReferences(subscription.Target, references);
+                CollectReferences(subscription.Index, references);
+                break;
+            case PythonParenthesizedExpression parenthesized:
+                CollectTargetReferences(parenthesized.Expression, references);
+                break;
+            case PythonTupleExpression tuple:
+                foreach (var element in tuple.Elements)
+                {
+                    CollectTargetReferences(element, references);
+                }
+
+                break;
         }
     }
 

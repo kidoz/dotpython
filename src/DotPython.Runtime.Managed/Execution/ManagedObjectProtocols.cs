@@ -174,6 +174,14 @@ internal static class ManagedObjectProtocols
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonDictionaryValue dictionary => dictionary.Items.Count,
             PythonDictionaryViewValue view => view.Snapshot.Elements.Count,
+            PythonRangeValue range => range.Count <= int.MaxValue
+                ? (int)range.Count
+                : throw Fault(
+                    "DPY4011",
+                    "The range length exceeds the supported size.",
+                    span,
+                    "OverflowError"
+                ),
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
@@ -198,6 +206,7 @@ internal static class ManagedObjectProtocols
                 or PythonDictionaryValue
                 or PythonTextValue
                 or PythonByteSequenceValue
+                or PythonRangeValue
             )
         )
         {
@@ -257,6 +266,51 @@ internal static class ManagedObjectProtocols
             case PythonByteSequenceValue bytes when iterator.Index < bytes.Value.Length:
                 value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
                 return true;
+            case PythonRangeValue range:
+            {
+                var current = range.Start + range.Step * iterator.Index;
+                if (range.Step > 0 ? current < range.Stop : current > range.Stop)
+                {
+                    iterator.Index++;
+                    value = PythonWholeNumberValue.Create(current);
+                    return true;
+                }
+
+                break;
+            }
+            case PythonEnumerateSourceValue enumerateSource:
+                if (TryGetNext(enumerateSource.Inner, out var element, span))
+                {
+                    value = new PythonTupleValue([
+                        PythonWholeNumberValue.Create(enumerateSource.StartIndex + iterator.Index),
+                        element,
+                    ]);
+                    iterator.Index++;
+                    return true;
+                }
+
+                break;
+            case PythonZipSourceValue zipSource when zipSource.Inners.Length != 0:
+            {
+                var row = new PythonValue[zipSource.Inners.Length];
+                var complete = true;
+                for (var index = 0; index < zipSource.Inners.Length; index++)
+                {
+                    if (!TryGetNext(zipSource.Inners[index], out row[index], span))
+                    {
+                        complete = false;
+                        break;
+                    }
+                }
+
+                if (complete)
+                {
+                    value = new PythonTupleValue(row);
+                    return true;
+                }
+
+                break;
+            }
         }
 
         value = PythonNoneValue.Instance;
@@ -324,6 +378,46 @@ internal static class ManagedObjectProtocols
                 return PythonWholeNumberValue.Create(
                     bytes.Value[GetSequenceIndex(index, bytes.Value.Length, span)]
                 );
+            case PythonRangeValue range when index is PythonSliceValue slice:
+            {
+                if (range.Count > int.MaxValue)
+                {
+                    throw Fault(
+                        "DPY4011",
+                        "The range length exceeds the supported size.",
+                        span,
+                        "OverflowError"
+                    );
+                }
+
+                var (start, stop, step) = GetSliceIndices(slice, (int)range.Count, span);
+                return new PythonRangeValue(
+                    range.Start + range.Step * start,
+                    range.Start + range.Step * stop,
+                    range.Step * step
+                );
+            }
+            case PythonRangeValue range:
+            {
+                var promoted = PromoteTruthValue(index);
+                if (promoted is not PythonWholeNumberValue wholeNumber)
+                {
+                    throw Fault("DPY4011", "Sequence indices must be integers.", span, "TypeError");
+                }
+
+                var position = wholeNumber.Value;
+                if (position < 0)
+                {
+                    position += range.Count;
+                }
+
+                if (position < 0 || position >= range.Count)
+                {
+                    throw Fault("DPY4012", "The range index is out of range.", span, "IndexError");
+                }
+
+                return PythonWholeNumberValue.Create(range.Start + range.Step * position);
+            }
             case PythonDictionaryValue dictionary
                 when TryFindDictionaryItem(dictionary, index, out var item):
                 return item.Value;
@@ -622,6 +716,8 @@ internal static class ManagedObjectProtocols
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
             PythonDictionaryValue dictionary => dictionary.Items.Count != 0,
+            PythonRangeValue range => !range.Count.IsZero,
+            PythonDictionaryViewValue view => view.Snapshot.Elements.Count != 0,
             _ => true,
         };
 
@@ -742,6 +838,9 @@ internal static class ManagedObjectProtocols
             PythonDictionaryValue => "dict",
             PythonSliceValue => "slice",
             PythonDictionaryViewValue view => view.Kind,
+            PythonRangeValue => "range",
+            PythonEnumerateSourceValue => "enumerate",
+            PythonZipSourceValue => "zip",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue => "type",
@@ -749,7 +848,7 @@ internal static class ManagedObjectProtocols
             PythonExternalObjectValue => "object",
             PythonBuiltinFunctionValue or PythonProtocolFunctionValue =>
                 "builtin_function_or_method",
-            PythonBoundMethodValue => "method",
+            PythonBoundMethodValue or PythonBoundUserMethodValue => "method",
             PythonExceptionTypeValue => "type",
             PythonExceptionValue exception => exception.TypeName,
             PythonFunctionValue => "function",
@@ -792,10 +891,15 @@ internal static class ManagedObjectProtocols
                 instance,
                 function
             ),
+            PythonFunctionValue function => new PythonBoundUserMethodValue(
+                function.Name,
+                instance,
+                function
+            ),
             _ => value,
         };
 
-    private static bool TryGetTypeAttribute(
+    internal static bool TryGetTypeAttribute(
         PythonManagedTypeValue type,
         string name,
         out PythonValue value

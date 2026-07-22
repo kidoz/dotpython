@@ -387,9 +387,41 @@ internal sealed record PythonFunctionValue(
     internal override string ToDisplayString() => $"<function {Name}>";
 }
 
+internal sealed record PythonBoundUserMethodValue(
+    string Name,
+    PythonManagedObjectValue Target,
+    PythonFunctionValue Function
+) : PythonValue
+{
+    internal override string ToDisplayString() => $"<bound method {Name}>";
+}
+
 internal sealed record PythonModuleValue(string Name, PythonGlobalNamespace Globals) : PythonValue
 {
     internal override string ToDisplayString() => $"<module '{Name}'>";
+}
+
+internal sealed record PythonRangeValue(BigInteger Start, BigInteger Stop, BigInteger Step)
+    : PythonValue
+{
+    internal BigInteger Count =>
+        Step > 0
+            ? (Stop > Start ? (Stop - Start + Step - 1) / Step : 0)
+            : (Start > Stop ? (Start - Stop - Step - 1) / (-Step) : 0);
+
+    internal override string ToDisplayString() =>
+        Step.IsOne ? $"range({Start}, {Stop})" : $"range({Start}, {Stop}, {Step})";
+}
+
+internal sealed record PythonEnumerateSourceValue(PythonIteratorValue Inner, BigInteger StartIndex)
+    : PythonValue
+{
+    internal override string ToDisplayString() => "<enumerate>";
+}
+
+internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : PythonValue
+{
+    internal override string ToDisplayString() => "<zip>";
 }
 
 internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, PythonValue Step)

@@ -60,7 +60,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":11,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":13,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -146,6 +146,49 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Contains(
             restored.Code.Instructions,
             instruction => instruction is { OpCode: PythonOpCode.CallKeyword, Operand: 2 }
+        );
+        Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
+    public void Deserialize_RoundTripsClassAndAttributeStoreInstructions()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "classes",
+                Compile(
+                    "class Value:\n"
+                        + "    def __init__(self, value):\n"
+                        + "        self.value = value\n"
+                )
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeClass
+        );
+        var classCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    restored.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var initializerCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    classCode.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Contains(
+            initializerCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.StoreAttribute
         );
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
     }
@@ -351,10 +394,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":11,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":13,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":11,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":13,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)

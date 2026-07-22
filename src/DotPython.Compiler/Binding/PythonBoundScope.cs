@@ -18,7 +18,7 @@ public sealed class PythonBoundScope
     internal PythonBoundScope(
         PythonScopeKind kind,
         string name,
-        PythonFunctionDefinitionStatement? definition,
+        PythonNode? definition,
         IList<string> parameters,
         IList<string> localNames,
         IList<string> referencedNames,
@@ -72,7 +72,7 @@ public sealed class PythonBoundScope
 
     public IReadOnlyList<PythonBoundScope> Children { get; }
 
-    internal PythonFunctionDefinitionStatement? Definition { get; }
+    internal PythonNode? Definition { get; }
 
     internal IReadOnlyDictionary<string, TextSpan> DeclaredGlobalNames { get; }
 

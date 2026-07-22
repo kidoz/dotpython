@@ -77,6 +77,9 @@ internal sealed class PythonVirtualMachine
             ["len"] = new PythonBuiltinFunctionValue("len", Length),
             ["print"] = new PythonBuiltinFunctionValue("print", Print),
             ["repr"] = new PythonBuiltinFunctionValue("repr", Representation),
+            ["range"] = new PythonBuiltinFunctionValue("range", Range),
+            ["enumerate"] = new PythonBuiltinFunctionValue("enumerate", Enumerate),
+            ["zip"] = new PythonBuiltinFunctionValue("zip", Zip),
         };
         foreach (var name in ExceptionBaseNames.Keys)
         {
@@ -234,10 +237,16 @@ internal sealed class PythonVirtualMachine
                 );
                 break;
             case PythonOpCode.StoreName:
-                frame.Globals.SetValue(
-                    frame.Code.Definition.Names[instruction.Operand],
-                    Pop(instruction.Span)
-                );
+                var storedName = frame.Code.Definition.Names[instruction.Operand];
+                var storedValue = Pop(instruction.Span);
+                if (frame.ClassNamespace is null)
+                {
+                    frame.Globals.SetValue(storedName, storedValue);
+                }
+                else
+                {
+                    frame.ClassNamespace.Attributes[storedName] = storedValue;
+                }
                 break;
             case PythonOpCode.LoadLocal:
                 _evaluationStack.Push(LoadLocal(instruction.Operand, instruction.Span));
@@ -259,6 +268,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.LoadAttribute:
                 LoadAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
+                break;
+            case PythonOpCode.StoreAttribute:
+                StoreAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
                 break;
             case PythonOpCode.PopTop:
                 Pop(instruction.Span);
@@ -321,6 +333,15 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.InPlaceMultiply:
                 ApplyInPlaceMultiply(instruction.Span);
                 break;
+            case PythonOpCode.UnpackSequence:
+                UnpackSequence(instruction);
+                break;
+            case PythonOpCode.ListAppend:
+                AppendToComprehensionList(instruction);
+                break;
+            case PythonOpCode.DictionaryAdd:
+                AddToComprehensionDictionary(instruction);
+                break;
             case PythonOpCode.Jump:
                 frame.InstructionPointer = GetJumpTarget(
                     instruction,
@@ -370,6 +391,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.MakeFunctionWithDefaults:
                 MakeFunction(instruction, withDefaults: true);
+                break;
+            case PythonOpCode.MakeClass:
+                MakeClass(instruction);
                 break;
             case PythonOpCode.CallKeyword:
                 ApplyKeywordCall(instruction);
@@ -915,6 +939,13 @@ internal sealed class PythonVirtualMachine
         _evaluationStack.Push(ManagedObjectProtocols.GetAttribute(target, name, span));
     }
 
+    private void StoreAttribute(string name, TextSpan span)
+    {
+        var target = Pop(span);
+        var value = Pop(span);
+        ManagedObjectProtocols.SetAttribute(target, name, value, span);
+    }
+
     private void BuildDictionary(int itemCount, TextSpan span)
     {
         if (
@@ -1040,6 +1071,15 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        var classNamespace = CurrentFrame.ClassNamespace;
+        if (
+            classNamespace is not null
+            && classNamespace.Attributes.TryGetValue(name, out var classValue)
+        )
+        {
+            return classValue;
+        }
+
         var globals = CurrentFrame.Globals;
         if (code.TryGetCachedName(instructionIndex, globals, out var value))
         {
@@ -1348,6 +1388,27 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (target is PythonBoundUserMethodValue boundMethod)
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            PushFunctionFrame(
+                boundMethod.Function,
+                PrependArgument(boundMethod.Target, arguments),
+                instruction.Span,
+                captureReturnLocalContinuation: true
+            );
+            return;
+        }
+
+        if (target is PythonManagedTypeValue { Construct: null } type)
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            ConstructManagedInstance(type, arguments, instruction.Span);
+            return;
+        }
+
         if (
             target
             is PythonProtocolFunctionValue
@@ -1389,7 +1450,23 @@ internal sealed class PythonVirtualMachine
         var keywordValues = PopArguments(keywordCount, instruction.Span);
         var positional = PopArguments(instruction.Operand - keywordCount, instruction.Span);
         var target = Pop(instruction.Span);
-        if (target is not PythonFunctionValue function)
+        if (target is PythonManagedTypeValue { Construct: null } type)
+        {
+            ConstructManagedInstance(type, positional, names, keywordValues, instruction.Span);
+            return;
+        }
+
+        PythonFunctionValue function;
+        if (target is PythonBoundUserMethodValue boundMethod)
+        {
+            function = boundMethod.Function;
+            positional = PrependArgument(boundMethod.Target, positional);
+        }
+        else if (target is PythonFunctionValue userFunction)
+        {
+            function = userFunction;
+        }
+        else
         {
             throw Fault(
                 "DPY4009",
@@ -1511,7 +1588,10 @@ internal sealed class PythonVirtualMachine
     private void PushFunctionFrameWithArguments(
         PythonFunctionValue function,
         PythonValue[] arguments,
-        TextSpan span
+        TextSpan span,
+        PythonValue? returnOverride = null,
+        bool requireNoneReturn = false,
+        bool captureReturnLocalContinuation = false
     )
     {
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
@@ -1521,12 +1601,17 @@ internal sealed class PythonVirtualMachine
             StoreArgument(function.Code, cells, localsBase, index, arguments[index]);
         }
 
+        var hasReturnLocalContinuation =
+            captureReturnLocalContinuation && CaptureReturnLocalContinuation();
         PushFrame(
             function.Code,
             function.Globals,
             localsBase,
             function.Code.Definition.VariableNames.Count,
-            cells
+            cells,
+            hasReturnLocalContinuation,
+            returnOverride: returnOverride,
+            requireNoneReturn: requireNoneReturn
         );
     }
 
@@ -1569,6 +1654,23 @@ internal sealed class PythonVirtualMachine
         {
             _evaluationStack.Push(CreateExceptionValue(exceptionType, Array.Empty<PythonValue>()));
             code.RecordBuiltinCall(instructionIndex);
+            return;
+        }
+
+        if (target is PythonBoundUserMethodValue boundMethod)
+        {
+            PushFunctionFrame(
+                boundMethod.Function,
+                [boundMethod.Target],
+                span,
+                captureReturnLocalContinuation: true
+            );
+            return;
+        }
+
+        if (target is PythonManagedTypeValue { Construct: null } type)
+        {
+            ConstructManagedInstance(type, [], span);
             return;
         }
 
@@ -1684,7 +1786,10 @@ internal sealed class PythonVirtualMachine
     private void PushFunctionFrame(
         PythonFunctionValue function,
         IReadOnlyList<PythonValue> arguments,
-        TextSpan span
+        TextSpan span,
+        PythonValue? returnOverride = null,
+        bool requireNoneReturn = false,
+        bool captureReturnLocalContinuation = false
     )
     {
         ValidateArgumentCount(function, arguments.Count, span);
@@ -1697,13 +1802,105 @@ internal sealed class PythonVirtualMachine
         }
 
         StoreMissingDefaultArguments(function, cells, localsBase, arguments.Count);
+        var hasReturnLocalContinuation =
+            captureReturnLocalContinuation && CaptureReturnLocalContinuation();
         PushFrame(
             function.Code,
             function.Globals,
             localsBase,
             function.Code.Definition.VariableNames.Count,
-            cells
+            cells,
+            hasReturnLocalContinuation,
+            returnOverride: returnOverride,
+            requireNoneReturn: requireNoneReturn
         );
+    }
+
+    private void ConstructManagedInstance(
+        PythonManagedTypeValue type,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        var instance = new PythonManagedObjectValue(type);
+        if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
+        {
+            if (arguments.Length != 0)
+            {
+                throw Fault("DPY4009", $"{type.Name}() takes no arguments.", span, "TypeError");
+            }
+
+            _evaluationStack.Push(instance);
+            return;
+        }
+
+        if (initializer is not PythonFunctionValue function)
+        {
+            throw Fault(
+                "DPY4009",
+                $"'{ManagedObjectProtocols.GetTypeName(initializer)}' object is not callable.",
+                span,
+                "TypeError"
+            );
+        }
+
+        PushFunctionFrame(
+            function,
+            PrependArgument(instance, arguments),
+            span,
+            returnOverride: instance,
+            requireNoneReturn: true,
+            captureReturnLocalContinuation: true
+        );
+    }
+
+    private void ConstructManagedInstance(
+        PythonManagedTypeValue type,
+        PythonValue[] positional,
+        PythonTupleValue names,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        var instance = new PythonManagedObjectValue(type);
+        if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
+        {
+            throw Fault("DPY4009", $"{type.Name}() takes no arguments.", span, "TypeError");
+        }
+
+        if (initializer is not PythonFunctionValue function)
+        {
+            throw Fault(
+                "DPY4009",
+                $"'{ManagedObjectProtocols.GetTypeName(initializer)}' object is not callable.",
+                span,
+                "TypeError"
+            );
+        }
+
+        var arguments = BindKeywordArguments(
+            function,
+            PrependArgument(instance, positional),
+            names,
+            keywordValues,
+            span
+        );
+        PushFunctionFrameWithArguments(
+            function,
+            arguments,
+            span,
+            returnOverride: instance,
+            requireNoneReturn: true,
+            captureReturnLocalContinuation: true
+        );
+    }
+
+    private static PythonValue[] PrependArgument(PythonValue first, PythonValue[] arguments)
+    {
+        var combined = new PythonValue[checked(arguments.Length + 1)];
+        combined[0] = first;
+        arguments.CopyTo(combined, 1);
+        return combined;
     }
 
     private void StoreMissingDefaultArguments(
@@ -1792,7 +1989,10 @@ internal sealed class PythonVirtualMachine
         int localsCount,
         PythonCell[] cells,
         bool hasReturnLocalContinuation = false,
-        PythonModuleValue? initializingModule = null
+        PythonModuleValue? initializingModule = null,
+        PythonManagedTypeValue? classNamespace = null,
+        PythonValue? returnOverride = null,
+        bool requireNoneReturn = false
     )
     {
         if (_frameCount == _frames.Length)
@@ -1808,7 +2008,10 @@ internal sealed class PythonVirtualMachine
             cells,
             _evaluationStack.Count,
             hasReturnLocalContinuation,
-            initializingModule
+            initializingModule,
+            classNamespace,
+            returnOverride,
+            requireNoneReturn
         );
     }
 
@@ -1900,6 +2103,50 @@ internal sealed class PythonVirtualMachine
         );
     }
 
+    private void MakeClass(PythonInstruction instruction)
+    {
+        PreparedPythonCode code;
+        try
+        {
+            code = CurrentFrame.Code.GetFunctionCode(instruction.Operand);
+        }
+        catch (InvalidOperationException)
+        {
+            throw Fault("DPY4007", "The class code object is invalid.", instruction.Span);
+        }
+
+        var closure = new PythonCell[code.Definition.FreeVariableNames.Count];
+        for (var index = 0; index < closure.Length; index++)
+        {
+            var name = code.Definition.FreeVariableNames[index];
+            var cellIndex = CurrentFrame.Code.GetClosureCellIndex(name);
+            if ((uint)cellIndex >= (uint)CurrentFrame.Cells.Length)
+            {
+                throw Fault(
+                    "DPY4007",
+                    $"Closure variable '{name}' cannot be resolved in the enclosing frame.",
+                    instruction.Span
+                );
+            }
+
+            closure[index] = CurrentFrame.Cells[cellIndex];
+        }
+
+        var type = new PythonManagedTypeValue(code.Definition.Name);
+        var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
+        var cells = CreateCells(code, closure, instruction.Span);
+        PushFrame(
+            code,
+            CurrentFrame.Globals,
+            _localsCount,
+            0,
+            cells,
+            hasReturnLocalContinuation,
+            classNamespace: type,
+            returnOverride: type
+        );
+    }
+
     private static PythonCell[] CreateCells(
         PreparedPythonCode code,
         PythonCell[] closure,
@@ -1973,6 +2220,17 @@ internal sealed class PythonVirtualMachine
         var localsCount = CurrentFrame.LocalsCount;
         var hasReturnLocalContinuation = CurrentFrame.HasReturnLocalContinuation;
         var initializingModule = CurrentFrame.InitializingModule;
+        if (CurrentFrame.RequireNoneReturn && value is not PythonNoneValue)
+        {
+            throw Fault(
+                "DPY4009",
+                "__init__() must return None.",
+                GetCurrentSpan(CurrentFrame),
+                "TypeError"
+            );
+        }
+
+        value = CurrentFrame.ReturnOverride ?? value;
         while (_evaluationStack.Count > evaluationStackBase)
         {
             _evaluationStack.Pop();
@@ -2049,6 +2307,99 @@ internal sealed class PythonVirtualMachine
         ValidateBuiltinArgumentCount("repr", arguments, span);
         return new PythonTextValue(arguments[0].ToRepresentationString());
     }
+
+    private static PythonRangeValue Range(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count is < 1 or > 3)
+        {
+            throw Fault(
+                "DPY4003",
+                $"range() expected 1 to 3 arguments ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        var bounds = new BigInteger[arguments.Count];
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            bounds[index] = RequireBuiltinInteger("range", arguments[index], span);
+        }
+
+        if (arguments.Count == 1)
+        {
+            return new PythonRangeValue(BigInteger.Zero, bounds[0], BigInteger.One);
+        }
+
+        if (arguments.Count == 2)
+        {
+            return new PythonRangeValue(bounds[0], bounds[1], BigInteger.One);
+        }
+
+        if (bounds[2].IsZero)
+        {
+            throw Fault("DPY4012", "range() arg 3 must not be zero.", span, "ValueError");
+        }
+
+        return new PythonRangeValue(bounds[0], bounds[1], bounds[2]);
+    }
+
+    private static PythonIteratorValue Enumerate(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count is < 1 or > 2)
+        {
+            throw Fault(
+                "DPY4003",
+                $"enumerate() expected 1 to 2 arguments ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        var start =
+            arguments.Count == 2
+                ? RequireBuiltinInteger("enumerate", arguments[1], span)
+                : BigInteger.Zero;
+        return new PythonIteratorValue(
+            new PythonEnumerateSourceValue(
+                ManagedObjectProtocols.GetIterator(arguments[0], span),
+                start
+            ),
+            -1
+        );
+    }
+
+    private static PythonIteratorValue Zip(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        var inners = new PythonIteratorValue[arguments.Count];
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            inners[index] = ManagedObjectProtocols.GetIterator(arguments[index], span);
+        }
+
+        return new PythonIteratorValue(new PythonZipSourceValue(inners), -1);
+    }
+
+    private static BigInteger RequireBuiltinInteger(
+        string name,
+        PythonValue value,
+        TextSpan span
+    ) =>
+        value switch
+        {
+            PythonWholeNumberValue wholeNumber => wholeNumber.Value,
+            PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+            _ => throw Fault(
+                "DPY4003",
+                $"{name}() arguments must be integers, "
+                    + $"not {ManagedObjectProtocols.GetTypeName(value)}.",
+                span,
+                "TypeError"
+            ),
+        };
 
     private static void ValidateBuiltinArgumentCount(
         string name,
@@ -2194,6 +2545,73 @@ internal sealed class PythonVirtualMachine
         }
 
         ApplyBinary(new PythonInstruction(PythonOpCode.BinaryMultiply, 0, span));
+    }
+
+    private void AppendToComprehensionList(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        if (Peek(instruction.Operand, instruction.Span) is not PythonListValue accumulator)
+        {
+            throw Fault(
+                "DPY4007",
+                "The comprehension list accumulator is invalid.",
+                instruction.Span
+            );
+        }
+
+        accumulator.Elements.Add(value);
+    }
+
+    private void AddToComprehensionDictionary(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        var key = Pop(instruction.Span);
+        if (Peek(instruction.Operand, instruction.Span) is not PythonDictionaryValue accumulator)
+        {
+            throw Fault(
+                "DPY4007",
+                "The comprehension dictionary accumulator is invalid.",
+                instruction.Span
+            );
+        }
+
+        ManagedObjectProtocols.SetDictionaryItem(accumulator, key, value, instruction.Span);
+    }
+
+    private void UnpackSequence(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        IReadOnlyList<PythonValue> items = value switch
+        {
+            PythonListValue list => list.Elements,
+            PythonTupleValue tuple => tuple.Elements,
+            _ => ManagedObjectProtocols.MaterializeValues(value, instruction.Span),
+        };
+        if (items.Count < instruction.Operand)
+        {
+            throw Fault(
+                "DPY4012",
+                $"Not enough values to unpack (expected {instruction.Operand}, "
+                    + $"received {items.Count}).",
+                instruction.Span,
+                "ValueError"
+            );
+        }
+
+        if (items.Count > instruction.Operand)
+        {
+            throw Fault(
+                "DPY4012",
+                $"Too many values to unpack (expected {instruction.Operand}).",
+                instruction.Span,
+                "ValueError"
+            );
+        }
+
+        for (var index = items.Count - 1; index >= 0; index--)
+        {
+            _evaluationStack.Push(items[index]);
+        }
     }
 
     private void RotateThree(TextSpan span)
@@ -2762,7 +3180,10 @@ internal sealed class PythonVirtualMachine
             PythonCell[] cells,
             int evaluationStackBase,
             bool hasReturnLocalContinuation,
-            PythonModuleValue? initializingModule
+            PythonModuleValue? initializingModule,
+            PythonManagedTypeValue? classNamespace,
+            PythonValue? returnOverride,
+            bool requireNoneReturn
         )
         {
             Code = code;
@@ -2774,6 +3195,9 @@ internal sealed class PythonVirtualMachine
             LocalsBase = localsBase;
             LocalsCount = localsCount;
             InitializingModule = initializingModule;
+            ClassNamespace = classNamespace;
+            ReturnOverride = returnOverride;
+            RequireNoneReturn = requireNoneReturn;
             ActiveExceptions = new Stack<PythonRaisedException>();
             ExceptionBlocks = [];
             PendingFinalies = new Stack<PythonPendingFinally>();
@@ -2787,6 +3211,8 @@ internal sealed class PythonVirtualMachine
         internal Stack<PythonRaisedException> ActiveExceptions { get; }
 
         internal PythonCell[] Cells { get; }
+
+        internal PythonManagedTypeValue? ClassNamespace { get; }
 
         internal int EvaluationStackBase =>
             HasReturnLocalContinuation ? ~_encodedEvaluationStackBase : _encodedEvaluationStackBase;
@@ -2804,6 +3230,10 @@ internal sealed class PythonVirtualMachine
         internal int LocalsCount { get; }
 
         internal Stack<PythonPendingFinally> PendingFinalies { get; }
+
+        internal bool RequireNoneReturn { get; }
+
+        internal PythonValue? ReturnOverride { get; }
 
         internal bool HasReturnLocalContinuation => _encodedEvaluationStackBase < 0;
     }

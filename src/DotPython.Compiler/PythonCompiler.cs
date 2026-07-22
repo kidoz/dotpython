@@ -131,6 +131,9 @@ public static class PythonCompiler
                 case PythonFunctionDefinitionStatement function:
                     CompileFunctionDefinition(function);
                     break;
+                case PythonClassDefinitionStatement @class:
+                    CompileClassDefinition(@class);
+                    break;
                 case PythonReturnStatement returnStatement:
                     CompileReturnStatement(returnStatement);
                     break;
@@ -275,6 +278,20 @@ public static class PythonCompiler
                     CompileOptionalSliceBound(slice.Step, slice.Span);
                     Emit(PythonOpCode.BuildSlice, 0, slice.Span);
                     break;
+                case PythonListComprehensionExpression listComprehension:
+                    CompileComprehension(
+                        listComprehension,
+                        "<listcomp>",
+                        listComprehension.Clauses
+                    );
+                    break;
+                case PythonDictionaryComprehensionExpression dictionaryComprehension:
+                    CompileComprehension(
+                        dictionaryComprehension,
+                        "<dictcomp>",
+                        dictionaryComprehension.Clauses
+                    );
+                    break;
                 case PythonAttributeExpression attribute:
                     CompileExpression(attribute.Target);
                     Emit(
@@ -303,6 +320,151 @@ public static class PythonCompiler
             foreach (var element in elements)
             {
                 CompileExpression(element);
+            }
+        }
+
+        private void CompileComprehension(
+            PythonExpression comprehension,
+            string name,
+            IReadOnlyList<PythonComprehensionClause> clauses
+        )
+        {
+            if (clauses.Count == 0 || clauses[0] is not PythonComprehensionForClause firstClause)
+            {
+                Report(
+                    "DPY3002",
+                    "The comprehension is missing its leading 'for' clause.",
+                    comprehension.Span
+                );
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                    comprehension.Span
+                );
+                return;
+            }
+
+            var childScope = _scope.Children.Single(scope =>
+                ReferenceEquals(scope.Definition, comprehension)
+            );
+            var childCompiler = new Compiler(
+                name,
+                childScope,
+                _diagnostics,
+                _enableReturnLocal,
+                _enableCallLocal
+            );
+            var childCode = childCompiler.CompileComprehensionCode(comprehension, clauses);
+            var constantIndex = AddConstant(
+                new PythonConstant(PythonConstantType.CodeObject, childCode)
+            );
+            Emit(PythonOpCode.MakeFunction, constantIndex, comprehension.Span);
+            CompileExpression(firstClause.Iterable);
+            Emit(PythonOpCode.GetIterator, 0, firstClause.Iterable.Span);
+            Emit(PythonOpCode.Call, 1, comprehension.Span);
+        }
+
+        private PythonCodeObject CompileComprehensionCode(
+            PythonExpression comprehension,
+            IReadOnlyList<PythonComprehensionClause> clauses
+        )
+        {
+            Emit(
+                comprehension is PythonDictionaryComprehensionExpression
+                    ? PythonOpCode.BuildDictionary
+                    : PythonOpCode.BuildList,
+                0,
+                comprehension.Span
+            );
+            Emit(PythonOpCode.LoadLocal, GetVariableIndex(".0"), comprehension.Span);
+            Emit(PythonOpCode.GetIterator, 0, comprehension.Span);
+            CompileComprehensionClauses(
+                comprehension,
+                clauses,
+                clauseIndex: 0,
+                iteratorDepth: 0,
+                innermostLoopStart: 0
+            );
+            Emit(PythonOpCode.ReturnValue, 0, comprehension.Span);
+            return new PythonCodeObject(
+                _codeName,
+                _instructions,
+                _constants,
+                _names,
+                [.. _scope.LocalNames],
+                [.. _scope.CellVariableNames],
+                [.. _scope.FreeVariableNames],
+                _scope.Parameters.Count
+            );
+        }
+
+        private void CompileComprehensionClauses(
+            PythonExpression comprehension,
+            IReadOnlyList<PythonComprehensionClause> clauses,
+            int clauseIndex,
+            int iteratorDepth,
+            int innermostLoopStart
+        )
+        {
+            if (clauseIndex == clauses.Count)
+            {
+                switch (comprehension)
+                {
+                    case PythonListComprehensionExpression listComprehension:
+                        CompileExpression(listComprehension.Element);
+                        Emit(
+                            PythonOpCode.ListAppend,
+                            iteratorDepth,
+                            listComprehension.Element.Span
+                        );
+                        break;
+                    case PythonDictionaryComprehensionExpression dictionaryComprehension:
+                        CompileExpression(dictionaryComprehension.Key);
+                        CompileExpression(dictionaryComprehension.Value);
+                        Emit(
+                            PythonOpCode.DictionaryAdd,
+                            iteratorDepth,
+                            dictionaryComprehension.Span
+                        );
+                        break;
+                }
+
+                return;
+            }
+
+            switch (clauses[clauseIndex])
+            {
+                case PythonComprehensionForClause forClause:
+                    if (clauseIndex != 0)
+                    {
+                        CompileExpression(forClause.Iterable);
+                        Emit(PythonOpCode.GetIterator, 0, forClause.Iterable.Span);
+                    }
+
+                    var loopStart = _instructions.Count;
+                    var exitJump = Emit(PythonOpCode.ForIter, 0, forClause.Span);
+                    CompileAssignmentTarget(forClause.Target);
+                    CompileComprehensionClauses(
+                        comprehension,
+                        clauses,
+                        clauseIndex + 1,
+                        iteratorDepth + 1,
+                        loopStart
+                    );
+                    Emit(PythonOpCode.Jump, loopStart, forClause.Span);
+                    PatchJump(exitJump, _instructions.Count);
+                    break;
+                case PythonComprehensionIfClause ifClause:
+                    CompileExpression(ifClause.Condition);
+                    Emit(PythonOpCode.JumpIfFalse, innermostLoopStart, ifClause.Span);
+                    CompileComprehensionClauses(
+                        comprehension,
+                        clauses,
+                        clauseIndex + 1,
+                        iteratorDepth,
+                        innermostLoopStart
+                    );
+                    break;
             }
         }
 
@@ -341,6 +503,23 @@ public static class PythonCompiler
                     Emit(PythonOpCode.RotateThree, 0, statement.Span);
                     Emit(PythonOpCode.StoreSubscript, 0, statement.Span);
                     break;
+                case PythonAttributeExpression attribute:
+                    CompileExpression(attribute.Target);
+                    Emit(PythonOpCode.CopyTop, 0, attribute.Span);
+                    Emit(
+                        PythonOpCode.LoadAttribute,
+                        GetNameIndex(attribute.AttributeName),
+                        attribute.Span
+                    );
+                    CompileExpression(statement.Value);
+                    EmitAugmentedOperator(statement.Operator, statement.Span);
+                    Emit(PythonOpCode.RotateTwo, 0, statement.Span);
+                    Emit(
+                        PythonOpCode.StoreAttribute,
+                        GetNameIndex(attribute.AttributeName),
+                        attribute.Span
+                    );
+                    break;
                 default:
                     Report("DPY3003", "This expression cannot be assigned to.", statement.Span);
                     break;
@@ -369,6 +548,25 @@ public static class PythonCompiler
                     CompileExpression(subscription.Target);
                     CompileExpression(subscription.Index);
                     Emit(PythonOpCode.StoreSubscript, 0, subscription.Span);
+                    break;
+                case PythonAttributeExpression attribute:
+                    CompileExpression(attribute.Target);
+                    Emit(
+                        PythonOpCode.StoreAttribute,
+                        GetNameIndex(attribute.AttributeName),
+                        attribute.Span
+                    );
+                    break;
+                case PythonParenthesizedExpression parenthesized:
+                    CompileAssignmentTarget(parenthesized.Expression);
+                    break;
+                case PythonTupleExpression tuple:
+                    Emit(PythonOpCode.UnpackSequence, tuple.Elements.Count, tuple.Span);
+                    foreach (var element in tuple.Elements)
+                    {
+                        CompileAssignmentTarget(element);
+                    }
+
                     break;
                 default:
                     Report("DPY3003", "This expression cannot be assigned to.", target.Span);
@@ -435,6 +633,26 @@ public static class PythonCompiler
             }
 
             EmitStoreName(function.Name);
+        }
+
+        private void CompileClassDefinition(PythonClassDefinitionStatement @class)
+        {
+            var childScope = _scope.Children.Single(scope =>
+                ReferenceEquals(scope.Definition, @class)
+            );
+            var childCompiler = new Compiler(
+                @class.Name.Name,
+                childScope,
+                _diagnostics,
+                _enableReturnLocal,
+                _enableCallLocal
+            );
+            var childCode = childCompiler.CompileCode(@class.Body, @class.Span.End);
+            var constantIndex = AddConstant(
+                new PythonConstant(PythonConstantType.CodeObject, childCode)
+            );
+            Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
+            EmitStoreName(@class.Name);
         }
 
         private void CompileReturnStatement(PythonReturnStatement statement)
@@ -692,7 +910,7 @@ public static class PythonCompiler
             Emit(PythonOpCode.GetIterator, 0, statement.Iterable.Span);
             var loopStart = _instructions.Count;
             var exitJump = Emit(PythonOpCode.ForIter, 0, statement.Iterable.Span);
-            EmitStoreName(statement.Target);
+            CompileAssignmentTarget(statement.Target);
             var loop = PushLoopScope(isForLoop: true, continueTarget: loopStart);
             CompileStatements(statement.Body);
             PopLoopScope();
@@ -945,6 +1163,16 @@ public static class PythonCompiler
             }
 
             if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            {
+                Emit(PythonOpCode.LoadCell, GetCellIndex(name.Name), name.Span);
+                return;
+            }
+
+            if (
+                _scope.Kind == PythonScopeKind.Class
+                && _scope.IsFreeVariable(name.Name)
+                && !_scope.IsLocal(name.Name)
+            )
             {
                 Emit(PythonOpCode.LoadCell, GetCellIndex(name.Name), name.Span);
                 return;

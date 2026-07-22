@@ -1334,6 +1334,73 @@ public sealed class ManagedPythonEngineTests
     }
 
     [Fact]
+    public void Execute_ConstructsManagedClassesAndBindsUserMethods()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "class Counter:\n"
+            + "    kind = 'counter'\n"
+            + "    def __init__(self, value):\n"
+            + "        self.value = value\n"
+            + "    def increment(self, amount=1):\n"
+            + "        self.value += amount\n"
+            + "        return self.value\n"
+            + "counter = Counter(value=40)\n"
+            + "print(counter.increment(), counter.increment(amount=1), counter.value, Counter.kind)";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "class.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"41 42 42 counter{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_ClassMethodsCloseOverEnclosingFunctionState()
+    {
+        using var output = new StringWriter();
+        const string code =
+            "def make(seed):\n"
+            + "    class Value:\n"
+            + "        seed = 100\n"
+            + "        copy = seed\n"
+            + "        def read(self): return seed\n"
+            + "    return Value()\n"
+            + "value = make(42)\n"
+            + "print(value.read(), value.seed, value.copy)";
+
+        var result = new ManagedPythonEngine().Execute(
+            code,
+            "closure-class.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal($"42 100 100{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public void Execute_RejectsNonNoneInitializerReturnValues()
+    {
+        var result = new ManagedPythonEngine().Execute(
+            "class Invalid:\n    def __init__(self): return 1\nInvalid()",
+            "invalid-init.py",
+            TextWriter.Null,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.False(result.Success);
+        var diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal("DPY4009", diagnostic.Code);
+        Assert.Equal("__init__() must return None.", diagnostic.Message);
+    }
+
+    [Fact]
     public void Execute_TreatsFunctionsAsFirstClassIdentityValues()
     {
         using var output = new StringWriter();
@@ -1895,6 +1962,111 @@ public sealed class ManagedPythonEngineTests
             $"attr{Environment.NewLine}pop-empty{Environment.NewLine}"
                 + $"unorderable{Environment.NewLine}zero-step{Environment.NewLine}"
                 + $"membership{Environment.NewLine}pop-missing{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_IteratesRangesEnumerateAndZipLazily()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "total = 0\n"
+                + "for value in range(2, 20, 3):\n"
+                + "    total += value\n"
+                + "print(total, range(5), range(1, 7, 2), len(range(10)))\n"
+                + "print(range(10)[3], range(10)[-1], range(0, 20, 2)[2:5], 4 in range(0, 10, 2))\n"
+                + "for pair in enumerate('xy', 10):\n"
+                + "    print(pair)\n"
+                + "for triple in zip([1, 2, 3], 'abcd', range(9)):\n"
+                + "    print(triple)\n",
+            "iteration.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"57 range(0, 5) range(1, 7, 2) 10{Environment.NewLine}"
+                + $"3 9 range(4, 10, 2) True{Environment.NewLine}"
+                + $"(10, 'x'){Environment.NewLine}(11, 'y'){Environment.NewLine}"
+                + $"(1, 'a', 0){Environment.NewLine}(2, 'b', 1){Environment.NewLine}"
+                + $"(3, 'c', 2){Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_UnpacksTupleTargetsAndBareTupleDisplays()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "a, b = 1, 2\n"
+                + "a, b = b, a\n"
+                + "print(a, b)\n"
+                + "(c, d), e = (5, 6), 7\n"
+                + "print(c, d, e)\n"
+                + "data = {'a': 1, 'b': 2}\n"
+                + "for index, (key, value) in enumerate(data.items()):\n"
+                + "    print(index, key, value)\n"
+                + "def swap(p, q):\n"
+                + "    return q, p\n"
+                + "r, s = swap(1, 2)\n"
+                + "print(r, s)\n"
+                + "try:\n"
+                + "    a, b, c = 1, 2\n"
+                + "except ValueError as error:\n"
+                + "    print('short', error)\n"
+                + "try:\n"
+                + "    a, b = 1, 2, 3\n"
+                + "except ValueError as error:\n"
+                + "    print('long', error)\n",
+            "unpacking.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"2 1{Environment.NewLine}"
+                + $"5 6 7{Environment.NewLine}"
+                + $"0 a 1{Environment.NewLine}1 b 2{Environment.NewLine}"
+                + $"2 1{Environment.NewLine}"
+                + $"short Not enough values to unpack (expected 3, received 2).{Environment.NewLine}"
+                + $"long Too many values to unpack (expected 2).{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_EvaluatesComprehensionsInIsolatedScopes()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "x = 99\n"
+                + "print([x * 2 for x in range(5)], x)\n"
+                + "print([a + b for a in range(3) for b in range(3) if a != b])\n"
+                + "print({k: v * 10 for k, v in zip('ab', range(2))})\n"
+                + "factor = 3\n"
+                + "def scale(values):\n"
+                + "    return [v * factor for v in values]\n"
+                + "print(scale([1, 2]))\n"
+                + "print([[y for y in range(n)] for n in range(3)])\n",
+            "comprehensions.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"[0, 2, 4, 6, 8] 99{Environment.NewLine}"
+                + $"[1, 2, 1, 3, 2, 3]{Environment.NewLine}"
+                + $"{{'a': 0, 'b': 10}}{Environment.NewLine}"
+                + $"[3, 6]{Environment.NewLine}"
+                + $"[[], [0], [0, 1]]{Environment.NewLine}",
             output.ToString()
         );
     }
