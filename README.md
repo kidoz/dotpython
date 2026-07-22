@@ -310,8 +310,25 @@ Generic Host applications can load and validate required per-runtime modules dur
 ```csharp
 builder.Services.AddDotPythonManaged().AddDotPythonModule(
     PricingModule.Registration,
-    options => options.WarmUpOnHostStart = true);
+    options =>
+    {
+        options.WarmUpOnHostStart = true;
+        options.MaximumInitializationAttempts = 3;
+    });
 ```
+
+Initialization uses one shared task per module. The default is one attempt; an explicitly configured
+maximum (up to ten, including the first attempt) retries structured `DotPythonException` load
+failures sequentially inside that task. A final failure remains sticky for the provider lifetime,
+and canceling one caller does not cancel initialization needed by other callers.
+
+Generic Host warm-up logs event IDs `6000` (starting), `6001` (succeeded), and `6002` (failed).
+The `DotPython.Hosting` meter publishes these counters with module-name and state-policy tags:
+
+- `dotpython.module.initialization.attempts`
+- `dotpython.module.initialization.failures`
+- `dotpython.module.warmup.successes`
+- `dotpython.module.warmup.failures`
 
 Modules compiled with `<DotPythonModuleStatePolicy>PerSession</DotPythonModuleStatePolicy>` are
 registered as scoped services. Each DI scope receives distinct module globals while sharing the
@@ -327,9 +344,10 @@ var pricing = python.GetModule(PricingModule.Registration);
 BigInteger total = await pricing.CalculateTotalAsync(left, right, cancellationToken);
 ```
 
-The SDK is not published yet. The build-integration suite packs it into an isolated local feed and
-proves restore, C# `ProjectReference`, embedded-resource execution, incremental reuse, and clean
-rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar-only module.
+The SDK is not published yet. The build-integration suite packs the SDK and runtime package graph
+into an isolated local feed. It proves both C# `ProjectReference` and package-only consumption,
+embedded-resource execution, incremental reuse, and clean rebuild equivalence. The initial SDK
+accepts one synchronous, positional, scalar-only module.
 
 A runnable source-tree example is available in
 [`samples/DotPython.ProjectReference`](samples/DotPython.ProjectReference/README.md). It places the
@@ -337,6 +355,13 @@ A runnable source-tree example is available in
 
 ```sh
 dotnet run --project samples/DotPython.ProjectReference/Consumer/Consumer.csproj
+```
+
+The scoped-state example at [`samples/DotPython.PerSession`](samples/DotPython.PerSession/README.md)
+shows a stateful generated module shared within one DI scope and isolated across scopes:
+
+```sh
+dotnet run --project samples/DotPython.PerSession/Consumer/Consumer.csproj
 ```
 
 ## Project layout
@@ -361,6 +386,7 @@ dotnet run --project samples/DotPython.ProjectReference/Consumer/Consumer.csproj
 | `native/dotpython-abi3` | Minimal Stable-ABI bridge, pinned fixture, manifest generator, and native harness. |
 | `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
 | `samples/DotPython.ProjectReference` | Runnable `.dpyproj` library referenced and called from C#. |
+| `samples/DotPython.PerSession` | Runnable stateful `.dpyproj` registered as a scoped C# service. |
 
 ## Development
 
