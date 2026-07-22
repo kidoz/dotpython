@@ -97,11 +97,7 @@ internal static class CSharpModuleFacadeGenerator
             .Append(contract.ClrTypeName)
             .AppendLine("> Registration { get; } =");
         builder.AppendLine("        new(");
-        builder.Append("            ").Append(Literal(contract.ModuleName)).AppendLine(",");
-        builder
-            .Append("            global::DotPython.Contracts.PythonModuleStatePolicy.")
-            .Append(contract.StatePolicy)
-            .AppendLine(",");
+        builder.AppendLine("            ModuleDefinition.Value,");
         builder.AppendLine("            static provider => new ProviderClient(provider)");
         builder.AppendLine("        );");
     }

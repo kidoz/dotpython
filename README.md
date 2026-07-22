@@ -305,6 +305,28 @@ BigInteger total = await rules.AddAsync(left, right, cancellationToken);
 The generated `PricingModule.LoadAsync(runtime, cancellationToken)` API remains available for
 tools and applications that prefer explicit low-level ownership.
 
+Generic Host applications can load and validate required per-runtime modules during startup:
+
+```csharp
+builder.Services.AddDotPythonManaged().AddDotPythonModule(
+    PricingModule.Registration,
+    options => options.WarmUpOnHostStart = true);
+```
+
+Modules compiled with `<DotPythonModuleStatePolicy>PerSession</DotPythonModuleStatePolicy>` are
+registered as scoped services. Each DI scope receives distinct module globals while sharing the
+host-owned managed runtime and scheduler. These logical sessions are state scopes, not security
+boundaries.
+
+Small applications that do not use DI can keep the same explicit lifetime ownership with one
+object:
+
+```csharp
+await using var python = DotPythonHost.CreateManaged();
+var pricing = python.GetModule(PricingModule.Registration);
+BigInteger total = await pricing.CalculateTotalAsync(left, right, cancellationToken);
+```
+
 The SDK is not published yet. The build-integration suite packs it into an isolated local feed and
 proves restore, C# `ProjectReference`, embedded-resource execution, incremental reuse, and clean
 rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar-only module.
