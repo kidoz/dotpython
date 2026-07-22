@@ -328,9 +328,15 @@ public sealed class ManagedPythonEngine
     {
         if (raised.OriginatingFault is { } originatingFault)
         {
+            // Native invocation faults carry the Python exception type separately so managed
+            // handlers can match it; restore the "{type}: {message}" form for host diagnostics.
+            var faultMessage = originatingFault
+                is { Code: "DPY8005", PythonExceptionTypeName: not null }
+                ? $"{raised.Value.TypeName}: {raised.Value.Message}"
+                : originatingFault.Message;
             return new PythonRuntimeException(
                 originatingFault.Code,
-                originatingFault.Message,
+                faultMessage,
                 originatingFault.Span
             );
         }

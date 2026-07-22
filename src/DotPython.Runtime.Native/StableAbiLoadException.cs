@@ -39,7 +39,8 @@ public sealed class StableAbiLoadException : Exception
         string? artifactPath,
         string? artifactSha256,
         string? missingSymbol,
-        Exception? innerException = null
+        Exception? innerException = null,
+        string? pythonErrorType = null
     )
         : base(message, innerException)
     {
@@ -48,9 +49,16 @@ public sealed class StableAbiLoadException : Exception
         ArtifactPath = artifactPath;
         ArtifactSha256 = artifactSha256;
         MissingSymbol = missingSymbol;
+        PythonErrorType = pythonErrorType;
     }
 
     public string Code { get; }
+
+    /// <summary>
+    /// The Python exception type name reported by the native module for invocation failures
+    /// (for example "ValueError"), when one was captured.
+    /// </summary>
+    public string? PythonErrorType { get; }
 
     public StableAbiLoadPhase Phase { get; }
 

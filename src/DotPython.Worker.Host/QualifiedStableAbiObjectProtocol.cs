@@ -317,12 +317,18 @@ internal sealed class QualifiedStableAbiObjectProtocol(
         }
         catch (StableAbiLoadException exception)
         {
-            throw new PythonRuntimeException(
-                exception.Code,
-                exception.Message,
-                span,
-                "RuntimeError"
-            );
+            var pythonType = exception.PythonErrorType ?? "RuntimeError";
+            var message = exception.Message;
+            var prefix = $"{pythonType}: ";
+            if (
+                exception.PythonErrorType is not null
+                && message.StartsWith(prefix, StringComparison.Ordinal)
+            )
+            {
+                message = message[prefix.Length..];
+            }
+
+            throw new PythonRuntimeException(exception.Code, message, span, pythonType);
         }
     }
 

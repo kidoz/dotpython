@@ -699,12 +699,19 @@ internal sealed class StableAbiModule : IDisposable
 
     private void EnsureActive() => ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
-    private StableAbiLoadException InvocationFailure() =>
-        Failure(
+    private StableAbiLoadException InvocationFailure()
+    {
+        var errorType = ReadUtf8(_errorType());
+        return new StableAbiLoadException(
             "DPY8005",
             StableAbiLoadPhase.Invocation,
-            $"{ReadUtf8(_errorType())}: {ReadUtf8(_errorMessage())}"
+            $"{errorType}: {ReadUtf8(_errorMessage())}",
+            artifactPath: null,
+            artifactSha256: null,
+            missingSymbol: null,
+            pythonErrorType: errorType.Length == 0 ? null : errorType
         );
+    }
 
     private static StableAbiLoadException InvalidArguments(string message) =>
         Failure("DPY8005", StableAbiLoadPhase.Invocation, message);
