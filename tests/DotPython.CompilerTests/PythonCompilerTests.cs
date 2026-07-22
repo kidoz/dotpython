@@ -155,14 +155,45 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
-    public void Compile_RejectsFormattedStringsUntilComponentParsingExists()
+    public void Compile_RejectsTemplateStringsUntilComponentParsingExists()
     {
-        var parseResult = PythonParser.Parse(new SourceText("print(f'{40 + 2}')"));
+        var parseResult = PythonParser.Parse(new SourceText("print(t'{40 + 2}')"));
 
         var result = PythonCompiler.Compile(parseResult.Module);
 
         var diagnostic = Assert.Single(result.Diagnostics);
         Assert.Equal("DPY3004", diagnostic.Code);
+    }
+
+    [Fact]
+    public void Compile_LowersFormattedStringsToFormatAndBuildInstructions()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("print(f'a {value!r} b {total:>6}')\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(
+            2,
+            result.Code.Instructions.Count(instruction =>
+                instruction.OpCode == PythonOpCode.FormatValue
+            )
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.FormatValue, Operand: 2 }
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.FormatValue, Operand: 4 }
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.BuildString, Operand: 4 }
+        );
     }
 
     [Fact]

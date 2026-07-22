@@ -82,4 +82,6 @@ public enum PythonOpCode
     LoadExceptionInfo = 77,
     EndWith = 78,
     BuildSet = 79,
+    FormatValue = 80,
+    BuildString = 81,
 }

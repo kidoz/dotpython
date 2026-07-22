@@ -285,6 +285,9 @@ public static class PythonCompiler
                     CompileElements(setExpression.Elements);
                     Emit(PythonOpCode.BuildSet, setExpression.Elements.Count, setExpression.Span);
                     break;
+                case PythonFormattedStringExpression formatted:
+                    CompileFormattedString(formatted);
+                    break;
                 case PythonLambdaExpression lambdaExpression:
                     CompileLambdaExpression(lambdaExpression);
                     break;
@@ -336,6 +339,70 @@ public static class PythonCompiler
             foreach (var element in elements)
             {
                 CompileExpression(element);
+            }
+        }
+
+        private void CompileFormattedString(PythonFormattedStringExpression formatted)
+        {
+            var partCount = 0;
+            foreach (var part in formatted.Parts)
+            {
+                switch (part)
+                {
+                    case PythonFormattedStringLiteralPart literal:
+                        var decoded = formatted.IsRaw
+                            ? literal.RawText
+                            : PythonLiteralDecoder.DecodeEscapes(literal.RawText);
+                        Emit(
+                            PythonOpCode.LoadConstant,
+                            AddConstant(new PythonConstant(PythonConstantType.TextValue, decoded)),
+                            literal.Span
+                        );
+                        partCount++;
+                        break;
+                    case PythonFormattedStringInterpolationPart interpolation:
+                        CompileExpression(interpolation.Expression);
+                        var flags = interpolation.Conversion switch
+                        {
+                            's' => 1,
+                            'r' => 2,
+                            'a' => 3,
+                            _ => 0,
+                        };
+                        if (interpolation.FormatSpecification is not null)
+                        {
+                            Emit(
+                                PythonOpCode.LoadConstant,
+                                AddConstant(
+                                    new PythonConstant(
+                                        PythonConstantType.TextValue,
+                                        interpolation.FormatSpecification
+                                    )
+                                ),
+                                interpolation.Span
+                            );
+                            flags |= 4;
+                        }
+
+                        Emit(PythonOpCode.FormatValue, flags, interpolation.Span);
+                        partCount++;
+                        break;
+                }
+            }
+
+            if (partCount == 0)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.TextValue, string.Empty)),
+                    formatted.Span
+                );
+                return;
+            }
+
+            if (partCount > 1)
+            {
+                Emit(PythonOpCode.BuildString, partCount, formatted.Span);
             }
         }
 

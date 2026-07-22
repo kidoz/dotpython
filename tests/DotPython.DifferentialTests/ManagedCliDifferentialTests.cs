@@ -174,6 +174,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "try:\n    bad = {[1], 2}\nexcept TypeError:\n    print('unhashable')\ntry:\n    {1}.remove(9)\nexcept KeyError:\n    print('remove-missing')\nversions = ['2.0', '10.0', '1.0']\nprint(sorted([int(float(v)) for v in versions]))"
     )]
+    [InlineData(
+        "name = 'world'\nvalue = 42\nprint(f'hello {name}', f'{value} and {value + 1} and {name.upper()}')\nprint(f'braces {{literal}} and {value}', f'{name!r} {value!s}')"
+    )]
+    [InlineData(
+        "pi = 3.14159265\nvalue = 42\nname = 'world'\nprint(f'{pi:.2f} {pi:10.3f} {pi:<10.1f}|')\nprint(f'{value:5d}|{value:<5d}|{value:^6d}|{value:06d}')\nprint(f'{name:>10}|{name:<10}|{name:^11}|{name:*^11}|{name:.3}')"
+    )]
+    [InlineData(
+        "value = 42\nprint(f'{255:x} {255:X} {255:o} {255:b}')\nprint(f'{0.25:%} {0.25:.1%} {1234567:,d} {1234567.891:,.2f}')\nprint(f'{value:+d} {-value:+d} {value: d}')\nprint(f'{1.5:e} {12345.6789:.2e} {1.5:E}')"
+    )]
+    [InlineData(
+        "d = {'k': 'v'}\nprint(f'{d[\"k\"]} {[x * 2 for x in range(3)]} {(lambda: 7)()}')\na, b = 1, 2\nprint(f'{a} should be <= {b}')\ntry:\n    print(f'{\"text\":d}')\nexcept ValueError:\n    print('bad-code')"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

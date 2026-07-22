@@ -176,6 +176,29 @@ public sealed class DotPythonModuleArtifactTests
     }
 
     [Fact]
+    public void Deserialize_RoundTripsFormattedStringInstructions()
+    {
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create(
+                "formatted",
+                Compile("print(f'a {value!r} b {total:>6}')\n")
+            )
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.FormatValue, Operand: 2 }
+        );
+        Assert.Contains(
+            restored.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.BuildString, Operand: 4 }
+        );
+        Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
+    }
+
+    [Fact]
     public void Deserialize_RoundTripsContextManagerInstructions()
     {
         var bytes = DotPythonModuleArtifactSerializer.Serialize(

@@ -2351,6 +2351,41 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_FormatsInterpolatedStrings()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "name = 'world'\n"
+                + "value = 42\n"
+                + "pi = 3.14159265\n"
+                + "print(f'hello {name}', f'{value} next {value + 1}')\n"
+                + "print(f'{name!r} {value!s} {{literal}}')\n"
+                + "print(f'{pi:.2f}|{value:5d}|{value:<5d}|{value:06d}|{name:*^11}')\n"
+                + "print(f'{255:x} {255:b} {0.25:.1%} {1234567:,d} {value:+d}')\n"
+                + "print(f'{[x * 2 for x in range(3)]} {(lambda: 7)()}')\n"
+                + "try:\n"
+                + "    print(f'{name:d}')\n"
+                + "except ValueError:\n"
+                + "    print('bad-code')\n",
+            "fstrings.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"hello world 42 next 43{Environment.NewLine}"
+                + $"'world' 42 {{literal}}{Environment.NewLine}"
+                + $"3.14|   42|42   |000042|***world***{Environment.NewLine}"
+                + $"ff 11111111 25.0% 1,234,567 +42{Environment.NewLine}"
+                + $"[0, 2, 4] 7{Environment.NewLine}"
+                + $"bad-code{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(

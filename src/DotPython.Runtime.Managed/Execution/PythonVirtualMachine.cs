@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using DotPython.Compiler.Bytecode;
 using DotPython.Language.Text;
 
@@ -457,6 +458,21 @@ internal sealed class PythonVirtualMachine
                     )
                 );
                 break;
+            case PythonOpCode.FormatValue:
+                FormatValue(instruction);
+                break;
+            case PythonOpCode.BuildString:
+            {
+                var stringParts = PopArguments(instruction.Operand, instruction.Span);
+                var builder = new StringBuilder();
+                foreach (var part in stringParts)
+                {
+                    builder.Append(((PythonTextValue)part).Value);
+                }
+
+                _evaluationStack.Push(new PythonTextValue(builder.ToString()));
+                break;
+            }
             case PythonOpCode.LoadSubscript:
                 LoadSubscript(instruction.Span);
                 break;
@@ -2963,6 +2979,43 @@ internal sealed class PythonVirtualMachine
         }
 
         ManagedObjectProtocols.SetDictionaryItem(accumulator, key, value, instruction.Span);
+    }
+
+    private void FormatValue(PythonInstruction instruction)
+    {
+        string? specification = null;
+        if ((instruction.Operand & 4) != 0)
+        {
+            if (Pop(instruction.Span) is not PythonTextValue specText)
+            {
+                throw Fault("DPY4007", "The format specification is invalid.", instruction.Span);
+            }
+
+            specification = specText.Value;
+        }
+
+        var value = Pop(instruction.Span);
+        var conversion = instruction.Operand & 3;
+        var text = conversion switch
+        {
+            1 => value.ToDisplayString(),
+            2 or 3 => value.ToRepresentationString(),
+            _ => specification is null ? value.ToDisplayString() : null,
+        };
+        if (text is null)
+        {
+            text = PythonValueFormatter.Format(value, specification!, instruction.Span);
+        }
+        else if (specification is not null)
+        {
+            text = PythonValueFormatter.Format(
+                new PythonTextValue(text),
+                specification,
+                instruction.Span
+            );
+        }
+
+        _evaluationStack.Push(new PythonTextValue(text));
     }
 
     private void UnpackSequence(PythonInstruction instruction)

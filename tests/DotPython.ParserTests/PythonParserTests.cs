@@ -529,6 +529,34 @@ public sealed class PythonParserTests
         Assert.Equal(3, setExpression.Elements.Count);
     }
 
+    [Fact]
+    public void Parse_BuildsFormattedStringParts()
+    {
+        var result = Parse("message = f'hi {name!r} and {value:>6} end'\n");
+
+        Assert.Empty(result.Diagnostics);
+        var formatted = Assert.IsType<PythonFormattedStringExpression>(
+            Assert.IsType<PythonAssignmentStatement>(Assert.Single(result.Module.Statements)).Value
+        );
+        Assert.False(formatted.IsRaw);
+        Assert.Equal(5, formatted.Parts.Count);
+        Assert.Equal(
+            "hi ",
+            Assert.IsType<PythonFormattedStringLiteralPart>(formatted.Parts[0]).RawText
+        );
+        var first = Assert.IsType<PythonFormattedStringInterpolationPart>(formatted.Parts[1]);
+        Assert.IsType<PythonNameExpression>(first.Expression);
+        Assert.Equal('r', first.Conversion);
+        Assert.Null(first.FormatSpecification);
+        var second = Assert.IsType<PythonFormattedStringInterpolationPart>(formatted.Parts[3]);
+        Assert.Null(second.Conversion);
+        Assert.Equal(">6", second.FormatSpecification);
+        Assert.Equal(
+            " end",
+            Assert.IsType<PythonFormattedStringLiteralPart>(formatted.Parts[4]).RawText
+        );
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]
@@ -544,6 +572,8 @@ public sealed class PythonParserTests
     [InlineData("act(first=1, first=2)", "DPY2018")]
     [InlineData("global for", "DPY2010")]
     [InlineData("nonlocal", "DPY2001")]
+    [InlineData("print(f'{}')", "DPY2019")]
+    [InlineData("print(f'closed}')", "DPY2019")]
     public void Parse_ReportsStructuredDiagnosticsAndReachesEnd(string code, string expectedCode)
     {
         var result = Parse(code);

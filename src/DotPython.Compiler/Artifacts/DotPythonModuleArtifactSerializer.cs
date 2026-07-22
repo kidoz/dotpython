@@ -477,10 +477,20 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.BuildTuple:
             case PythonOpCode.BuildDictionary:
             case PythonOpCode.BuildSet:
+            case PythonOpCode.BuildString:
                 if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(
                         $"Instruction {instructionIndex} has an invalid element count."
+                    );
+                }
+
+                break;
+            case PythonOpCode.FormatValue:
+                if (instruction.Operand is < 0 or > 7)
+                {
+                    throw new InvalidDataException(
+                        $"Instruction {instructionIndex} has an invalid format flag."
                     );
                 }
 

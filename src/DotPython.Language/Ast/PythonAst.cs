@@ -197,6 +197,24 @@ public sealed record PythonLambdaExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonFormattedStringExpression(
+    IReadOnlyList<PythonFormattedStringPart> Parts,
+    bool IsRaw,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public abstract record PythonFormattedStringPart(TextSpan Span) : PythonNode(Span);
+
+public sealed record PythonFormattedStringLiteralPart(string RawText, TextSpan Span)
+    : PythonFormattedStringPart(Span);
+
+public sealed record PythonFormattedStringInterpolationPart(
+    PythonExpression Expression,
+    char? Conversion,
+    string? FormatSpecification,
+    TextSpan Span
+) : PythonFormattedStringPart(Span);
+
 public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Span);
 
 public sealed record PythonComprehensionForClause(

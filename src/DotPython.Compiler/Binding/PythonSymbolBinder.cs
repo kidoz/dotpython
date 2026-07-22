@@ -922,6 +922,16 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonFormattedStringExpression formatted:
+                foreach (var part in formatted.Parts)
+                {
+                    if (part is PythonFormattedStringInterpolationPart interpolation)
+                    {
+                        CollectReferences(interpolation.Expression, references);
+                    }
+                }
+
+                break;
             case PythonLambdaExpression lambdaExpression:
                 foreach (var parameter in lambdaExpression.Parameters)
                 {
@@ -1269,6 +1279,21 @@ public static class PythonSymbolBinder
                 foreach (var element in setExpression.Elements)
                 {
                     foreach (var nested in EnumerateComprehensions(element))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonFormattedStringExpression formatted:
+                foreach (var part in formatted.Parts)
+                {
+                    if (part is not PythonFormattedStringInterpolationPart interpolation)
+                    {
+                        continue;
+                    }
+
+                    foreach (var nested in EnumerateComprehensions(interpolation.Expression))
                     {
                         yield return nested;
                     }

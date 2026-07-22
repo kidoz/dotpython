@@ -1738,6 +1738,265 @@ public static class PythonParser
             return expression;
         }
 
+        private PythonFormattedStringExpression ParseFormattedString(SyntaxToken token)
+        {
+            var quoteIndex = token.Text.IndexOfAny(['\'', '"']);
+            var quote = token.Text[quoteIndex];
+            var quoteLength =
+                quoteIndex + 2 < token.Text.Length
+                && token.Text[quoteIndex + 1] == quote
+                && token.Text[quoteIndex + 2] == quote
+                    ? 3
+                    : 1;
+            var prefix = token.Text[..quoteIndex];
+            var contentStart = quoteIndex + quoteLength;
+            var contentLength = Math.Max(0, token.Text.Length - contentStart - quoteLength);
+            var content = token.Text.Substring(contentStart, contentLength);
+            var isRaw = prefix.Contains('r', StringComparison.OrdinalIgnoreCase);
+
+            var parts = new List<PythonFormattedStringPart>();
+            var literal = new System.Text.StringBuilder();
+            var position = 0;
+            var contentOffset = token.Span.Start + contentStart;
+            while (position < content.Length)
+            {
+                var current = content[position];
+                if (current == '{' && position + 1 < content.Length && content[position + 1] == '{')
+                {
+                    literal.Append('{');
+                    position += 2;
+                    continue;
+                }
+
+                if (current == '}' && position + 1 < content.Length && content[position + 1] == '}')
+                {
+                    literal.Append('}');
+                    position += 2;
+                    continue;
+                }
+
+                if (current == '}')
+                {
+                    Report(
+                        "DPY2019",
+                        "A single '}' is not allowed inside an f-string.",
+                        new TextSpan(contentOffset + position, 1)
+                    );
+                    position++;
+                    continue;
+                }
+
+                if (current != '{')
+                {
+                    literal.Append(current);
+                    position++;
+                    continue;
+                }
+
+                FlushFormattedLiteral(parts, literal, contentOffset, position);
+                position++;
+                var holeStart = position;
+                var end = ScanInterpolation(
+                    content,
+                    position,
+                    out var conversionIndex,
+                    out var specIndex
+                );
+                if (end < 0)
+                {
+                    Report(
+                        "DPY2019",
+                        "The f-string interpolation is not terminated.",
+                        new TextSpan(contentOffset + holeStart - 1, 1)
+                    );
+                    break;
+                }
+
+                var expressionEnd =
+                    specIndex >= 0 ? specIndex : (conversionIndex >= 0 ? conversionIndex : end);
+                if (conversionIndex >= 0 && specIndex >= 0 && conversionIndex > specIndex)
+                {
+                    expressionEnd = specIndex;
+                    conversionIndex = -1;
+                }
+
+                var expressionText = content[holeStart..expressionEnd];
+                char? conversion = conversionIndex >= 0 ? content[conversionIndex + 1] : null;
+                string? specification = specIndex >= 0 ? content[(specIndex + 1)..end] : null;
+                var holeSpan = new TextSpan(
+                    contentOffset + holeStart,
+                    Math.Max(1, end - holeStart)
+                );
+                if (
+                    specification is not null
+                    && specification.Contains('{', StringComparison.Ordinal)
+                )
+                {
+                    Report(
+                        "DPY2019",
+                        "Nested interpolations in f-string format specifications are not "
+                            + "supported in this runtime slice.",
+                        holeSpan
+                    );
+                    specification = null;
+                }
+
+                if (string.IsNullOrWhiteSpace(expressionText))
+                {
+                    Report(
+                        "DPY2019",
+                        "The f-string interpolation is missing an expression.",
+                        holeSpan
+                    );
+                }
+                else
+                {
+                    var expression = ParseEmbeddedExpression(expressionText, holeSpan);
+                    if (expression is not null)
+                    {
+                        parts.Add(
+                            new PythonFormattedStringInterpolationPart(
+                                expression,
+                                conversion,
+                                specification,
+                                holeSpan
+                            )
+                        );
+                    }
+                }
+
+                position = end + 1;
+            }
+
+            FlushFormattedLiteral(parts, literal, contentOffset, position);
+            return new PythonFormattedStringExpression(parts.AsReadOnly(), isRaw, token.Span);
+        }
+
+        private static void FlushFormattedLiteral(
+            List<PythonFormattedStringPart> parts,
+            System.Text.StringBuilder literal,
+            int contentOffset,
+            int position
+        )
+        {
+            if (literal.Length == 0)
+            {
+                return;
+            }
+
+            parts.Add(
+                new PythonFormattedStringLiteralPart(
+                    literal.ToString(),
+                    new TextSpan(contentOffset + position - literal.Length, literal.Length)
+                )
+            );
+            literal.Clear();
+        }
+
+        private static int ScanInterpolation(
+            string content,
+            int start,
+            out int conversionIndex,
+            out int specIndex
+        )
+        {
+            conversionIndex = -1;
+            specIndex = -1;
+            var depth = 0;
+            var position = start;
+            while (position < content.Length)
+            {
+                var current = content[position];
+                if (current is '\'' or '"')
+                {
+                    var quote = current;
+                    position++;
+                    while (position < content.Length && content[position] != quote)
+                    {
+                        position += content[position] == '\\' ? 2 : 1;
+                    }
+
+                    position++;
+                    continue;
+                }
+
+                if (current is '(' or '[' or '{')
+                {
+                    depth++;
+                }
+                else if (current is ')' or ']')
+                {
+                    depth--;
+                }
+                else if (current == '}')
+                {
+                    if (depth == 0)
+                    {
+                        return position;
+                    }
+
+                    depth--;
+                }
+                else if (depth == 0 && specIndex < 0)
+                {
+                    if (
+                        current == '!'
+                        && position + 1 < content.Length
+                        && content[position + 1] is 's' or 'r' or 'a'
+                        && position + 2 < content.Length
+                        && content[position + 2] is '}' or ':'
+                    )
+                    {
+                        conversionIndex = position;
+                        position += 2;
+                        continue;
+                    }
+
+                    if (current == ':')
+                    {
+                        specIndex = position;
+                    }
+                }
+
+                position++;
+            }
+
+            return -1;
+        }
+
+        private PythonExpression? ParseEmbeddedExpression(string text, TextSpan holeSpan)
+        {
+            var tokenization = PythonTokenizer.Tokenize(new SourceText(text, "<fstring>"));
+            var parser = new Parser(tokenization);
+            var (expression, embeddedDiagnostics) = parser.ParseEmbedded();
+            foreach (var diagnostic in embeddedDiagnostics)
+            {
+                Report(
+                    diagnostic.Code,
+                    $"Invalid f-string interpolation: {diagnostic.Message}",
+                    holeSpan
+                );
+            }
+
+            return expression;
+        }
+
+        internal (
+            PythonExpression? Expression,
+            IReadOnlyList<Diagnostic> Diagnostics
+        ) ParseEmbedded()
+        {
+            SkipNewLines();
+            var expression = ParseExpressionListValue();
+            SkipNewLines();
+            if (expression is not null && Current.Kind != SyntaxTokenKind.EndOfFile)
+            {
+                ReportExpected("the end of the interpolated expression", Current.Span);
+            }
+
+            return (expression, _diagnostics);
+        }
+
         private PythonExpression? ParseSubscript(SyntaxToken leftBracket)
         {
             PythonExpression? start = null;
@@ -1830,10 +2089,14 @@ public static class PythonParser
                 SyntaxTokenKind.ImaginaryLiteral => PythonConstantKind.ImaginaryLiteral,
                 SyntaxTokenKind.StringLiteral => PythonConstantKind.StringLiteral,
                 SyntaxTokenKind.BytesLiteral => PythonConstantKind.BytesLiteral,
-                SyntaxTokenKind.FormattedStringLiteral => PythonConstantKind.FormattedStringLiteral,
                 SyntaxTokenKind.TemplateStringLiteral => PythonConstantKind.TemplateStringLiteral,
                 _ => (PythonConstantKind?)null,
             };
+
+            if (Current.Kind == SyntaxTokenKind.FormattedStringLiteral)
+            {
+                return ParseFormattedString(Advance());
+            }
 
             return constantKind is null ? null : Constant(Advance(), constantKind.Value);
         }

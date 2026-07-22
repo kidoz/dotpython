@@ -186,7 +186,7 @@ internal static class PythonLiteralDecoder
         return (tokenText[..quoteIndex], tokenText.Substring(contentStart, contentLength));
     }
 
-    private static string DecodeEscapes(string content)
+    internal static string DecodeEscapes(string content)
     {
         var builder = new StringBuilder(content.Length);
         for (var index = 0; index < content.Length; index++)
