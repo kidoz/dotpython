@@ -1,0 +1,55 @@
+name: managed-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Install the reference CPython
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install the .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.301
+
+      - name: Verify deterministic parser regeneration
+        run: >
+          dotnet run --project src/DotPython.ParserGenerator.Tool --
+          check
+          src/DotPython.ParserGenerator/Grammar/python314-subset.gram
+          src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
+
+      - name: Build the solution
+        run: dotnet build DotPython.sln --configuration Release
+
+      - name: Run the language and runtime test suites
+        run: |
+          set -eu
+          for project in ParserTests CompilerTests RuntimeTests InteropTests \
+              PackageCompatibilityTests BuildIntegrationTests; do
+            dotnet run --project "tests/DotPython.$project" --configuration Release --no-build
+          done
+
+      - name: Run the CPython differential suite without skips
+        env:
+          DOTPYTHON_REFERENCE_PYTHON: python3.14
+        run: >
+          dotnet run --project tests/DotPython.DifferentialTests
+          --configuration Release --no-build -- -failSkips
