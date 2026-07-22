@@ -285,21 +285,37 @@ compiles an abstraction-only typed facade into the resulting managed assembly.
 </Project>
 ```
 
-A C# project can use an ordinary project reference and bind the generated facade to an explicitly
-owned runtime:
+A C# project can use an ordinary project reference and register the generated interface as a typed
+service:
 
 ```xml
 <ProjectReference Include="../PricingRules/PricingRules.dpyproj" />
 ```
 
 ```csharp
-await using var rules = await PricingModule.LoadAsync(runtime, cancellationToken);
+await using var services = new ServiceCollection()
+    .AddDotPythonManaged()
+    .AddDotPythonModule(PricingModule.Registration)
+    .BuildServiceProvider();
+
+var rules = services.GetRequiredService<IPricingModule>();
 BigInteger total = await rules.AddAsync(left, right, cancellationToken);
 ```
+
+The generated `PricingModule.LoadAsync(runtime, cancellationToken)` API remains available for
+tools and applications that prefer explicit low-level ownership.
 
 The SDK is not published yet. The build-integration suite packs it into an isolated local feed and
 proves restore, C# `ProjectReference`, embedded-resource execution, incremental reuse, and clean
 rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar-only module.
+
+A runnable source-tree example is available in
+[`samples/DotPython.ProjectReference`](samples/DotPython.ProjectReference/README.md). It places the
+`.dpyproj` Python library and its C# consumer in this solution and runs with:
+
+```sh
+dotnet run --project samples/DotPython.ProjectReference/Consumer/Consumer.csproj
+```
 
 ## Project layout
 
@@ -322,6 +338,7 @@ rebuild equivalence. The initial SDK accepts one synchronous, positional, scalar
 | `src/DotPython.Worker.Host` | Executable managed worker host and test-only failure injection. |
 | `native/dotpython-abi3` | Minimal Stable-ABI bridge, pinned fixture, manifest generator, and native harness. |
 | `benchmarks/DotPython.Benchmarks` | Managed front-end, compiler, and runtime performance baselines. |
+| `samples/DotPython.ProjectReference` | Runnable `.dpyproj` library referenced and called from C#. |
 
 ## Development
 
