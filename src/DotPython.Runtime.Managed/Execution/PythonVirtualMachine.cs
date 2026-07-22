@@ -87,6 +87,7 @@ internal sealed class PythonVirtualMachine
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
             ["sorted"] = new PythonBuiltinFunctionValue("sorted", Sorted),
+            ["hash"] = new PythonBuiltinFunctionValue("hash", HashValue),
             ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
@@ -3023,6 +3024,17 @@ internal sealed class PythonVirtualMachine
         return best;
     }
 
+    private static PythonWholeNumberValue HashValue(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        ValidateBuiltinArgumentCount("hash", arguments, span);
+        return PythonWholeNumberValue.Create(
+            ManagedObjectProtocols.ComputePythonHash(arguments[0], span)
+        );
+    }
+
     private static PythonListValue Sorted(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("sorted", arguments, span);
@@ -3441,7 +3453,12 @@ internal sealed class PythonVirtualMachine
 
     private static bool AreEqual(PythonValue left, PythonValue right)
     {
-        if (left is PythonSetValue || right is PythonSetValue)
+        if (
+            left is PythonExternalObjectValue
+            || right is PythonExternalObjectValue
+            || left is PythonSetValue
+            || right is PythonSetValue
+        )
         {
             return ManagedObjectProtocols.AreEqual(left, right);
         }

@@ -267,6 +267,8 @@ internal interface PythonExternalObjectProtocol
 
     PythonValue GetItem(PythonValue index, TextSpan span);
 
+    long GetHash(TextSpan span);
+
     int GetLength(TextSpan span);
 
     PythonTruthValue RichCompare(PythonValue other, PythonRichComparison comparison, TextSpan span);

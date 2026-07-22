@@ -183,6 +183,7 @@ internal sealed record StableAbiSymbolManifest(
         "dp_abi3_object_from_utf8",
         "dp_abi3_object_get_attr",
         "dp_abi3_object_get_item",
+        "dp_abi3_object_hash",
         "dp_abi3_object_kind_of",
         "dp_abi3_object_release",
         "dp_abi3_object_repr",

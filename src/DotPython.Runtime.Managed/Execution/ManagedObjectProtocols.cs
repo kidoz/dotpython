@@ -914,6 +914,26 @@ internal static class ManagedObjectProtocols
             _ => throw new ArgumentOutOfRangeException(nameof(comparison)),
         };
 
+    /// <summary>
+    /// Computes the value returned by the Python <c>hash()</c> builtin. Integers follow
+    /// CPython's modular algorithm exactly; native values delegate to their tp_hash through
+    /// the Stable-ABI bridge; other hashable values reuse the runtime's internal hash.
+    /// </summary>
+    internal static BigInteger ComputePythonHash(PythonValue value, TextSpan span = default)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var modulus = (BigInteger.One << 61) - 1;
+        BigInteger hash = value switch
+        {
+            PythonTruthValue truth => truth.Value ? 1 : 0,
+            PythonWholeNumberValue whole when whole.Value >= 0 => whole.Value % modulus,
+            PythonWholeNumberValue whole => -((-whole.Value) % modulus),
+            PythonExternalObjectValue external => external.Protocol.GetHash(span),
+            _ => GetPythonHash(value, span),
+        };
+        return hash == -1 ? -2 : hash;
+    }
+
     internal static int GetPythonHash(PythonValue value, TextSpan span = default)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -928,7 +948,7 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => GetByteHash(bytes.Value),
             PythonTupleValue tuple => GetTupleHash(tuple, span),
             PythonManagedObjectValue instance => RuntimeHelpers.GetHashCode(instance),
-            PythonExternalObjectValue external => RuntimeHelpers.GetHashCode(external),
+            PythonExternalObjectValue external => external.Protocol.GetHash(span).GetHashCode(),
             PythonManagedTypeValue type => RuntimeHelpers.GetHashCode(type),
             PythonBuiltinFunctionValue function => RuntimeHelpers.GetHashCode(function),
             PythonProtocolFunctionValue function => RuntimeHelpers.GetHashCode(function),
@@ -1127,6 +1147,20 @@ internal static class ManagedObjectProtocols
 
     internal static bool AreEqual(PythonValue left, PythonValue right)
     {
+        if (left is PythonExternalObjectValue leftExternal)
+        {
+            return leftExternal
+                .Protocol.RichCompare(right, PythonRichComparison.Equal, default)
+                .Value;
+        }
+
+        if (right is PythonExternalObjectValue rightExternal)
+        {
+            return rightExternal
+                .Protocol.RichCompare(left, PythonRichComparison.Equal, default)
+                .Value;
+        }
+
         if (left is PythonSetValue || right is PythonSetValue)
         {
             return left is PythonSetValue leftSet

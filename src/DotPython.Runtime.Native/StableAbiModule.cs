@@ -479,6 +479,19 @@ internal sealed class StableAbiModule : IDisposable
         }
     }
 
+    internal long GetObjectHash(StableAbiObject value)
+    {
+        lock (_gate)
+        {
+            if (_generic.ObjectHash(ValidateHandle(value), out var result) != 0)
+            {
+                throw InvocationFailure();
+            }
+
+            return result;
+        }
+    }
+
     internal long GetObjectInt64(StableAbiObject value)
     {
         lock (_gate)
@@ -773,6 +786,9 @@ internal sealed class StableAbiModule : IDisposable
     private delegate int ObjectCall(nint callable, nint arguments, long count, out nint result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectHash(nint value, out nint result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int ObjectCallKeywords(
         nint callable,
         nint arguments,
@@ -845,6 +861,7 @@ internal sealed class StableAbiModule : IDisposable
         ObjectGetAttribute ObjectGetAttribute,
         ObjectCall ObjectCall,
         ObjectCallKeywords ObjectCallKeywords,
+        ObjectHash ObjectHash,
         ObjectFromUtf8 ObjectFromUtf8,
         ObjectFromInt64 ObjectFromInt64,
         ObjectFromBool ObjectFromBool,
@@ -868,6 +885,7 @@ internal sealed class StableAbiModule : IDisposable
                 GetDelegate<ObjectGetAttribute>(library, "dp_abi3_object_get_attr"),
                 GetDelegate<ObjectCall>(library, "dp_abi3_object_call"),
                 GetDelegate<ObjectCallKeywords>(library, "dp_abi3_object_call_kw"),
+                GetDelegate<ObjectHash>(library, "dp_abi3_object_hash"),
                 GetDelegate<ObjectFromUtf8>(library, "dp_abi3_object_from_utf8"),
                 GetDelegate<ObjectFromInt64>(library, "dp_abi3_object_from_int64"),
                 GetDelegate<ObjectFromBool>(library, "dp_abi3_object_from_bool"),
@@ -940,6 +958,8 @@ internal sealed class StableAbiObject : IDisposable
         IReadOnlyList<string> keywordNames,
         IReadOnlyList<StableAbiObject> keywordValues
     ) => RequireOwner().CallObjectWithKeywords(this, arguments, keywordNames, keywordValues);
+
+    internal long Hash() => RequireOwner().GetObjectHash(this);
 
     internal long AsInt64() => RequireOwner().GetObjectInt64(this);
 

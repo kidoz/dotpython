@@ -107,6 +107,9 @@ internal sealed class QualifiedStableAbiObjectProtocol(
         );
     }
 
+    public long GetHash(TextSpan span) =>
+        Invoke(() => Session.InvokeNative(NativeObject.Hash), span);
+
     public int GetLength(TextSpan span) =>
         Invoke(
             () =>

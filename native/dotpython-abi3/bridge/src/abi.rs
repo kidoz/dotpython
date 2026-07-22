@@ -61,6 +61,7 @@ pub type destructor = unsafe extern "C" fn(*mut PyObject);
 pub type reprfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 pub type richcmpfunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject;
 pub type getiterfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+pub type hashfunc = unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t;
 pub type iternextfunc = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 pub type newfunc =
     unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
@@ -152,6 +153,7 @@ pub const PY_TP_ALLOC: c_int = 47;
 pub const PY_TP_BASE: c_int = 48;
 pub const PY_TP_CALL: c_int = 50;
 pub const PY_TP_DEALLOC: c_int = 52;
+pub const PY_TP_HASH: c_int = 59;
 pub const PY_TP_ITER: c_int = 62;
 pub const PY_TP_ITERNEXT: c_int = 63;
 pub const PY_TP_METHODS: c_int = 64;

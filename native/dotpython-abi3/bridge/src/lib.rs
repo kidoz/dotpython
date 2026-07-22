@@ -3334,6 +3334,36 @@ pub extern "C" fn dp_abi3_object_call_kw(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_hash(object: *mut PyObject, result: *mut Py_ssize_t) -> c_int {
+    require_owner!(-1);
+    if object.is_null() || result.is_null() {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "hash input is invalid");
+        }
+        return -1;
+    }
+    clear_error();
+    let hash_slot = unsafe { slot((*object).ob_type, PY_TP_HASH) };
+    let value = if hash_slot.is_null() {
+        // Default object hash mirrors CPython's pointer-derived identity hash.
+        (object as Py_ssize_t) >> 4
+    } else {
+        let f: hashfunc = unsafe { transmute(hash_slot) };
+        let returned = unsafe { f(object) };
+        if returned == -1 {
+            if !with_err(|error| error.etype).is_null() {
+                return -1;
+            }
+            -2
+        } else {
+            returned
+        }
+    };
+    unsafe { *result = value };
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn dp_abi3_object_from_utf8(
     value: *const c_char,
     value_length: i64,

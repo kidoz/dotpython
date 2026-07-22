@@ -108,6 +108,7 @@ _dp_abi3_object_from_none
 _dp_abi3_object_from_utf8
 _dp_abi3_object_get_attr
 _dp_abi3_object_get_item
+_dp_abi3_object_hash
 _dp_abi3_object_kind_of
 _dp_abi3_object_release
 _dp_abi3_object_repr

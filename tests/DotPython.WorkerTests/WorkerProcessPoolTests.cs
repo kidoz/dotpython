@@ -427,6 +427,31 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_HashesAndDeduplicatesNativeValuesInManagedCollections()
+    {
+        SkipAnyverPackageWhenUnavailable();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        var result = await session.ExecuteAsync(
+            "from anyver import Version\n"
+                + "s = {Version('1.0'), Version('1.0.0'), Version('2.0')}\n"
+                + "d = {Version('1.0'): 'one'}\n"
+                + "print(len(s), d[Version('1.0.0')], hash(Version('1.0')) == hash(Version('1.0.0')))\n"
+                + "print(Version('1.0') == Version('1.0.0'), Version('1.0') in [Version('1.0.0')])",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal(
+            "2 one True" + Environment.NewLine + "True True" + Environment.NewLine,
+            result.StandardOutput
+        );
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
     public async Task Worker_ContainsRepeatedAnyverFailuresWithoutPoisoningOwnerLane()
     {
         SkipAnyverPackageWhenUnavailable();
