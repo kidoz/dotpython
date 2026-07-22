@@ -90,6 +90,14 @@ public static class PythonSymbolBinder
 
         var references = new List<NameReference>();
         CollectReferences(statements, references, diagnostics, kind);
+        foreach (var reference in references)
+        {
+            if (reference.IsBinding)
+            {
+                AddLocal(reference.Name, localNames, localNameSet, excludedNames);
+            }
+        }
+
         var referencedNames = references
             .Select(reference => reference.Name)
             .Distinct(StringComparer.Ordinal)
@@ -226,6 +234,14 @@ public static class PythonSymbolBinder
             }
         }
 
+        foreach (var reference in references)
+        {
+            if (reference.IsBinding)
+            {
+                AddLocal(reference.Name, localNames, localNameSet, excludedNames);
+            }
+        }
+
         var referencedNames = references
             .Select(reference => reference.Name)
             .Distinct(StringComparer.Ordinal)
@@ -300,6 +316,15 @@ public static class PythonSymbolBinder
 
         var references = new List<NameReference>();
         CollectReferences(lambdaExpression.Body, references);
+        var lambdaExcludedNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var reference in references)
+        {
+            if (reference.IsBinding)
+            {
+                AddLocal(reference.Name, localNames, localNameSet, lambdaExcludedNames);
+            }
+        }
+
         var referencedNames = references
             .Select(reference => reference.Name)
             .Distinct(StringComparer.Ordinal)
@@ -906,7 +931,11 @@ public static class PythonSymbolBinder
             case PythonDictionaryExpression dictionary:
                 foreach (var item in dictionary.Items)
                 {
-                    CollectReferences(item.Key, references);
+                    if (item.Key is not null)
+                    {
+                        CollectReferences(item.Key, references);
+                    }
+
                     CollectReferences(item.Value, references);
                 }
 
@@ -969,6 +998,16 @@ public static class PythonSymbolBinder
                 CollectReferences(conditional.Condition, references);
                 CollectReferences(conditional.TrueResult, references);
                 CollectReferences(conditional.FalseResult, references);
+                break;
+            case PythonAssignmentExpression assignmentExpression:
+                references.Add(
+                    new NameReference(
+                        assignmentExpression.Target.Name,
+                        assignmentExpression.Target.Span,
+                        IsBinding: true
+                    )
+                );
+                CollectReferences(assignmentExpression.Value, references);
                 break;
             case PythonListComprehensionExpression listComprehension:
                 CollectFirstIterableReferences(listComprehension.Clauses, references);
@@ -1261,6 +1300,13 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonAssignmentExpression assignmentExpression:
+                foreach (var nested in EnumerateComprehensions(assignmentExpression.Value))
+                {
+                    yield return nested;
+                }
+
+                break;
             case PythonListComprehensionExpression listComprehension:
                 yield return listComprehension;
                 foreach (
@@ -1417,7 +1463,9 @@ public static class PythonSymbolBinder
             case PythonDictionaryExpression dictionary:
                 foreach (var item in dictionary.Items)
                 {
-                    foreach (var nested in EnumerateComprehensions(item.Key))
+                    foreach (
+                        var nested in item.Key is null ? [] : EnumerateComprehensions(item.Key)
+                    )
                     {
                         yield return nested;
                     }
@@ -1562,5 +1610,9 @@ public static class PythonSymbolBinder
         TextSpan span
     ) => diagnostics.Add(new Diagnostic(code, message, DiagnosticSeverity.Error, span));
 
-    private readonly record struct NameReference(string Name, TextSpan Span);
+    private readonly record struct NameReference(
+        string Name,
+        TextSpan Span,
+        bool IsBinding = false
+    );
 }

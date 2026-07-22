@@ -317,21 +317,60 @@ public static class PythonCompiler
                     );
                     break;
                 case PythonListExpression list:
-                    CompileElements(list.Elements);
-                    Emit(PythonOpCode.BuildList, list.Elements.Count, list.Span);
-                    break;
-                case PythonTupleExpression tuple:
-                    CompileElements(tuple.Elements);
-                    Emit(PythonOpCode.BuildTuple, tuple.Elements.Count, tuple.Span);
-                    break;
-                case PythonDictionaryExpression dictionary:
-                    foreach (var item in dictionary.Items)
+                    if (list.Elements.Any(element => element is PythonStarredExpression))
                     {
-                        CompileExpression(item.Key);
-                        CompileExpression(item.Value);
+                        CompileUnpackedElements(list.Elements, list.Span);
+                    }
+                    else
+                    {
+                        CompileElements(list.Elements);
+                        Emit(PythonOpCode.BuildList, list.Elements.Count, list.Span);
                     }
 
-                    Emit(PythonOpCode.BuildDictionary, dictionary.Items.Count, dictionary.Span);
+                    break;
+                case PythonTupleExpression tuple:
+                    if (tuple.Elements.Any(element => element is PythonStarredExpression))
+                    {
+                        CompileUnpackedElements(tuple.Elements, tuple.Span);
+                        Emit(PythonOpCode.ListToTuple, 0, tuple.Span);
+                    }
+                    else
+                    {
+                        CompileElements(tuple.Elements);
+                        Emit(PythonOpCode.BuildTuple, tuple.Elements.Count, tuple.Span);
+                    }
+
+                    break;
+                case PythonDictionaryExpression dictionary:
+                    if (dictionary.Items.Any(item => item.Key is null))
+                    {
+                        Emit(PythonOpCode.BuildDictionary, 0, dictionary.Span);
+                        foreach (var item in dictionary.Items)
+                        {
+                            if (item.Key is null)
+                            {
+                                CompileExpression(item.Value);
+                                Emit(PythonOpCode.DictionaryUpdate, 0, item.Span);
+                            }
+                            else
+                            {
+                                CompileExpression(item.Key);
+                                CompileExpression(item.Value);
+                                Emit(PythonOpCode.DictionaryAdd, 0, item.Span);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (var item in dictionary.Items)
+                        {
+                            CompileExpression(item.Key!);
+                            CompileExpression(item.Value);
+                        }
+
+                        Emit(PythonOpCode.BuildDictionary, dictionary.Items.Count, dictionary.Span);
+                    }
+
                     break;
                 case PythonSubscriptionExpression subscription:
                     CompileExpression(subscription.Target);
@@ -339,8 +378,33 @@ public static class PythonCompiler
                     Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
                     break;
                 case PythonSetExpression setExpression:
-                    CompileElements(setExpression.Elements);
-                    Emit(PythonOpCode.BuildSet, setExpression.Elements.Count, setExpression.Span);
+                    if (setExpression.Elements.Any(element => element is PythonStarredExpression))
+                    {
+                        Emit(PythonOpCode.BuildSet, 0, setExpression.Span);
+                        foreach (var element in setExpression.Elements)
+                        {
+                            if (element is PythonStarredExpression starredElement)
+                            {
+                                CompileExpression(starredElement.Operand);
+                                Emit(PythonOpCode.SetUpdate, 0, starredElement.Span);
+                            }
+                            else
+                            {
+                                CompileExpression(element);
+                                Emit(PythonOpCode.SetAdd, 0, element.Span);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        CompileElements(setExpression.Elements);
+                        Emit(
+                            PythonOpCode.BuildSet,
+                            setExpression.Elements.Count,
+                            setExpression.Span
+                        );
+                    }
+
                     break;
                 case PythonFormattedStringExpression formatted:
                     CompileFormattedString(formatted);
@@ -350,6 +414,11 @@ public static class PythonCompiler
                     break;
                 case PythonLambdaExpression lambdaExpression:
                     CompileLambdaExpression(lambdaExpression);
+                    break;
+                case PythonAssignmentExpression assignmentExpression:
+                    CompileExpression(assignmentExpression.Value);
+                    Emit(PythonOpCode.CopyTop, 0, assignmentExpression.Span);
+                    EmitStoreName(assignmentExpression.Target);
                     break;
                 case PythonConditionalExpression conditional:
                     CompileExpression(conditional.Condition);
@@ -648,6 +717,27 @@ public static class PythonCompiler
             CompileExpression(lambdaExpression.Body);
             Emit(PythonOpCode.ReturnValue, 0, lambdaExpression.Body.Span);
             return CreateCodeObject(lambdaExpression.Parameters);
+        }
+
+        private void CompileUnpackedElements(
+            IReadOnlyList<PythonExpression> elements,
+            TextSpan span
+        )
+        {
+            Emit(PythonOpCode.BuildList, 0, span);
+            foreach (var element in elements)
+            {
+                if (element is PythonStarredExpression starred)
+                {
+                    CompileExpression(starred.Operand);
+                    Emit(PythonOpCode.ListExtend, 0, starred.Span);
+                }
+                else
+                {
+                    CompileExpression(element);
+                    Emit(PythonOpCode.ListAppend, 0, element.Span);
+                }
+            }
         }
 
         private void CompileCallWithUnpacking(PythonCallExpression call)

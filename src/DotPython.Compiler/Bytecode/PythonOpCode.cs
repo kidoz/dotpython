@@ -93,4 +93,7 @@ public enum PythonOpCode
     MakeClassWithBases = 88,
     MakeInterpolation = 89,
     MakeTemplate = 90,
+    ListToTuple = 91,
+    SetUpdate = 92,
+    DictionaryUpdate = 93,
 }

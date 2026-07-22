@@ -282,6 +282,15 @@ public static class PythonParser
                     : inner;
             }
 
+            if (Match(SyntaxTokenKind.Star, out var starToken))
+            {
+                var starred = ParseForTargetAtom();
+                return new PythonStarredExpression(
+                    starred,
+                    TextSpan.FromBounds(starToken.Span.Start, starred.Span.End)
+                );
+            }
+
             var targetToken = Expect(SyntaxTokenKind.Identifier, "a target after 'for'");
             if (targetToken.Text.Length != 0 && IsReservedKeyword(targetToken.Text))
             {
@@ -1309,6 +1318,31 @@ public static class PythonParser
             if (IsKeyword("lambda"))
             {
                 return ParseLambdaExpression();
+            }
+
+            if (
+                Current.Kind == SyntaxTokenKind.Identifier
+                && Peek(1).Kind == SyntaxTokenKind.ColonEqual
+                && !IsExpressionKeyword(Current.Text)
+            )
+            {
+                var nameToken = Advance();
+                Advance();
+                if (IsReservedKeyword(nameToken.Text))
+                {
+                    Report(
+                        "DPY2010",
+                        $"The keyword '{nameToken.Text}' cannot be used as an assignment target.",
+                        nameToken.Span
+                    );
+                }
+
+                var walrusValue = ParseRequiredExpression("an expression after ':='");
+                return new PythonAssignmentExpression(
+                    new PythonNameExpression(nameToken.Text, nameToken.Span),
+                    walrusValue,
+                    TextSpan.FromBounds(nameToken.Span.Start, walrusValue.Span.End)
+                );
             }
 
             var expression = ParseDisjunction();
@@ -2352,7 +2386,7 @@ public static class PythonParser
                 );
             }
 
-            var first = ParseExpression();
+            var first = ParsePossiblyStarredExpression();
             if (first is null)
             {
                 ReportExpected("an expression", Current.Span);
@@ -2375,7 +2409,7 @@ public static class PythonParser
             var elements = new List<PythonExpression> { first };
             while (Current.Kind != SyntaxTokenKind.RightParenthesis)
             {
-                var element = ParseExpression();
+                var element = ParsePossiblyStarredExpression();
                 if (element is null)
                 {
                     ReportExpected("a tuple element", Current.Span);
@@ -2405,7 +2439,7 @@ public static class PythonParser
             var elements = new List<PythonExpression>();
             while (Current.Kind != SyntaxTokenKind.RightBracket)
             {
-                var element = ParseExpression();
+                var element = ParsePossiblyStarredExpression();
                 if (element is null)
                 {
                     ReportExpected("a list element", Current.Span);
@@ -2447,6 +2481,35 @@ public static class PythonParser
             var items = new List<PythonDictionaryItem>();
             while (Current.Kind != SyntaxTokenKind.RightBrace)
             {
+                if (Match(SyntaxTokenKind.DoubleStar, out var doubleStarToken))
+                {
+                    var unpacked = ParseRequiredExpression("a mapping after '**'");
+                    items.Add(
+                        new PythonDictionaryItem(
+                            null,
+                            unpacked,
+                            TextSpan.FromBounds(doubleStarToken.Span.Start, unpacked.Span.End)
+                        )
+                    );
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (Current.Kind == SyntaxTokenKind.Star)
+                {
+                    var starredElement = ParsePossiblyStarredExpression();
+                    if (starredElement is null)
+                    {
+                        break;
+                    }
+
+                    return ParseSetDisplay(leftBrace, starredElement);
+                }
+
                 var key = ParseExpression();
                 if (key is null)
                 {
@@ -2529,7 +2592,7 @@ public static class PythonParser
                     break;
                 }
 
-                var element = ParseExpression();
+                var element = ParsePossiblyStarredExpression();
                 if (element is null)
                 {
                     ReportExpected("a set element", Current.Span);

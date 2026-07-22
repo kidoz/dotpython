@@ -60,6 +60,38 @@ internal static class PythonBuiltinMethods
                     PythonTextFormatting.FormatTemplate(text, arguments, [], [], default)
                 )
         ),
+        ["format_map"] = Text(
+            "format_map",
+            1,
+            1,
+            (text, arguments) =>
+            {
+                if (arguments[0] is not PythonDictionaryValue mapping)
+                {
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4003",
+                        "format_map() argument must be a mapping.",
+                        default,
+                        "TypeError"
+                    );
+                }
+
+                var names = new List<string>();
+                var values = new List<PythonValue>();
+                foreach (var item in mapping.Items)
+                {
+                    if (item.Key is PythonTextValue keyText)
+                    {
+                        names.Add(keyText.Value);
+                        values.Add(item.Value);
+                    }
+                }
+
+                return new PythonTextValue(
+                    PythonTextFormatting.FormatTemplate(text, [], names, values, default)
+                );
+            }
+        ),
         ["replace"] = Text(
             "replace",
             2,

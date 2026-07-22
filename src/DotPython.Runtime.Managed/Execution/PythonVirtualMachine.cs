@@ -453,6 +453,20 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.SetAdd:
                 AddToComprehensionSet(instruction);
                 break;
+            case PythonOpCode.ListToTuple:
+                if (Pop(instruction.Span) is not PythonListValue listToConvert)
+                {
+                    throw Fault("DPY4007", "The tuple accumulator is invalid.", instruction.Span);
+                }
+
+                _evaluationStack.Push(new PythonTupleValue([.. listToConvert.Elements]));
+                break;
+            case PythonOpCode.SetUpdate:
+                UpdateSetOnStack(instruction);
+                break;
+            case PythonOpCode.DictionaryUpdate:
+                UpdateDictionaryOnStack(instruction);
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -2330,6 +2344,48 @@ internal sealed class PythonVirtualMachine
                 );
             }
 
+            ManagedObjectProtocols.SetDictionaryItem(
+                accumulator,
+                item.Key,
+                item.Value,
+                instruction.Span
+            );
+        }
+    }
+
+    private void UpdateSetOnStack(PythonInstruction instruction)
+    {
+        var iterable = Pop(instruction.Span);
+        if (Peek(instruction.Operand, instruction.Span) is not PythonSetValue accumulator)
+        {
+            throw Fault("DPY4007", "The set accumulator is invalid.", instruction.Span);
+        }
+
+        foreach (var value in ManagedObjectProtocols.MaterializeValues(iterable, instruction.Span))
+        {
+            ManagedObjectProtocols.AddToSet(accumulator, value, instruction.Span);
+        }
+    }
+
+    private void UpdateDictionaryOnStack(PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonDictionaryValue source)
+        {
+            throw Fault(
+                "DPY4009",
+                "Argument after ** must be a mapping.",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        if (Peek(instruction.Operand, instruction.Span) is not PythonDictionaryValue accumulator)
+        {
+            throw Fault("DPY4007", "The dictionary accumulator is invalid.", instruction.Span);
+        }
+
+        foreach (var item in source.Items)
+        {
             ManagedObjectProtocols.SetDictionaryItem(
                 accumulator,
                 item.Key,

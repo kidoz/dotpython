@@ -279,6 +279,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "v = 'ab'\nprint(f'{v!r:>8}|', f'{v!s:^7}|')\nt = t'{v!r:>6}'\nprint(t.interpolations[0].conversion, t.interpolations[0].format_spec)"
     )]
+    [InlineData(
+        "if (n := 5) > 3:\n    print('big', n)\nwhile (m := n - 2) > 0:\n    n = m\nprint(n, m)\ndata = [1, 5, 2, 8]\nprint([y for x in data if (y := x * 2) > 5])\ndef f():\n    return (local := 10) + local\nprint(f(), (z := 1) + z)"
+    )]
+    [InlineData(
+        "a = [2, 3]\nd1 = {'x': 1}\nd2 = {'y': 2, 'x': 9}\nprint([1, *a, 4], (0, *a), (*a,), [*a, *a])\nprint({*a, 1, *[3, 9]} == {1, 2, 3, 9}, sorted({*a, *a}))\nprint({**d1, 'z': 3}, {**d1, **d2}, {'x': 0, **d1})"
+    )]
+    [InlineData(
+        "print('{a}-{b}'.format_map({'a': 1, 'b': 2}))\ntry:\n    '{missing}'.format_map({'a': 1})\nexcept KeyError:\n    print('map-missing')\npairs = [(1, 2, 3), (4, 5, 6)]\nfor first, *rest in pairs:\n    print(first, rest)\nfor *init, last in [(1, 2, 3)]:\n    print(init, last)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

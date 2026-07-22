@@ -221,6 +221,12 @@ public sealed record PythonSetComprehensionExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonAssignmentExpression(
+    PythonNameExpression Target,
+    PythonExpression Value,
+    TextSpan Span
+) : PythonExpression(Span);
+
 public sealed record PythonConditionalExpression(
     PythonExpression Condition,
     PythonExpression TrueResult,
@@ -286,7 +292,7 @@ public sealed record PythonDictionaryExpression(
 ) : PythonExpression(Span);
 
 public sealed record PythonDictionaryItem(
-    PythonExpression Key,
+    PythonExpression? Key,
     PythonExpression Value,
     TextSpan Span
 ) : PythonNode(Span);

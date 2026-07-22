@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 21.
+# DotPython executable PEG subset, version 22.
 # Upstream tag: CPython v3.14.6.
 # Upstream commit: c63aec69bd59c55314c06c23f4c22c03de76fe45.
 # Provenance: https://github.com/python/cpython/blob/c63aec69bd59c55314c06c23f4c22c03de76fe45/Grammar/python.gram
@@ -37,7 +37,7 @@ if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' bl
 while_stmt: 'while' expression ':' block ['else' ':' block]
 for_stmt: 'for' for_targets 'in' expression_list ':' block ['else' ':' block]
 for_targets: ','.for_target+ [',']
-for_target: '(' for_targets ')' | NAME
+for_target: '*' for_target | '(' for_targets ')' | NAME
 with_stmt: 'with' ','.with_item+ ':' block
 with_item: expression ['as' primary]
 try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
@@ -48,7 +48,8 @@ parameters: ','.parameter+ [',']
 parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
 block: NEWLINE INDENT statements DEDENT | simple_stmts
 
-expression: lambda_expression | conditional_expression
+expression: lambda_expression | assignment_expression | conditional_expression
+assignment_expression: NAME ':=' expression
 conditional_expression: disjunction ['if' disjunction 'else' expression]
 lambda_expression: 'lambda' [parameters] ':' expression
 disjunction: conjunction ('or' conjunction)*
@@ -69,11 +70,11 @@ expression_list: ','.star_expression+ [',']
 star_expression: '*' expression | expression
 atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
 list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
-tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
+tuple_display: '(' ')' | '(' star_expression ',' [expression_list] ')'
 dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
 comp_clauses: comp_for (comp_for | comp_if)*
 comp_for: 'for' for_targets 'in' disjunction
 comp_if: 'if' disjunction
 dict_items: ','.dict_item+ [',']
-dict_item: expression ':' expression
+dict_item: '**' expression | expression ':' expression
 group: '(' expression ')'

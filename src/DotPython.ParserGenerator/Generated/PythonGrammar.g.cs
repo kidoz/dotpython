@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "7312c9f96331d780a8800bdebdbe11281689ace92896fc8f5eb1b61e9d3d6400";
-    internal const int RuleCount = 70;
+    internal const string SourceSha256 = "3bbeb24477c94778bf93b1620537d7e2f870a94a1c69f832d2a68aa74f837c26";
+    internal const int RuleCount = 71;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -40,7 +40,7 @@ internal static class GeneratedPythonGrammar
         while_stmt: 'while' expression ':' block ['else' ':' block]
         for_stmt: 'for' for_targets 'in' expression_list ':' block ['else' ':' block]
         for_targets: ','.for_target+ [',']
-        for_target: '(' for_targets ')' | NAME
+        for_target: '*' for_target | '(' for_targets ')' | NAME
         with_stmt: 'with' ','.with_item+ ':' block
         with_item: expression ['as' primary]
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
@@ -50,7 +50,8 @@ internal static class GeneratedPythonGrammar
         parameters: ','.parameter+ [',']
         parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
-        expression: lambda_expression | conditional_expression
+        expression: lambda_expression | assignment_expression | conditional_expression
+        assignment_expression: NAME ':=' expression
         conditional_expression: disjunction ['if' disjunction 'else' expression]
         lambda_expression: 'lambda' [parameters] ':' expression
         disjunction: conjunction ('or' conjunction)*
@@ -71,13 +72,13 @@ internal static class GeneratedPythonGrammar
         star_expression: '*' expression | expression
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
         list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
-        tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
+        tuple_display: '(' ')' | '(' star_expression ',' [expression_list] ')'
         dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
         comp_clauses: comp_for (comp_for | comp_if)*
         comp_for: 'for' for_targets 'in' disjunction
         comp_if: 'if' disjunction
         dict_items: ','.dict_item+ [',']
-        dict_item: expression ':' expression
+        dict_item: '**' expression | expression ':' expression
         group: '(' expression ')'
         """;
 
