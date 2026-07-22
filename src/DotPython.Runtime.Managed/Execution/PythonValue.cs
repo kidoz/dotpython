@@ -392,6 +392,20 @@ internal sealed record PythonModuleValue(string Name, PythonGlobalNamespace Glob
     internal override string ToDisplayString() => $"<module '{Name}'>";
 }
 
+internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, PythonValue Step)
+    : PythonValue
+{
+    internal override string ToDisplayString() =>
+        $"slice({Start.ToRepresentationString()}, {Stop.ToRepresentationString()}, "
+        + $"{Step.ToRepresentationString()})";
+}
+
+internal sealed record PythonDictionaryViewValue(string Kind, PythonListValue Snapshot)
+    : PythonValue
+{
+    internal override string ToDisplayString() => $"{Kind}({Snapshot.ToDisplayString()})";
+}
+
 internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
 {
     internal override string ToDisplayString()

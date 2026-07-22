@@ -1772,6 +1772,133 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_DispatchesBuiltinMethodsAcrossValueKinds()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "values = [3, 1, 2]\n"
+                + "values.append(4)\n"
+                + "values.extend([5])\n"
+                + "values.insert(0, 0)\n"
+                + "print(values, values.pop(), values.pop(0))\n"
+                + "values.sort()\n"
+                + "print(values, values.index(2), values.count(1))\n"
+                + "print(' hi '.strip(), 'a,b'.split(','), '-'.join(['x', 'y']))\n"
+                + "print('banana'.replace('an', 'A'), 'abc'.upper(), 'banana'.find('na'))\n"
+                + "mapping = {'a': 1, 'b': 2}\n"
+                + "print(mapping.get('a'), mapping.get('z', 9), mapping.keys(), mapping.items())\n"
+                + "mapping.update({'c': 3})\n"
+                + "print(mapping.pop('b'), mapping.setdefault('d', 4), mapping)\n"
+                + "print((1, 2, 2).count(2), (1, 2, 2).index(2))\n",
+            "methods.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"[3, 1, 2, 4] 5 0{Environment.NewLine}"
+                + $"[1, 2, 3, 4] 1 1{Environment.NewLine}"
+                + $"hi ['a', 'b'] x-y{Environment.NewLine}"
+                + $"bAAa ABC 2{Environment.NewLine}"
+                + $"1 9 dict_keys(['a', 'b']) dict_items([('a', 1), ('b', 2)]){Environment.NewLine}"
+                + $"2 4 {{'a': 1, 'c': 3, 'd': 4}}{Environment.NewLine}"
+                + $"2 1{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_SlicesSequencesAndAssignsListSlices()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "letters = ['a', 'b', 'c', 'd', 'e']\n"
+                + "print(letters[1:3], letters[:2], letters[::2], letters[::-1], letters[-2:])\n"
+                + "print('abcdef'[1:4], 'abcdef'[::-1], (1, 2, 3, 4)[1:3])\n"
+                + "letters[1:3] = ['B', 'C', 'X']\n"
+                + "print(letters)\n"
+                + "letters[::3] = ['1', '2']\n"
+                + "print(letters)\n",
+            "slices.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"['b', 'c'] ['a', 'b'] ['a', 'c', 'e'] ['e', 'd', 'c', 'b', 'a'] "
+                + $"['d', 'e']{Environment.NewLine}"
+                + $"bcd fedcba (2, 3){Environment.NewLine}"
+                + $"['a', 'B', 'C', 'X', 'd', 'e']{Environment.NewLine}"
+                + $"['1', 'B', 'C', '2', 'd', 'e']{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_EvaluatesMembershipIdentityAndInPlaceOperators()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "print(2 in [1, 2], 3 not in (1, 2), 'an' in 'banana', 'k' in {'k': 1})\n"
+                + "print(None is None, [] is [], 1 is not None)\n"
+                + "n = 10\n"
+                + "n += 5\n"
+                + "n *= 2\n"
+                + "n //= 4\n"
+                + "print(n)\n"
+                + "items = [1]\n"
+                + "alias = items\n"
+                + "items += [2, 3]\n"
+                + "items *= 2\n"
+                + "items[0] += 9\n"
+                + "print(items, alias is items)\n",
+            "operators.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"True True True True{Environment.NewLine}"
+                + $"True False True{Environment.NewLine}"
+                + $"7{Environment.NewLine}"
+                + $"[10, 2, 3, 1, 2, 3] True{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RaisesCatchableCollectionProtocolErrors()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "try:\n    'abc'.nope\nexcept AttributeError:\n    print('attr')\n"
+                + "try:\n    [].pop()\nexcept IndexError:\n    print('pop-empty')\n"
+                + "try:\n    [1, 'a'].sort()\nexcept TypeError:\n    print('unorderable')\n"
+                + "try:\n    [1, 2][::0]\nexcept ValueError:\n    print('zero-step')\n"
+                + "try:\n    print(1 in 'abc')\nexcept TypeError:\n    print('membership')\n"
+                + "try:\n    {'a': 1}.pop('zz')\nexcept KeyError:\n    print('pop-missing')\n",
+            "collection-errors.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"attr{Environment.NewLine}pop-empty{Environment.NewLine}"
+                + $"unorderable{Environment.NewLine}zero-step{Environment.NewLine}"
+                + $"membership{Environment.NewLine}pop-missing{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(

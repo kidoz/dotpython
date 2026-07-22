@@ -92,6 +92,18 @@ internal static class ManagedObjectProtocols
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetAttribute(name, span);
+            case var builtin when PythonBuiltinMethods.SupportsMethods(builtin):
+                if (PythonBuiltinMethods.TryGet(builtin, name, out var method))
+                {
+                    return new PythonBoundMethodValue(name, builtin, method);
+                }
+
+                throw Fault(
+                    "DPY4023",
+                    $"'{GetTypeName(builtin)}' object has no attribute '{name}'.",
+                    span,
+                    "AttributeError"
+                );
             default:
                 throw Fault(
                     "DPY4023",
@@ -161,6 +173,7 @@ internal static class ManagedObjectProtocols
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonDictionaryValue dictionary => dictionary.Items.Count,
+            PythonDictionaryViewValue view => view.Snapshot.Elements.Count,
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
@@ -170,6 +183,11 @@ internal static class ManagedObjectProtocols
         if (value is PythonIteratorValue iterator)
         {
             return iterator;
+        }
+
+        if (value is PythonDictionaryViewValue view)
+        {
+            return GetIterator(view.Snapshot, span);
         }
 
         if (
@@ -256,6 +274,41 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonListValue list when index is PythonSliceValue slice:
+            {
+                var result = new List<PythonValue>();
+                foreach (
+                    var elementIndex in EnumerateSliceIndices(slice, list.Elements.Count, span)
+                )
+                {
+                    result.Add(list.Elements[elementIndex]);
+                }
+
+                return new PythonListValue(result);
+            }
+            case PythonTupleValue tuple when index is PythonSliceValue slice:
+            {
+                var result = new List<PythonValue>();
+                foreach (
+                    var elementIndex in EnumerateSliceIndices(slice, tuple.Elements.Length, span)
+                )
+                {
+                    result.Add(tuple.Elements[elementIndex]);
+                }
+
+                return new PythonTupleValue([.. result]);
+            }
+            case PythonTextValue text when index is PythonSliceValue slice:
+            {
+                var runes = text.Value.EnumerateRunes().ToArray();
+                var builder = new StringBuilder();
+                foreach (var elementIndex in EnumerateSliceIndices(slice, runes.Length, span))
+                {
+                    builder.Append(runes[elementIndex].ToString());
+                }
+
+                return new PythonTextValue(builder.ToString());
+            }
             case PythonListValue list:
                 return list.Elements[GetSequenceIndex(index, list.Elements.Count, span)];
             case PythonTupleValue tuple:
@@ -296,6 +349,9 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonListValue list when index is PythonSliceValue slice:
+                AssignListSlice(list, slice, value, span);
+                return;
             case PythonListValue list:
                 list.Elements[GetSequenceIndex(index, list.Elements.Count, span)] = value;
                 return;
@@ -350,6 +406,21 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(container);
         ArgumentNullException.ThrowIfNull(item);
+        if (container is PythonTextValue text)
+        {
+            if (item is not PythonTextValue substring)
+            {
+                throw Fault(
+                    "DPY4011",
+                    "A string membership test requires a string operand.",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            return text.Value.Contains(substring.Value, StringComparison.Ordinal);
+        }
+
         if (container is PythonDictionaryValue dictionary)
         {
             return TryFindDictionaryItem(dictionary, item, out _);
@@ -365,6 +436,177 @@ internal static class ManagedObjectProtocols
         }
 
         return false;
+    }
+
+    internal static IEnumerable<int> EnumerateSliceIndices(
+        PythonSliceValue slice,
+        int length,
+        TextSpan span
+    )
+    {
+        var (start, stop, step) = GetSliceIndices(slice, length, span);
+        if (step > 0)
+        {
+            for (var index = start; index < stop; index += step)
+            {
+                yield return index;
+            }
+        }
+        else
+        {
+            for (var index = start; index > stop; index += step)
+            {
+                yield return index;
+            }
+        }
+    }
+
+    internal static (int Start, int Stop, int Step) GetSliceIndices(
+        PythonSliceValue slice,
+        int length,
+        TextSpan span
+    )
+    {
+        var step = slice.Step is PythonNoneValue ? 1 : GetSliceBound(slice.Step, span);
+        if (step == 0)
+        {
+            throw Fault("DPY4012", "The slice step cannot be zero.", span, "ValueError");
+        }
+
+        var start =
+            slice.Start is PythonNoneValue
+                ? (step > 0 ? 0 : length - 1)
+                : AdjustSliceIndex(GetSliceBound(slice.Start, span), length, step);
+        var stop =
+            slice.Stop is PythonNoneValue
+                ? (step > 0 ? length : -1)
+                : AdjustSliceIndex(GetSliceBound(slice.Stop, span), length, step);
+        return (start, stop, step);
+    }
+
+    private static int AdjustSliceIndex(int index, int length, int step)
+    {
+        if (index < 0)
+        {
+            index += length;
+            if (index < 0)
+            {
+                return step < 0 ? -1 : 0;
+            }
+
+            return index;
+        }
+
+        if (index >= length)
+        {
+            return step < 0 ? length - 1 : length;
+        }
+
+        return index;
+    }
+
+    private static int GetSliceBound(PythonValue value, TextSpan span)
+    {
+        var promoted = PromoteTruthValue(value);
+        if (promoted is not PythonWholeNumberValue wholeNumber)
+        {
+            throw Fault("DPY4011", "Slice indices must be integers or None.", span, "TypeError");
+        }
+
+        if (wholeNumber.Value > int.MaxValue)
+        {
+            return int.MaxValue;
+        }
+
+        if (wholeNumber.Value < int.MinValue)
+        {
+            return int.MinValue;
+        }
+
+        return (int)wholeNumber.Value;
+    }
+
+    internal static void AssignListSlice(
+        PythonListValue list,
+        PythonSliceValue slice,
+        PythonValue value,
+        TextSpan span
+    )
+    {
+        var values = MaterializeValues(value, span);
+        var (start, stop, step) = GetSliceIndices(slice, list.Elements.Count, span);
+        if (step == 1)
+        {
+            if (stop < start)
+            {
+                stop = start;
+            }
+
+            list.Elements.RemoveRange(start, stop - start);
+            list.Elements.InsertRange(start, values);
+            return;
+        }
+
+        var indices = EnumerateSliceIndices(slice, list.Elements.Count, span).ToList();
+        if (indices.Count != values.Count)
+        {
+            throw Fault(
+                "DPY4012",
+                $"An extended slice of size {indices.Count} cannot accept "
+                    + $"{values.Count} value(s).",
+                span,
+                "ValueError"
+            );
+        }
+
+        for (var position = 0; position < indices.Count; position++)
+        {
+            list.Elements[indices[position]] = values[position];
+        }
+    }
+
+    internal static void ExtendList(PythonListValue list, PythonValue iterable, TextSpan span)
+    {
+        var values = MaterializeValues(iterable, span);
+        list.Elements.AddRange(values);
+    }
+
+    internal static void RepeatListInPlace(PythonListValue list, PythonValue count, TextSpan span)
+    {
+        var promoted = PromoteTruthValue(count);
+        if (promoted is not PythonWholeNumberValue wholeNumber)
+        {
+            throw Fault(
+                "DPY4011",
+                "A list can only be repeated by an integer count.",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (wholeNumber.Value <= 0)
+        {
+            list.Elements.Clear();
+            return;
+        }
+
+        var snapshot = list.Elements.ToArray();
+        for (var repetition = 1; repetition < wholeNumber.Value; repetition++)
+        {
+            list.Elements.AddRange(snapshot);
+        }
+    }
+
+    internal static List<PythonValue> MaterializeValues(PythonValue iterable, TextSpan span)
+    {
+        var values = new List<PythonValue>();
+        var iterator = GetIterator(iterable, span);
+        while (TryGetNext(iterator, out var value, span))
+        {
+            values.Add(value);
+        }
+
+        return values;
     }
 
     internal static bool IsTrue(PythonValue value) =>
@@ -498,6 +740,8 @@ internal static class ManagedObjectProtocols
             PythonListValue => "list",
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
+            PythonSliceValue => "slice",
+            PythonDictionaryViewValue view => view.Kind,
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue => "type",
@@ -569,7 +813,7 @@ internal static class ManagedObjectProtocols
         return false;
     }
 
-    private static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
+    internal static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
     {
         var promoted = PromoteTruthValue(index);
         if (promoted is not PythonWholeNumberValue wholeNumber)
@@ -591,7 +835,7 @@ internal static class ManagedObjectProtocols
         return (int)value;
     }
 
-    private static void SetDictionaryItem(
+    internal static void SetDictionaryItem(
         PythonDictionaryValue dictionary,
         PythonValue key,
         PythonValue value,
@@ -613,7 +857,7 @@ internal static class ManagedObjectProtocols
         dictionary.SizeVersion++;
     }
 
-    private static bool TryFindDictionaryItem(
+    internal static bool TryFindDictionaryItem(
         PythonDictionaryValue dictionary,
         PythonValue key,
         out PythonDictionaryItemValue item
@@ -632,7 +876,7 @@ internal static class ManagedObjectProtocols
         return false;
     }
 
-    private static bool IsHashable(PythonValue value) =>
+    internal static bool IsHashable(PythonValue value) =>
         value switch
         {
             PythonListValue or PythonDictionaryValue => false,
@@ -640,7 +884,7 @@ internal static class ManagedObjectProtocols
             _ => true,
         };
 
-    private static bool AreEqual(PythonValue left, PythonValue right)
+    internal static bool AreEqual(PythonValue left, PythonValue right)
     {
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
@@ -730,7 +974,7 @@ internal static class ManagedObjectProtocols
         return true;
     }
 
-    private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
+    internal static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
     {
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
@@ -837,7 +1081,7 @@ internal static class ManagedObjectProtocols
         TextSpan span
     ) => Fault("DPY4022", $"'{typeName}' has no attribute '{name}'.", span, "AttributeError");
 
-    private static PythonRuntimeException Fault(
+    internal static PythonRuntimeException Fault(
         string code,
         string message,
         TextSpan span,

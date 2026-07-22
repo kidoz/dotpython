@@ -87,6 +87,27 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def act(first, second=2):\n    return first\ntry:\n    act(1, wrong=3)\nexcept TypeError:\n    print('unexpected-keyword')\ntry:\n    act(second=3)\nexcept TypeError:\n    print('missing-argument')"
     )]
+    [InlineData(
+        "values = [3, 1, 2]\nvalues.append(4)\nvalues.extend([5])\nvalues.insert(0, 0)\nprint(values.pop(), values.pop(0), values)\nvalues.remove(3)\nvalues.sort()\nprint(values, values.index(2), values.count(1))\nvalues.reverse()\nprint(values, values.copy())"
+    )]
+    [InlineData(
+        "print(' hi '.strip(), 'a,b,,c'.split(','), 'a b  c'.split(), '-'.join(['x', 'y']))\nprint('banana'.replace('an', 'A'), 'abc'.upper(), 'AbC'.lower(), 'hello world'.capitalize())\nprint('banana'.find('na'), 'banana'.find('xx'), 'banana'.count('a'), 'banana'.startswith('ban'), 'banana'.endswith('x'))"
+    )]
+    [InlineData(
+        "d = {'a': 1, 'b': 2}\nprint(d.get('a'), d.get('z'), d.get('z', 9))\nprint(d.keys(), d.values(), d.items())\nd.update({'c': 3})\nprint(d.pop('b'), d.pop('zz', -1), d.setdefault('d', 4), d.setdefault('a', 99), d)\nprint((1, 2, 2).count(2), (1, 2, 2).index(2))"
+    )]
+    [InlineData(
+        "print(2 in [1, 2], 3 not in (1, 2), 'an' in 'banana', 'xx' not in 'banana', 'k' in {'k': 1})\nprint(None is None, [] is [], 1 is not None)"
+    )]
+    [InlineData(
+        "letters = ['a', 'b', 'c', 'd', 'e']\nprint(letters[1:3], letters[:2], letters[3:], letters[::2], letters[::-1], letters[-2:])\nprint('abcdef'[1:4], 'abcdef'[::-1], (1, 2, 3, 4)[1:3])\nletters[1:3] = ['B', 'C', 'X']\nprint(letters)\nletters[::3] = ['1', '2']\nprint(letters)"
+    )]
+    [InlineData(
+        "n = 10\nn += 5\nn -= 3\nn *= 2\nn //= 5\nn **= 3\nn %= 7\nprint(n)\nlst = [1, 2]\nalias = lst\nlst += [3, 4]\nlst *= 2\nlst[0] += 9\nprint(lst, alias is lst)\ngrid = [[0, 1], [2, 3]]\ngrid[0][1] += 5\nprint(grid)"
+    )]
+    [InlineData(
+        "try:\n    [1, 'a'].sort()\nexcept TypeError:\n    print('unorderable')\ntry:\n    [1, 2][::0]\nexcept ValueError:\n    print('zero-step')\ntry:\n    {'a': 1}.pop('zz')\nexcept KeyError:\n    print('pop-missing')\ntry:\n    'abc'.nope\nexcept AttributeError:\n    print('attr')"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

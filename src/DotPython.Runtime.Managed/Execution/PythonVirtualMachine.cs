@@ -301,6 +301,26 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.CompareGreaterThanOrEqual:
                 ApplyOrderedComparison(frame.Code, instructionIndex, instruction);
                 break;
+            case PythonOpCode.CompareIn:
+            case PythonOpCode.CompareNotIn:
+                ApplyMembership(instruction);
+                break;
+            case PythonOpCode.CompareIs:
+            case PythonOpCode.CompareIsNot:
+                ApplyIdentity(instruction);
+                break;
+            case PythonOpCode.BuildSlice:
+                BuildSlice(instruction.Span);
+                break;
+            case PythonOpCode.CopyTopTwo:
+                CopyTopTwo(instruction.Span);
+                break;
+            case PythonOpCode.InPlaceAdd:
+                ApplyInPlaceAdd(instruction.Span);
+                break;
+            case PythonOpCode.InPlaceMultiply:
+                ApplyInPlaceMultiply(instruction.Span);
+                break;
             case PythonOpCode.Jump:
                 frame.InstructionPointer = GetJumpTarget(
                     instruction,
@@ -2103,6 +2123,77 @@ internal sealed class PythonVirtualMachine
         var second = Pop(span);
         _evaluationStack.Push(top);
         _evaluationStack.Push(second);
+    }
+
+    private void ApplyMembership(PythonInstruction instruction)
+    {
+        var container = Pop(instruction.Span);
+        var item = Pop(instruction.Span);
+        var contains = ManagedObjectProtocols.Contains(container, item, instruction.Span);
+        if (instruction.OpCode == PythonOpCode.CompareNotIn)
+        {
+            contains = !contains;
+        }
+
+        _evaluationStack.Push(contains ? PythonTruthValue.True : PythonTruthValue.False);
+    }
+
+    private void ApplyIdentity(PythonInstruction instruction)
+    {
+        var right = Pop(instruction.Span);
+        var left = Pop(instruction.Span);
+        var identical = ReferenceEquals(left, right);
+        if (instruction.OpCode == PythonOpCode.CompareIsNot)
+        {
+            identical = !identical;
+        }
+
+        _evaluationStack.Push(identical ? PythonTruthValue.True : PythonTruthValue.False);
+    }
+
+    private void BuildSlice(TextSpan span)
+    {
+        var step = Pop(span);
+        var stop = Pop(span);
+        var start = Pop(span);
+        _evaluationStack.Push(new PythonSliceValue(start, stop, step));
+    }
+
+    private void CopyTopTwo(TextSpan span)
+    {
+        var top = Pop(span);
+        var second = Peek(span);
+        _evaluationStack.Push(top);
+        _evaluationStack.Push(second);
+        _evaluationStack.Push(top);
+    }
+
+    private void ApplyInPlaceAdd(TextSpan span)
+    {
+        if (Peek(1, span) is PythonListValue list)
+        {
+            var right = Pop(span);
+            Pop(span);
+            ManagedObjectProtocols.ExtendList(list, right, span);
+            _evaluationStack.Push(list);
+            return;
+        }
+
+        ApplyBinary(new PythonInstruction(PythonOpCode.BinaryAdd, 0, span));
+    }
+
+    private void ApplyInPlaceMultiply(TextSpan span)
+    {
+        if (Peek(1, span) is PythonListValue list)
+        {
+            var right = Pop(span);
+            Pop(span);
+            ManagedObjectProtocols.RepeatListInPlace(list, right, span);
+            _evaluationStack.Push(list);
+            return;
+        }
+
+        ApplyBinary(new PythonInstruction(PythonOpCode.BinaryMultiply, 0, span));
     }
 
     private void RotateThree(TextSpan span)
