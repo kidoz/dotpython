@@ -1,0 +1,29 @@
+<Project>
+    <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+    <Import Project="../../../src/DotPython.Sdk/Sdk/Sdk.props" />
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>DotPython.Samples.PricingRules</RootNamespace>
+        <DotPythonModuleName>pricing</DotPythonModuleName>
+        <DotPythonClrTypeName>PricingModule</DotPythonClrTypeName>
+
+        <!-- Use the in-repository SDK toolchain until DotPython.Sdk is published. -->
+        <DotPythonSdkToolsPath
+            >$(MSBuildThisFileDirectory)../../../src/DotPython.Build.Tasks/bin/$(Configuration)/net10.0/</DotPythonSdkToolsPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PythonCompile Include="pricing.py" />
+        <PythonContract Include="pricing.pyi" />
+
+        <ProjectReference
+            Include="../../../src/DotPython.Build.Tasks/DotPython.Build.Tasks.csproj"
+            ReferenceOutputAssembly="false"
+            PrivateAssets="all"
+        />
+    </ItemGroup>
+
+    <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+    <Import Project="../../../src/DotPython.Sdk/Sdk/Sdk.targets" />
+</Project>

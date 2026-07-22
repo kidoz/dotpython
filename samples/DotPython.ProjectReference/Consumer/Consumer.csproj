@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <!-- A console entry point has no synchronization context to preserve. -->
+        <NoWarn>$(NoWarn);CA2007</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../PricingRules/PricingRules.dpyproj" />
+        <ProjectReference Include="../../../src/DotPython.Hosting/DotPython.Hosting.csproj" />
+    </ItemGroup>
+</Project>
