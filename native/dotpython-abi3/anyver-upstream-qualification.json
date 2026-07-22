@@ -24,15 +24,15 @@
     "blockers": [
       {
         "id": "managed-suite-admission",
-        "diagnosticCode": "DPY3004",
+        "diagnosticCode": "DPY4020",
         "message": "The unmodified upstream module was rejected before any test case could be attempted.",
         "occurrences": 1
       },
       {
-        "id": "managed-dpy3004-0-formatted-and-template-strings-are-not-executabl",
-        "diagnosticCode": "DPY3004",
-        "message": "Formatted and template strings are not executable in this runtime slice.",
-        "occurrences": 6
+        "id": "managed-dpy4020-0-no-managed-module-named-pytest-is-registered",
+        "diagnosticCode": "DPY4020",
+        "message": "No managed module named \u0027pytest\u0027 is registered.",
+        "occurrences": 1
       }
     ]
   },
