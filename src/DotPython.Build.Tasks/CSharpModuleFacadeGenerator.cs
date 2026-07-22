@@ -17,6 +17,8 @@ internal static class CSharpModuleFacadeGenerator
         builder.AppendLine();
         builder.Append("namespace ").Append(contract.ClrNamespace).AppendLine(";");
         builder.AppendLine();
+        AppendInterface(builder, contract);
+        builder.AppendLine();
         builder
             .Append("/// <summary>Provides typed access to the '")
             .Append(contract.ModuleName)
@@ -24,13 +26,20 @@ internal static class CSharpModuleFacadeGenerator
         builder
             .Append("public sealed class ")
             .Append(contract.ClrTypeName)
-            .AppendLine(" : global::System.IAsyncDisposable");
+            .Append(" : I")
+            .Append(contract.ClrTypeName)
+            .AppendLine(", global::System.IAsyncDisposable");
         builder.AppendLine("{");
         builder
             .Append("    private const string ArtifactResourceName = ")
             .Append(Literal(artifactResourceName))
             .AppendLine(";");
+        builder.AppendLine(
+            "    private static readonly global::System.Lazy<global::DotPython.PythonModuleDefinition> ModuleDefinition = new(CreateDefinition);"
+        );
         builder.AppendLine("    private readonly global::DotPython.IDotPythonModule _module;");
+        builder.AppendLine();
+        AppendRegistration(builder, contract);
         builder.AppendLine();
         builder
             .Append("    private ")
@@ -44,7 +53,7 @@ internal static class CSharpModuleFacadeGenerator
         foreach (var function in contract.Functions)
         {
             builder.AppendLine();
-            AppendFunction(builder, function);
+            AppendFunction(builder, function, "_module");
         }
 
         builder.AppendLine();
@@ -52,9 +61,49 @@ internal static class CSharpModuleFacadeGenerator
         builder.AppendLine("    public global::System.Threading.Tasks.ValueTask DisposeAsync() =>");
         builder.AppendLine("        _module.DisposeAsync();");
         builder.AppendLine();
+        AppendDefinitionFactory(builder, contract);
+        builder.AppendLine();
         AppendContractFactory(builder, contract);
+        builder.AppendLine();
+        AppendProviderClient(builder, contract);
         builder.AppendLine("}");
         return builder.ToString();
+    }
+
+    private static void AppendInterface(StringBuilder builder, PythonModuleContract contract)
+    {
+        builder
+            .Append("/// <summary>Defines typed access to the '")
+            .Append(contract.ModuleName)
+            .AppendLine("' DotPython module.</summary>");
+        builder.Append("public interface I").Append(contract.ClrTypeName).AppendLine();
+        builder.AppendLine("{");
+        foreach (var function in contract.Functions)
+        {
+            AppendFunctionSignature(builder, function, "    ");
+            builder.AppendLine(";");
+        }
+
+        builder.AppendLine("}");
+    }
+
+    private static void AppendRegistration(StringBuilder builder, PythonModuleContract contract)
+    {
+        builder.AppendLine(
+            "    /// <summary>Gets the host registration for this module.</summary>"
+        );
+        builder
+            .Append("    public static global::DotPython.PythonModuleRegistration<I")
+            .Append(contract.ClrTypeName)
+            .AppendLine("> Registration { get; } =");
+        builder.AppendLine("        new(");
+        builder.Append("            ").Append(Literal(contract.ModuleName)).AppendLine(",");
+        builder
+            .Append("            global::DotPython.Contracts.PythonModuleStatePolicy.")
+            .Append(contract.StatePolicy)
+            .AppendLine(",");
+        builder.AppendLine("            static provider => new ProviderClient(provider)");
+        builder.AppendLine("        );");
     }
 
     private static void AppendLoadMethod(StringBuilder builder, PythonModuleContract contract)
@@ -73,56 +122,27 @@ internal static class CSharpModuleFacadeGenerator
         builder.AppendLine("    )");
         builder.AppendLine("    {");
         builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(runtime);");
-        builder
-            .Append("        await using var resource = typeof(")
-            .Append(contract.ClrTypeName)
-            .AppendLine(").Assembly.GetManifestResourceStream(ArtifactResourceName)");
-        builder.AppendLine(
-            "            ?? throw new global::System.InvalidOperationException(\"The embedded DotPython module artifact is missing.\");"
-        );
-        builder.AppendLine("        using var artifact = new global::System.IO.MemoryStream();");
-        builder.AppendLine(
-            "        await resource.CopyToAsync(artifact, cancellationToken).ConfigureAwait(false);"
-        );
         builder.AppendLine("        var module = await runtime.LoadModuleAsync(");
-        builder.AppendLine(
-            "            new global::DotPython.PythonModuleDefinition(CreateContract(), artifact.ToArray()),"
-        );
+        builder.AppendLine("            ModuleDefinition.Value,");
         builder.AppendLine("            cancellationToken");
         builder.AppendLine("        ).ConfigureAwait(false);");
         builder.Append("        return new ").Append(contract.ClrTypeName).AppendLine("(module);");
         builder.AppendLine("    }");
     }
 
-    private static void AppendFunction(StringBuilder builder, PythonFunctionContract function)
+    private static void AppendFunction(
+        StringBuilder builder,
+        PythonFunctionContract function,
+        string invocationTarget
+    )
     {
         builder
             .Append("    /// <summary>Invokes the '")
             .Append(function.PythonName)
             .AppendLine("' Python export.</summary>");
-        builder.Append("    public global::System.Threading.Tasks.ValueTask");
-        if (!IsVoid(function.ReturnType))
-        {
-            builder.Append('<').Append(TypeName(function.ReturnType)).Append('>');
-        }
-
-        builder.Append(' ').Append(function.ClrName).AppendLine("(");
-        for (var index = 0; index < function.Parameters.Count; index++)
-        {
-            var parameter = function.Parameters[index];
-            builder
-                .Append("        ")
-                .Append(TypeName(parameter.Type))
-                .Append(' ')
-                .Append(parameter.ClrName)
-                .AppendLine(",");
-        }
-
-        builder.AppendLine(
-            "        global::System.Threading.CancellationToken cancellationToken = default"
-        );
-        builder.AppendLine("    ) =>");
-        builder.Append("        _module.InvokeAsync");
+        AppendFunctionSignature(builder, function, "    public ");
+        builder.AppendLine(" =>");
+        builder.Append("        ").Append(invocationTarget).Append(".InvokeAsync");
         if (!IsVoid(function.ReturnType))
         {
             builder.Append('<').Append(TypeName(function.ReturnType)).Append('>');
@@ -152,6 +172,129 @@ internal static class CSharpModuleFacadeGenerator
         builder.AppendLine("),");
         builder.AppendLine("            cancellationToken");
         builder.AppendLine("        );");
+    }
+
+    private static void AppendFunctionSignature(
+        StringBuilder builder,
+        PythonFunctionContract function,
+        string prefix
+    )
+    {
+        var indent = new string(' ', prefix.TakeWhile(character => character == ' ').Count());
+        var parameterIndent = indent + "    ";
+        builder.Append(prefix).Append("global::System.Threading.Tasks.ValueTask");
+        if (!IsVoid(function.ReturnType))
+        {
+            builder.Append('<').Append(TypeName(function.ReturnType)).Append('>');
+        }
+
+        builder.Append(' ').Append(function.ClrName).AppendLine("(");
+        for (var index = 0; index < function.Parameters.Count; index++)
+        {
+            var parameter = function.Parameters[index];
+            builder
+                .Append(parameterIndent)
+                .Append(TypeName(parameter.Type))
+                .Append(' ')
+                .Append(parameter.ClrName)
+                .AppendLine(",");
+        }
+
+        builder
+            .Append(parameterIndent)
+            .AppendLine("global::System.Threading.CancellationToken cancellationToken = default");
+        builder.Append(indent).Append(')');
+    }
+
+    private static void AppendDefinitionFactory(
+        StringBuilder builder,
+        PythonModuleContract contract
+    )
+    {
+        builder.AppendLine(
+            "    private static global::DotPython.PythonModuleDefinition CreateDefinition()"
+        );
+        builder.AppendLine("    {");
+        builder
+            .Append("        using var resource = typeof(")
+            .Append(contract.ClrTypeName)
+            .AppendLine(").Assembly.GetManifestResourceStream(ArtifactResourceName)");
+        builder.AppendLine(
+            "            ?? throw new global::System.InvalidOperationException(\"The embedded DotPython module artifact is missing.\");"
+        );
+        builder.AppendLine("        using var artifact = new global::System.IO.MemoryStream();");
+        builder.AppendLine("        resource.CopyTo(artifact);");
+        builder.AppendLine(
+            "        return new global::DotPython.PythonModuleDefinition(CreateContract(), artifact.ToArray());"
+        );
+        builder.AppendLine("    }");
+    }
+
+    private static void AppendProviderClient(StringBuilder builder, PythonModuleContract contract)
+    {
+        builder
+            .Append("    private sealed class ProviderClient : I")
+            .Append(contract.ClrTypeName)
+            .AppendLine();
+        builder.AppendLine("    {");
+        builder.AppendLine(
+            "        private readonly global::DotPython.IDotPythonModuleProvider _provider;"
+        );
+        builder.AppendLine();
+        builder.AppendLine(
+            "        internal ProviderClient(global::DotPython.IDotPythonModuleProvider provider)"
+        );
+        builder.AppendLine("        {");
+        builder.AppendLine("            _provider = provider;");
+        builder.AppendLine("        }");
+        foreach (var function in contract.Functions)
+        {
+            builder.AppendLine();
+            AppendProviderFunction(builder, function);
+        }
+
+        builder.AppendLine("    }");
+    }
+
+    private static void AppendProviderFunction(
+        StringBuilder builder,
+        PythonFunctionContract function
+    )
+    {
+        builder.AppendLine("        /// <inheritdoc />");
+        AppendFunctionSignature(builder, function, "        public ");
+        builder.AppendLine(" =>");
+        builder.Append("            _provider.InvokeAsync");
+        if (!IsVoid(function.ReturnType))
+        {
+            builder.Append('<').Append(TypeName(function.ReturnType)).Append('>');
+        }
+
+        builder.AppendLine("(");
+        builder.AppendLine("                ModuleDefinition.Value,");
+        builder
+            .Append("                new global::DotPython.PythonFunctionInvocation(")
+            .Append(Literal(function.PythonName));
+        if (function.Parameters.Count != 0)
+        {
+            builder.AppendLine(",");
+            builder.Append("                    [");
+            for (var index = 0; index < function.Parameters.Count; index++)
+            {
+                if (index != 0)
+                {
+                    builder.Append(", ");
+                }
+
+                builder.Append(function.Parameters[index].ClrName);
+            }
+
+            builder.Append(']');
+        }
+
+        builder.AppendLine("),");
+        builder.AppendLine("                cancellationToken");
+        builder.AppendLine("            );");
     }
 
     private static void AppendContractFactory(StringBuilder builder, PythonModuleContract contract)

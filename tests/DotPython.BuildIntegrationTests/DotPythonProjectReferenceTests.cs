@@ -96,6 +96,9 @@ public sealed class DotPythonProjectReferenceTests
                 TestContext.Current.CancellationToken
             );
             Assert.Contains("IDotPythonModuleRuntime", facade, StringComparison.Ordinal);
+            Assert.Contains("public interface IPricingModule", facade, StringComparison.Ordinal);
+            Assert.Contains("Registration { get; }", facade, StringComparison.Ordinal);
+            Assert.Contains("IDotPythonModuleProvider", facade, StringComparison.Ordinal);
             Assert.DoesNotContain("DotPython.Runtime.Managed", facade, StringComparison.Ordinal);
 
             using (var assemblyStream = File.OpenRead(assemblyPath))
