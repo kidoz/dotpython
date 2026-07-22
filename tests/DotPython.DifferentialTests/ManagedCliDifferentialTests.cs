@@ -228,6 +228,21 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print(list(map(str, [1, 2])), list(map(lambda a, b: a + b, [1, 2], [10, 20, 30])))\nprint(list(filter(None, [0, 1, '', 'x'])), list(filter(lambda v: v > 1, [1, 2, 3])))\nfor pair in map(lambda v: (v, v * 2), [1, 2]):\n    print(pair)\nprint(sorted(map(len, ['aaa', 'b', 'cc'])), any(map(lambda v: v > 2, [1, 3])))"
     )]
+    [InlineData(
+        "def f(*args):\n    return args\nprint(f(), f(1), f(1, 2, 3))\ndef g(a, b=2, *args, key=10, flag=None, **kw):\n    return (a, b, args, key, flag, sorted(kw.items()))\nprint(g(1))\nprint(g(1, 5, 6, 7, key=9, extra=1, more=2))\ndef wrapper(*args, **kwargs):\n    return g(*args, **kwargs)\nprint(wrapper(1, 5, 6, key=3, z=4))"
+    )]
+    [InlineData(
+        "def h(a, *, b, c=3):\n    return (a, b, c)\nprint(h(1, b=2), h(1, b=2, c=9))\ntry:\n    h(1, 2)\nexcept TypeError:\n    print('pos-after-star')\ntry:\n    h(1)\nexcept TypeError:\n    print('missing-kwonly')\ndef g(a, b=2):\n    return (a, b)\ntry:\n    g(1, a=5)\nexcept TypeError:\n    print('multiple-values')\ntry:\n    g(1, **{'a': 1}, **{'a': 2})\nexcept TypeError:\n    print('dup-star-kw')"
+    )]
+    [InlineData(
+        "items = [1, 2, 3]\ndef f(*args):\n    return args\nprint(f(*items, 4), max(*items), f(0, *items, *items))\nd = {'b': 20}\ndef g(a, b=2):\n    return (a, b)\nprint(g(1, **d), g(*[7], **{}))\nadd = lambda *a, scale=1: sum(a) * scale\nprint(add(1, 2, 3), add(1, 2, scale=10))"
+    )]
+    [InlineData(
+        "a, *rest = [1, 2, 3, 4]\nprint(a, rest)\nfirst, *mid, last = 'abcde'\nprint(first, mid, last)\n*init, tail = (9,)\nprint(init, tail)\ntry:\n    a, *r, b, c = [1, 2]\nexcept ValueError:\n    print('too-few')\nx, *y = range(3)\nprint(x, y)"
+    )]
+    [InlineData(
+        "print({x % 3 for x in range(9)} == {0, 1, 2}, sorted({c for c in 'hello'}))\nprint({len(w) for w in ['a', 'bb', 'a']}, {(v, v * 2) for v in [1, 1, 2]} == {(1, 2), (2, 4)})\nprint(sorted({x * y for x in [1, 2] for y in [3, 4] if x != y}))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

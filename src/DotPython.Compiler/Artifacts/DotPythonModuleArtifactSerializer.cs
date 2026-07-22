@@ -145,6 +145,10 @@ public static class DotPythonModuleArtifactSerializer
         writer.WriteInt32(code.FormatVersion);
         writer.WriteString(code.Name);
         writer.WriteInt32(code.ArgumentCount);
+        writer.WriteInt32(code.KeywordOnlyArgumentCount);
+        writer.WriteInt32(
+            (code.HasVariadicPositional ? 1 : 0) | (code.HasVariadicKeywords ? 2 : 0)
+        );
         writer.WriteStrings(code.Names);
         writer.WriteStrings(code.VariableNames);
         writer.WriteStrings(code.CellVariableNames);
@@ -180,6 +184,13 @@ public static class DotPythonModuleArtifactSerializer
 
         var name = reader.ReadString();
         var argumentCount = reader.ReadNonNegativeInt32("argument count");
+        var keywordOnlyArgumentCount = reader.ReadNonNegativeInt32("keyword-only argument count");
+        var signatureFlags = reader.ReadNonNegativeInt32("signature flags");
+        if (signatureFlags > 3)
+        {
+            throw new InvalidDataException($"Signature flags {signatureFlags} are invalid.");
+        }
+
         var names = reader.ReadStrings();
         var variableNames = reader.ReadStrings();
         var cellVariableNames = reader.ReadStrings();
@@ -221,7 +232,10 @@ public static class DotPythonModuleArtifactSerializer
             variableNames,
             cellVariableNames,
             freeVariableNames,
-            argumentCount
+            argumentCount,
+            keywordOnlyArgumentCount,
+            hasVariadicPositional: (signatureFlags & 1) != 0,
+            hasVariadicKeywords: (signatureFlags & 2) != 0
         );
         ValidateCodeObject(code);
         return code;

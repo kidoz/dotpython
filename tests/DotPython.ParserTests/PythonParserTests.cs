@@ -315,6 +315,63 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsVariadicAndKeywordOnlySignatures()
+    {
+        var result = Parse("def f(a, b=1, *args, key, flag=None, **kw):\n    return a\n");
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.Equal(
+            [
+                PythonParameterKind.Positional,
+                PythonParameterKind.Positional,
+                PythonParameterKind.VariadicPositional,
+                PythonParameterKind.KeywordOnly,
+                PythonParameterKind.KeywordOnly,
+                PythonParameterKind.VariadicKeywords,
+            ],
+            function.Parameters.Select(parameter => parameter.Kind)
+        );
+
+        var bare = Parse("def g(a, *, b):\n    return b\n");
+        Assert.Empty(bare.Diagnostics);
+
+        var invalid = Parse("def h(a, *):\n    return a\n");
+        Assert.Contains(invalid.Diagnostics, diagnostic => diagnostic.Code == "DPY2021");
+    }
+
+    [Fact]
+    public void Parse_BuildsStarredTargetsAndCallUnpacking()
+    {
+        var result = Parse("a, *rest = values\nf(*items, 1, **mapping)\n");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        var tuple = Assert.IsType<PythonTupleExpression>(assignment.Target);
+        Assert.IsType<PythonStarredExpression>(tuple.Elements[1]);
+        var call = Assert.IsType<PythonCallExpression>(
+            Assert.IsType<PythonExpressionStatement>(result.Module.Statements[1]).Expression
+        );
+        Assert.IsType<PythonStarredExpression>(call.Arguments[0]);
+        Assert.Null(Assert.Single(call.KeywordArguments).Name);
+    }
+
+    [Fact]
+    public void Parse_BuildsSetComprehensions()
+    {
+        var result = Parse("values = {x * 2 for x in source if x}\n");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var comprehension = Assert.IsType<PythonSetComprehensionExpression>(assignment.Value);
+        Assert.Equal(2, comprehension.Clauses.Count);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

@@ -41,8 +41,20 @@ public sealed record PythonClassDefinitionStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
-public sealed record PythonParameter(string Name, PythonExpression? Default, TextSpan Span)
-    : PythonNode(Span);
+public enum PythonParameterKind
+{
+    Positional,
+    VariadicPositional,
+    KeywordOnly,
+    VariadicKeywords,
+}
+
+public sealed record PythonParameter(
+    string Name,
+    PythonExpression? Default,
+    TextSpan Span,
+    PythonParameterKind Kind = PythonParameterKind.Positional
+) : PythonNode(Span);
 
 public sealed record PythonReturnStatement(PythonExpression? Value, TextSpan Span)
     : PythonStatement(Span);
@@ -184,8 +196,11 @@ public sealed record PythonCallExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
-public sealed record PythonKeywordArgument(string Name, PythonExpression Value, TextSpan Span)
+public sealed record PythonKeywordArgument(string? Name, PythonExpression Value, TextSpan Span)
     : PythonNode(Span);
+
+public sealed record PythonStarredExpression(PythonExpression Operand, TextSpan Span)
+    : PythonExpression(Span);
 
 public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);
@@ -196,6 +211,12 @@ public sealed record PythonSetExpression(IReadOnlyList<PythonExpression> Element
 public sealed record PythonLambdaExpression(
     IReadOnlyList<PythonParameter> Parameters,
     PythonExpression Body,
+    TextSpan Span
+) : PythonExpression(Span);
+
+public sealed record PythonSetComprehensionExpression(
+    PythonExpression Element,
+    IReadOnlyList<PythonComprehensionClause> Clauses,
     TextSpan Span
 ) : PythonExpression(Span);
 

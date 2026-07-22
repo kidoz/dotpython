@@ -135,12 +135,13 @@ public static class PythonSymbolBinder
                         childAncestors,
                         diagnostics
                     ),
-                    PythonListComprehensionExpression or PythonDictionaryComprehensionExpression =>
-                        BindComprehensionScope(
-                            (PythonExpression)definitionNode,
-                            childAncestors,
-                            diagnostics
-                        ),
+                    PythonListComprehensionExpression
+                    or PythonDictionaryComprehensionExpression
+                    or PythonSetComprehensionExpression => BindComprehensionScope(
+                        (PythonExpression)definitionNode,
+                        childAncestors,
+                        diagnostics
+                    ),
                     PythonLambdaExpression lambdaExpression => BindLambdaScope(
                         lambdaExpression,
                         childAncestors,
@@ -177,6 +178,11 @@ public static class PythonSymbolBinder
                 clauses = dictionaryComprehension.Clauses;
                 innerExpressions.Add(dictionaryComprehension.Key);
                 innerExpressions.Add(dictionaryComprehension.Value);
+                break;
+            case PythonSetComprehensionExpression setComprehension:
+                name = "<setcomp>";
+                clauses = setComprehension.Clauses;
+                innerExpressions.Add(setComprehension.Element);
                 break;
             default:
                 throw new InvalidOperationException("The comprehension kind is invalid.");
@@ -965,6 +971,12 @@ public static class PythonSymbolBinder
             case PythonDictionaryComprehensionExpression dictionaryComprehension:
                 CollectFirstIterableReferences(dictionaryComprehension.Clauses, references);
                 break;
+            case PythonSetComprehensionExpression setComprehension:
+                CollectFirstIterableReferences(setComprehension.Clauses, references);
+                break;
+            case PythonStarredExpression starred:
+                CollectReferences(starred.Operand, references);
+                break;
         }
     }
 
@@ -1219,6 +1231,23 @@ public static class PythonSymbolBinder
     {
         switch (expression)
         {
+            case PythonSetComprehensionExpression setComprehension:
+                yield return setComprehension;
+                foreach (
+                    var nested in EnumerateFirstIterableComprehensions(setComprehension.Clauses)
+                )
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonStarredExpression starredExpression:
+                foreach (var nested in EnumerateComprehensions(starredExpression.Operand))
+                {
+                    yield return nested;
+                }
+
+                break;
             case PythonListComprehensionExpression listComprehension:
                 yield return listComprehension;
                 foreach (
@@ -1459,6 +1488,9 @@ public static class PythonSymbolBinder
                     localNameSet,
                     excludedNames
                 );
+                break;
+            case PythonStarredExpression starred:
+                CollectTargetNames(starred.Operand, localNames, localNameSet, excludedNames);
                 break;
             case PythonTupleExpression tuple:
                 foreach (var element in tuple.Elements)

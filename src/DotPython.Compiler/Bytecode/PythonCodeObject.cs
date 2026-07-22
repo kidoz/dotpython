@@ -12,9 +12,13 @@ public sealed class PythonCodeObject
         IList<string> variableNames,
         IList<string> cellVariableNames,
         IList<string> freeVariableNames,
-        int argumentCount
+        int argumentCount,
+        int keywordOnlyArgumentCount = 0,
+        bool hasVariadicPositional = false,
+        bool hasVariadicKeywords = false
     )
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(keywordOnlyArgumentCount);
         ArgumentOutOfRangeException.ThrowIfNegative(argumentCount);
         if (argumentCount > variableNames.Count)
         {
@@ -27,6 +31,9 @@ public sealed class PythonCodeObject
         FormatVersion = DotPythonBytecodeFormat.CurrentVersion;
         Name = name;
         ArgumentCount = argumentCount;
+        KeywordOnlyArgumentCount = keywordOnlyArgumentCount;
+        HasVariadicPositional = hasVariadicPositional;
+        HasVariadicKeywords = hasVariadicKeywords;
         Instructions = new ReadOnlyCollection<PythonInstruction>(instructions);
         Constants = new ReadOnlyCollection<PythonConstant>(constants);
         Names = new ReadOnlyCollection<string>(names);
@@ -40,6 +47,26 @@ public sealed class PythonCodeObject
     public string Name { get; }
 
     public int ArgumentCount { get; }
+
+    /// <summary>Keyword-only parameter slot count within <see cref="ArgumentCount"/>.</summary>
+    public int KeywordOnlyArgumentCount { get; }
+
+    /// <summary>Whether a `*args` slot exists (in source order, before keyword-only slots).</summary>
+    public bool HasVariadicPositional { get; }
+
+    /// <summary>Whether a `**kwargs` slot exists (always the last parameter slot).</summary>
+    public bool HasVariadicKeywords { get; }
+
+    /// <summary>Plain positional parameter slot count at the start of the parameter slots.</summary>
+    public int PositionalParameterCount =>
+        ArgumentCount
+        - KeywordOnlyArgumentCount
+        - (HasVariadicPositional ? 1 : 0)
+        - (HasVariadicKeywords ? 1 : 0);
+
+    /// <summary>Whether the signature has no variadic or keyword-only parameters.</summary>
+    public bool HasSimpleSignature =>
+        KeywordOnlyArgumentCount == 0 && !HasVariadicPositional && !HasVariadicKeywords;
 
     public IReadOnlyList<PythonInstruction> Instructions { get; }
 

@@ -516,84 +516,7 @@ public static class PythonParser
 
             var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
             Expect(SyntaxTokenKind.LeftParenthesis, "'(' after the function name");
-
-            var parameters = new List<PythonParameter>();
-            var parameterNames = new HashSet<string>(StringComparer.Ordinal);
-            var sawDefault = false;
-            if (Current.Kind != SyntaxTokenKind.RightParenthesis)
-            {
-                while (true)
-                {
-                    var parameter = Expect(SyntaxTokenKind.Identifier, "a parameter name");
-                    PythonExpression? defaultValue = null;
-                    if (Match(SyntaxTokenKind.Equal))
-                    {
-                        defaultValue = ParseExpression();
-                        if (defaultValue is null)
-                        {
-                            ReportExpected("a default value after '='", Current.Span);
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(parameter.Text))
-                    {
-                        if (IsReservedKeyword(parameter.Text))
-                        {
-                            Report(
-                                "DPY2010",
-                                $"The keyword '{parameter.Text}' cannot be used as a parameter.",
-                                parameter.Span
-                            );
-                        }
-
-                        if (!parameterNames.Add(parameter.Text))
-                        {
-                            Report(
-                                "DPY2009",
-                                $"Duplicate parameter '{parameter.Text}'.",
-                                parameter.Span
-                            );
-                        }
-
-                        if (defaultValue is not null)
-                        {
-                            sawDefault = true;
-                        }
-                        else if (sawDefault)
-                        {
-                            Report(
-                                "DPY2016",
-                                "A parameter without a default follows a parameter with a default.",
-                                parameter.Span
-                            );
-                        }
-
-                        parameters.Add(
-                            new PythonParameter(
-                                parameter.Text,
-                                defaultValue,
-                                defaultValue is null
-                                    ? parameter.Span
-                                    : TextSpan.FromBounds(
-                                        parameter.Span.Start,
-                                        defaultValue.Span.End
-                                    )
-                            )
-                        );
-                    }
-
-                    if (!Match(SyntaxTokenKind.Comma))
-                    {
-                        break;
-                    }
-
-                    if (Current.Kind == SyntaxTokenKind.RightParenthesis)
-                    {
-                        break;
-                    }
-                }
-            }
-
+            var parameters = ParseParameters(SyntaxTokenKind.RightParenthesis);
             Expect(SyntaxTokenKind.RightParenthesis, "')' after the parameters");
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the function signature");
             _functionDepth++;
@@ -812,7 +735,10 @@ public static class PythonParser
                 return null;
             }
 
-            var expression = ParseExpression();
+            var expression =
+                Current.Kind == SyntaxTokenKind.Star
+                    ? ParsePossiblyStarredExpression()
+                    : ParseExpression();
             if (expression is null)
             {
                 return null;
@@ -1267,6 +1193,27 @@ public static class PythonParser
             return Current.Kind == SyntaxTokenKind.Comma ? ParseBareTupleTail(first) : first;
         }
 
+        private PythonExpression? ParsePossiblyStarredExpression()
+        {
+            if (Current.Kind != SyntaxTokenKind.Star)
+            {
+                return ParseExpression();
+            }
+
+            var starToken = Advance();
+            var operand = ParseExpression();
+            if (operand is null)
+            {
+                ReportExpected("an expression after '*'", Current.Span);
+                return null;
+            }
+
+            return new PythonStarredExpression(
+                operand,
+                TextSpan.FromBounds(starToken.Span.Start, operand.Span.End)
+            );
+        }
+
         private PythonTupleExpression ParseBareTupleTail(PythonExpression first)
         {
             var elements = new List<PythonExpression> { first };
@@ -1274,12 +1221,12 @@ public static class PythonParser
             while (Match(SyntaxTokenKind.Comma, out var comma))
             {
                 end = comma.Span.End;
-                if (!StartsExpression())
+                if (!StartsExpression() && Current.Kind != SyntaxTokenKind.Star)
                 {
                     break;
                 }
 
-                var element = ParseExpression();
+                var element = ParsePossiblyStarredExpression();
                 if (element is null)
                 {
                     break;
@@ -1325,7 +1272,12 @@ public static class PythonParser
                     parenthesized.Expression
                 ),
                 PythonTupleExpression tuple => tuple.Elements.Count != 0
-                    && tuple.Elements.All(IsAssignableTarget),
+                    && tuple.Elements.All(element =>
+                        element is PythonStarredExpression starred
+                            ? IsAssignableTarget(starred.Operand)
+                            : IsAssignableTarget(element)
+                    )
+                    && tuple.Elements.Count(element => element is PythonStarredExpression) <= 1,
                 _ => false,
             };
 
@@ -1381,45 +1333,92 @@ public static class PythonParser
             );
         }
 
-        private PythonLambdaExpression ParseLambdaExpression()
+        private ReadOnlyCollection<PythonParameter> ParseParameters(SyntaxTokenKind terminator)
         {
-            var lambdaToken = Advance();
             var parameters = new List<PythonParameter>();
             var parameterNames = new HashSet<string>(StringComparer.Ordinal);
             var sawDefault = false;
-            while (Current.Kind == SyntaxTokenKind.Identifier && !IsExpressionKeyword(Current.Text))
+            var sawStar = false;
+            var sawBareStar = false;
+            var sawDoubleStar = false;
+            var sawKeywordOnly = false;
+            while (
+                Current.Kind == SyntaxTokenKind.Star
+                || Current.Kind == SyntaxTokenKind.DoubleStar
+                || (
+                    Current.Kind == SyntaxTokenKind.Identifier
+                    && (!IsExpressionKeyword(Current.Text) || IsReservedKeyword(Current.Text))
+                )
+            )
             {
-                var parameter = Advance();
-                PythonExpression? defaultValue = null;
-                if (Match(SyntaxTokenKind.Equal))
+                if (sawDoubleStar)
                 {
-                    defaultValue = ParseExpression();
-                    if (defaultValue is null)
-                    {
-                        ReportExpected("a default value after '='", Current.Span);
-                    }
+                    Report("DPY2021", "No parameters may follow the '**' parameter.", Current.Span);
                 }
 
-                if (IsReservedKeyword(parameter.Text))
+                if (Match(SyntaxTokenKind.DoubleStar))
                 {
-                    Report(
-                        "DPY2010",
-                        $"The keyword '{parameter.Text}' cannot be used as a parameter.",
-                        parameter.Span
+                    var nameToken = Expect(
+                        SyntaxTokenKind.Identifier,
+                        "a parameter name after '**'"
                     );
+                    sawDoubleStar = true;
+                    AddParameter(
+                        parameters,
+                        parameterNames,
+                        nameToken,
+                        null,
+                        PythonParameterKind.VariadicKeywords
+                    );
+                }
+                else if (Current.Kind == SyntaxTokenKind.Star)
+                {
+                    var starToken = Advance();
+                    if (sawStar)
+                    {
+                        Report("DPY2021", "Only one '*' parameter is allowed.", starToken.Span);
+                    }
+
+                    sawStar = true;
+                    if (
+                        Current.Kind == SyntaxTokenKind.Identifier
+                        && !IsExpressionKeyword(Current.Text)
+                    )
+                    {
+                        AddParameter(
+                            parameters,
+                            parameterNames,
+                            Advance(),
+                            null,
+                            PythonParameterKind.VariadicPositional
+                        );
+                    }
+                    else
+                    {
+                        sawBareStar = true;
+                    }
                 }
                 else
                 {
-                    if (!parameterNames.Add(parameter.Text))
+                    var nameToken = Advance();
+                    PythonExpression? defaultValue = null;
+                    if (Match(SyntaxTokenKind.Equal))
                     {
-                        Report(
-                            "DPY2009",
-                            $"Duplicate parameter '{parameter.Text}'.",
-                            parameter.Span
-                        );
+                        defaultValue = ParseExpression();
+                        if (defaultValue is null)
+                        {
+                            ReportExpected("a default value after '='", Current.Span);
+                        }
                     }
 
-                    if (defaultValue is not null)
+                    var kind = sawStar
+                        ? PythonParameterKind.KeywordOnly
+                        : PythonParameterKind.Positional;
+                    if (kind == PythonParameterKind.KeywordOnly)
+                    {
+                        sawKeywordOnly = true;
+                    }
+                    else if (defaultValue is not null)
                     {
                         sawDefault = true;
                     }
@@ -1428,19 +1427,11 @@ public static class PythonParser
                         Report(
                             "DPY2016",
                             "A parameter without a default follows a parameter with a default.",
-                            parameter.Span
+                            nameToken.Span
                         );
                     }
 
-                    parameters.Add(
-                        new PythonParameter(
-                            parameter.Text,
-                            defaultValue,
-                            defaultValue is null
-                                ? parameter.Span
-                                : TextSpan.FromBounds(parameter.Span.Start, defaultValue.Span.End)
-                        )
-                    );
+                    AddParameter(parameters, parameterNames, nameToken, defaultValue, kind);
                 }
 
                 if (!Match(SyntaxTokenKind.Comma))
@@ -1448,6 +1439,69 @@ public static class PythonParser
                     break;
                 }
             }
+
+            if (sawBareStar && !sawKeywordOnly)
+            {
+                Report(
+                    "DPY2021",
+                    "Named parameters must follow a bare '*' parameter.",
+                    Current.Span
+                );
+            }
+
+            if (Current.Kind != terminator)
+            {
+                ReportExpected("a parameter", Current.Span);
+            }
+
+            return parameters.AsReadOnly();
+        }
+
+        private void AddParameter(
+            List<PythonParameter> parameters,
+            HashSet<string> parameterNames,
+            SyntaxToken nameToken,
+            PythonExpression? defaultValue,
+            PythonParameterKind kind
+        )
+        {
+            if (string.IsNullOrEmpty(nameToken.Text))
+            {
+                return;
+            }
+
+            if (IsReservedKeyword(nameToken.Text))
+            {
+                Report(
+                    "DPY2010",
+                    $"The keyword '{nameToken.Text}' cannot be used as a parameter.",
+                    nameToken.Span
+                );
+                return;
+            }
+
+            if (!parameterNames.Add(nameToken.Text))
+            {
+                Report("DPY2009", $"Duplicate parameter '{nameToken.Text}'.", nameToken.Span);
+                return;
+            }
+
+            parameters.Add(
+                new PythonParameter(
+                    nameToken.Text,
+                    defaultValue,
+                    defaultValue is null
+                        ? nameToken.Span
+                        : TextSpan.FromBounds(nameToken.Span.Start, defaultValue.Span.End),
+                    kind
+                )
+            );
+        }
+
+        private PythonLambdaExpression ParseLambdaExpression()
+        {
+            var lambdaToken = Advance();
+            var parameters = ParseParameters(SyntaxTokenKind.Colon);
 
             Expect(SyntaxTokenKind.Colon, "':' after the lambda parameters");
             var body = ParseExpression();
@@ -1716,7 +1770,51 @@ public static class PythonParser
                     {
                         while (true)
                         {
-                            if (
+                            if (Current.Kind == SyntaxTokenKind.Star)
+                            {
+                                var starToken = Advance();
+                                var unpacked = ParseExpression();
+                                if (unpacked is null)
+                                {
+                                    ReportExpected("an iterable after '*'", Current.Span);
+                                    break;
+                                }
+
+                                if (keywordArguments.Count != 0)
+                                {
+                                    Report(
+                                        "DPY2017",
+                                        "An iterable unpacking follows a keyword argument.",
+                                        unpacked.Span
+                                    );
+                                }
+
+                                arguments.Add(
+                                    new PythonStarredExpression(
+                                        unpacked,
+                                        TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
+                                    )
+                                );
+                            }
+                            else if (Current.Kind == SyntaxTokenKind.DoubleStar)
+                            {
+                                var starToken = Advance();
+                                var unpacked = ParseExpression();
+                                if (unpacked is null)
+                                {
+                                    ReportExpected("a mapping after '**'", Current.Span);
+                                    break;
+                                }
+
+                                keywordArguments.Add(
+                                    new PythonKeywordArgument(
+                                        null,
+                                        unpacked,
+                                        TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
+                                    )
+                                );
+                            }
+                            else if (
                                 Current.Kind == SyntaxTokenKind.Identifier
                                 && Peek(1).Kind == SyntaxTokenKind.Equal
                                 && !IsReservedKeyword(Current.Text)
@@ -2322,6 +2420,21 @@ public static class PythonParser
                 {
                     ReportExpected("a dictionary key", Current.Span);
                     break;
+                }
+
+                if (items.Count == 0 && IsKeyword("for"))
+                {
+                    var setClauses = ParseComprehensionClauses();
+                    var setEnd = ExpectClosingDelimiter(
+                        SyntaxTokenKind.RightBrace,
+                        "'}'",
+                        setClauses[^1].Span.End
+                    );
+                    return new PythonSetComprehensionExpression(
+                        key,
+                        setClauses,
+                        TextSpan.FromBounds(leftBrace.Span.Start, setEnd)
+                    );
                 }
 
                 if (items.Count == 0 && Current.Kind != SyntaxTokenKind.Colon)

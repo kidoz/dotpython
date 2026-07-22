@@ -398,7 +398,8 @@ internal sealed record PythonFunctionValue(
     PreparedPythonCode Code,
     PythonGlobalNamespace Globals,
     PythonCell[] Closure,
-    PythonValue[] Defaults
+    PythonValue[] Defaults,
+    IReadOnlyDictionary<string, PythonValue>? KeywordDefaults = null
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<function {Name}>";

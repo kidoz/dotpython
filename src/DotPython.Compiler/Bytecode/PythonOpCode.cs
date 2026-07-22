@@ -84,4 +84,10 @@ public enum PythonOpCode
     BuildSet = 79,
     FormatValue = 80,
     BuildString = 81,
+    ListExtend = 82,
+    DictionaryMerge = 83,
+    CallUnpacked = 84,
+    MakeFunctionWithSignature = 85,
+    UnpackSequenceStarred = 86,
+    SetAdd = 87,
 }

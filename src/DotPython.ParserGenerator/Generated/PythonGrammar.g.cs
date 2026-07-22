@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "7b8749a3b820231595960368c9dd8dc3230857ced55f4706ef90055539843495";
-    internal const int RuleCount = 69;
+    internal const string SourceSha256 = "83615d45b3686cd4310f27377ea0e2c8798a7d28c231cd02935fb36a85086a72";
+    internal const int RuleCount = 70;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -48,7 +48,7 @@ internal static class GeneratedPythonGrammar
         function_def: 'def' NAME '(' [parameters] ')' ':' block
         class_def: 'class' NAME ':' block
         parameters: ','.parameter+ [',']
-        parameter: NAME ['=' expression]
+        parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
         expression: lambda_expression | conditional_expression
         conditional_expression: disjunction ['if' disjunction 'else' expression]
@@ -66,12 +66,13 @@ internal static class GeneratedPythonGrammar
         subscript: slice | expression
         slice: [expression] ':' [expression] [':' [expression]]
         arguments: ','.argument+ [',']
-        argument: NAME '=' expression | expression
-        expression_list: ','.expression+ [',']
+        argument: NAME '=' expression | '**' expression | '*' expression | expression
+        expression_list: ','.star_expression+ [',']
+        star_expression: '*' expression | expression
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
         list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
-        dict_display: '{' expression ':' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
+        dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
         comp_clauses: comp_for (comp_for | comp_if)*
         comp_for: 'for' for_targets 'in' disjunction
         comp_if: 'if' disjunction

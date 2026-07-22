@@ -433,6 +433,24 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.MakeFunctionWithDefaults:
                 MakeFunction(instruction, withDefaults: true);
                 break;
+            case PythonOpCode.MakeFunctionWithSignature:
+                MakeFunction(instruction, withDefaults: true, withKeywordDefaults: true);
+                break;
+            case PythonOpCode.CallUnpacked:
+                ApplyUnpackedCall(instruction);
+                break;
+            case PythonOpCode.ListExtend:
+                ExtendListOnStack(instruction);
+                break;
+            case PythonOpCode.DictionaryMerge:
+                MergeDictionaryOnStack(instruction);
+                break;
+            case PythonOpCode.UnpackSequenceStarred:
+                UnpackSequenceStarred(instruction);
+                break;
+            case PythonOpCode.SetAdd:
+                AddToComprehensionSet(instruction);
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -1619,6 +1637,18 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
+        if (!function.Code.Definition.HasSimpleSignature)
+        {
+            var positional = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            PushBoundArgumentsFrame(
+                function,
+                BindFunctionArguments(function, positional, [], [], instruction.Span),
+                instruction.Span
+            );
+            return;
+        }
+
         ValidateArgumentCount(function, instruction.Operand, instruction.Span);
         code.RecordManagedCall(instructionIndex, function);
         PushFunctionFrameUnchecked(function, instruction.Operand, instruction.Span);
@@ -1640,73 +1670,13 @@ internal sealed class PythonVirtualMachine
         var keywordValues = PopArguments(keywordCount, instruction.Span);
         var positional = PopArguments(instruction.Operand - keywordCount, instruction.Span);
         var target = Pop(instruction.Span);
-        if (target is PythonManagedTypeValue { Construct: null } type)
-        {
-            ConstructManagedInstance(type, positional, names, keywordValues, instruction.Span);
-            return;
-        }
-
-        PythonFunctionValue function;
-        if (target is PythonBoundUserMethodValue boundMethod)
-        {
-            function = boundMethod.Function;
-            positional = PrependArgument(boundMethod.Target, positional);
-        }
-        else if (target is PythonFunctionValue userFunction)
-        {
-            function = userFunction;
-        }
-        else if (target is PythonExternalObjectValue external)
-        {
-            _evaluationStack.Push(
-                external.Protocol.CallWithKeywords(
-                    positional,
-                    RequireKeywordNames(names, instruction.Span),
-                    keywordValues,
-                    instruction.Span
-                )
-            );
-            return;
-        }
-        else if (target is PythonBuiltinFunctionValue builtinFunction)
-        {
-            _evaluationStack.Push(
-                InvokeBuiltinWithKeywords(
-                    builtinFunction,
-                    positional,
-                    RequireKeywordNames(names, instruction.Span),
-                    keywordValues,
-                    instruction.Span
-                )
-            );
-            return;
-        }
-        else
-        {
-            throw Fault(
-                "DPY4009",
-                target
-                    is PythonBuiltinFunctionValue
-                        or PythonBuiltinTypeValue
-                        or PythonExceptionTypeValue
-                        or PythonProtocolFunctionValue
-                        or PythonBoundMethodValue
-                        or PythonManagedTypeValue
-                        or PythonExternalObjectValue
-                    ? "Keyword arguments are not supported for this callable in this runtime slice."
-                    : "The selected value is not callable.",
-                instruction.Span
-            );
-        }
-
-        var arguments = BindKeywordArguments(
-            function,
+        DispatchCallWithKeywords(
+            target,
             positional,
-            names,
+            RequireKeywordNames(names, instruction.Span),
             keywordValues,
             instruction.Span
         );
-        PushFunctionFrameWithArguments(function, arguments, instruction.Span);
     }
 
     private static string[] RequireKeywordNames(PythonTupleValue names, TextSpan span)
@@ -1888,7 +1858,7 @@ internal sealed class PythonVirtualMachine
             return ManagedObjectProtocols.Call(callable, arguments, span);
         }
 
-        var bound = BindKeywordArguments(function, arguments, new PythonTupleValue([]), [], span);
+        var bound = BindFunctionArguments(function, arguments, [], [], span);
         var baseFrameCount = _frameCount;
         PushFunctionFrameWithArguments(function, bound, span);
         while (_frameCount > baseFrameCount)
@@ -1944,96 +1914,446 @@ internal sealed class PythonVirtualMachine
         return Pop(span);
     }
 
-    private static PythonValue[] BindKeywordArguments(
+    private void ApplyUnpackedCall(PythonInstruction instruction)
+    {
+        var keywordNames = Array.Empty<string>();
+        var keywordValues = Array.Empty<PythonValue>();
+        if ((instruction.Operand & 1) != 0)
+        {
+            if (Pop(instruction.Span) is not PythonDictionaryValue keywordDictionary)
+            {
+                throw Fault(
+                    "DPY4007",
+                    "The unpacked keyword mapping is invalid.",
+                    instruction.Span
+                );
+            }
+
+            keywordNames = new string[keywordDictionary.Items.Count];
+            keywordValues = new PythonValue[keywordDictionary.Items.Count];
+            for (var index = 0; index < keywordDictionary.Items.Count; index++)
+            {
+                if (keywordDictionary.Items[index].Key is not PythonTextValue keyText)
+                {
+                    throw Fault(
+                        "DPY4009",
+                        "Keywords must be strings.",
+                        instruction.Span,
+                        "TypeError"
+                    );
+                }
+
+                keywordNames[index] = keyText.Value;
+                keywordValues[index] = keywordDictionary.Items[index].Value;
+            }
+        }
+
+        if (Pop(instruction.Span) is not PythonListValue argumentList)
+        {
+            throw Fault("DPY4007", "The unpacked argument list is invalid.", instruction.Span);
+        }
+
+        var positional = argumentList.Elements.ToArray();
+        var target = Pop(instruction.Span);
+        DispatchCallWithKeywords(target, positional, keywordNames, keywordValues, instruction.Span);
+    }
+
+    private void DispatchCallWithKeywords(
+        PythonValue target,
+        PythonValue[] positional,
+        string[] keywordNames,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        if (keywordNames.Length == 0)
+        {
+            switch (target)
+            {
+                case PythonBuiltinFunctionValue builtin:
+                    _evaluationStack.Push(builtin.Invoke(positional, span));
+                    return;
+                case PythonBuiltinTypeValue builtinType:
+                    _evaluationStack.Push(builtinType.Construct(positional, span));
+                    return;
+                case PythonExceptionTypeValue exceptionType:
+                    _evaluationStack.Push(CreateExceptionValue(exceptionType, positional));
+                    return;
+                case PythonProtocolFunctionValue or PythonBoundMethodValue:
+                case PythonExternalObjectValue:
+                case PythonManagedTypeValue { Construct: not null }:
+                    _evaluationStack.Push(ManagedObjectProtocols.Call(target, positional, span));
+                    return;
+            }
+        }
+
+        switch (target)
+        {
+            case PythonManagedTypeValue { Construct: null } type:
+                ConstructManagedInstanceWithKeywords(
+                    type,
+                    positional,
+                    keywordNames,
+                    keywordValues,
+                    span
+                );
+                return;
+            case PythonBoundUserMethodValue boundMethod:
+                PushBoundArgumentsFrame(
+                    boundMethod.Function,
+                    BindFunctionArguments(
+                        boundMethod.Function,
+                        PrependArgument(boundMethod.Target, positional),
+                        keywordNames,
+                        keywordValues,
+                        span
+                    ),
+                    span
+                );
+                return;
+            case PythonFunctionValue function:
+                PushBoundArgumentsFrame(
+                    function,
+                    BindFunctionArguments(function, positional, keywordNames, keywordValues, span),
+                    span
+                );
+                return;
+            case PythonExternalObjectValue external:
+                _evaluationStack.Push(
+                    external.Protocol.CallWithKeywords(
+                        positional,
+                        keywordNames,
+                        keywordValues,
+                        span
+                    )
+                );
+                return;
+            case PythonBuiltinFunctionValue builtinFunction:
+                _evaluationStack.Push(
+                    InvokeBuiltinWithKeywords(
+                        builtinFunction,
+                        positional,
+                        keywordNames,
+                        keywordValues,
+                        span
+                    )
+                );
+                return;
+            default:
+                throw Fault(
+                    "DPY4009",
+                    "Keyword arguments are not supported for this callable in this runtime slice.",
+                    span
+                );
+        }
+    }
+
+    private void PushBoundArgumentsFrame(
+        PythonFunctionValue function,
+        PythonValue[] slots,
+        TextSpan span
+    )
+    {
+        var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
+        var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
+        var cells = CreateCells(function.Code, function.Closure, span);
+        for (var index = 0; index < slots.Length; index++)
+        {
+            StoreArgument(function.Code, cells, localsBase, index, slots[index]);
+        }
+
+        PushFrame(
+            function.Code,
+            function.Globals,
+            localsBase,
+            function.Code.Definition.VariableNames.Count,
+            cells,
+            hasReturnLocalContinuation
+        );
+    }
+
+    /// <summary>
+    /// Binds positional and keyword arguments to the full parameter-slot layout
+    /// (positional…, *args?, keyword-only…, **kwargs? in source order), applying
+    /// positional and keyword-only defaults with CPython error semantics.
+    /// </summary>
+    private static PythonValue[] BindFunctionArguments(
         PythonFunctionValue function,
         PythonValue[] positional,
-        PythonTupleValue names,
+        string[] keywordNames,
         PythonValue[] keywordValues,
         TextSpan span
     )
     {
         var definition = function.Code.Definition;
-        var parameterCount = definition.ArgumentCount;
-        if (positional.Length > parameterCount)
-        {
-            ValidateArgumentCount(function, positional.Length, span);
-        }
+        var positionalCount = definition.PositionalParameterCount;
+        var keywordOnlyCount = definition.KeywordOnlyArgumentCount;
+        var variadicPositionalIndex = definition.HasVariadicPositional ? positionalCount : -1;
+        var keywordOnlyStart = positionalCount + (definition.HasVariadicPositional ? 1 : 0);
+        var variadicKeywordsIndex = definition.HasVariadicKeywords
+            ? definition.ArgumentCount - 1
+            : -1;
 
-        var arguments = new PythonValue[parameterCount];
-        var assigned = new bool[parameterCount];
-        for (var index = 0; index < positional.Length; index++)
+        var slots = new PythonValue[definition.ArgumentCount];
+        var assigned = new bool[definition.ArgumentCount];
+
+        var boundPositionally = Math.Min(positional.Length, positionalCount);
+        for (var index = 0; index < boundPositionally; index++)
         {
-            arguments[index] = positional[index];
+            slots[index] = positional[index];
             assigned[index] = true;
         }
 
-        for (var index = 0; index < keywordValues.Length; index++)
+        if (positional.Length > positionalCount)
         {
-            if (names.Elements[index] is not PythonTextValue keywordName)
-            {
-                throw Fault("DPY4007", "The keyword-argument name tuple is invalid.", span);
-            }
-
-            var parameterIndex = FindParameterIndex(definition, keywordName.Value);
-            if (parameterIndex < 0)
+            if (variadicPositionalIndex < 0)
             {
                 throw Fault(
                     "DPY4009",
-                    $"Function '{function.Name}' received an unexpected keyword argument "
-                        + $"'{keywordName.Value}'.",
+                    $"Function '{function.Name}' takes {positionalCount} positional "
+                        + $"argument(s), but received {positional.Length}.",
                     span
                 );
             }
 
-            if (assigned[parameterIndex])
+            slots[variadicPositionalIndex] = new PythonTupleValue(positional[positionalCount..]);
+            assigned[variadicPositionalIndex] = true;
+        }
+        else if (variadicPositionalIndex >= 0)
+        {
+            slots[variadicPositionalIndex] = new PythonTupleValue([]);
+            assigned[variadicPositionalIndex] = true;
+        }
+
+        Dictionary<PythonValue, PythonValue>? extraKeywords = null;
+        if (variadicKeywordsIndex >= 0)
+        {
+            extraKeywords = [];
+        }
+
+        var variableNames = definition.VariableNames;
+        for (var index = 0; index < keywordNames.Length; index++)
+        {
+            var name = keywordNames[index];
+            var slotIndex = -1;
+            for (var parameter = 0; parameter < positionalCount; parameter++)
+            {
+                if (string.Equals(variableNames[parameter], name, StringComparison.Ordinal))
+                {
+                    slotIndex = parameter;
+                    break;
+                }
+            }
+
+            if (slotIndex < 0)
+            {
+                for (
+                    var parameter = keywordOnlyStart;
+                    parameter < keywordOnlyStart + keywordOnlyCount;
+                    parameter++
+                )
+                {
+                    if (string.Equals(variableNames[parameter], name, StringComparison.Ordinal))
+                    {
+                        slotIndex = parameter;
+                        break;
+                    }
+                }
+            }
+
+            if (slotIndex < 0)
+            {
+                if (extraKeywords is null)
+                {
+                    throw Fault(
+                        "DPY4009",
+                        $"Function '{function.Name}' received an unexpected keyword argument "
+                            + $"'{name}'.",
+                        span
+                    );
+                }
+
+                extraKeywords[new PythonTextValue(name)] = keywordValues[index];
+                continue;
+            }
+
+            if (assigned[slotIndex])
             {
                 throw Fault(
                     "DPY4009",
                     $"Function '{function.Name}' received multiple values for argument "
-                        + $"'{keywordName.Value}'.",
+                        + $"'{name}'.",
                     span
                 );
             }
 
-            arguments[parameterIndex] = keywordValues[index];
-            assigned[parameterIndex] = true;
+            slots[slotIndex] = keywordValues[index];
+            assigned[slotIndex] = true;
         }
 
-        var firstDefaultIndex = parameterCount - function.Defaults.Length;
-        for (var index = 0; index < parameterCount; index++)
+        if (variadicKeywordsIndex >= 0)
+        {
+            var mapping = new PythonDictionaryValue([]);
+            foreach (var pair in extraKeywords!)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(mapping, pair.Key, pair.Value, span);
+            }
+
+            slots[variadicKeywordsIndex] = mapping;
+            assigned[variadicKeywordsIndex] = true;
+        }
+
+        var firstPositionalDefault = positionalCount - function.Defaults.Length;
+        for (var index = 0; index < positionalCount; index++)
         {
             if (assigned[index])
             {
                 continue;
             }
 
-            if (index < firstDefaultIndex)
+            if (index < firstPositionalDefault)
             {
                 throw Fault(
                     "DPY4009",
                     $"Function '{function.Name}' is missing a value for argument "
-                        + $"'{definition.VariableNames[index]}'.",
+                        + $"'{variableNames[index]}'.",
                     span
                 );
             }
 
-            arguments[index] = function.Defaults[index - firstDefaultIndex];
+            slots[index] = function.Defaults[index - firstPositionalDefault];
         }
 
-        return arguments;
+        for (var index = keywordOnlyStart; index < keywordOnlyStart + keywordOnlyCount; index++)
+        {
+            if (assigned[index])
+            {
+                continue;
+            }
+
+            if (
+                function.KeywordDefaults is null
+                || !function.KeywordDefaults.TryGetValue(variableNames[index], out var value)
+            )
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"Function '{function.Name}' is missing a value for keyword-only "
+                        + $"argument '{variableNames[index]}'.",
+                    span
+                );
+            }
+
+            slots[index] = value;
+        }
+
+        return slots;
     }
 
-    private static int FindParameterIndex(PythonCodeObject definition, string name)
+    private void ExtendListOnStack(PythonInstruction instruction)
     {
-        for (var index = 0; index < definition.ArgumentCount; index++)
+        var iterable = Pop(instruction.Span);
+        if (Peek(instruction.Operand, instruction.Span) is not PythonListValue accumulator)
         {
-            if (string.Equals(definition.VariableNames[index], name, StringComparison.Ordinal))
-            {
-                return index;
-            }
+            throw Fault("DPY4007", "The argument-list accumulator is invalid.", instruction.Span);
         }
 
-        return -1;
+        accumulator.Elements.AddRange(
+            ManagedObjectProtocols.MaterializeValues(iterable, instruction.Span)
+        );
+    }
+
+    private void MergeDictionaryOnStack(PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonDictionaryValue source)
+        {
+            throw Fault(
+                "DPY4009",
+                "Argument after ** must be a mapping.",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        if (Peek(instruction.Operand, instruction.Span) is not PythonDictionaryValue accumulator)
+        {
+            throw Fault("DPY4007", "The keyword-mapping accumulator is invalid.", instruction.Span);
+        }
+
+        foreach (var item in source.Items)
+        {
+            if (
+                accumulator.Items.Any(existing =>
+                    ManagedObjectProtocols.AreEqual(existing.Key, item.Key)
+                )
+            )
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"Got multiple values for keyword argument "
+                        + $"{item.Key.ToRepresentationString()}.",
+                    instruction.Span,
+                    "TypeError"
+                );
+            }
+
+            ManagedObjectProtocols.SetDictionaryItem(
+                accumulator,
+                item.Key,
+                item.Value,
+                instruction.Span
+            );
+        }
+    }
+
+    private void UnpackSequenceStarred(PythonInstruction instruction)
+    {
+        var beforeCount = (instruction.Operand >> 8) & 0xFF;
+        var afterCount = instruction.Operand & 0xFF;
+        var values = ManagedObjectProtocols.MaterializeValues(
+            Pop(instruction.Span),
+            instruction.Span
+        );
+        if (values.Count < beforeCount + afterCount)
+        {
+            throw Fault(
+                "DPY4012",
+                $"Not enough values to unpack (expected at least "
+                    + $"{beforeCount + afterCount}, got {values.Count}).",
+                instruction.Span,
+                "ValueError"
+            );
+        }
+
+        for (var index = values.Count - 1; index >= values.Count - afterCount; index--)
+        {
+            _evaluationStack.Push(values[index]);
+        }
+
+        _evaluationStack.Push(
+            new PythonListValue([
+                .. values.Skip(beforeCount).Take(values.Count - beforeCount - afterCount),
+            ])
+        );
+        for (var index = beforeCount - 1; index >= 0; index--)
+        {
+            _evaluationStack.Push(values[index]);
+        }
+    }
+
+    private void AddToComprehensionSet(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        if (Peek(instruction.Operand, instruction.Span) is not PythonSetValue accumulator)
+        {
+            throw Fault(
+                "DPY4007",
+                "The comprehension set accumulator is invalid.",
+                instruction.Span
+            );
+        }
+
+        ManagedObjectProtocols.AddToSet(accumulator, value, instruction.Span);
     }
 
     private void PushFunctionFrameWithArguments(
@@ -2250,16 +2570,28 @@ internal sealed class PythonVirtualMachine
         bool captureReturnLocalContinuation = false
     )
     {
-        ValidateArgumentCount(function, arguments.Count, span);
+        IReadOnlyList<PythonValue> bound;
+        if (function.Code.Definition.HasSimpleSignature)
+        {
+            ValidateArgumentCount(function, arguments.Count, span);
+            bound = arguments;
+        }
+        else
+        {
+            bound = BindFunctionArguments(function, [.. arguments], [], [], span);
+        }
 
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         var cells = CreateCells(function.Code, function.Closure, span);
-        for (var index = 0; index < arguments.Count; index++)
+        for (var index = 0; index < bound.Count; index++)
         {
-            StoreArgument(function.Code, cells, localsBase, index, arguments[index]);
+            StoreArgument(function.Code, cells, localsBase, index, bound[index]);
         }
 
-        StoreMissingDefaultArguments(function, cells, localsBase, arguments.Count);
+        if (function.Code.Definition.HasSimpleSignature)
+        {
+            StoreMissingDefaultArguments(function, cells, localsBase, arguments.Count);
+        }
         var hasReturnLocalContinuation =
             captureReturnLocalContinuation && CaptureReturnLocalContinuation();
         PushFrame(
@@ -2312,10 +2644,10 @@ internal sealed class PythonVirtualMachine
         );
     }
 
-    private void ConstructManagedInstance(
+    private void ConstructManagedInstanceWithKeywords(
         PythonManagedTypeValue type,
         PythonValue[] positional,
-        PythonTupleValue names,
+        string[] keywordNames,
         PythonValue[] keywordValues,
         TextSpan span
     )
@@ -2336,10 +2668,10 @@ internal sealed class PythonVirtualMachine
             );
         }
 
-        var arguments = BindKeywordArguments(
+        var arguments = BindFunctionArguments(
             function,
             PrependArgument(instance, positional),
-            names,
+            keywordNames,
             keywordValues,
             span
         );
@@ -2497,8 +2829,40 @@ internal sealed class PythonVirtualMachine
         return true;
     }
 
-    private void MakeFunction(PythonInstruction instruction, bool withDefaults)
+    private void MakeFunction(
+        PythonInstruction instruction,
+        bool withDefaults,
+        bool withKeywordDefaults = false
+    )
     {
+        Dictionary<string, PythonValue>? keywordDefaults = null;
+        if (withKeywordDefaults)
+        {
+            if (Pop(instruction.Span) is not PythonDictionaryValue keywordDefaultsDictionary)
+            {
+                throw Fault(
+                    "DPY4007",
+                    "The keyword-default dictionary is invalid.",
+                    instruction.Span
+                );
+            }
+
+            keywordDefaults = new Dictionary<string, PythonValue>(StringComparer.Ordinal);
+            foreach (var item in keywordDefaultsDictionary.Items)
+            {
+                if (item.Key is not PythonTextValue keyText)
+                {
+                    throw Fault(
+                        "DPY4007",
+                        "The keyword-default dictionary is invalid.",
+                        instruction.Span
+                    );
+                }
+
+                keywordDefaults[keyText.Value] = item.Value;
+            }
+        }
+
         var defaults = NoDefaults;
         if (withDefaults)
         {
@@ -2556,7 +2920,8 @@ internal sealed class PythonVirtualMachine
                 code,
                 CurrentFrame.Globals,
                 closure,
-                defaults
+                defaults,
+                keywordDefaults
             )
         );
     }

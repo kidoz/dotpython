@@ -87,11 +87,36 @@ public static class PythonCompiler
 
         private PythonCodeObject CompileCode(
             IReadOnlyList<PythonStatement> statements,
-            int endPosition
+            int endPosition,
+            IReadOnlyList<PythonParameter>? signature = null
         )
         {
             CompileStatements(statements);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
+            return CreateCodeObject(signature);
+        }
+
+        private PythonCodeObject CreateCodeObject(IReadOnlyList<PythonParameter>? signature)
+        {
+            var keywordOnlyCount = 0;
+            var hasVariadicPositional = false;
+            var hasVariadicKeywords = false;
+            foreach (var parameter in signature ?? [])
+            {
+                switch (parameter.Kind)
+                {
+                    case PythonParameterKind.KeywordOnly:
+                        keywordOnlyCount++;
+                        break;
+                    case PythonParameterKind.VariadicPositional:
+                        hasVariadicPositional = true;
+                        break;
+                    case PythonParameterKind.VariadicKeywords:
+                        hasVariadicKeywords = true;
+                        break;
+                }
+            }
+
             return new PythonCodeObject(
                 _codeName,
                 _instructions,
@@ -100,7 +125,10 @@ public static class PythonCompiler
                 [.. _scope.LocalNames],
                 [.. _scope.CellVariableNames],
                 [.. _scope.FreeVariableNames],
-                _scope.Parameters.Count
+                _scope.Parameters.Count,
+                keywordOnlyCount,
+                hasVariadicPositional,
+                hasVariadicKeywords
             );
         }
 
@@ -206,6 +234,15 @@ public static class PythonCompiler
                     CompileComparisonExpression(comparison);
                     break;
                 case PythonCallExpression call:
+                    if (
+                        call.Arguments.Any(argument => argument is PythonStarredExpression)
+                        || call.KeywordArguments.Any(keyword => keyword.Name is null)
+                    )
+                    {
+                        CompileCallWithUnpacking(call);
+                        break;
+                    }
+
                     var targetName = GetNameExpression(call.Target);
                     if (
                         _enableCallLocal
@@ -320,6 +357,22 @@ public static class PythonCompiler
                         dictionaryComprehension.Clauses
                     );
                     break;
+                case PythonSetComprehensionExpression setComprehension:
+                    CompileComprehension(setComprehension, "<setcomp>", setComprehension.Clauses);
+                    break;
+                case PythonStarredExpression starred:
+                    Report(
+                        "DPY3113",
+                        "A starred expression is only valid in call arguments and "
+                            + "assignment targets.",
+                        starred.Span
+                    );
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                        starred.Span
+                    );
+                    break;
                 case PythonAttributeExpression attribute:
                     CompileExpression(attribute.Target);
                     Emit(
@@ -415,6 +468,64 @@ public static class PythonCompiler
             }
         }
 
+        private void EmitFunctionCreation(
+            IReadOnlyList<PythonParameter> parameters,
+            int constantIndex,
+            TextSpan span
+        )
+        {
+            var simpleSignature = parameters.All(parameter =>
+                parameter.Kind == PythonParameterKind.Positional
+            );
+            var positionalDefaultCount = 0;
+            foreach (var parameter in parameters)
+            {
+                if (parameter.Kind != PythonParameterKind.Positional || parameter.Default is null)
+                {
+                    continue;
+                }
+
+                CompileExpression(parameter.Default);
+                positionalDefaultCount++;
+            }
+
+            if (simpleSignature)
+            {
+                if (positionalDefaultCount == 0)
+                {
+                    Emit(PythonOpCode.MakeFunction, constantIndex, span);
+                }
+                else
+                {
+                    Emit(PythonOpCode.BuildTuple, positionalDefaultCount, span);
+                    Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, span);
+                }
+
+                return;
+            }
+
+            Emit(PythonOpCode.BuildTuple, positionalDefaultCount, span);
+            var keywordDefaultCount = 0;
+            foreach (var parameter in parameters)
+            {
+                if (parameter.Kind != PythonParameterKind.KeywordOnly || parameter.Default is null)
+                {
+                    continue;
+                }
+
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.TextValue, parameter.Name)),
+                    parameter.Span
+                );
+                CompileExpression(parameter.Default);
+                keywordDefaultCount++;
+            }
+
+            Emit(PythonOpCode.BuildDictionary, keywordDefaultCount, span);
+            Emit(PythonOpCode.MakeFunctionWithSignature, constantIndex, span);
+        }
+
         private void CompileLambdaExpression(PythonLambdaExpression lambdaExpression)
         {
             var childScope = _scope.Children.Single(scope =>
@@ -431,43 +542,63 @@ public static class PythonCompiler
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            var defaultCount = 0;
-            foreach (var parameter in lambdaExpression.Parameters)
-            {
-                if (parameter.Default is null)
-                {
-                    continue;
-                }
-
-                CompileExpression(parameter.Default);
-                defaultCount++;
-            }
-
-            if (defaultCount == 0)
-            {
-                Emit(PythonOpCode.MakeFunction, constantIndex, lambdaExpression.Span);
-            }
-            else
-            {
-                Emit(PythonOpCode.BuildTuple, defaultCount, lambdaExpression.Span);
-                Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, lambdaExpression.Span);
-            }
+            EmitFunctionCreation(lambdaExpression.Parameters, constantIndex, lambdaExpression.Span);
         }
 
         private PythonCodeObject CompileLambdaCode(PythonLambdaExpression lambdaExpression)
         {
             CompileExpression(lambdaExpression.Body);
             Emit(PythonOpCode.ReturnValue, 0, lambdaExpression.Body.Span);
-            return new PythonCodeObject(
-                _codeName,
-                _instructions,
-                _constants,
-                _names,
-                [.. _scope.LocalNames],
-                [.. _scope.CellVariableNames],
-                [.. _scope.FreeVariableNames],
-                _scope.Parameters.Count
-            );
+            return CreateCodeObject(lambdaExpression.Parameters);
+        }
+
+        private void CompileCallWithUnpacking(PythonCallExpression call)
+        {
+            CompileExpression(call.Target);
+            Emit(PythonOpCode.BuildList, 0, call.Span);
+            foreach (var argument in call.Arguments)
+            {
+                if (argument is PythonStarredExpression starred)
+                {
+                    CompileExpression(starred.Operand);
+                    Emit(PythonOpCode.ListExtend, 0, starred.Span);
+                }
+                else
+                {
+                    CompileExpression(argument);
+                    Emit(PythonOpCode.ListAppend, 0, argument.Span);
+                }
+            }
+
+            if (call.KeywordArguments.Count == 0)
+            {
+                Emit(PythonOpCode.CallUnpacked, 0, call.Span);
+                return;
+            }
+
+            Emit(PythonOpCode.BuildDictionary, 0, call.Span);
+            foreach (var keywordArgument in call.KeywordArguments)
+            {
+                if (keywordArgument.Name is null)
+                {
+                    CompileExpression(keywordArgument.Value);
+                    Emit(PythonOpCode.DictionaryMerge, 0, keywordArgument.Span);
+                }
+                else
+                {
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(
+                            new PythonConstant(PythonConstantType.TextValue, keywordArgument.Name)
+                        ),
+                        keywordArgument.Span
+                    );
+                    CompileExpression(keywordArgument.Value);
+                    Emit(PythonOpCode.DictionaryAdd, 0, keywordArgument.Span);
+                }
+            }
+
+            Emit(PythonOpCode.CallUnpacked, 1, call.Span);
         }
 
         private void CompileComprehension(
@@ -517,9 +648,12 @@ public static class PythonCompiler
         )
         {
             Emit(
-                comprehension is PythonDictionaryComprehensionExpression
-                    ? PythonOpCode.BuildDictionary
-                    : PythonOpCode.BuildList,
+                comprehension switch
+                {
+                    PythonDictionaryComprehensionExpression => PythonOpCode.BuildDictionary,
+                    PythonSetComprehensionExpression => PythonOpCode.BuildSet,
+                    _ => PythonOpCode.BuildList,
+                },
                 0,
                 comprehension.Span
             );
@@ -573,6 +707,10 @@ public static class PythonCompiler
                             iteratorDepth,
                             dictionaryComprehension.Span
                         );
+                        break;
+                    case PythonSetComprehensionExpression setComprehension:
+                        CompileExpression(setComprehension.Element);
+                        Emit(PythonOpCode.SetAdd, iteratorDepth, setComprehension.Element.Span);
                         break;
                 }
 
@@ -708,10 +846,46 @@ public static class PythonCompiler
                     CompileAssignmentTarget(parenthesized.Expression);
                     break;
                 case PythonTupleExpression tuple:
-                    Emit(PythonOpCode.UnpackSequence, tuple.Elements.Count, tuple.Span);
+                    var starIndex = -1;
+                    for (var index = 0; index < tuple.Elements.Count; index++)
+                    {
+                        if (tuple.Elements[index] is PythonStarredExpression)
+                        {
+                            starIndex = index;
+                            break;
+                        }
+                    }
+
+                    if (starIndex < 0)
+                    {
+                        Emit(PythonOpCode.UnpackSequence, tuple.Elements.Count, tuple.Span);
+                    }
+                    else
+                    {
+                        var afterCount = tuple.Elements.Count - starIndex - 1;
+                        if (starIndex > byte.MaxValue || afterCount > byte.MaxValue)
+                        {
+                            Report(
+                                "DPY3113",
+                                "Too many assignment targets around the starred target.",
+                                tuple.Span
+                            );
+                        }
+
+                        Emit(
+                            PythonOpCode.UnpackSequenceStarred,
+                            (starIndex << 8) | afterCount,
+                            tuple.Span
+                        );
+                    }
+
                     foreach (var element in tuple.Elements)
                     {
-                        CompileAssignmentTarget(element);
+                        CompileAssignmentTarget(
+                            element is PythonStarredExpression starredElement
+                                ? starredElement.Operand
+                                : element
+                        );
                     }
 
                     break;
@@ -758,31 +932,15 @@ public static class PythonCompiler
                 _enableReturnLocal,
                 _enableCallLocal
             );
-            var childCode = childCompiler.CompileCode(function.Body, function.Span.End);
+            var childCode = childCompiler.CompileCode(
+                function.Body,
+                function.Span.End,
+                function.Parameters
+            );
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            var defaultCount = 0;
-            foreach (var parameter in function.Parameters)
-            {
-                if (parameter.Default is null)
-                {
-                    continue;
-                }
-
-                CompileExpression(parameter.Default);
-                defaultCount++;
-            }
-
-            if (defaultCount == 0)
-            {
-                Emit(PythonOpCode.MakeFunction, constantIndex, function.Span);
-            }
-            else
-            {
-                Emit(PythonOpCode.BuildTuple, defaultCount, function.Span);
-                Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, function.Span);
-            }
+            EmitFunctionCreation(function.Parameters, constantIndex, function.Span);
 
             for (var index = 0; index < function.Decorators.Count; index++)
             {
