@@ -103,8 +103,8 @@ public sealed class AnyverQualificationEvidenceTests
         AssertCounts(suite, cases.Length, passed, failed, skipped, collectedName: "collectedCases");
         Assert.Equal(passed + failed, execution.GetProperty("attemptedCases").GetInt32());
         Assert.Equal(325, cases.Length);
-        Assert.Equal(238, passed);
-        Assert.Equal(87, failed);
+        Assert.Equal(285, passed);
+        Assert.Equal(40, failed);
         Assert.Equal(0, skipped);
     }
 

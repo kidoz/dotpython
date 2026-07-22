@@ -17,16 +17,16 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "d882edb6ad91493c01e53ce80707381217169e7739fe128422e848d6c69bb6cc",
+    "evidenceSha256": "c5ba1d020cba445828a9d91819eaf0716c8b85d414e5b9c9993bd27a24ed0221",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
-    "passed": 238,
-    "failed": 87,
+    "passed": 285,
+    "failed": 40,
     "skipped": 0,
-    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 238 of 325 cases pass; 87 fail, led by keyword arguments on qualified callables (DPY4009, 59 cases). No skipped or failed case is counted as passed."
+    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 285 of 325 cases pass; 40 fail, led by ordering of Stable-ABI values inside managed sorts (DPY4005, 6 cases) and native exceptions surfacing as RuntimeError instead of their declared Python type (DPY8005, 13 cases). No skipped or failed case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",

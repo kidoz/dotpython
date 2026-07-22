@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 238,
-    "failed": 87,
+    "passed": 285,
+    "failed": 40,
     "skipped": 0
   },
   "cases": [
@@ -387,43 +387,37 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_compare_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_version_compare_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_module_compare_version_inputs_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_sort_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_batch_compare_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_bool_helpers_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_ecosystem_raises",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: unsupported ecosystem \u0027unknown\u0027; expected one of: generic, semver, pep440, debian, rpm, ruby, maven, go, npm, nuget, composer, crates, hex, swift, calver, alpine, docker, conda, arch, gentoo, cran, spack, dart, julia, terraform, helm, cpan, nix, homebrew, freebsd"
     },
     {
       "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_semver_in_semver_ecosystem_raises",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0a1-1.0a2--1]",
@@ -491,58 +485,47 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0~rc1-1.0--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1.0^git1--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1^git1-1.0-1.fc33--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^-1.0-1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1.0^--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.0-1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.0^git2--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.01--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^20160101-1.0.1--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0~rc1^git1-1.0~rc1-1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1~pre-1.0^git1--1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestGoModules::test_go[v1.0.0-v1.0.1--1]",
@@ -697,8 +680,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestToDict::test_from_dict_roundtrip",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_basic",
@@ -707,17 +689,17 @@
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_simple",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_prerelease",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_sort_key_structure",
@@ -730,12 +712,12 @@
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_pep440_local_label_key_ordered",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440_local",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestTransitivity::test_trailing_zero_post_release",
@@ -911,8 +893,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSatisfies::test_ecosystem_semver_strict",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_constraint_raises",
@@ -922,7 +903,7 @@
     {
       "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_version_for_ecosystem_raises",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
     },
     {
       "nodeId": "tests/test_anyver.py::TestStableVersions::test_filters_prereleases",
@@ -955,7 +936,7 @@
     {
       "nodeId": "tests/test_anyver.py::TestStableVersions::test_ecosystem_validation_rejects_invalid",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: Expected 3 parts, got 2"
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_picks_latest_stable",
@@ -985,8 +966,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestLatestStable::test_semver_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[1.2.3-2.0.0]",
@@ -1130,13 +1110,12 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse_with_ecosystem",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse_raises_on_invalid",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: Expected 3 parts, got 1"
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_try_parse_valid",
@@ -1144,8 +1123,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_try_parse_invalid",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.2.3-^1.0.0-True]",
@@ -1250,63 +1228,51 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_sorts_after_release",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_equal_to_self",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_lex_ordering",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_longer_wins_when_prefix_matches",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_numeric_beats_alpha",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_separator_normalization",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_public_ordering_still_wins",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[final]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[ga]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[release]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_below_sp",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_above_snapshot",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_in_hash",
@@ -1320,12 +1286,12 @@
     {
       "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_go_requires_lowercase_v",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY8005: ValueError: Go version must start with a lowercase \u0027v\u0027 prefix: \u00271.0.0\u0027"
     },
     {
       "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_pep440_local_sort_key_isomorphic",
       "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "detail": "DPY4005: Values of these types cannot be ordered."
     },
     {
       "nodeId": "tests/test_anyver.py::TestRangeCore::test_range_contains_basic",
@@ -1358,68 +1324,55 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[conda-1.0-1.1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[arch-1:1.0-2:1.0]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[gentoo-1.0_alpha-1.0]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[cran-1.0-1-1.0-2]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[spack-1.0-2.0]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[terraform-1.0.0-1.1.0]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[cpan-1.0-1.1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[nix-1.0-1.1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[homebrew-1.0-1.1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[freebsd-1.0-1.1]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[dart]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[julia]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[helm]",
-      "outcome": "failed",
-      "detail": "DPY4009: Keyword arguments are not supported for this callable in this runtime slice."
+      "outcome": "passed"
     }
   ]
 }
