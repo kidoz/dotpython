@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 312,
-    "failed": 13,
+    "passed": 315,
+    "failed": 10,
     "skipped": 0
   },
   "cases": [
@@ -174,13 +174,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestHash::test_set_dedup",
-      "outcome": "failed",
-      "detail": "DPY4031: AssertionError"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestHash::test_dict_lookup",
-      "outcome": "failed",
-      "detail": "DPY4013: The dictionary key was not found."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestOperators::test_lt",
@@ -1251,8 +1249,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_in_hash",
-      "outcome": "failed",
-      "detail": "DPY4002: Name \u0027hash\u0027 is not defined."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_works_in_generic_mode_too",
