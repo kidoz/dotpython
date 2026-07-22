@@ -1,6 +1,11 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using DotPython.Protocol;
 using DotPython.Runtime.Native;
 using DotPython.Worker;
@@ -194,6 +199,178 @@ public sealed class WorkerProcessPoolTests
             result.StandardOutput
         );
         Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
+    public async Task Worker_RecordsUnchangedAnyverUpstreamSuiteQualification()
+    {
+        SkipAnyverPackageWhenUnavailable();
+        var sourceRoot = Environment.GetEnvironmentVariable("DOTPYTHON_ANYVER_SOURCE");
+        var pythonPath = Environment.GetEnvironmentVariable("DOTPYTHON_ANYVER_PYTHON");
+        if (string.IsNullOrWhiteSpace(sourceRoot) || string.IsNullOrWhiteSpace(pythonPath))
+        {
+            Assert.Skip(
+                "Set DOTPYTHON_ANYVER_SOURCE and DOTPYTHON_ANYVER_PYTHON to qualify the pinned upstream suite."
+            );
+        }
+
+        var fullSourceRoot = Path.GetFullPath(sourceRoot);
+        var fullPythonPath = Path.GetFullPath(pythonPath);
+        Assert.True(Directory.Exists(fullSourceRoot));
+        Assert.True(File.Exists(fullPythonPath));
+        var testPath = Path.Combine(fullSourceRoot, "tests", "test_anyver.py");
+        var testBytes = await File.ReadAllBytesAsync(
+            testPath,
+            TestContext.Current.CancellationToken
+        );
+        Assert.Equal(
+            "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
+            Convert.ToHexStringLower(SHA256.HashData(testBytes))
+        );
+        var testSource = Encoding.UTF8.GetString(testBytes);
+
+        var packageRoot = NativeFixturePath("anyver-package");
+        var pythonVersion = await RunQualificationProcessAsync(
+            fullPythonPath,
+            ["--version"],
+            fullSourceRoot,
+            packageRoot
+        );
+        var pytestVersion = await RunQualificationProcessAsync(
+            fullPythonPath,
+            ["-B", "-m", "pytest", "--version"],
+            fullSourceRoot,
+            packageRoot
+        );
+        var collection = await RunQualificationProcessAsync(
+            fullPythonPath,
+            [
+                "-B",
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "--color=no",
+                "--collect-only",
+                "-q",
+                "tests/test_anyver.py",
+            ],
+            fullSourceRoot,
+            packageRoot
+        );
+        var nodeIds = collection
+            .StandardOutput.Split(
+                '\n',
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries
+            )
+            .Where(line => line.StartsWith("tests/test_anyver.py::", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(325, nodeIds.Length);
+        Assert.Equal(nodeIds.Length, nodeIds.Distinct(StringComparer.Ordinal).Count());
+
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+        var execution = await session.ExecuteAsync(
+            testSource,
+            fileName: "tests/test_anyver.py",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.False(execution.Success);
+        var blocker = Assert.IsType<WorkerDiagnostic>(execution.Diagnostics[0]);
+        Assert.Equal("DPY2004", blocker.Code);
+        Assert.Equal("The 'class' statement is not supported in this position.", blocker.Message);
+
+        var evidence = new AnyverQualificationEvidence
+        {
+            SchemaVersion = 1,
+            Package = "anyver",
+            PackageVersion = "1.1.0",
+            Wheel = "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
+            WheelSha256 = "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
+            SourceRevision = "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",
+            SourceTestFile = "tests/test_anyver.py",
+            SourceTestFileSha256 =
+                "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
+            Platform = "macos-arm64",
+            Collector = new AnyverQualificationCollector
+            {
+                PythonVersion = pythonVersion.StandardOutput.Trim(),
+                PytestVersion = pytestVersion.StandardOutput.Trim(),
+                Command =
+                    "python -B -m pytest -p no:cacheprovider --color=no --collect-only -q tests/test_anyver.py",
+            },
+            Execution = new AnyverQualificationExecution
+            {
+                Provider = "dotpython-managed-abi3",
+                ProviderVersion = "0.1.0",
+                LanguageProfile = "3.14",
+                Isolation = "worker-process",
+                SourceModified = false,
+                SuiteAdmissionAttempts = 1,
+                AttemptedCases = 0,
+                Blockers =
+                [
+                    new AnyverQualificationBlocker
+                    {
+                        Id = "managed-parser-class-statement",
+                        DiagnosticCode = blocker.Code,
+                        Message = blocker.Message,
+                    },
+                ],
+            },
+            Summary = new AnyverQualificationSummary
+            {
+                Collected = nodeIds.Length,
+                Passed = 0,
+                Failed = 0,
+                Skipped = nodeIds.Length,
+            },
+            Cases = nodeIds
+                .Select(nodeId => new AnyverQualificationCase
+                {
+                    NodeId = nodeId,
+                    Outcome = "skipped",
+                    Blocker = "managed-parser-class-statement",
+                })
+                .ToArray(),
+        };
+        var generated =
+            JsonSerializer.Serialize(
+                evidence,
+                AnyverQualificationJsonContext.Default.AnyverQualificationEvidence
+            ) + "\n";
+        var evidencePath = Path.Combine(
+            FindRepositoryRoot(),
+            "native",
+            "dotpython-abi3",
+            "anyver-upstream-qualification.json"
+        );
+        if (
+            string.Equals(
+                Environment.GetEnvironmentVariable("DOTPYTHON_ANYVER_UPDATE_EVIDENCE"),
+                "1",
+                StringComparison.Ordinal
+            )
+        )
+        {
+            await File.WriteAllTextAsync(
+                evidencePath,
+                generated,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                TestContext.Current.CancellationToken
+            );
+        }
+        else
+        {
+            Assert.Equal(
+                generated,
+                (
+                    await File.ReadAllTextAsync(evidencePath, TestContext.Current.CancellationToken)
+                ).ReplaceLineEndings("\n")
+            );
+        }
     }
 
     [Fact]
@@ -810,6 +987,67 @@ public sealed class WorkerProcessPoolTests
         }
     }
 
+    private static async Task<QualificationProcessResult> RunQualificationProcessAsync(
+        string executable,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        string pythonPath
+    )
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.Environment.Clear();
+        startInfo.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
+        startInfo.Environment["PYTHONPATH"] = pythonPath;
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        Assert.True(process.Start());
+        var standardOutput = process.StandardOutput.ReadToEndAsync(
+            TestContext.Current.CancellationToken
+        );
+        var standardError = process.StandardError.ReadToEndAsync(
+            TestContext.Current.CancellationToken
+        );
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        var result = new QualificationProcessResult(
+            process.ExitCode,
+            await standardOutput,
+            await standardError
+        );
+        Assert.True(
+            result.ExitCode == 0,
+            $"Qualification process failed with exit code {result.ExitCode}:{Environment.NewLine}{result.StandardError}"
+        );
+        return result;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            directory is not null;
+            directory = directory.Parent
+        )
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "DotPython.sln")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("The DotPython repository root could not be located.");
+    }
+
     private static async Task WaitForStateAsync(WorkerProcessPool pool, WorkerProcessState expected)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -842,4 +1080,100 @@ public sealed class WorkerProcessPoolTests
             catch (UnauthorizedAccessException) { }
         }
     }
+
+    private sealed record QualificationProcessResult(
+        int ExitCode,
+        string StandardOutput,
+        string StandardError
+    );
 }
+
+internal sealed class AnyverQualificationEvidence
+{
+    public required int SchemaVersion { get; init; }
+
+    public required string Package { get; init; }
+
+    public required string PackageVersion { get; init; }
+
+    public required string Wheel { get; init; }
+
+    public required string WheelSha256 { get; init; }
+
+    public required string SourceRevision { get; init; }
+
+    public required string SourceTestFile { get; init; }
+
+    public required string SourceTestFileSha256 { get; init; }
+
+    public required string Platform { get; init; }
+
+    public required AnyverQualificationCollector Collector { get; init; }
+
+    public required AnyverQualificationExecution Execution { get; init; }
+
+    public required AnyverQualificationSummary Summary { get; init; }
+
+    public required IReadOnlyList<AnyverQualificationCase> Cases { get; init; }
+}
+
+internal sealed class AnyverQualificationCollector
+{
+    public required string PythonVersion { get; init; }
+
+    public required string PytestVersion { get; init; }
+
+    public required string Command { get; init; }
+}
+
+internal sealed class AnyverQualificationExecution
+{
+    public required string Provider { get; init; }
+
+    public required string ProviderVersion { get; init; }
+
+    public required string LanguageProfile { get; init; }
+
+    public required string Isolation { get; init; }
+
+    public required bool SourceModified { get; init; }
+
+    public required int SuiteAdmissionAttempts { get; init; }
+
+    public required int AttemptedCases { get; init; }
+
+    public required IReadOnlyList<AnyverQualificationBlocker> Blockers { get; init; }
+}
+
+internal sealed class AnyverQualificationBlocker
+{
+    public required string Id { get; init; }
+
+    public required string DiagnosticCode { get; init; }
+
+    public required string Message { get; init; }
+}
+
+internal sealed class AnyverQualificationSummary
+{
+    public required int Collected { get; init; }
+
+    public required int Passed { get; init; }
+
+    public required int Failed { get; init; }
+
+    public required int Skipped { get; init; }
+}
+
+internal sealed class AnyverQualificationCase
+{
+    public required string NodeId { get; init; }
+
+    public required string Outcome { get; init; }
+
+    public required string Blocker { get; init; }
+}
+
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web, WriteIndented = true)]
+[JsonSerializable(typeof(AnyverQualificationEvidence))]
+internal sealed partial class AnyverQualificationJsonContext : JsonSerializerContext;

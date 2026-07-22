@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "package": "anyver",
   "packageVersion": "1.1.0",
   "qualificationStatus": "partial",
@@ -16,11 +16,17 @@
     "publicChecksFailed": 0
   },
   "upstreamPythonSuite": {
+    "evidenceFile": "anyver-upstream-qualification.json",
+    "evidenceSha256": "87f2d5ae68d7ac628ec6e24d2eb4b8e09873ecae3275bca34fa471fb111630cc",
+    "sourceTestFile": "tests/test_anyver.py",
+    "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
+    "collector": "pytest 9.1.1 on Python 3.14.6",
+    "executionIsolation": "worker-process",
     "collectedCases": 325,
     "passed": 0,
     "failed": 0,
     "skipped": 325,
-    "reason": "The managed language/runtime does not yet claim the full pytest, class, assertion, builtin, keyword-call, and comparison surface required to execute the upstream suite unchanged. No upstream pytest case is claimed as passed."
+    "reason": "The unchanged suite is blocked at worker admission by DPY2004 because managed class statements are not yet supported. All 325 upstream node IDs are recorded as skipped; no skipped case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",

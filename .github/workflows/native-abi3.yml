@@ -15,8 +15,11 @@ concurrency:
 env:
   ANYVER_MACOS_ARM64_SHA256: '0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9'
   ANYVER_MACOS_ARM64_URL: 'https://files.pythonhosted.org/packages/17/b2/bc88c1b3900fbd213fb95ae8904ac574a8e28e4899b67eaa835bc7011c4b/anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl'
+  ANYVER_SOURCE_REVISION: '3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e'
+  ANYVER_TEST_SHA256: '9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_NOLOGO: 'true'
+  PYTEST_VERSION: '9.1.1'
 
 jobs:
   build-and-test:
@@ -41,6 +44,21 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6
+
+      - name: Check out the pinned Anyver source
+        if: runner.os == 'macOS'
+        uses: actions/checkout@v6
+        with:
+          repository: kidoz/anyver
+          ref: ${{ env.ANYVER_SOURCE_REVISION }}
+          path: build/anyver-source
+
+      - name: Install qualification Python
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14.6'
+          architecture: arm64
 
       - name: Install Rust toolchain
         run: |
@@ -73,6 +91,17 @@ jobs:
           actual=$(shasum -a 256 "$wheel" | awk '{ print $1 }')
           test "$actual" = "$ANYVER_MACOS_ARM64_SHA256"
           echo "DOTPYTHON_ANYVER_WHEEL=$wheel" >> "$GITHUB_ENV"
+
+      - name: Verify the pinned Anyver suite
+        if: runner.os == 'macOS'
+        run: |
+          source_root="$PWD/build/anyver-source"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$ANYVER_SOURCE_REVISION"
+          actual=$(shasum -a 256 "$source_root/tests/test_anyver.py" | awk '{ print $1 }')
+          test "$actual" = "$ANYVER_TEST_SHA256"
+          python -m pip install --disable-pip-version-check "pytest==$PYTEST_VERSION"
+          echo "DOTPYTHON_ANYVER_SOURCE=$source_root" >> "$GITHUB_ENV"
+          echo "DOTPYTHON_ANYVER_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
       - name: Check native formatting
         run: cargo fmt --manifest-path native/dotpython-abi3/Cargo.toml --all -- --check
@@ -139,3 +168,10 @@ jobs:
               --configuration Release \
               --no-build
           fi
+
+      - name: Validate package qualification evidence
+        run: >-
+          dotnet run
+          --project tests/DotPython.PackageCompatibilityTests/DotPython.PackageCompatibilityTests.csproj
+          --configuration Release
+          -- -noColor

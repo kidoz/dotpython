@@ -235,8 +235,11 @@ native symbol surface, and treats every skipped worker test as a failure. For lo
 `DOTPYTHON_ANYVER_WHEEL` to the pinned wheel when building `DotPython.WorkerTests`; the native
 harness additionally accepts its prepared module through `ANYVER_MODULE`. The checked-in
 `anyver-compatibility.json` records 1 successful unchanged-package import, 16 passing public checks,
-and all 325 upstream pytest cases as skipped because the complete required Python/pytest surface is
-not yet claimed. This remains a package-, artifact-, and platform-specific partial result;
+and links `anyver-upstream-qualification.json`, which records all 325 upstream pytest node IDs as
+skipped. Native CI checks out the pinned source revision, verifies the unchanged test-file hash,
+repeats pytest collection with pinned tool versions, and submits the unchanged suite to the isolated
+worker. The current first blocker is `DPY2004` for managed class statements; no skipped test is
+promoted to a pass. This remains a package-, artifact-, and platform-specific partial result;
 `SupportsCpythonAbi` remains false, and this does not claim NumPy, HPy, or general `abi3`
 compatibility.
 

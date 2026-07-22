@@ -1,0 +1,1665 @@
+{
+  "schemaVersion": 1,
+  "package": "anyver",
+  "packageVersion": "1.1.0",
+  "wheel": "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
+  "wheelSha256": "0f2fa90663b0203d3086c313d6384a6d74177e1f52508abf613cb17439edc4f9",
+  "sourceRevision": "3dc892e3eb9d1a4baf7a315a6ce4a41b3893337e",
+  "sourceTestFile": "tests/test_anyver.py",
+  "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
+  "platform": "macos-arm64",
+  "collector": {
+    "pythonVersion": "Python 3.14.6",
+    "pytestVersion": "pytest 9.1.1",
+    "command": "python -B -m pytest -p no:cacheprovider --color=no --collect-only -q tests/test_anyver.py"
+  },
+  "execution": {
+    "provider": "dotpython-managed-abi3",
+    "providerVersion": "0.1.0",
+    "languageProfile": "3.14",
+    "isolation": "worker-process",
+    "sourceModified": false,
+    "suiteAdmissionAttempts": 1,
+    "attemptedCases": 0,
+    "blockers": [
+      {
+        "id": "managed-parser-class-statement",
+        "diagnosticCode": "DPY2004",
+        "message": "The \u0027class\u0027 statement is not supported in this position."
+      }
+    ]
+  },
+  "summary": {
+    "collected": 325,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 325
+  },
+  "cases": [
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_repr",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_version_shortcut",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_empty_string",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_non_string_raises_typeerror",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_epoch_default",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_epoch_pep440",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_epoch_debian",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_build",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_build_local",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_build_empty",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_is_prerelease_true",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_is_prerelease_false",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_is_postrelease_true",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_is_postrelease_false",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_is_postrelease_caret",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_major",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_minor",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_patch",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_count",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestProperties::test_major_missing",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSegments::test_segments_tuple",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSegments::test_segments_type",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSegments::test_release_tuple",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSegments::test_pep440_segments",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSegments::test_semver_rc_segments",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestIndexing::test_numeric_index",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestIndexing::test_negative_index",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestIndexing::test_text_index",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestIndexing::test_out_of_range",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSequence::test_len_3",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSequence::test_len_5",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSequence::test_bool_true",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSequence::test_bool_empty",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestHash::test_set_dedup",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestHash::test_dict_lookup",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_lt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_le",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_eq",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_ne",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_gt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_ge",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_eq_vprefix",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_eq_build",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOperators::test_eq_epoch_zero",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionCompare::test_compare_str_lt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionCompare::test_compare_str_gt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionCompare::test_compare_str_eq",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVersionCompare::test_compare_version_obj",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleCompare::test_str_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleCompare::test_ver_ver",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleCompare::test_ver_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleCompare::test_str_ver",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1-2--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[2-1-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1-1-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.0-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.0.0-1.0.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.0.1-1.1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.1.0-2.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[10.0.0-9.0.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.2.3-1.2.3-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[0.0.1-0.0.2--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.2-1.10--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[1.0.0.0.0-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBasicNumeric::test_basic[0-0.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVPrefix::test_vprefix[v1.0.0-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVPrefix::test_vprefix[V1.0.0-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVPrefix::test_vprefix[v2.0.0-v1.0.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestVPrefix::test_vprefix[v0.1.0-v0.2.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0-alpha-1.0.0-alpha.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0-alpha-1.0.0-beta--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0-beta-1.0.0-rc--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0-rc-1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0-alpha-1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0\u002Bbuild-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0\u002Bbuild.1-1.0.0\u002Bbuild.2-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerPrerelease::test_semver[1.0.0\u002B20130313144700-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[1.0.0-alpha-1.0.0-alpha.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[1.0.0-alpha.1-1.0.0-alpha.beta--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[1.0.0-beta.2-1.0.0-beta.11--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[1.0.0-rc.1-1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[1.0.0\u002Bbuild-1.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_strict[0.0.0-0.0.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrict::test_invalid_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_compare_default_generic",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_compare_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_version_compare_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_module_compare_version_inputs_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_sort_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_batch_compare_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_bool_helpers_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_ecosystem_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestEcosystemDispatch::test_invalid_semver_in_semver_ecosystem_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0a1-1.0a2--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0a2-1.0b1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0b1-1.0rc1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0rc1-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0.dev1-1.0a1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0.dev1-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0-1.0.post1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1.0.post1-1.0.post2--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPEP440::test_pep440[1!0.1-2.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[1.0~alpha-1.0~beta--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[1.0~rc1-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[1.0~alpha-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[1:0.1-2.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[2:1.0-1:2.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[0:1.0-1.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestDebian::test_debian[1.0\u002Bdeb9u1-1.0\u002Bdeb9u2-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0~rc1-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1.0^git1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1^git1-1.0-1.fc33--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^-1.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0-1.0^--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.0-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.0^git2--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1-1.01--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^20160101-1.0.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0~rc1^git1-1.0~rc1-1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRPM::test_rpm[1.0^git1~pre-1.0^git1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestGoModules::test_go[v1.0.0-v1.0.1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestGoModules::test_go[v1.0.0-alpha-v1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestGoModules::test_go[v2.0.0\u002Bincompatible-v2.0.0-0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestGoModules::test_go[v2.0.0\u002Bincompatible-v2.0.1\u002Bincompatible--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRubyGems::test_ruby[1.0.0.pre-1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRubyGems::test_ruby[1.0.0.alpha-1.0.0.beta--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRubyGems::test_ruby[1.0.0.beta-1.0.0.rc1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRubyGems::test_ruby[1.0.0.rc1-1.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRubyGems::test_ruby[3.2-3.10--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMaven::test_maven[1.0-alpha-1-1.0-beta-1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMaven::test_maven[1.0-beta-1-1.0-rc-1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMaven::test_maven[1.0-SNAPSHOT-1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMaven::test_maven[1.0-1.0-sp-1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[4.2-5.0a1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[5.0a1-5.0b1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[5.0b1-5.0rc1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[5.0rc1-5.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[7.1.0.beta1-7.1.0.rc1--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[7.1.0.rc1-7.1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[18.17.0-20.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[5.15.0-6.1.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[5.3.30-6.0.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRealWorld::test_real_world[2.31.0-2.32.0--1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortVersions::test_basic_sort",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortVersions::test_full_sort",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBatchCompare::test_batch",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMinMax::test_max",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMinMax::test_min",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMinMax::test_max_empty",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMinMax::test_min_empty",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_gt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_ge",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_lt",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_le",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_eq",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBooleanHelpers::test_ne",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestToDict::test_basic",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestToDict::test_from_dict_roundtrip",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_basic",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_simple",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_prerelease",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_sort_key_structure",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_equal_versions_same_key",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_pep440_local_label_key_ordered",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSortKey::test_isomorphism_pep440_local",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestTransitivity::test_trailing_zero_post_release",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestTransitivity::test_trailing_zero_prerelease",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_sort_versions_mixed",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_sort_versions_all_version_objects",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_batch_compare_mixed",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_max_version_mixed",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_min_version_mixed",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_max_version_returns_original_type",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMixedTypes::test_min_version_returns_original_type",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_major",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_minor",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_patch",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_leading_zero_prerelease",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_empty_prerelease",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_empty_prerelease_ident",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_valid_prerelease_with_hyphen",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_zero_parts_ok",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSemVerStrictValidation::test_zero_prerelease_ok",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOverflow::test_overflow_does_not_become_zero",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestOverflow::test_overflow_greater_than_normal",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003E=1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003E=2.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003C=2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003C=1.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003E1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003E1.5.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003C2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-\u003C1.5.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-==1.5.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-==1.5.1-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-!=1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.5.0-!=1.5.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.0.0-==1.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_single_constraint[1.0-==1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[1.5.0-\u003E=1.0.0,\u003C2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[2.0.0-\u003E=1.0.0,\u003C2.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[0.9.0-\u003E=1.0.0,\u003C2.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[1.5.0-\u003E=1.0.0, \u003C2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[1.5.0- \u003E= 1.0.0 , \u003C 2.0.0 -True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[1.5.0-\u003E=1.0.0,\u003C2.0.0,!=1.5.1-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_compound_constraint[1.5.1-\u003E=1.0.0,\u003C2.0.0,!=1.5.1-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_ecosystem_semver_strict",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_constraint_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfies::test_invalid_version_for_ecosystem_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_filters_prereleases",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_keeps_postreleases",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_empty_input",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_all_prerelease",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_accepts_version_objects",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_mixed_types",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_preserves_order",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStableVersions::test_ecosystem_validation_rejects_invalid",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_picks_latest_stable",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_ignores_prereleases_higher_than_stable",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_includes_postreleases",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_accepts_version_objects",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_empty_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_all_prerelease_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestLatestStable::test_semver_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[1.2.3-2.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[0.0.1-1.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[5-6.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[1.2.3-alpha-2.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major[v1.2.3-2.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_minor[1.2.3-1.3.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_minor[0.0.1-0.1.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_minor[1.2.3-alpha-1.3.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_minor[v1.2.3-1.3.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_patch[1.2.3-1.2.4]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_patch[0.0.0-0.0.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_patch[1.2.3-alpha-1.2.4]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_patch[v1.2.3-1.2.4]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpHelpers::test_bump_major_no_numeric_first_segment",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpPrerelease::test_fresh_from_release",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpPrerelease::test_increment_same_tag",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpPrerelease::test_tag_switch_resets_counter",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpPrerelease::test_custom_tag",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestBumpPrerelease::test_missing_parts_fill_zero",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNextStable::test_strip_prerelease[1.2.3-1.2.3]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNextStable::test_strip_prerelease[1.2.3-alpha.1-1.2.3]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNextStable::test_strip_prerelease[1.2.3-rc.2\u002Bbuild-1.2.3]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNextStable::test_strip_prerelease[v1.0-1.0.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNextStable::test_strip_prerelease[1.2-1.2.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPickle::test_roundtrip",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPickle::test_roundtrip_auto",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPickle::test_deepcopy",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_eq_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_lt_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_ge_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_ne_str",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_notimplemented_other_type",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestStrComparison::test_ordering_with_other_type_raises",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse_with_ecosystem",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_parse_raises_on_invalid",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_try_parse_valid",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestParseClassmethods::test_try_parse_invalid",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.2.3-^1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.9.9-^1.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[2.0.0-^1.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[0.2.5-^0.2.3-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[0.3.0-^0.2.3-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[0.0.3-^0.0.3-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[0.0.4-^0.0.3-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.2.5-~1.2.3-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.3.0-~1.2.3-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.2.0-~1.2-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.3.0-~1.2-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.5.0-~1-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[2.0.0-~1-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.2.5-1.2.x-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.3.0-1.2.x-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.0.0-1.x-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[2.0.0-1.x-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[99.0.0-*-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.5.0-^1.0.0 || ^2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[2.3.0-^1.0.0 || ^2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[3.0.0-^1.0.0 || ^2.0.0-False]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.5.0-\u003E=1.0.0,\u003C2.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSatisfiesShorthand::test_shorthand[1.5.0-\u003E=1.0.0 || \u003E=3.0.0-True]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleSurface::test_version_attribute",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestModuleSurface::test_py_typed_marker_present",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_sorts_after_release",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_equal_to_self",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_lex_ordering",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_longer_wins_when_prefix_matches",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_numeric_beats_alpha",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_separator_normalization",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_public_ordering_still_wins",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[final]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[ga]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_equal_to_release[release]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_below_sp",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_above_snapshot",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_in_hash",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestMavenReleaseAliases::test_alias_works_in_generic_mode_too",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_go_requires_lowercase_v",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestCorrectnessHardening::test_pep440_local_sort_key_isomorphic",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRangeCore::test_range_contains_basic",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRangeCore::test_range_contains_shorthand",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRangeCore::test_ranges_intersect",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestRangeCore::test_interval_range",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSecurityInterop::test_purl_parse_and_build",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSecurityInterop::test_vers_contains",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestSecurityInterop::test_osv_affected_events",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[conda-1.0-1.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[arch-1:1.0-2:1.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[gentoo-1.0_alpha-1.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[cran-1.0-1-1.0-2]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[spack-1.0-2.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[terraform-1.0.0-1.1.0]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[cpan-1.0-1.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[nix-1.0-1.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[homebrew-1.0-1.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[freebsd-1.0-1.1]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[dart]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[julia]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    },
+    {
+      "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_semver_new_ecosystem_modes[helm]",
+      "outcome": "skipped",
+      "blocker": "managed-parser-class-statement"
+    }
+  ]
+}
