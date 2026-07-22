@@ -10,6 +10,9 @@ namespace DotPython.Runtime.Managed;
 public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
 {
     private readonly ManagedExecutionOptions _executionOptions;
+    private readonly Dictionary<string, ModuleDefinitionIdentity> _definitions = new(
+        StringComparer.Ordinal
+    );
     private readonly Dictionary<string, ManagedModuleState> _modules = new(StringComparer.Ordinal);
     private readonly TextWriter _output;
     private readonly ManagedRuntimeScheduler _scheduler;
@@ -23,7 +26,7 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         _executionOptions = executionOptions ?? new ManagedExecutionOptions();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_executionOptions.InstructionLimit);
         _output = output ?? TextWriter.Null;
-        _scheduler = new ManagedRuntimeScheduler(finalize: _modules.Clear);
+        _scheduler = new ManagedRuntimeScheduler(finalize: ClearModules);
     }
 
     /// <inheritdoc />
@@ -66,24 +69,31 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
 
         ValidateDefinition(definition.Contract, artifact);
         cancellationToken.ThrowIfCancellationRequested();
-        if (_modules.TryGetValue(definition.Contract.ModuleName, out var existing))
+        var moduleName = definition.Contract.ModuleName;
+        if (_definitions.TryGetValue(moduleName, out var identity))
         {
             if (
                 !string.Equals(
-                    existing.ArtifactFingerprint,
+                    identity.ArtifactFingerprint,
                     definition.ArtifactFingerprint,
                     StringComparison.Ordinal
-                ) || !ContractsEqual(existing.Contract, definition.Contract)
+                ) || !ContractsEqual(identity.Contract, definition.Contract)
             )
             {
                 throw Failure(
                     "DPY6002",
-                    $"Module '{definition.Contract.ModuleName}' is already loaded with a different definition.",
+                    $"Module '{moduleName}' is already loaded with a different definition.",
                     DotPythonFailurePhase.ModuleLoad,
-                    definition.Contract.ModuleName
+                    moduleName
                 );
             }
+        }
 
+        if (
+            definition.Contract.StatePolicy == PythonModuleStatePolicy.PerRuntime
+            && _modules.TryGetValue(moduleName, out var existing)
+        )
+        {
             return CreateModuleHandle(existing);
         }
 
@@ -110,7 +120,15 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
             definition.ArtifactFingerprint,
             engine
         );
-        _modules.Add(definition.Contract.ModuleName, state);
+        _definitions.TryAdd(
+            moduleName,
+            new ModuleDefinitionIdentity(definition.Contract, definition.ArtifactFingerprint)
+        );
+        if (definition.Contract.StatePolicy == PythonModuleStatePolicy.PerRuntime)
+        {
+            _modules.Add(moduleName, state);
+        }
+
         return CreateModuleHandle(state);
     }
 
@@ -295,11 +313,14 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
             );
         }
 
-        if (contract.StatePolicy != PythonModuleStatePolicy.PerRuntime)
+        if (
+            contract.StatePolicy
+            is not (PythonModuleStatePolicy.PerRuntime or PythonModuleStatePolicy.PerSession)
+        )
         {
             throw Failure(
                 "DPY6003",
-                "The managed module runtime currently supports only per-runtime module state.",
+                "The managed module runtime does not support the requested module state policy.",
                 DotPythonFailurePhase.ModuleLoad,
                 contract.ModuleName
             );
@@ -370,6 +391,12 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
         return new ManagedPythonModule(this, state, resource);
     }
 
+    private void ClearModules()
+    {
+        _modules.Clear();
+        _definitions.Clear();
+    }
+
     private static bool ContractsEqual(PythonModuleContract left, PythonModuleContract right) =>
         string.Equals(left.ClrNamespace, right.ClrNamespace, StringComparison.Ordinal)
         && string.Equals(left.ClrTypeName, right.ClrTypeName, StringComparison.Ordinal)
@@ -425,6 +452,11 @@ public sealed class ManagedPythonModuleRuntime : IDotPythonModuleRuntime
 
         internal void ReleaseHandle() => OpenHandleCount--;
     }
+
+    private sealed record ModuleDefinitionIdentity(
+        PythonModuleContract Contract,
+        string ArtifactFingerprint
+    );
 
     private sealed class ManagedPythonModule(
         ManagedPythonModuleRuntime owner,

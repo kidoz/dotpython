@@ -119,6 +119,51 @@ public sealed class ManagedPythonModuleRuntimeTests
     }
 
     [Fact]
+    public async Task LoadModuleAsync_CreatesDistinctPerSessionState()
+    {
+        var definition = CreateDefinition(
+            "session_state",
+            "state = [0]\n"
+                + "def next_value():\n"
+                + "    state[0] = state[0] + 1\n"
+                + "    return state[0]",
+            PythonModuleStatePolicy.PerSession,
+            Function("next_value", "NextValueAsync", [], BigIntegerType())
+        );
+        await using IDotPythonModuleRuntime runtime = new ManagedPythonModuleRuntime();
+        await using var first = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+        await using var second = await runtime.LoadModuleAsync(
+            definition,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(
+            BigInteger.One,
+            await first.InvokeAsync<BigInteger>(
+                new PythonFunctionInvocation("next_value"),
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Equal(
+            new BigInteger(2),
+            await first.InvokeAsync<BigInteger>(
+                new PythonFunctionInvocation("next_value"),
+                TestContext.Current.CancellationToken
+            )
+        );
+        Assert.Equal(
+            BigInteger.One,
+            await second.InvokeAsync<BigInteger>(
+                new PythonFunctionInvocation("next_value"),
+                TestContext.Current.CancellationToken
+            )
+        );
+    }
+
+    [Fact]
     public async Task ConcurrentInvocations_RunSeriallyOnTheRuntimeOwningThread()
     {
         var definition = CreateDefinition(
@@ -350,6 +395,13 @@ public sealed class ManagedPythonModuleRuntimeTests
         string moduleName,
         string source,
         params PythonFunctionContract[] functions
+    ) => CreateDefinition(moduleName, source, PythonModuleStatePolicy.PerRuntime, functions);
+
+    private static PythonModuleDefinition CreateDefinition(
+        string moduleName,
+        string source,
+        PythonModuleStatePolicy statePolicy,
+        params PythonFunctionContract[] functions
     )
     {
         var text = new SourceText(source, moduleName + ".py");
@@ -362,7 +414,7 @@ public sealed class ManagedPythonModuleRuntimeTests
             moduleName,
             "Generated",
             moduleName + "Module",
-            PythonModuleStatePolicy.PerRuntime,
+            statePolicy,
             functions
         );
         var exports = functions.Select(function => new DotPythonModuleExport(
