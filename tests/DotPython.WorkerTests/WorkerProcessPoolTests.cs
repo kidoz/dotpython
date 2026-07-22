@@ -280,7 +280,7 @@ public sealed class WorkerProcessPoolTests
         Assert.False(execution.Success);
         var blocker = Assert.IsType<WorkerDiagnostic>(execution.Diagnostics[0]);
         Assert.Equal("DPY2004", blocker.Code);
-        Assert.Equal("The 'class' statement is not supported in this position.", blocker.Message);
+        Assert.Equal("The 'assert' statement is not supported in this position.", blocker.Message);
 
         var evidence = new AnyverQualificationEvidence
         {
@@ -314,7 +314,7 @@ public sealed class WorkerProcessPoolTests
                 [
                     new AnyverQualificationBlocker
                     {
-                        Id = "managed-parser-class-statement",
+                        Id = "managed-parser-assert-statement",
                         DiagnosticCode = blocker.Code,
                         Message = blocker.Message,
                     },
@@ -332,7 +332,7 @@ public sealed class WorkerProcessPoolTests
                 {
                     NodeId = nodeId,
                     Outcome = "skipped",
-                    Blocker = "managed-parser-class-statement",
+                    Blocker = "managed-parser-assert-statement",
                 })
                 .ToArray(),
         };

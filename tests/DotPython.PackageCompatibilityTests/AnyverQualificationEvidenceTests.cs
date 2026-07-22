@@ -55,7 +55,7 @@ public sealed class AnyverQualificationEvidenceTests
             .EnumerateArray()
             .Select(blocker => blocker.GetProperty("id").GetString())
             .ToHashSet(StringComparer.Ordinal);
-        Assert.Contains("managed-parser-class-statement", blockerIds);
+        Assert.Contains("managed-parser-assert-statement", blockerIds);
 
         var cases = evidenceRoot.GetProperty("cases").EnumerateArray().ToArray();
         var nodeIds = new HashSet<string>(StringComparer.Ordinal);
