@@ -97,10 +97,14 @@ internal static class ManagedObjectProtocols
                 throw MissingAttribute(instance.Type.Name, name, span);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return value;
+            case PythonManagedTypeValue type when name == "__name__":
+                return new PythonTextValue(type.Name);
             case PythonManagedTypeValue type:
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetAttribute(name, span);
+            case PythonFunctionValue function when name == "__name__":
+                return new PythonTextValue(function.Name);
             case var builtin when PythonBuiltinMethods.SupportsMethods(builtin):
                 if (PythonBuiltinMethods.TryGet(builtin, name, out var method))
                 {

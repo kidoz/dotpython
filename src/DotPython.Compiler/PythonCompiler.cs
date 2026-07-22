@@ -734,6 +734,11 @@ public static class PythonCompiler
 
         private void CompileFunctionDefinition(PythonFunctionDefinitionStatement function)
         {
+            foreach (var decorator in function.Decorators)
+            {
+                CompileExpression(decorator);
+            }
+
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, function)
             );
@@ -770,11 +775,21 @@ public static class PythonCompiler
                 Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, function.Span);
             }
 
+            for (var index = 0; index < function.Decorators.Count; index++)
+            {
+                Emit(PythonOpCode.Call, 1, function.Span);
+            }
+
             EmitStoreName(function.Name);
         }
 
         private void CompileClassDefinition(PythonClassDefinitionStatement @class)
         {
+            foreach (var decorator in @class.Decorators)
+            {
+                CompileExpression(decorator);
+            }
+
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, @class)
             );
@@ -790,6 +805,11 @@ public static class PythonCompiler
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
             Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
+            for (var index = 0; index < @class.Decorators.Count; index++)
+            {
+                Emit(PythonOpCode.Call, 1, @class.Span);
+            }
+
             EmitStoreName(@class.Name);
         }
 

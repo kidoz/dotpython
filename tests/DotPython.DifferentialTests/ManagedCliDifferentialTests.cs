@@ -186,6 +186,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "d = {'k': 'v'}\nprint(f'{d[\"k\"]} {[x * 2 for x in range(3)]} {(lambda: 7)()}')\na, b = 1, 2\nprint(f'{a} should be <= {b}')\ntry:\n    print(f'{\"text\":d}')\nexcept ValueError:\n    print('bad-code')"
     )]
+    [InlineData(
+        "def trace(func):\n    print('decorating', func.__name__)\n    return func\n@trace\ndef greet():\n    return 'hi'\nprint(greet(), greet.__name__)"
+    )]
+    [InlineData(
+        "order = []\ndef first(func):\n    order.append('first')\n    return func\ndef second(func):\n    order.append('second')\n    return func\n@first\n@second\ndef target():\n    return 1\nprint(order, target())"
+    )]
+    [InlineData(
+        "registry = {}\nclass Mark:\n    def parametrize(self, names, values):\n        def apply(func):\n            registry[func.__name__] = (names, values)\n            return func\n        return apply\nmark = Mark()\nclass TestThing:\n    @mark.parametrize('a,b', [(1, 2), (3, 4)])\n    def test_add(self, a, b):\n        return a + b\nentry = registry['test_add']\nprint(entry[0], entry[1], TestThing().test_add(1, 2))"
+    )]
+    [InlineData(
+        "def register(cls):\n    print('registered', cls.__name__)\n    return cls\n@register\nclass Widget:\n    def size(self):\n        return 3\nprint(Widget().size())"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

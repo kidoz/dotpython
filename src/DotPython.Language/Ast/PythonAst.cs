@@ -27,6 +27,7 @@ public sealed record PythonExpressionStatement(PythonExpression Expression, Text
     : PythonStatement(Span);
 
 public sealed record PythonFunctionDefinitionStatement(
+    IReadOnlyList<PythonExpression> Decorators,
     PythonNameExpression Name,
     IReadOnlyList<PythonParameter> Parameters,
     IReadOnlyList<PythonStatement> Body,
@@ -34,6 +35,7 @@ public sealed record PythonFunctionDefinitionStatement(
 ) : PythonStatement(Span);
 
 public sealed record PythonClassDefinitionStatement(
+    IReadOnlyList<PythonExpression> Decorators,
     PythonNameExpression Name,
     IReadOnlyList<PythonStatement> Body,
     TextSpan Span

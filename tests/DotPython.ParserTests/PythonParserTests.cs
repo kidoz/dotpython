@@ -248,6 +248,49 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsDecoratorsOnFunctionsAndClasses()
+    {
+        var result = Parse(
+            "@trace\n"
+                + "@mark.parametrize('a,b', [(1, 2)])\n"
+                + "def target(a, b):\n"
+                + "    return a + b\n"
+                + "@register\n"
+                + "class Widget:\n"
+                + "    @staticmethod_like\n"
+                + "    def method(self):\n"
+                + "        return 1\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.Equal(2, function.Decorators.Count);
+        Assert.Equal("trace", Assert.IsType<PythonNameExpression>(function.Decorators[0]).Name);
+        var call = Assert.IsType<PythonCallExpression>(function.Decorators[1]);
+        Assert.Equal(
+            "parametrize",
+            Assert.IsType<PythonAttributeExpression>(call.Target).AttributeName
+        );
+        var @class = Assert.IsType<PythonClassDefinitionStatement>(result.Module.Statements[1]);
+        Assert.Equal("register", Assert.IsType<PythonNameExpression>(@class.Decorators[0]).Name);
+        var method = Assert.IsType<PythonFunctionDefinitionStatement>(@class.Body[0]);
+        Assert.Equal(
+            "staticmethod_like",
+            Assert.IsType<PythonNameExpression>(Assert.Single(method.Decorators)).Name
+        );
+    }
+
+    [Fact]
+    public void Parse_ReportsDecoratorsWithoutADefinition()
+    {
+        var result = Parse("@trace\nvalue = 1\n");
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "DPY2020");
+    }
+
+    [Fact]
     public void Parse_BuildsImportAliasesFromImportsAndAttributes()
     {
         var result = Parse(

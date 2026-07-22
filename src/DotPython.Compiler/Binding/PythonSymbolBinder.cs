@@ -815,12 +815,24 @@ public static class PythonSymbolBinder
                     CollectReferences(tryStatement.FinallyBody, references, diagnostics, scopeKind);
                     break;
                 case PythonFunctionDefinitionStatement function:
+                    foreach (var decorator in function.Decorators)
+                    {
+                        CollectReferences(decorator, references);
+                    }
+
                     foreach (var parameter in function.Parameters)
                     {
                         if (parameter.Default is not null)
                         {
                             CollectReferences(parameter.Default, references);
                         }
+                    }
+
+                    break;
+                case PythonClassDefinitionStatement @class:
+                    foreach (var decorator in @class.Decorators)
+                    {
+                        CollectReferences(decorator, references);
                     }
 
                     break;
@@ -971,6 +983,14 @@ public static class PythonSymbolBinder
             switch (statement)
             {
                 case PythonFunctionDefinitionStatement function:
+                    foreach (var decorator in function.Decorators)
+                    {
+                        foreach (var nested in EnumerateComprehensions(decorator))
+                        {
+                            yield return nested;
+                        }
+                    }
+
                     foreach (var parameter in function.Parameters)
                     {
                         if (parameter.Default is null)
@@ -987,6 +1007,14 @@ public static class PythonSymbolBinder
                     yield return function;
                     break;
                 case PythonClassDefinitionStatement @class:
+                    foreach (var decorator in @class.Decorators)
+                    {
+                        foreach (var nested in EnumerateComprehensions(decorator))
+                        {
+                            yield return nested;
+                        }
+                    }
+
                     yield return @class;
                     break;
                 case PythonAssignmentStatement assignment:

@@ -112,11 +112,19 @@ public static class PythonParser
                 }
                 else if (IsKeyword("def"))
                 {
-                    statements.Add(ParseFunctionDefinition());
+                    statements.Add(ParseFunctionDefinition(Array.Empty<PythonExpression>()));
                 }
                 else if (IsKeyword("class"))
                 {
-                    statements.Add(ParseClassDefinition());
+                    statements.Add(ParseClassDefinition(Array.Empty<PythonExpression>()));
+                }
+                else if (Current.Kind == SyntaxTokenKind.At)
+                {
+                    var decorated = ParseDecoratedDefinition();
+                    if (decorated is not null)
+                    {
+                        statements.Add(decorated);
+                    }
                 }
                 else
                 {
@@ -445,9 +453,57 @@ public static class PythonParser
             );
         }
 
-        private PythonFunctionDefinitionStatement ParseFunctionDefinition()
+        private PythonStatement? ParseDecoratedDefinition()
         {
-            var start = Advance().Span.Start;
+            var start = Current.Span.Start;
+            var decorators = new List<PythonExpression>();
+            while (Current.Kind == SyntaxTokenKind.At)
+            {
+                Advance();
+                var decorator = ParsePrimary();
+                if (decorator is null)
+                {
+                    ReportExpected("a decorator expression after '@'", Current.Span);
+                    SynchronizeLine();
+                }
+                else
+                {
+                    decorators.Add(decorator);
+                    if (!Match(SyntaxTokenKind.NewLine))
+                    {
+                        ReportExpected("a new line after the decorator", Current.Span);
+                        SynchronizeLine();
+                    }
+                }
+
+                SkipNewLines();
+            }
+
+            if (IsKeyword("def"))
+            {
+                return ParseFunctionDefinition(decorators.AsReadOnly(), start);
+            }
+
+            if (IsKeyword("class"))
+            {
+                return ParseClassDefinition(decorators.AsReadOnly(), start);
+            }
+
+            Report(
+                "DPY2020",
+                "Expected a function or class definition after the decorators.",
+                Current.Span
+            );
+            return null;
+        }
+
+        private PythonFunctionDefinitionStatement ParseFunctionDefinition(
+            IReadOnlyList<PythonExpression> decorators,
+            int? decoratedStart = null
+        )
+        {
+            var start = decoratedStart ?? Current.Span.Start;
+            Advance();
             var nameToken = Expect(SyntaxTokenKind.Identifier, "a function name after 'def'");
             if (IsReservedKeyword(nameToken.Text))
             {
@@ -552,6 +608,7 @@ public static class PythonParser
             }
 
             return new PythonFunctionDefinitionStatement(
+                decorators,
                 name,
                 parameters.AsReadOnly(),
                 body,
@@ -559,9 +616,13 @@ public static class PythonParser
             );
         }
 
-        private PythonClassDefinitionStatement ParseClassDefinition()
+        private PythonClassDefinitionStatement ParseClassDefinition(
+            IReadOnlyList<PythonExpression> decorators,
+            int? decoratedStart = null
+        )
         {
-            var start = Advance().Span.Start;
+            var start = decoratedStart ?? Current.Span.Start;
+            Advance();
             var nameToken = Expect(SyntaxTokenKind.Identifier, "a class name after 'class'");
             if (IsReservedKeyword(nameToken.Text))
             {
@@ -587,6 +648,7 @@ public static class PythonParser
             }
 
             return new PythonClassDefinitionStatement(
+                decorators,
                 name,
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
