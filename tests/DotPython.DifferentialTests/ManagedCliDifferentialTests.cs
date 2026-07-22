@@ -258,6 +258,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print('{0[1]} {0[0]}'.format(['a', 'b']), '{m[k]}'.format(m={'k': 'v'}))\nprint('{:{}}|'.format('ab', 6), '{:{}.{}f}'.format(3.14159, 8, 2))\ntry:\n    '{} {0}'.format(1, 2)\nexcept ValueError:\n    print('mixed-numbering')\ntry:\n    '{2}'.format(1, 2)\nexcept IndexError:\n    print('index-range')\ntry:\n    '{missing}'.format(x=1)\nexcept KeyError:\n    print('missing-key')"
     )]
+    [InlineData(
+        "class Animal:\n    kind = 'animal'\n    def __init__(self, name):\n        self.name = name\n    def speak(self):\n        return self.name + ' makes a sound'\n    def label(self):\n        return self.kind + ':' + self.name\nclass Dog(Animal):\n    def speak(self):\n        return self.name + ' barks'\nd = Dog('Rex')\nprint(d.speak(), d.label(), d.kind)\nprint(isinstance(d, Dog), isinstance(d, Animal), type(d) is Dog)"
+    )]
+    [InlineData(
+        "class Base:\n    def greet(self):\n        return 'base:' + self.tag()\n    def tag(self):\n        return 'B'\nclass Child(Base):\n    def tag(self):\n        return 'C'\nprint(Child().greet())\nclass A:\n    def __init__(self, log):\n        self.log = log\n        self.log.append('A')\nclass B(A):\n    def __init__(self, log):\n        super().__init__(log)\n        self.log.append('B')\nclass C(B):\n    def __init__(self, log):\n        super().__init__(log)\n        self.log.append('C')\ntrace = []\nc = C(trace)\nprint(trace, isinstance(c, A))"
+    )]
+    [InlineData(
+        "class Dog:\n    def __init__(self, name):\n        self.name = name\n    def speak(self):\n        return self.name + ' barks'\nclass Puppy(Dog):\n    def __init__(self, name, age):\n        super().__init__(name)\n        self.age = age\n    def speak(self):\n        return super().speak() + ' softly'\np = Puppy('Bo', 1)\nprint(p.speak(), p.name, p.age)"
+    )]
+    [InlineData(
+        "class MyError(ValueError):\n    pass\nclass DeepError(MyError):\n    pass\ntry:\n    raise MyError('boom')\nexcept MyError as e:\n    print('caught-mine', e)\ntry:\n    raise DeepError('deep')\nexcept ValueError:\n    print('caught-deep')\ntry:\n    raise ValueError('plain')\nexcept MyError:\n    print('never')\nexcept ValueError:\n    print('plain-not-mine')\ne = MyError('inst')\nprint(isinstance(e, MyError), isinstance(e, ValueError), isinstance(e, Exception), isinstance(e, KeyError))\ntry:\n    raise DeepError\nexcept MyError:\n    print('bare-raise-type')"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

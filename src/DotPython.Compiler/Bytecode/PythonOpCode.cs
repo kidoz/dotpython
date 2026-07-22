@@ -90,4 +90,5 @@ public enum PythonOpCode
     MakeFunctionWithSignature = 85,
     UnpackSequenceStarred = 86,
     SetAdd = 87,
+    MakeClassWithBases = 88,
 }

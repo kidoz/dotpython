@@ -48,6 +48,7 @@ internal sealed class PythonVirtualMachine
     private readonly long _instructionLimit;
     private readonly PythonModuleRegistry _modules;
     private readonly TextWriter _output;
+    private readonly Dictionary<string, string> _exceptionBaseOverlay = new(StringComparer.Ordinal);
     private PythonFrame[] _frames = new PythonFrame[4];
     private int _frameCount;
     private int _deferredControlFlowCount;
@@ -83,6 +84,7 @@ internal sealed class PythonVirtualMachine
             ["enumerate"] = new PythonBuiltinFunctionValue("enumerate", Enumerate),
             ["zip"] = new PythonBuiltinFunctionValue("zip", Zip),
             ["isinstance"] = new PythonBuiltinFunctionValue("isinstance", IsInstance),
+            ["super"] = new PythonBuiltinFunctionValue("super", Super),
             ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
@@ -453,6 +455,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
+                break;
+            case PythonOpCode.MakeClassWithBases:
+                MakeClass(instruction, Pop(instruction.Span));
                 break;
             case PythonOpCode.CallKeyword:
                 ApplyKeywordCall(instruction);
@@ -835,7 +840,7 @@ internal sealed class PythonVirtualMachine
         );
     }
 
-    private static bool MatchesExceptionType(
+    private bool MatchesExceptionType(
         PythonExceptionValue exception,
         PythonValue handlerType,
         TextSpan span
@@ -844,6 +849,11 @@ internal sealed class PythonVirtualMachine
         if (handlerType is PythonExceptionTypeValue type)
         {
             return IsExceptionSubclass(exception.TypeName, type.Name);
+        }
+
+        if (handlerType is PythonManagedTypeValue { ExceptionBaseName: not null } managedType)
+        {
+            return IsExceptionSubclass(exception.TypeName, managedType.Name);
         }
 
         if (handlerType is PythonTupleValue tuple)
@@ -867,7 +877,7 @@ internal sealed class PythonVirtualMachine
         );
     }
 
-    private static bool IsExceptionSubclass(string candidate, string expected)
+    private bool IsExceptionSubclass(string candidate, string expected)
     {
         for (string? current = candidate; current is not null; )
         {
@@ -876,7 +886,9 @@ internal sealed class PythonVirtualMachine
                 return true;
             }
 
-            current = ExceptionBaseNames.GetValueOrDefault(current);
+            current =
+                _exceptionBaseOverlay.GetValueOrDefault(current)
+                ?? ExceptionBaseNames.GetValueOrDefault(current);
         }
 
         return false;
@@ -923,6 +935,8 @@ internal sealed class PythonVirtualMachine
         {
             PythonExceptionValue exception => exception,
             PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
+            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
+                new PythonExceptionValue(exceptionClass.Name, string.Empty),
             _ => throw CreateRaisedException(
                 new PythonExceptionValue("TypeError", "Exceptions must derive from BaseException.")
             ),
@@ -2526,15 +2540,36 @@ internal sealed class PythonVirtualMachine
     private static PythonExceptionValue CreateExceptionValue(
         PythonExceptionTypeValue type,
         PythonValue[] arguments
-    )
-    {
-        var message = arguments.Length switch
+    ) => new(type.Name, ComposeExceptionMessage(arguments));
+
+    private static string ComposeExceptionMessage(PythonValue[] arguments) =>
+        arguments.Length switch
         {
             0 => string.Empty,
             1 => arguments[0].ToDisplayString(),
             _ => new PythonTupleValue(arguments).ToDisplayString(),
         };
-        return new PythonExceptionValue(type.Name, message);
+
+    private PythonSuperProxyValue Super(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (
+            arguments.Count == 2
+            && arguments[0] is PythonManagedTypeValue definingType
+            && arguments[1] is PythonManagedObjectValue instance
+        )
+        {
+            return new PythonSuperProxyValue(definingType, instance);
+        }
+
+        throw Fault(
+            "DPY4034",
+            arguments.Count == 0
+                ? "super(): no arguments (zero-argument super() is only supported inside "
+                    + "class methods in this runtime slice)."
+                : "super() requires a class and an instance of it.",
+            span,
+            "RuntimeError"
+        );
     }
 
     private void PushFunctionFrame(PythonFunctionValue function, int argumentCount, TextSpan span)
@@ -2625,6 +2660,14 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        if (type.ExceptionBaseName is not null)
+        {
+            _evaluationStack.Push(
+                new PythonExceptionValue(type.Name, ComposeExceptionMessage(arguments))
+            );
+            return;
+        }
+
         var instance = new PythonManagedObjectValue(type);
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
@@ -2665,6 +2708,16 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        if (type.ExceptionBaseName is not null)
+        {
+            throw Fault(
+                "DPY4034",
+                $"{type.Name}() does not accept keyword arguments in this runtime slice.",
+                span,
+                "TypeError"
+            );
+        }
+
         var instance = new PythonManagedObjectValue(type);
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
@@ -2939,7 +2992,7 @@ internal sealed class PythonVirtualMachine
         );
     }
 
-    private void MakeClass(PythonInstruction instruction)
+    private void MakeClass(PythonInstruction instruction, PythonValue? baseValue = null)
     {
         PreparedPythonCode code;
         try
@@ -2968,7 +3021,50 @@ internal sealed class PythonVirtualMachine
             closure[index] = CurrentFrame.Cells[cellIndex];
         }
 
-        var type = new PythonManagedTypeValue(code.Definition.Name);
+        PythonManagedTypeValue type;
+        switch (baseValue)
+        {
+            case null:
+                type = new PythonManagedTypeValue(code.Definition.Name);
+                break;
+            case PythonManagedTypeValue managedBase:
+                type = new PythonManagedTypeValue(
+                    code.Definition.Name,
+                    managedBase,
+                    exceptionBaseName: managedBase.ExceptionBaseName is null
+                        ? null
+                        : managedBase.Name
+                );
+                break;
+            case PythonExceptionTypeValue exceptionBase:
+                type = new PythonManagedTypeValue(
+                    code.Definition.Name,
+                    exceptionBaseName: exceptionBase.Name
+                );
+                break;
+            case PythonBuiltinTypeValue builtinBase:
+                throw Fault(
+                    "DPY4034",
+                    $"Subclassing the builtin type '{builtinBase.Name}' is not supported "
+                        + "in this runtime slice.",
+                    instruction.Span,
+                    "TypeError"
+                );
+            default:
+                throw Fault(
+                    "DPY4034",
+                    $"'{ManagedObjectProtocols.GetTypeName(baseValue)}' is not an "
+                        + "acceptable base type.",
+                    instruction.Span,
+                    "TypeError"
+                );
+        }
+
+        if (type.ExceptionBaseName is not null)
+        {
+            _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName;
+        }
+
         var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
         var cells = CreateCells(code, closure, instruction.Span);
         PushFrame(
@@ -3237,7 +3333,7 @@ internal sealed class PythonVirtualMachine
             ),
         };
 
-    private static PythonTruthValue IsInstance(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonTruthValue IsInstance(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count != 2)
         {
@@ -3252,7 +3348,7 @@ internal sealed class PythonVirtualMachine
         return PythonTruthValue.FromBoolean(MatchesClassInfo(arguments[0], arguments[1], span));
     }
 
-    private static bool MatchesClassInfo(PythonValue value, PythonValue classInfo, TextSpan span)
+    private bool MatchesClassInfo(PythonValue value, PythonValue classInfo, TextSpan span)
     {
         switch (classInfo)
         {
@@ -3261,26 +3357,11 @@ internal sealed class PythonVirtualMachine
             case PythonBuiltinTypeValue builtinType:
                 return PythonBuiltinTypes.IsInstance(value, builtinType);
             case PythonExceptionTypeValue exceptionType:
-            {
-                if (value is not PythonExceptionValue exception)
-                {
-                    return false;
-                }
-
-                for (
-                    var current = exception.TypeName;
-                    current is not null;
-                    current = ExceptionBaseNames.GetValueOrDefault(current)
-                )
-                {
-                    if (string.Equals(current, exceptionType.Name, StringComparison.Ordinal))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
+                return value is PythonExceptionValue exception
+                    && IsExceptionSubclass(exception.TypeName, exceptionType.Name);
+            case PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass
+                when value is PythonExceptionValue raisedValue:
+                return IsExceptionSubclass(raisedValue.TypeName, exceptionClass.Name);
             case PythonManagedTypeValue managedType:
             {
                 if (value is not PythonManagedObjectValue instance)

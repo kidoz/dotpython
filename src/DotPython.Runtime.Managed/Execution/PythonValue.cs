@@ -322,18 +322,23 @@ internal sealed record PythonManagedTypeValue : PythonValue
     internal PythonManagedTypeValue(
         string name,
         PythonManagedTypeValue? baseType = null,
-        Func<IReadOnlyList<PythonValue>, PythonValue>? construct = null
+        Func<IReadOnlyList<PythonValue>, PythonValue>? construct = null,
+        string? exceptionBaseName = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         Name = name;
         BaseType = baseType;
         Construct = construct;
+        ExceptionBaseName = exceptionBaseName;
     }
 
     internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
 
     internal PythonManagedTypeValue? BaseType { get; }
+
+    /// <summary>The builtin exception type this class derives from, when it is an exception class.</summary>
+    internal string? ExceptionBaseName { get; }
 
     internal Func<IReadOnlyList<PythonValue>, PythonValue>? Construct { get; }
 
@@ -403,6 +408,15 @@ internal sealed record PythonFunctionValue(
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<function {Name}>";
+}
+
+internal sealed record PythonSuperProxyValue(
+    PythonManagedTypeValue DefiningType,
+    PythonManagedObjectValue Instance
+) : PythonValue
+{
+    internal override string ToDisplayString() =>
+        $"<super: {DefiningType.Name}, {Instance.Type.Name}>";
 }
 
 internal sealed record PythonBoundUserMethodValue(

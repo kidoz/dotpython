@@ -372,6 +372,24 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsClassBases()
+    {
+        var result = Parse(
+            "class Plain:\n    pass\nclass Empty():\n    pass\nclass Child(Base):\n    pass\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        Assert.Empty(
+            Assert.IsType<PythonClassDefinitionStatement>(result.Module.Statements[0]).Bases
+        );
+        Assert.Empty(
+            Assert.IsType<PythonClassDefinitionStatement>(result.Module.Statements[1]).Bases
+        );
+        var child = Assert.IsType<PythonClassDefinitionStatement>(result.Module.Statements[2]);
+        Assert.Equal("Base", Assert.IsType<PythonNameExpression>(Assert.Single(child.Bases)).Name);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 20.
+# DotPython executable PEG subset, version 21.
 # Upstream tag: CPython v3.14.6.
 # Upstream commit: c63aec69bd59c55314c06c23f4c22c03de76fe45.
 # Provenance: https://github.com/python/cpython/blob/c63aec69bd59c55314c06c23f4c22c03de76fe45/Grammar/python.gram
@@ -43,7 +43,7 @@ with_item: expression ['as' primary]
 try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
 except_block: 'except' [expression ['as' NAME]] ':' block
 function_def: 'def' NAME '(' [parameters] ')' ':' block
-class_def: 'class' NAME ':' block
+class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
 parameters: ','.parameter+ [',']
 parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
 block: NEWLINE INDENT statements DEDENT | simple_stmts

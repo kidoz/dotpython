@@ -557,6 +557,28 @@ public static class PythonParser
             }
 
             var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
+            var bases = new List<PythonExpression>();
+            if (Match(SyntaxTokenKind.LeftParenthesis))
+            {
+                while (Current.Kind != SyntaxTokenKind.RightParenthesis)
+                {
+                    var baseExpression = ParseExpression();
+                    if (baseExpression is null)
+                    {
+                        ReportExpected("a base class expression", Current.Span);
+                        break;
+                    }
+
+                    bases.Add(baseExpression);
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+                }
+
+                Expect(SyntaxTokenKind.RightParenthesis, "')' after the base classes");
+            }
+
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the class name");
             var enclosingFunctionDepth = _functionDepth;
             _functionDepth = 0;
@@ -573,6 +595,7 @@ public static class PythonParser
             return new PythonClassDefinitionStatement(
                 decorators,
                 name,
+                bases.AsReadOnly(),
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
             );

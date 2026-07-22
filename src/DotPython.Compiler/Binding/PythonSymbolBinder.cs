@@ -841,6 +841,11 @@ public static class PythonSymbolBinder
                         CollectReferences(decorator, references);
                     }
 
+                    foreach (var baseExpression in @class.Bases)
+                    {
+                        CollectReferences(baseExpression, references);
+                    }
+
                     break;
             }
         }
@@ -1027,6 +1032,14 @@ public static class PythonSymbolBinder
                     foreach (var decorator in @class.Decorators)
                     {
                         foreach (var nested in EnumerateComprehensions(decorator))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    foreach (var baseExpression in @class.Bases)
+                    {
+                        foreach (var nested in EnumerateComprehensions(baseExpression))
                         {
                             yield return nested;
                         }

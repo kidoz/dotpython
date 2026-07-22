@@ -63,13 +63,15 @@ public static class PythonCompiler
         private readonly PythonBoundScope _scope;
         private readonly bool _enableCallLocal;
         private readonly bool _enableReturnLocal;
+        private readonly string? _enclosingClassName;
 
         internal Compiler(
             string codeName,
             PythonBoundScope scope,
             List<Diagnostic> diagnostics,
             bool enableReturnLocal,
-            bool enableCallLocal
+            bool enableCallLocal,
+            string? enclosingClassName = null
         )
         {
             _codeName = codeName;
@@ -77,6 +79,7 @@ public static class PythonCompiler
             _diagnostics = diagnostics;
             _enableReturnLocal = enableReturnLocal;
             _enableCallLocal = enableCallLocal;
+            _enclosingClassName = enclosingClassName;
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
@@ -234,6 +237,23 @@ public static class PythonCompiler
                     CompileComparisonExpression(comparison);
                     break;
                 case PythonCallExpression call:
+                    if (
+                        call.Target is PythonNameExpression { Name: "super" }
+                        && call.Arguments.Count == 0
+                        && call.KeywordArguments.Count == 0
+                        && _enclosingClassName is not null
+                        && _scope.Parameters.Count > 0
+                    )
+                    {
+                        CompileExpression(call.Target);
+                        CompileExpression(new PythonNameExpression(_enclosingClassName, call.Span));
+                        CompileExpression(
+                            new PythonNameExpression(_scope.Parameters[0], call.Span)
+                        );
+                        Emit(PythonOpCode.Call, 2, call.Span);
+                        break;
+                    }
+
                     if (
                         call.Arguments.Any(argument => argument is PythonStarredExpression)
                         || call.KeywordArguments.Any(keyword => keyword.Name is null)
@@ -930,7 +950,8 @@ public static class PythonCompiler
                 childScope,
                 _diagnostics,
                 _enableReturnLocal,
-                _enableCallLocal
+                _enableCallLocal,
+                _scope.Kind == PythonScopeKind.Class ? _codeName : null
             );
             var childCode = childCompiler.CompileCode(
                 function.Body,
@@ -971,7 +992,25 @@ public static class PythonCompiler
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
+            if (@class.Bases.Count > 1)
+            {
+                Report(
+                    "DPY3114",
+                    "Multiple inheritance is not supported in this runtime slice.",
+                    @class.Span
+                );
+            }
+
+            if (@class.Bases.Count == 0)
+            {
+                Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
+            }
+            else
+            {
+                CompileExpression(@class.Bases[0]);
+                Emit(PythonOpCode.MakeClassWithBases, constantIndex, @class.Span);
+            }
+
             for (var index = 0; index < @class.Decorators.Count; index++)
             {
                 Emit(PythonOpCode.Call, 1, @class.Span);

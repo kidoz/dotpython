@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "83615d45b3686cd4310f27377ea0e2c8798a7d28c231cd02935fb36a85086a72";
+    internal const string SourceSha256 = "7312c9f96331d780a8800bdebdbe11281689ace92896fc8f5eb1b61e9d3d6400";
     internal const int RuleCount = 70;
 
     private const string GrammarSource = """
@@ -46,7 +46,7 @@ internal static class GeneratedPythonGrammar
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ':' block
-        class_def: 'class' NAME ':' block
+        class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
         parameters: ','.parameter+ [',']
         parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts

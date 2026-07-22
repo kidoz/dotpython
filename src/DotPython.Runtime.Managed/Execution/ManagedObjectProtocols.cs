@@ -95,6 +95,23 @@ internal static class ManagedObjectProtocols
                 }
 
                 throw MissingAttribute(instance.Type.Name, name, span);
+            case PythonSuperProxyValue proxy:
+                if (
+                    proxy.DefiningType.BaseType is { } baseType
+                    && TryGetTypeAttribute(baseType, name, out var inherited)
+                )
+                {
+                    return inherited is PythonFunctionValue inheritedMethod
+                        ? new PythonBoundUserMethodValue(name, proxy.Instance, inheritedMethod)
+                        : inherited;
+                }
+
+                throw Fault(
+                    "DPY4022",
+                    $"'super' object has no attribute '{name}'.",
+                    span,
+                    "AttributeError"
+                );
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return value;
             case PythonManagedTypeValue type when name == "__name__":
