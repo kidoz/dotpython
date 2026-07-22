@@ -1,6 +1,7 @@
 <Project>
     <PropertyGroup>
-        <DotPythonSdkToolsPath>$(MSBuildThisFileDirectory)..\tools\net10.0\any\</DotPythonSdkToolsPath>
+        <DotPythonSdkToolsPath Condition="'$(DotPythonSdkToolsPath)' == ''"
+            >$(MSBuildThisFileDirectory)..\tools\net10.0\any\</DotPythonSdkToolsPath>
         <DotPythonBuildToolPath Condition="'$(DotPythonBuildToolPath)' == ''"
             >$(DotPythonSdkToolsPath)DotPython.Build.Tasks.dll</DotPythonBuildToolPath>
         <DotPythonDotNetHost Condition="'$(DotNetHostPath)' != ''"
