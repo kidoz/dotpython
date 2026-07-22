@@ -631,6 +631,44 @@ public static class PythonParser
                 );
             }
 
+            var augmentedOperator = Current.Kind switch
+            {
+                SyntaxTokenKind.PlusEqual => PythonBinaryOperator.Add,
+                SyntaxTokenKind.MinusEqual => PythonBinaryOperator.Subtract,
+                SyntaxTokenKind.StarEqual => PythonBinaryOperator.Multiply,
+                SyntaxTokenKind.SlashEqual => PythonBinaryOperator.TrueDivide,
+                SyntaxTokenKind.DoubleSlashEqual => PythonBinaryOperator.FloorDivide,
+                SyntaxTokenKind.PercentEqual => PythonBinaryOperator.Modulo,
+                SyntaxTokenKind.DoubleStarEqual => PythonBinaryOperator.Power,
+                _ => (PythonBinaryOperator?)null,
+            };
+            if (augmentedOperator is not null)
+            {
+                Advance();
+                var value = ParseExpression();
+                if (value is null)
+                {
+                    ReportExpected(
+                        "an expression after the augmented assignment operator",
+                        Current.Span
+                    );
+                    return null;
+                }
+
+                if (expression is not (PythonNameExpression or PythonSubscriptionExpression))
+                {
+                    Report("DPY2005", "This expression cannot be assigned to.", expression.Span);
+                    return null;
+                }
+
+                return new PythonAugmentedAssignmentStatement(
+                    expression,
+                    augmentedOperator.Value,
+                    value,
+                    TextSpan.FromBounds(expression.Span.Start, value.Span.End)
+                );
+            }
+
             return new PythonExpressionStatement(expression, expression.Span);
         }
 
@@ -1241,7 +1279,7 @@ public static class PythonParser
                     continue;
                 }
 
-                if (!Match(SyntaxTokenKind.LeftBracket, out _))
+                if (!Match(SyntaxTokenKind.LeftBracket, out var leftBracket))
                 {
                     if (!Match(SyntaxTokenKind.Dot, out _))
                     {
@@ -1274,10 +1312,9 @@ public static class PythonParser
                     continue;
                 }
 
-                var index = ParseExpression();
+                var index = ParseSubscript(leftBracket);
                 if (index is null)
                 {
-                    ReportExpected("a subscription index", Current.Span);
                     break;
                 }
 
@@ -1294,6 +1331,58 @@ public static class PythonParser
             }
 
             return expression;
+        }
+
+        private PythonExpression? ParseSubscript(SyntaxToken leftBracket)
+        {
+            PythonExpression? start = null;
+            if (Current.Kind != SyntaxTokenKind.Colon)
+            {
+                start = ParseExpression();
+                if (start is null)
+                {
+                    ReportExpected("a subscription index", Current.Span);
+                    return null;
+                }
+
+                if (Current.Kind != SyntaxTokenKind.Colon)
+                {
+                    return start;
+                }
+            }
+
+            var colon = Advance();
+            PythonExpression? stop = null;
+            if (Current.Kind is not (SyntaxTokenKind.Colon or SyntaxTokenKind.RightBracket))
+            {
+                stop = ParseExpression();
+                if (stop is null)
+                {
+                    ReportExpected("a slice stop expression", Current.Span);
+                }
+            }
+
+            PythonExpression? step = null;
+            if (Match(SyntaxTokenKind.Colon))
+            {
+                if (Current.Kind != SyntaxTokenKind.RightBracket)
+                {
+                    step = ParseExpression();
+                    if (step is null)
+                    {
+                        ReportExpected("a slice step expression", Current.Span);
+                    }
+                }
+            }
+
+            var spanStart = start?.Span.Start ?? leftBracket.Span.End;
+            var end = step?.Span.End ?? stop?.Span.End ?? colon.Span.End;
+            return new PythonSliceExpression(
+                start,
+                stop,
+                step,
+                TextSpan.FromBounds(spanStart, end)
+            );
         }
 
         private PythonExpression? ParseAtom()
@@ -1490,6 +1579,34 @@ public static class PythonParser
             out SyntaxToken token
         )
         {
+            if (IsKeyword("in"))
+            {
+                @operator = PythonComparisonOperator.In;
+                token = Advance();
+                return true;
+            }
+
+            if (IsKeyword("not") && Peek(1) is { Kind: SyntaxTokenKind.Identifier, Text: "in" })
+            {
+                @operator = PythonComparisonOperator.NotIn;
+                token = Advance();
+                Advance();
+                return true;
+            }
+
+            if (IsKeyword("is"))
+            {
+                token = Advance();
+                if (MatchKeyword("not", out _))
+                {
+                    @operator = PythonComparisonOperator.IsNot;
+                    return true;
+                }
+
+                @operator = PythonComparisonOperator.Is;
+                return true;
+            }
+
             var value = Current.Kind switch
             {
                 SyntaxTokenKind.EqualEqual => PythonComparisonOperator.Equal,
@@ -1655,6 +1772,7 @@ public static class PythonParser
                     or "or"
                     or "not"
                     or "in"
+                    or "is"
                     or "as"
                     or "from"
                     or "except"

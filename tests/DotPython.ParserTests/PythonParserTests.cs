@@ -323,6 +323,63 @@ public sealed class PythonParserTests
         Assert.Equal("third", Assert.Single(nonlocalStatement.Names).Name);
     }
 
+    [Fact]
+    public void Parse_BuildsSliceMembershipAndAugmentedAssignmentNodes()
+    {
+        var result = Parse(
+            "part = letters[1:8:2]\ncount += value in items\nflag = value is not None\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        var subscription = Assert.IsType<PythonSubscriptionExpression>(assignment.Value);
+        var slice = Assert.IsType<PythonSliceExpression>(subscription.Index);
+        Assert.NotNull(slice.Start);
+        Assert.NotNull(slice.Stop);
+        Assert.NotNull(slice.Step);
+
+        var augmented = Assert.IsType<PythonAugmentedAssignmentStatement>(
+            result.Module.Statements[1]
+        );
+        Assert.Equal(PythonBinaryOperator.Add, augmented.Operator);
+        var membership = Assert.IsType<PythonComparisonExpression>(augmented.Value);
+        Assert.Equal(PythonComparisonOperator.In, Assert.Single(membership.Comparisons).Operator);
+
+        var identity = Assert.IsType<PythonComparisonExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[2]).Value
+        );
+        Assert.Equal(PythonComparisonOperator.IsNot, Assert.Single(identity.Comparisons).Operator);
+    }
+
+    [Fact]
+    public void Parse_BuildsOpenEndedSlicesAndNotIn()
+    {
+        var result = Parse("print(letters[:2], letters[3:], letters[:], value not in items)\n");
+
+        Assert.Empty(result.Diagnostics);
+        var call = Assert.IsType<PythonCallExpression>(
+            Assert
+                .IsType<PythonExpressionStatement>(Assert.Single(result.Module.Statements))
+                .Expression
+        );
+        var first = Assert.IsType<PythonSliceExpression>(
+            Assert.IsType<PythonSubscriptionExpression>(call.Arguments[0]).Index
+        );
+        Assert.Null(first.Start);
+        Assert.NotNull(first.Stop);
+        var full = Assert.IsType<PythonSliceExpression>(
+            Assert.IsType<PythonSubscriptionExpression>(call.Arguments[2]).Index
+        );
+        Assert.Null(full.Start);
+        Assert.Null(full.Stop);
+        Assert.Null(full.Step);
+        var membership = Assert.IsType<PythonComparisonExpression>(call.Arguments[3]);
+        Assert.Equal(
+            PythonComparisonOperator.NotIn,
+            Assert.Single(membership.Comparisons).Operator
+        );
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]

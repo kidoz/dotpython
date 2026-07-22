@@ -16,6 +16,13 @@ public sealed record PythonAssignmentStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
+public sealed record PythonAugmentedAssignmentStatement(
+    PythonExpression Target,
+    PythonBinaryOperator Operator,
+    PythonExpression Value,
+    TextSpan Span
+) : PythonStatement(Span);
+
 public sealed record PythonExpressionStatement(PythonExpression Expression, TextSpan Span)
     : PythonStatement(Span);
 
@@ -174,6 +181,13 @@ public sealed record PythonSubscriptionExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonSliceExpression(
+    PythonExpression? Start,
+    PythonExpression? Stop,
+    PythonExpression? Step,
+    TextSpan Span
+) : PythonExpression(Span);
+
 public sealed record PythonAttributeExpression(
     PythonExpression Target,
     string AttributeName,
@@ -225,4 +239,8 @@ public enum PythonComparisonOperator
     LessThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
+    In,
+    NotIn,
+    Is,
+    IsNot,
 }

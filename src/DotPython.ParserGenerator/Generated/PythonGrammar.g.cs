@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "d465b12ab5547012776fa732f58715ed03a2aa16b357591d7bf64f71e13efbb7";
-    internal const int RuleCount = 51;
+    internal const string SourceSha256 = "2731d8cb4773eef904545b7e03adb943038f80b1a70c1f80b39ae3cd926da3fe";
+    internal const int RuleCount = 55;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -14,8 +14,9 @@ internal static class GeneratedPythonGrammar
         statement: compound_stmt | simple_stmts
         compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression
+        simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression
         assignment: primary '=' expression
+        augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression
         return_stmt: 'return' [expression]
         break_stmt: 'break'
         continue_stmt: 'continue'
@@ -44,12 +45,15 @@ internal static class GeneratedPythonGrammar
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
         inversion: 'not' inversion | comparison
-        comparison: sum (('==' | '!=' | '<' | '<=' | '>' | '>=') sum)*
+        comparison: sum (comparison_operator sum)*
+        comparison_operator: '==' | '!=' | '<=' | '<' | '>=' | '>' | 'not' 'in' | 'in' | 'is' 'not' | 'is'
         sum: term (('+' | '-') term)*
         term: factor (('*' | '/' | '//' | '%') factor)*
         factor: ('+' | '-' | '~') factor | power
         power: primary ['**' factor]
-        primary: atom (('(' [arguments] ')') | ('[' expression ']') | ('.' NAME))*
+        primary: atom (('(' [arguments] ')') | ('[' subscript ']') | ('.' NAME))*
+        subscript: slice | expression
+        slice: [expression] ':' [expression] [':' [expression]]
         arguments: ','.argument+ [',']
         argument: NAME '=' expression | expression
         expression_list: ','.expression+ [',']
