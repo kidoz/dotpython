@@ -24,45 +24,15 @@
     "blockers": [
       {
         "id": "managed-suite-admission",
-        "diagnosticCode": "DPY2004",
+        "diagnosticCode": "DPY3004",
         "message": "The unmodified upstream module was rejected before any test case could be attempted.",
         "occurrences": 1
       },
       {
-        "id": "managed-parser-with-statement",
-        "diagnosticCode": "DPY2004",
-        "message": "The \u0027with\u0027 statement is not supported in this position.",
-        "occurrences": 22
-      },
-      {
-        "id": "managed-dpy2003-1-expected-a-new-line-or-semicolon-after-the-state",
-        "diagnosticCode": "DPY2003",
-        "message": "Expected a new line or semicolon after the statement.",
+        "id": "managed-dpy3004-0-formatted-and-template-strings-are-not-executabl",
+        "diagnosticCode": "DPY3004",
+        "message": "Formatted and template strings are not executable in this runtime slice.",
         "occurrences": 6
-      },
-      {
-        "id": "managed-dpy2001-2-expected",
-        "diagnosticCode": "DPY2001",
-        "message": "Expected \u0027)\u0027.",
-        "occurrences": 5
-      },
-      {
-        "id": "managed-dpy2001-3-expected-after-the-dictionary-key",
-        "diagnosticCode": "DPY2001",
-        "message": "Expected \u0027:\u0027 after the dictionary key.",
-        "occurrences": 1
-      },
-      {
-        "id": "managed-dpy2001-4-expected",
-        "diagnosticCode": "DPY2001",
-        "message": "Expected \u0027}\u0027.",
-        "occurrences": 1
-      },
-      {
-        "id": "managed-dpy2001-5-expected-a-dictionary-value",
-        "diagnosticCode": "DPY2001",
-        "message": "Expected a dictionary value.",
-        "occurrences": 1
       }
     ]
   },

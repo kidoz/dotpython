@@ -56,8 +56,14 @@ public sealed class AnyverQualificationEvidenceTests
             .Select(blocker => blocker.GetProperty("id").GetString())
             .ToHashSet(StringComparer.Ordinal);
         Assert.Contains("managed-suite-admission", blockerIds);
-        Assert.Contains("managed-parser-with-statement", blockerIds);
         Assert.DoesNotContain("managed-parser-assert-statement", blockerIds);
+        Assert.DoesNotContain("managed-parser-with-statement", blockerIds);
+        Assert.Contains(
+            blockerIds,
+            blocker =>
+                blocker is not null
+                && blocker.StartsWith("managed-dpy3004", StringComparison.Ordinal)
+        );
         Assert.All(
             execution.GetProperty("blockers").EnumerateArray(),
             blocker => Assert.True(blocker.GetProperty("occurrences").GetInt32() >= 1)

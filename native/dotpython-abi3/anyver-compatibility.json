@@ -17,7 +17,7 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "6a8f4a570580aa2e9b960787003a51b6a2b92d93be29146b60879c72b21985ec",
+    "evidenceSha256": "22a7cbf5651a34e7704b8f1e1f75f765f8a5e5962166e88e0ee0e9e5a53822a8",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
@@ -26,7 +26,7 @@
     "passed": 0,
     "failed": 0,
     "skipped": 325,
-    "reason": "The unchanged suite is still blocked at worker admission: the previous 'assert' blocker is cleared, and the remaining parse blockers are 22 'with' statements (DPY2004), 5 lambda expressions, and 1 set literal. All 325 upstream node IDs remain recorded as skipped; no skipped case is counted as passed."
+    "reason": "The unchanged suite now parses completely ('assert', 'with', lambdas, set literals, and decorators are cleared) and is blocked at worker admission by 6 f-string sites rejected at compile time (DPY3004). All 325 upstream node IDs remain recorded as skipped; no skipped case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",
