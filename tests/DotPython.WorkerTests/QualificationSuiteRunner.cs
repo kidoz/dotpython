@@ -28,7 +28,8 @@ internal static partial class QualificationSuiteRunner
         string moduleSource,
         string fileName,
         IReadOnlyList<string> nodeIds,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        bool attemptParametrized = false
     )
     {
         var admission = await session
@@ -93,25 +94,84 @@ internal static partial class QualificationSuiteRunner
 
         var attempted = 0;
         var sawParametrized = false;
+        var parameterIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
         var cases = new List<AnyverQualificationCase>(nodeIds.Count);
         foreach (var nodeId in nodeIds)
         {
-            if (nodeId.Contains('[', StringComparison.Ordinal))
+            string? snippet;
+            var parameterStart = nodeId.IndexOf('[', StringComparison.Ordinal);
+            if (parameterStart >= 0)
             {
-                sawParametrized = true;
+                if (!attemptParametrized)
+                {
+                    sawParametrized = true;
+                    cases.Add(
+                        new AnyverQualificationCase
+                        {
+                            NodeId = nodeId,
+                            Outcome = "skipped",
+                            Blocker = ParametrizeBlockerId,
+                        }
+                    );
+                    continue;
+                }
+
+                var bareNodeId = nodeId[..parameterStart];
+                var parameterSegments = bareNodeId.Split(
+                    "::",
+                    StringSplitOptions.RemoveEmptyEntries
+                );
+                var index = parameterIndexes.GetValueOrDefault(bareNodeId);
+                parameterIndexes[bareNodeId] = index + 1;
+                snippet = parameterSegments.Length switch
+                {
+                    3 => $"import pytest\npytest._run_case({parameterSegments[1]}()."
+                        + $"{parameterSegments[2]}, '{parameterSegments[2]}', {index})",
+                    2 => $"import pytest\npytest._run_case({parameterSegments[1]}, "
+                        + $"'{parameterSegments[1]}', {index})",
+                    _ => null,
+                };
+                if (snippet is null)
+                {
+                    cases.Add(
+                        new AnyverQualificationCase
+                        {
+                            NodeId = nodeId,
+                            Outcome = "skipped",
+                            Blocker = SuiteAdmissionBlockerId,
+                        }
+                    );
+                    continue;
+                }
+
+                attempted++;
+                var parametrizedAttempt = await session
+                    .ExecuteAsync(
+                        snippet,
+                        fileName: $"<{nodeId}>",
+                        cancellationToken: cancellationToken
+                    )
+                    .ConfigureAwait(false);
                 cases.Add(
                     new AnyverQualificationCase
                     {
                         NodeId = nodeId,
-                        Outcome = "skipped",
-                        Blocker = ParametrizeBlockerId,
+                        Outcome = parametrizedAttempt.Success ? "passed" : "failed",
+                        Detail = parametrizedAttempt.Success
+                            ? null
+                            : string.Join(
+                                "; ",
+                                parametrizedAttempt.Diagnostics.Select(diagnostic =>
+                                    $"{diagnostic.Code}: {diagnostic.Message}"
+                                )
+                            ),
                     }
                 );
                 continue;
             }
 
             var segments = nodeId.Split("::", StringSplitOptions.RemoveEmptyEntries);
-            var snippet = segments.Length switch
+            snippet = segments.Length switch
             {
                 3 => $"{segments[1]}().{segments[2]}()",
                 2 => $"{segments[1]}()",

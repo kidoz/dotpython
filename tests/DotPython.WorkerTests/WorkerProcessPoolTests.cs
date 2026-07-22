@@ -268,7 +268,8 @@ public sealed class WorkerProcessPoolTests
         Assert.Equal(325, nodeIds.Length);
         Assert.Equal(nodeIds.Length, nodeIds.Distinct(StringComparer.Ordinal).Count());
 
-        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
+        var (shimRoot, shimSha256) = StagePytestShim();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions(shimRoot));
         await using var session = await pool.OpenSessionAsync(
             TestContext.Current.CancellationToken
         );
@@ -277,13 +278,14 @@ public sealed class WorkerProcessPoolTests
             testSource,
             fileName: "tests/test_anyver.py",
             nodeIds,
-            TestContext.Current.CancellationToken
+            TestContext.Current.CancellationToken,
+            attemptParametrized: true
         );
         Assert.Equal(nodeIds.Length, run.Cases.Count);
 
         var evidence = new AnyverQualificationEvidence
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             Package = "anyver",
             PackageVersion = "1.1.0",
             Wheel = "anyver-1.1.0-cp311-abi3-macosx_11_0_arm64.whl",
@@ -309,6 +311,11 @@ public sealed class WorkerProcessPoolTests
                 SourceModified = false,
                 SuiteAdmissionAttempts = 1,
                 AttemptedCases = run.AttemptedCases,
+                PytestShim = new AnyverQualificationShim
+                {
+                    File = "pytest.py",
+                    Sha256 = shimSha256,
+                },
                 Blockers = run.Blockers,
             },
             Summary = new AnyverQualificationSummary
@@ -972,15 +979,86 @@ public sealed class WorkerProcessPoolTests
         return features;
     }
 
-    private static WorkerProcessOptions CreateQualifiedAnyverOptions()
+    private static WorkerProcessOptions CreateQualifiedAnyverOptions(
+        string? additionalPackageRoot = null
+    )
     {
         var packageRoot = NativeFixturePath("anyver-package");
+        IReadOnlyList<string> packageRoots = additionalPackageRoot is null
+            ? [packageRoot]
+            : [packageRoot, additionalPackageRoot];
         return CreateOptions(
             stableAbiModule: true,
             nativeManifestFileName: "anyver-symbol-manifest.json",
             nativeModulePath: Path.Combine(packageRoot, "anyver", "_anyver.abi3.so"),
-            packageRoots: [packageRoot]
+            packageRoots: packageRoots
         );
+    }
+
+    private const string PytestShimSource = """
+_registry = {}
+
+
+class _RaisesContext:
+    def __init__(self, expected):
+        self.expected = expected
+        self.value = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is None:
+            raise AssertionError('DID NOT RAISE')
+        if isinstance(exc_value, self.expected):
+            self.value = exc_value
+            return True
+        return False
+
+
+class _Mark:
+    def parametrize(self, names, values):
+        def _apply(func):
+            _registry[func.__name__] = (names, values)
+            return func
+        return _apply
+
+
+mark = _Mark()
+
+
+def raises(expected):
+    return _RaisesContext(expected)
+
+
+def _run_case(bound, name, index):
+    entry = _registry[name]
+    names = entry[0]
+    values = entry[1]
+    params = values[index]
+    count = len(names.split(','))
+    if count == 1:
+        bound(params)
+    elif count == 2:
+        bound(params[0], params[1])
+    elif count == 3:
+        bound(params[0], params[1], params[2])
+    elif count == 4:
+        bound(params[0], params[1], params[2], params[3])
+    else:
+        raise ValueError('Unsupported parametrize arity.')
+""";
+
+    private static (string Root, string Sha256) StagePytestShim()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "pytest-shim");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "pytest.py");
+        var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(
+            PytestShimSource.ReplaceLineEndings("\n")
+        );
+        File.WriteAllBytes(path, bytes);
+        return (root, Convert.ToHexStringLower(SHA256.HashData(bytes)));
     }
 
     private static string NativeFixturePath(string fileName) =>
@@ -1166,7 +1244,17 @@ internal sealed class AnyverQualificationExecution
 
     public required int AttemptedCases { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnyverQualificationShim? PytestShim { get; init; }
+
     public required IReadOnlyList<AnyverQualificationBlocker> Blockers { get; init; }
+}
+
+internal sealed class AnyverQualificationShim
+{
+    public required string File { get; init; }
+
+    public required string Sha256 { get; init; }
 }
 
 internal sealed class AnyverQualificationBlocker
