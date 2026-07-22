@@ -3578,40 +3578,8 @@ internal sealed class PythonVirtualMachine
         return true;
     }
 
-    private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
-    {
-        left = PromoteTruthValue(left);
-        right = PromoteTruthValue(right);
-
-        if (IsNumeric(left) && IsNumeric(right))
-        {
-            if (left is PythonComplexValue || right is PythonComplexValue)
-            {
-                throw Fault("DPY4005", "Complex numbers cannot be ordered.", span);
-            }
-
-            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
-            {
-                return ToDouble(left).CompareTo(ToDouble(right));
-            }
-
-            return ((PythonWholeNumberValue)left).Value.CompareTo(
-                ((PythonWholeNumberValue)right).Value
-            );
-        }
-
-        return (left, right) switch
-        {
-            (PythonTextValue leftText, PythonTextValue rightText) => string.CompareOrdinal(
-                leftText.Value,
-                rightText.Value
-            ),
-            (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
-                .Value.AsSpan()
-                .SequenceCompareTo(rightBytes.Value),
-            _ => throw Fault("DPY4005", "Values of these types cannot be ordered.", span),
-        };
-    }
+    private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span) =>
+        ManagedObjectProtocols.CompareOrdered(left, right, span);
 
     private static PythonValue ApplyBinary(
         PythonOpCode opCode,

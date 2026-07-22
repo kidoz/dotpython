@@ -1258,6 +1258,28 @@ internal static class ManagedObjectProtocols
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceCompareTo(rightBytes.Value),
+            (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => CompareSequencesOrdered(
+                leftTuple.Elements,
+                rightTuple.Elements,
+                span
+            ),
+            (PythonListValue leftList, PythonListValue rightList) => CompareSequencesOrdered(
+                leftList.Elements,
+                rightList.Elements,
+                span
+            ),
+            (PythonExternalObjectValue external, _) => CompareExternalOrdered(
+                external,
+                right,
+                externalIsRight: false,
+                span
+            ),
+            (_, PythonExternalObjectValue external) => CompareExternalOrdered(
+                external,
+                left,
+                externalIsRight: true,
+                span
+            ),
             _ => throw Fault(
                 "DPY4005",
                 "Values of these types cannot be ordered.",
@@ -1265,6 +1287,50 @@ internal static class ManagedObjectProtocols
                 "TypeError"
             ),
         };
+    }
+
+    private static int CompareSequencesOrdered(
+        IReadOnlyList<PythonValue> left,
+        IReadOnlyList<PythonValue> right,
+        TextSpan span
+    )
+    {
+        var count = Math.Min(left.Count, right.Count);
+        for (var index = 0; index < count; index++)
+        {
+            if (AreEqual(left[index], right[index]))
+            {
+                continue;
+            }
+
+            return CompareOrdered(left[index], right[index], span);
+        }
+
+        return left.Count.CompareTo(right.Count);
+    }
+
+    private static int CompareExternalOrdered(
+        PythonExternalObjectValue external,
+        PythonValue other,
+        bool externalIsRight,
+        TextSpan span
+    )
+    {
+        if (external.Protocol.RichCompare(other, PythonRichComparison.Equal, span).Value)
+        {
+            return 0;
+        }
+
+        // Both probes ask the native side about the external operand, so the comparison
+        // direction flips when the external value sat on the right of the original pair.
+        var leftOperandFirst = external
+            .Protocol.RichCompare(
+                other,
+                externalIsRight ? PythonRichComparison.GreaterThan : PythonRichComparison.LessThan,
+                span
+            )
+            .Value;
+        return leftOperandFirst ? -1 : 1;
     }
 
     private static int GetByteHash(byte[] bytes)

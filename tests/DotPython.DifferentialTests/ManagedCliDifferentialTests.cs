@@ -207,6 +207,12 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print(1, 2, 3, sep='-', end='!\\n')\nprint('x', 'y', sep='', end='')\nprint('tail')\nprint('a', 'b', sep=None, end=None)\nprint(sep='-')\nprint('solo', end='|')\nprint()"
     )]
+    [InlineData(
+        "print(sorted([(2, 'b'), (1, 'z'), (2, 'a')]))\nprint((1, 2) < (1, 3), (1, 2) < (1, 2, 0), (2,) > (1, 9, 9), (1, 'a') == (1, 'a'))\nprint(sorted([[3], [1, 2], [1]]), [1, 2] < [1, 2, 0], [2] > [1, 9])\nprint(min([(2, 0), (1, 5)]), max([(2, 0), (1, 5)]))\nnested = [((1, 'b'), 0), ((1, 'a'), 1)]\nprint(sorted(nested), sorted(['b1', 'a2'], key=lambda s: (s[1], s[0])))"
+    )]
+    [InlineData(
+        "try:\n    sorted([(1,), 2])\nexcept TypeError:\n    print('mixed-rejected')\ntry:\n    (1,) < [1]\nexcept TypeError:\n    print('tuple-list-rejected')\nprint(sorted([(1.5, 'x'), (1, 'y')]), (True, 2) < (1, 3))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
