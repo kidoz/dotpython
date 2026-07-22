@@ -454,6 +454,64 @@ internal static class PythonBuiltinMethods
         ),
     };
 
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> SetMethods = new(
+        StringComparer.Ordinal
+    )
+    {
+        ["add"] = Set(
+            "add",
+            1,
+            1,
+            (set, arguments) =>
+            {
+                ManagedObjectProtocols.AddToSet(set, arguments[0], default);
+                return PythonNoneValue.Instance;
+            }
+        ),
+        ["remove"] = Set(
+            "remove",
+            1,
+            1,
+            (set, arguments) =>
+            {
+                var index = FindElement(set.Elements, arguments[0]);
+                if (index < 0)
+                {
+                    throw Fault("The set element was not found.", "KeyError");
+                }
+
+                set.Elements.RemoveAt(index);
+                return PythonNoneValue.Instance;
+            }
+        ),
+        ["discard"] = Set(
+            "discard",
+            1,
+            1,
+            (set, arguments) =>
+            {
+                var index = FindElement(set.Elements, arguments[0]);
+                if (index >= 0)
+                {
+                    set.Elements.RemoveAt(index);
+                }
+
+                return PythonNoneValue.Instance;
+            }
+        ),
+        ["clear"] = Set(
+            "clear",
+            0,
+            0,
+            (set, _) =>
+            {
+                set.Elements.Clear();
+                return PythonNoneValue.Instance;
+            }
+        ),
+        ["copy"] = Set("copy", 0, 0, (set, _) => new PythonSetValue([.. set.Elements])),
+    };
+
     internal static bool TryGet(
         PythonValue target,
         string name,
@@ -466,6 +524,7 @@ internal static class PythonBuiltinMethods
             PythonListValue => ListMethods,
             PythonDictionaryValue => DictionaryMethods,
             PythonTupleValue => TupleMethods,
+            PythonSetValue => SetMethods,
             _ => null,
         };
         if (table is not null && table.TryGetValue(name, out var found))
@@ -479,7 +538,12 @@ internal static class PythonBuiltinMethods
     }
 
     internal static bool SupportsMethods(PythonValue target) =>
-        target is PythonTextValue or PythonListValue or PythonDictionaryValue or PythonTupleValue;
+        target
+            is PythonTextValue
+                or PythonListValue
+                or PythonDictionaryValue
+                or PythonTupleValue
+                or PythonSetValue;
 
     private static PythonProtocolFunctionValue Text(
         string name,
@@ -523,6 +587,21 @@ internal static class PythonBuiltinMethods
             {
                 RequireArguments(name, arguments, minimumArguments, maximumArguments);
                 return implementation((PythonDictionaryValue)target!, arguments);
+            }
+        );
+
+    private static PythonProtocolFunctionValue Set(
+        string name,
+        int minimumArguments,
+        int maximumArguments,
+        Func<PythonSetValue, IReadOnlyList<PythonValue>, PythonValue> implementation
+    ) =>
+        new(
+            name,
+            (target, arguments) =>
+            {
+                RequireArguments(name, arguments, minimumArguments, maximumArguments);
+                return implementation((PythonSetValue)target!, arguments);
             }
         );
 

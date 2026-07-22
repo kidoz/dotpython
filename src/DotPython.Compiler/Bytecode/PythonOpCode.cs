@@ -79,4 +79,7 @@ public enum PythonOpCode
     DeleteSubscript = 74,
     DeleteCell = 75,
     DeleteAttribute = 76,
+    LoadExceptionInfo = 77,
+    EndWith = 78,
+    BuildSet = 79,
 }

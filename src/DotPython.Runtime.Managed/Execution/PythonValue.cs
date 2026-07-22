@@ -432,6 +432,33 @@ internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : Pyth
     internal override string ToDisplayString() => "<zip>";
 }
 
+internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
+{
+    internal override string ToDisplayString()
+    {
+        if (Elements.Count == 0)
+        {
+            return "set()";
+        }
+
+        if (!PythonRepresentationGuard.TryEnter(this))
+        {
+            return "{...}";
+        }
+
+        try
+        {
+            return "{"
+                + string.Join(", ", Elements.Select(element => element.ToRepresentationString()))
+                + "}";
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
+}
+
 internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, PythonValue Step)
     : PythonValue
 {

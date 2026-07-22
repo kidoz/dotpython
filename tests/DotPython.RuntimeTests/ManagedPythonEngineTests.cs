@@ -2202,6 +2202,155 @@ public sealed class ManagedPythonEngineTests
         );
     }
 
+    [Fact]
+    public void Execute_RunsContextManagersWithSuppressionSemantics()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "class Manager:\n"
+                + "    def __init__(self, name, suppress=False):\n"
+                + "        self.name = name\n"
+                + "        self.suppress = suppress\n"
+                + "    def __enter__(self):\n"
+                + "        print('enter', self.name)\n"
+                + "        return self.name\n"
+                + "    def __exit__(self, exc_type, exc_value, traceback):\n"
+                + "        print('exit', self.name, exc_type is None)\n"
+                + "        return self.suppress\n"
+                + "with Manager('bound') as name:\n"
+                + "    print('got', name)\n"
+                + "try:\n"
+                + "    with Manager('leaky'):\n"
+                + "        raise ValueError('boom')\n"
+                + "except ValueError as error:\n"
+                + "    print('caught', error)\n"
+                + "with Manager('quiet', suppress=True):\n"
+                + "    raise ValueError('silenced')\n"
+                + "print('after-suppress')\n"
+                + "with Manager('outer') as a, Manager('inner') as b:\n"
+                + "    print('nested', a, b)\n",
+            "context-managers.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"enter bound{Environment.NewLine}got bound{Environment.NewLine}"
+                + $"exit bound True{Environment.NewLine}"
+                + $"enter leaky{Environment.NewLine}exit leaky False{Environment.NewLine}"
+                + $"caught boom{Environment.NewLine}"
+                + $"enter quiet{Environment.NewLine}exit quiet False{Environment.NewLine}"
+                + $"after-suppress{Environment.NewLine}"
+                + $"enter outer{Environment.NewLine}enter inner{Environment.NewLine}"
+                + $"nested outer inner{Environment.NewLine}"
+                + $"exit inner True{Environment.NewLine}exit outer True{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_RunsContextManagerExitsOnReturnAndBreak()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "class Manager:\n"
+                + "    def __init__(self, name):\n"
+                + "        self.name = name\n"
+                + "    def __enter__(self):\n"
+                + "        return self.name\n"
+                + "    def __exit__(self, exc_type, exc_value, traceback):\n"
+                + "        print('exit', self.name, exc_type is None)\n"
+                + "        return False\n"
+                + "def run():\n"
+                + "    with Manager('ret'):\n"
+                + "        return 'early'\n"
+                + "print(run())\n"
+                + "for i in range(4):\n"
+                + "    with Manager('loop'):\n"
+                + "        if i == 2:\n"
+                + "            break\n"
+                + "        print('iter', i)\n"
+                + "print('after-loop')\n"
+                + "class BadExit:\n"
+                + "    def __enter__(self):\n"
+                + "        return self\n"
+                + "    def __exit__(self, t, v, tb):\n"
+                + "        raise KeyError('exit-fail')\n"
+                + "try:\n"
+                + "    with BadExit():\n"
+                + "        raise ValueError('original')\n"
+                + "except KeyError:\n"
+                + "    print('exit-error-replaced')\n",
+            "context-exits.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"exit ret True{Environment.NewLine}early{Environment.NewLine}"
+                + $"iter 0{Environment.NewLine}exit loop True{Environment.NewLine}"
+                + $"iter 1{Environment.NewLine}exit loop True{Environment.NewLine}"
+                + $"exit loop True{Environment.NewLine}"
+                + $"after-loop{Environment.NewLine}"
+                + $"exit-error-replaced{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
+    [Fact]
+    public void Execute_EvaluatesLambdasAndSets()
+    {
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "add = lambda a, b=10: a + b\n"
+                + "print(add(1), add(1, 2))\n"
+                + "factor = 3\n"
+                + "print((lambda v: v * factor)(5))\n"
+                + "def make_adder(n):\n"
+                + "    return lambda v: v + n\n"
+                + "print(make_adder(100)(1))\n"
+                + "print([f(10) for f in [lambda v: v + 1, lambda v: v * 2]])\n"
+                + "s = {1, 2, 2, 3, 1}\n"
+                + "print(len(s), 2 in s, 9 in s, sorted(s))\n"
+                + "s.add(9)\n"
+                + "s.discard(1)\n"
+                + "print(sorted(s), {1, 2} == {2, 1}, set() == set(), {1} == {1, 2})\n"
+                + "print(len({1, 1.0, True}), isinstance(s, set), type(s) is set)\n"
+                + "print({42}, set(), sorted(set([3, 1, 2, 3])))\n"
+                + "try:\n"
+                + "    bad = {[1], 2}\n"
+                + "except TypeError:\n"
+                + "    print('unhashable')\n"
+                + "try:\n"
+                + "    {1}.remove(9)\n"
+                + "except KeyError:\n"
+                + "    print('remove-missing')\n",
+            "lambdas-sets.py",
+            output,
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            $"11 3{Environment.NewLine}"
+                + $"15{Environment.NewLine}"
+                + $"101{Environment.NewLine}"
+                + $"[11, 20]{Environment.NewLine}"
+                + $"3 True False [1, 2, 3]{Environment.NewLine}"
+                + $"[2, 3, 9] True True False{Environment.NewLine}"
+                + $"1 True True{Environment.NewLine}"
+                + $"{{42}} set() [1, 2, 3]{Environment.NewLine}"
+                + $"unhashable{Environment.NewLine}"
+                + $"remove-missing{Environment.NewLine}",
+            output.ToString()
+        );
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(

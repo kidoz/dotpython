@@ -159,6 +159,9 @@ public static class PythonCompiler
                 case PythonTryStatement tryStatement:
                     CompileTryStatement(tryStatement);
                     break;
+                case PythonWithStatement withStatement:
+                    CompileWithStatement(withStatement, itemIndex: 0);
+                    break;
                 case PythonImportStatement importStatement:
                     CompileImportStatement(importStatement);
                     break;
@@ -278,6 +281,13 @@ public static class PythonCompiler
                     CompileExpression(subscription.Index);
                     Emit(PythonOpCode.LoadSubscript, 0, subscription.Span);
                     break;
+                case PythonSetExpression setExpression:
+                    CompileElements(setExpression.Elements);
+                    Emit(PythonOpCode.BuildSet, setExpression.Elements.Count, setExpression.Span);
+                    break;
+                case PythonLambdaExpression lambdaExpression:
+                    CompileLambdaExpression(lambdaExpression);
+                    break;
                 case PythonSliceExpression slice:
                     CompileOptionalSliceBound(slice.Start, slice.Span);
                     CompileOptionalSliceBound(slice.Stop, slice.Span);
@@ -327,6 +337,61 @@ public static class PythonCompiler
             {
                 CompileExpression(element);
             }
+        }
+
+        private void CompileLambdaExpression(PythonLambdaExpression lambdaExpression)
+        {
+            var childScope = _scope.Children.Single(scope =>
+                ReferenceEquals(scope.Definition, lambdaExpression)
+            );
+            var childCompiler = new Compiler(
+                "<lambda>",
+                childScope,
+                _diagnostics,
+                _enableReturnLocal,
+                _enableCallLocal
+            );
+            var childCode = childCompiler.CompileLambdaCode(lambdaExpression);
+            var constantIndex = AddConstant(
+                new PythonConstant(PythonConstantType.CodeObject, childCode)
+            );
+            var defaultCount = 0;
+            foreach (var parameter in lambdaExpression.Parameters)
+            {
+                if (parameter.Default is null)
+                {
+                    continue;
+                }
+
+                CompileExpression(parameter.Default);
+                defaultCount++;
+            }
+
+            if (defaultCount == 0)
+            {
+                Emit(PythonOpCode.MakeFunction, constantIndex, lambdaExpression.Span);
+            }
+            else
+            {
+                Emit(PythonOpCode.BuildTuple, defaultCount, lambdaExpression.Span);
+                Emit(PythonOpCode.MakeFunctionWithDefaults, constantIndex, lambdaExpression.Span);
+            }
+        }
+
+        private PythonCodeObject CompileLambdaCode(PythonLambdaExpression lambdaExpression)
+        {
+            CompileExpression(lambdaExpression.Body);
+            Emit(PythonOpCode.ReturnValue, 0, lambdaExpression.Body.Span);
+            return new PythonCodeObject(
+                _codeName,
+                _instructions,
+                _constants,
+                _names,
+                [.. _scope.LocalNames],
+                [.. _scope.CellVariableNames],
+                [.. _scope.FreeVariableNames],
+                _scope.Parameters.Count
+            );
         }
 
         private void CompileComprehension(
@@ -785,6 +850,44 @@ public static class PythonCompiler
             Emit(PythonOpCode.Raise, 2, statement.Span);
         }
 
+        private void CompileWithStatement(PythonWithStatement statement, int itemIndex)
+        {
+            var item = statement.Items[itemIndex];
+            CompileExpression(item.Context);
+            Emit(PythonOpCode.CopyTop, 0, item.Context.Span);
+            Emit(PythonOpCode.LoadAttribute, GetNameIndex("__exit__"), item.Context.Span);
+            Emit(PythonOpCode.RotateTwo, 0, item.Context.Span);
+            Emit(PythonOpCode.LoadAttribute, GetNameIndex("__enter__"), item.Context.Span);
+            Emit(PythonOpCode.Call, 0, item.Context.Span);
+            if (item.Target is not null)
+            {
+                CompileAssignmentTarget(item.Target);
+            }
+            else
+            {
+                Emit(PythonOpCode.PopTop, 0, item.Span);
+            }
+
+            _protectionScopes.Add(WithProtection.Instance);
+            var setupFinally = Emit(PythonOpCode.SetupFinally, 0, statement.Span);
+            if (itemIndex + 1 < statement.Items.Count)
+            {
+                CompileWithStatement(statement, itemIndex + 1);
+            }
+            else
+            {
+                CompileStatements(statement.Body);
+            }
+
+            Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            _protectionScopes.RemoveAt(_protectionScopes.Count - 1);
+            Emit(PythonOpCode.EnterFinally, 0, statement.Span);
+            PatchJump(setupFinally, _instructions.Count);
+            Emit(PythonOpCode.LoadExceptionInfo, 0, statement.Span);
+            Emit(PythonOpCode.Call, 3, statement.Span);
+            Emit(PythonOpCode.EndWith, 0, statement.Span);
+        }
+
         private void CompileTryStatement(PythonTryStatement statement)
         {
             if (statement.FinallyBody.Count == 0)
@@ -1075,6 +1178,19 @@ public static class PythonCompiler
                     case FinallyProtection finallyProtection:
                         CompileFinallyBody(finallyProtection.FinallyBody);
                         break;
+                    case WithProtection:
+                        for (var argument = 0; argument < 3; argument++)
+                        {
+                            Emit(
+                                PythonOpCode.LoadConstant,
+                                AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                                span
+                            );
+                        }
+
+                        Emit(PythonOpCode.Call, 3, span);
+                        Emit(PythonOpCode.PopTop, 0, span);
+                        break;
                 }
             }
         }
@@ -1361,6 +1477,11 @@ public static class PythonCompiler
 
     private sealed record FinallyProtection(IReadOnlyList<PythonStatement> FinallyBody)
         : ProtectionScope;
+
+    private sealed record WithProtection : ProtectionScope
+    {
+        internal static readonly WithProtection Instance = new();
+    }
 
     private sealed record HandlerCleanupProtection(PythonNameExpression? Target) : ProtectionScope;
 }

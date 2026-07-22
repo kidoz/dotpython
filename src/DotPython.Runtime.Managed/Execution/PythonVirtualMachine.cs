@@ -449,6 +449,14 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.BuildDictionary:
                 BuildDictionary(instruction.Operand, instruction.Span);
                 break;
+            case PythonOpCode.BuildSet:
+                _evaluationStack.Push(
+                    ManagedObjectProtocols.CreateSet(
+                        PopArguments(instruction.Operand, instruction.Span),
+                        instruction.Span
+                    )
+                );
+                break;
             case PythonOpCode.LoadSubscript:
                 LoadSubscript(instruction.Span);
                 break;
@@ -478,6 +486,12 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.EndFinally:
                 EndFinally();
+                break;
+            case PythonOpCode.LoadExceptionInfo:
+                LoadExceptionInfo(ref frame, instruction.Span);
+                break;
+            case PythonOpCode.EndWith:
+                EndWith(instruction.Span);
                 break;
             case PythonOpCode.LoadException:
                 _evaluationStack.Push(GetActiveException(instruction.Span).Value);
@@ -644,6 +658,45 @@ internal sealed class PythonVirtualMachine
         }
 
         frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
+    }
+
+    private void LoadExceptionInfo(ref PythonFrame frame, TextSpan span)
+    {
+        if (frame.PendingFinalies.Count == 0)
+        {
+            throw Fault("DPY4007", "The managed finally state is unavailable.", span);
+        }
+
+        if (frame.PendingFinalies.Peek().Exception is PythonRaisedException raised)
+        {
+            _evaluationStack.Push(new PythonExceptionTypeValue(raised.Value.TypeName));
+            _evaluationStack.Push(raised.Value);
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            return;
+        }
+
+        for (var argument = 0; argument < 3; argument++)
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+        }
+    }
+
+    private void EndWith(TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        var suppressed = IsTruthy(Pop(span));
+        if (frame.PendingFinalies.Count == 0)
+        {
+            throw Fault("DPY4007", "The managed finally state is unavailable.", span);
+        }
+
+        if (suppressed && frame.PendingFinalies.Peek().Exception is PythonRaisedException)
+        {
+            PopPendingFinally(ref frame);
+            return;
+        }
+
+        EndFinally();
     }
 
     private void EndFinally()
@@ -2604,6 +2657,7 @@ internal sealed class PythonVirtualMachine
             PythonListValue => PythonBuiltinTypes.List,
             PythonTupleValue => PythonBuiltinTypes.Tuple,
             PythonDictionaryValue => PythonBuiltinTypes.Dict,
+            PythonSetValue => PythonBuiltinTypes.Set,
             PythonManagedObjectValue instance => instance.Type,
             PythonExceptionValue exception => _builtins.TryGetValue(
                 exception.TypeName,
@@ -3074,6 +3128,11 @@ internal sealed class PythonVirtualMachine
 
     private static bool AreEqual(PythonValue left, PythonValue right)
     {
+        if (left is PythonSetValue || right is PythonSetValue)
+        {
+            return ManagedObjectProtocols.AreEqual(left, right);
+        }
+
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 

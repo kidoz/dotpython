@@ -995,6 +995,113 @@ public sealed class PythonCompilerTests
     }
 
     [Fact]
+    public void Compile_LowersWithStatementsOntoTheFinallyProtocol()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("with manager() as value:\n    print(value)\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        Assert.Contains("__enter__", result.Code.Names);
+        Assert.Contains("__exit__", result.Code.Names);
+        var opCodes = result.Code.Instructions.Select(instruction => instruction.OpCode).ToList();
+        var setupIndex = opCodes.IndexOf(PythonOpCode.SetupFinally);
+        Assert.True(setupIndex > 0);
+        Assert.Equal(
+            [
+                PythonOpCode.EnterFinally,
+                PythonOpCode.LoadExceptionInfo,
+                PythonOpCode.Call,
+                PythonOpCode.EndWith,
+            ],
+            opCodes.Skip(opCodes.IndexOf(PythonOpCode.EnterFinally)).Take(4)
+        );
+        Assert.Equal(
+            3,
+            result
+                .Code.Instructions.Last(instruction => instruction.OpCode == PythonOpCode.Call)
+                .Operand
+        );
+    }
+
+    [Fact]
+    public void Compile_UnwindsWithProtectionForLoopControl()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText(
+                "for value in items:\n"
+                    + "    with manager():\n"
+                    + "        if value:\n"
+                    + "            break\n"
+            )
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var instructions = result.Code.Instructions;
+        var breakUnwindIndex = instructions
+            .Select((instruction, index) => (instruction, index))
+            .First(entry =>
+                entry.instruction.OpCode == PythonOpCode.PopExceptionBlock
+                && instructions[entry.index + 1].OpCode == PythonOpCode.LoadConstant
+            )
+            .index;
+        Assert.Equal(
+            [
+                PythonOpCode.PopExceptionBlock,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.LoadConstant,
+                PythonOpCode.Call,
+                PythonOpCode.PopTop,
+                PythonOpCode.PopTop,
+                PythonOpCode.Jump,
+            ],
+            instructions.Skip(breakUnwindIndex).Take(8).Select(instruction => instruction.OpCode)
+        );
+    }
+
+    [Fact]
+    public void Compile_LowersLambdasToFunctionScopesAndSetsToBuildSet()
+    {
+        var parseResult = PythonParser.Parse(
+            new SourceText("scale = lambda v, factor=2: v * factor\nvalues = {1, 2, 2}\n")
+        );
+
+        var result = PythonCompiler.Compile(parseResult.Module);
+
+        Assert.Empty(parseResult.Diagnostics);
+        Assert.Empty(result.Diagnostics);
+        var lambdaCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        Assert.Equal("<lambda>", lambdaCode.Name);
+        Assert.Equal(2, lambdaCode.ArgumentCount);
+        Assert.Contains(
+            lambdaCode.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.ReturnValue
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction.OpCode == PythonOpCode.MakeFunctionWithDefaults
+        );
+        Assert.Contains(
+            result.Code.Instructions,
+            instruction => instruction is { OpCode: PythonOpCode.BuildSet, Operand: 3 }
+        );
+    }
+
+    [Fact]
     public void Compile_AllowsLoopControlForLoopsInsideAFinallyClause()
     {
         var parseResult = PythonParser.Parse(

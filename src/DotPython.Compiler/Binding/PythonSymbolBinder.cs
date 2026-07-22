@@ -141,6 +141,11 @@ public static class PythonSymbolBinder
                             childAncestors,
                             diagnostics
                         ),
+                    PythonLambdaExpression lambdaExpression => BindLambdaScope(
+                        lambdaExpression,
+                        childAncestors,
+                        diagnostics
+                    ),
                     _ => throw new InvalidOperationException(
                         "The scope definition kind is invalid."
                     ),
@@ -239,8 +244,79 @@ public static class PythonSymbolBinder
         {
             foreach (var nested in EnumerateComprehensions(expression))
             {
-                children.Add(BindComprehensionScope(nested, childAncestors, diagnostics));
+                children.Add(BindExpressionScope(nested, childAncestors, diagnostics));
             }
+        }
+
+        return scope;
+    }
+
+    private static PythonBoundScope BindExpressionScope(
+        PythonExpression definition,
+        IReadOnlyList<PythonBoundScope> ancestors,
+        List<Diagnostic> diagnostics
+    ) =>
+        definition switch
+        {
+            PythonLambdaExpression lambdaExpression => BindLambdaScope(
+                lambdaExpression,
+                ancestors,
+                diagnostics
+            ),
+            _ => BindComprehensionScope(definition, ancestors, diagnostics),
+        };
+
+    private static PythonBoundScope BindLambdaScope(
+        PythonLambdaExpression lambdaExpression,
+        IReadOnlyList<PythonBoundScope> ancestors,
+        List<Diagnostic> diagnostics
+    )
+    {
+        var parameterNames = new List<string>();
+        var localNames = new List<string>();
+        var localNameSet = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var parameter in lambdaExpression.Parameters)
+        {
+            if (!localNameSet.Add(parameter.Name))
+            {
+                Report(
+                    diagnostics,
+                    "DPY3102",
+                    $"Duplicate parameter '{parameter.Name}'.",
+                    parameter.Span
+                );
+                continue;
+            }
+
+            parameterNames.Add(parameter.Name);
+            localNames.Add(parameter.Name);
+        }
+
+        var references = new List<NameReference>();
+        CollectReferences(lambdaExpression.Body, references);
+        var referencedNames = references
+            .Select(reference => reference.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var children = new List<PythonBoundScope>();
+        var scope = new PythonBoundScope(
+            PythonScopeKind.Function,
+            "<lambda>",
+            lambdaExpression,
+            parameterNames,
+            localNames,
+            referencedNames,
+            [],
+            [],
+            children,
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal)
+        );
+        var childAncestors = ancestors.Append(scope).ToArray();
+        foreach (var nested in EnumerateComprehensions(lambdaExpression.Body))
+        {
+            children.Add(BindExpressionScope(nested, childAncestors, diagnostics));
         }
 
         return scope;
@@ -352,6 +428,15 @@ public static class PythonSymbolBinder
                     CollectScopeDeclarations(
                         kind,
                         loop.ElseBody,
+                        declaredGlobalNames,
+                        declaredNonlocalNames,
+                        diagnostics
+                    );
+                    break;
+                case PythonWithStatement withStatement:
+                    CollectScopeDeclarations(
+                        kind,
+                        withStatement.Body,
                         declaredGlobalNames,
                         declaredNonlocalNames,
                         diagnostics
@@ -566,6 +651,22 @@ public static class PythonSymbolBinder
                     CollectBoundNames(loop.Body, localNames, localNameSet, excludedNames);
                     CollectBoundNames(loop.ElseBody, localNames, localNameSet, excludedNames);
                     break;
+                case PythonWithStatement withStatement:
+                    foreach (var item in withStatement.Items)
+                    {
+                        if (item.Target is not null)
+                        {
+                            CollectTargetNames(
+                                item.Target,
+                                localNames,
+                                localNameSet,
+                                excludedNames
+                            );
+                        }
+                    }
+
+                    CollectBoundNames(withStatement.Body, localNames, localNameSet, excludedNames);
+                    break;
                 case PythonTryStatement tryStatement:
                     CollectBoundNames(tryStatement.Body, localNames, localNameSet, excludedNames);
                     foreach (var handler in tryStatement.Handlers)
@@ -686,6 +787,18 @@ public static class PythonSymbolBinder
                     CollectReferences(loop.Body, references, diagnostics, scopeKind);
                     CollectReferences(loop.ElseBody, references, diagnostics, scopeKind);
                     break;
+                case PythonWithStatement withStatement:
+                    foreach (var item in withStatement.Items)
+                    {
+                        CollectReferences(item.Context, references);
+                        if (item.Target is not null)
+                        {
+                            CollectTargetReferences(item.Target, references);
+                        }
+                    }
+
+                    CollectReferences(withStatement.Body, references, diagnostics, scopeKind);
+                    break;
                 case PythonTryStatement tryStatement:
                     CollectReferences(tryStatement.Body, references, diagnostics, scopeKind);
                     foreach (var handler in tryStatement.Handlers)
@@ -801,6 +914,23 @@ public static class PythonSymbolBinder
                 break;
             case PythonParenthesizedExpression parenthesized:
                 CollectReferences(parenthesized.Expression, references);
+                break;
+            case PythonSetExpression setExpression:
+                foreach (var element in setExpression.Elements)
+                {
+                    CollectReferences(element, references);
+                }
+
+                break;
+            case PythonLambdaExpression lambdaExpression:
+                foreach (var parameter in lambdaExpression.Parameters)
+                {
+                    if (parameter.Default is not null)
+                    {
+                        CollectReferences(parameter.Default, references);
+                    }
+                }
+
                 break;
             case PythonListComprehensionExpression listComprehension:
                 CollectFirstIterableReferences(listComprehension.Clauses, references);
@@ -982,6 +1112,26 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonWithStatement withStatement:
+                    foreach (var item in withStatement.Items)
+                    {
+                        foreach (var nested in EnumerateComprehensions(item.Context))
+                        {
+                            yield return nested;
+                        }
+
+                        foreach (var nested in EnumerateOptionalComprehensions(item.Target))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    foreach (var nested in EnumerateScopeDefinitions(withStatement.Body))
+                    {
+                        yield return nested;
+                    }
+
+                    break;
                 case PythonTryStatement tryStatement:
                     foreach (var nested in EnumerateScopeDefinitions(tryStatement.Body))
                     {
@@ -1114,6 +1264,32 @@ public static class PythonSymbolBinder
                     }
                 }
 
+                break;
+            case PythonSetExpression setExpression:
+                foreach (var element in setExpression.Elements)
+                {
+                    foreach (var nested in EnumerateComprehensions(element))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonLambdaExpression lambdaExpression:
+                foreach (var parameter in lambdaExpression.Parameters)
+                {
+                    if (parameter.Default is null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var nested in EnumerateComprehensions(parameter.Default))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                yield return lambdaExpression;
                 break;
             case PythonTupleExpression tuple:
                 foreach (var element in tuple.Elements)

@@ -16,11 +16,12 @@ internal static class PythonBuiltinTypes
     internal static readonly PythonBuiltinTypeValue Float = new("float", ConstructFloat);
     internal static readonly PythonBuiltinTypeValue Int = new("int", ConstructInt);
     internal static readonly PythonBuiltinTypeValue List = new("list", ConstructList);
+    internal static readonly PythonBuiltinTypeValue Set = new("set", ConstructSet);
     internal static readonly PythonBuiltinTypeValue Str = new("str", ConstructStr);
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
-        [Bool, Dict, Float, Int, List, Str, Tuple];
+        [Bool, Dict, Float, Int, List, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
         new(
@@ -44,6 +45,7 @@ internal static class PythonBuiltinTypes
             "list" => value is PythonListValue,
             "tuple" => value is PythonTupleValue,
             "dict" => value is PythonDictionaryValue,
+            "set" => value is PythonSetValue,
             _ => false,
         };
 
@@ -185,6 +187,17 @@ internal static class PythonBuiltinTypes
                     span
                 );
         }
+    }
+
+    private static PythonSetValue ConstructSet(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        RequireArguments("set", arguments, 0, 1, span);
+        return arguments.Count == 0
+            ? new PythonSetValue([])
+            : ManagedObjectProtocols.CreateSet(
+                ManagedObjectProtocols.MaterializeValues(arguments[0], span),
+                span
+            );
     }
 
     private static PythonTextValue ConstructStr(IReadOnlyList<PythonValue> arguments, TextSpan span)

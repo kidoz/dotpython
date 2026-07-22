@@ -489,6 +489,46 @@ public sealed class PythonParserTests
         Assert.IsType<PythonAttributeExpression>(deleteStatement.Targets[2]);
     }
 
+    [Fact]
+    public void Parse_BuildsWithStatements()
+    {
+        var result = Parse(
+            "with open_resource() as handle, guard():\n    print(handle)\nwith plain:\n    pass\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var multiple = Assert.IsType<PythonWithStatement>(result.Module.Statements[0]);
+        Assert.Equal(2, multiple.Items.Count);
+        Assert.IsType<PythonCallExpression>(multiple.Items[0].Context);
+        Assert.Equal("handle", Assert.IsType<PythonNameExpression>(multiple.Items[0].Target).Name);
+        Assert.Null(multiple.Items[1].Target);
+        Assert.Single(multiple.Body);
+
+        var plain = Assert.IsType<PythonWithStatement>(result.Module.Statements[1]);
+        Assert.Null(Assert.Single(plain.Items).Target);
+        Assert.IsType<PythonPassStatement>(Assert.Single(plain.Body));
+    }
+
+    [Fact]
+    public void Parse_BuildsLambdaAndSetExpressions()
+    {
+        var result = Parse("key = lambda v, base=10: v * base\nvalues = {1, 2, 3}\n");
+
+        Assert.Empty(result.Diagnostics);
+        var lambdaExpression = Assert.IsType<PythonLambdaExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]).Value
+        );
+        Assert.Equal(2, lambdaExpression.Parameters.Count);
+        Assert.Null(lambdaExpression.Parameters[0].Default);
+        Assert.NotNull(lambdaExpression.Parameters[1].Default);
+        Assert.IsType<PythonBinaryExpression>(lambdaExpression.Body);
+
+        var setExpression = Assert.IsType<PythonSetExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]).Value
+        );
+        Assert.Equal(3, setExpression.Elements.Count);
+    }
+
     [Theory]
     [InlineData("value =", "DPY2001")]
     [InlineData("value 42", "DPY2003")]

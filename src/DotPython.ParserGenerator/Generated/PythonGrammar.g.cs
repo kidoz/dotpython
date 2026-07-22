@@ -5,14 +5,16 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "bd6b35e61a1e66d28c84dff7e0dbc4a0f8dfadc2cbe51cad92c713f0027d030a";
-    internal const int RuleCount = 63;
+    internal const string SourceSha256 = "a5dbefb0560466390f9bf79a0dbd500b8b614e89eba352b712c625dd688e4e7b";
+    internal const int RuleCount = 68;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | function_def | class_def
+        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | class_def
+        decorated: decorators (function_def | class_def)
+        decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
         simple_stmt: assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
         assignment: expression_list '=' expression_list
@@ -39,6 +41,8 @@ internal static class GeneratedPythonGrammar
         for_stmt: 'for' for_targets 'in' expression_list ':' block ['else' ':' block]
         for_targets: ','.for_target+ [',']
         for_target: '(' for_targets ')' | NAME
+        with_stmt: 'with' ','.with_item+ ':' block
+        with_item: expression ['as' primary]
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ':' block
@@ -46,7 +50,8 @@ internal static class GeneratedPythonGrammar
         parameters: ','.parameter+ [',']
         parameter: NAME ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
-        expression: disjunction
+        expression: lambda_expression | disjunction
+        lambda_expression: 'lambda' [parameters] ':' expression
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
         inversion: 'not' inversion | comparison
@@ -65,7 +70,7 @@ internal static class GeneratedPythonGrammar
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
         list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' expression ',' [expression_list] ')'
-        dict_display: '{' expression ':' expression comp_clauses '}' | '{' [dict_items] '}'
+        dict_display: '{' expression ':' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'
         comp_clauses: comp_for (comp_for | comp_if)*
         comp_for: 'for' for_targets 'in' expression
         comp_if: 'if' expression

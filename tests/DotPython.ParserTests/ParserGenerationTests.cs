@@ -35,7 +35,7 @@ public sealed class ParserGenerationTests
         Assert.Equal(first, second);
         Assert.Equal(first, windowsLineEndings);
         Assert.Equal(File.ReadAllText(generatedPath), first);
-        Assert.Equal(63, ParserGeneratorCapabilities.GeneratedGrammarRuleCount);
+        Assert.Equal(68, ParserGeneratorCapabilities.GeneratedGrammarRuleCount);
         Assert.Equal(64, ParserGeneratorCapabilities.GeneratedGrammarFingerprint.Length);
         Assert.Contains(
             ParserGeneratorCapabilities.GeneratedGrammarFingerprint,

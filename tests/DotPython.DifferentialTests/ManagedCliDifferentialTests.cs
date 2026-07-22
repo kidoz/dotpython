@@ -153,6 +153,27 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "print(sum([1, 2, 3]), sum(range(5), 100), sum([0.5, 0.25]))\nprint(min([3, 1, 2]), max([3, 1, 2]), min(4, 2, 9), max('a', 'c', 'b'))\nprint(sorted([3, 1, 2]), sorted(['b', 'a']), sorted((5, 4)), abs(-5), abs(-2.5), abs(-3 + 4j))\ntry:\n    int('abc')\nexcept ValueError:\n    print('bad-int')\ntry:\n    min([])\nexcept ValueError:\n    print('empty-min')"
     )]
+    [InlineData(
+        "class M:\n    def __init__(self, name, suppress=False):\n        self.name = name\n        self.suppress = suppress\n    def __enter__(self):\n        print('enter', self.name)\n        return self.name\n    def __exit__(self, t, v, tb):\n        print('exit', self.name, t is None)\n        return self.suppress\nwith M('plain'):\n    print('body')\nwith M('bound') as name:\n    print('got', name)\nwith M('a') as x, M('b') as y:\n    print('nested', x, y)"
+    )]
+    [InlineData(
+        "class M:\n    def __init__(self, name, suppress=False):\n        self.name = name\n        self.suppress = suppress\n    def __enter__(self):\n        print('enter', self.name)\n        return self.name\n    def __exit__(self, t, v, tb):\n        print('exit', self.name, t is None)\n        return self.suppress\ntry:\n    with M('leaky'):\n        raise ValueError('boom')\nexcept ValueError as error:\n    print('caught', error)\nwith M('quiet', suppress=True):\n    raise ValueError('silenced')\nprint('after')"
+    )]
+    [InlineData(
+        "class M:\n    def __init__(self, name, suppress=False):\n        self.name = name\n        self.suppress = suppress\n    def __enter__(self):\n        print('enter', self.name)\n        return self.name\n    def __exit__(self, t, v, tb):\n        print('exit', self.name, t is None)\n        return self.suppress\ndef run():\n    with M('ret'):\n        return 'early'\nprint(run())\nfor i in range(4):\n    with M('loop'):\n        if i == 2:\n            break\n        print('iter', i)\nprint('after-loop')"
+    )]
+    [InlineData(
+        "class BadEnter:\n    def __enter__(self):\n        raise ValueError('enter-fail')\n    def __exit__(self, t, v, tb):\n        print('never')\n        return False\ntry:\n    with BadEnter():\n        print('unreached')\nexcept ValueError as error:\n    print('enter-error', error)\nclass BadExit:\n    def __enter__(self):\n        return self\n    def __exit__(self, t, v, tb):\n        raise KeyError('exit-fail')\ntry:\n    with BadExit():\n        raise ValueError('original')\nexcept KeyError:\n    print('exit-error-replaced')"
+    )]
+    [InlineData(
+        "add = lambda a, b=10: a + b\nprint(add(1), add(1, 2))\nfactor = 3\nprint((lambda v: v * factor)(5))\ndef make_adder(n):\n    return lambda v: v + n\nprint(make_adder(100)(1))\nprint([f(10) for f in [lambda v: v + 1, lambda v: v * 2]])\napply = lambda f, v: f(v)\nprint(apply(lambda x: x + 1, 41))"
+    )]
+    [InlineData(
+        "s = {1, 2, 2, 3, 1}\nprint(len(s), 2 in s, 9 in s, bool(s), bool(set()), sorted(s))\nprint({42}, set(), len({1, 1.0, True}))\ns.add(9)\ns.discard(1)\nprint(sorted(s), {1, 2} == {2, 1}, {1} == {1, 2}, set() == set())\nprint(isinstance(s, set), type(s) is set, sorted(set([3, 1, 2, 3])))"
+    )]
+    [InlineData(
+        "try:\n    bad = {[1], 2}\nexcept TypeError:\n    print('unhashable')\ntry:\n    {1}.remove(9)\nexcept KeyError:\n    print('remove-missing')\nversions = ['2.0', '10.0', '1.0']\nprint(sorted([int(float(v)) for v in versions]))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

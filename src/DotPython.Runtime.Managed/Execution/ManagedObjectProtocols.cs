@@ -233,6 +233,7 @@ internal static class ManagedObjectProtocols
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonDictionaryValue dictionary => dictionary.Items.Count,
             PythonDictionaryViewValue view => view.Snapshot.Elements.Count,
+            PythonSetValue set => set.Elements.Count,
             PythonRangeValue range => range.Count <= int.MaxValue
                 ? (int)range.Count
                 : throw Fault(
@@ -266,6 +267,7 @@ internal static class ManagedObjectProtocols
                 or PythonTextValue
                 or PythonByteSequenceValue
                 or PythonRangeValue
+                or PythonSetValue
             )
         )
         {
@@ -324,6 +326,9 @@ internal static class ManagedObjectProtocols
             }
             case PythonByteSequenceValue bytes when iterator.Index < bytes.Value.Length:
                 value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
+                return true;
+            case PythonSetValue set when iterator.Index < set.Elements.Count:
+                value = set.Elements[iterator.Index++];
                 return true;
             case PythonRangeValue range:
             {
@@ -788,6 +793,35 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    internal static void AddToSet(PythonSetValue set, PythonValue value, TextSpan span)
+    {
+        if (!IsHashable(value))
+        {
+            throw Fault("DPY4014", $"Unhashable type: '{GetTypeName(value)}'.", span, "TypeError");
+        }
+
+        foreach (var element in set.Elements)
+        {
+            if (AreEqual(element, value))
+            {
+                return;
+            }
+        }
+
+        set.Elements.Add(value);
+    }
+
+    internal static PythonSetValue CreateSet(IReadOnlyList<PythonValue> values, TextSpan span)
+    {
+        var set = new PythonSetValue([]);
+        foreach (var value in values)
+        {
+            AddToSet(set, value, span);
+        }
+
+        return set;
+    }
+
     internal static List<PythonValue> MaterializeValues(PythonValue iterable, TextSpan span)
     {
         var values = new List<PythonValue>();
@@ -815,6 +849,7 @@ internal static class ManagedObjectProtocols
             PythonDictionaryValue dictionary => dictionary.Items.Count != 0,
             PythonRangeValue range => !range.Count.IsZero,
             PythonDictionaryViewValue view => view.Snapshot.Elements.Count != 0,
+            PythonSetValue set => set.Elements.Count != 0,
             _ => true,
         };
 
@@ -934,6 +969,7 @@ internal static class ManagedObjectProtocols
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
             PythonSliceValue => "slice",
+            PythonSetValue => "set",
             PythonDictionaryViewValue view => view.Kind,
             PythonRangeValue => "range",
             PythonEnumerateSourceValue => "enumerate",
@@ -1080,13 +1116,23 @@ internal static class ManagedObjectProtocols
     internal static bool IsHashable(PythonValue value) =>
         value switch
         {
-            PythonListValue or PythonDictionaryValue => false,
+            PythonListValue or PythonDictionaryValue or PythonSetValue => false,
             PythonTupleValue tuple => tuple.Elements.All(IsHashable),
             _ => true,
         };
 
     internal static bool AreEqual(PythonValue left, PythonValue right)
     {
+        if (left is PythonSetValue || right is PythonSetValue)
+        {
+            return left is PythonSetValue leftSet
+                && right is PythonSetValue rightSet
+                && leftSet.Elements.Count == rightSet.Elements.Count
+                && leftSet.Elements.All(element =>
+                    rightSet.Elements.Any(candidate => AreEqual(candidate, element))
+                );
+        }
+
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 

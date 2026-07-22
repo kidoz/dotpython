@@ -113,6 +113,18 @@ public sealed record PythonForStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
+public sealed record PythonWithStatement(
+    IReadOnlyList<PythonWithItem> Items,
+    IReadOnlyList<PythonStatement> Body,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonWithItem(
+    PythonExpression Context,
+    PythonExpression? Target,
+    TextSpan Span
+) : PythonNode(Span);
+
 public sealed record PythonTryStatement(
     IReadOnlyList<PythonStatement> Body,
     IReadOnlyList<PythonExceptHandler> Handlers,
@@ -175,6 +187,15 @@ public sealed record PythonKeywordArgument(string Name, PythonExpression Value, 
 
 public sealed record PythonListExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
     : PythonExpression(Span);
+
+public sealed record PythonSetExpression(IReadOnlyList<PythonExpression> Elements, TextSpan Span)
+    : PythonExpression(Span);
+
+public sealed record PythonLambdaExpression(
+    IReadOnlyList<PythonParameter> Parameters,
+    PythonExpression Body,
+    TextSpan Span
+) : PythonExpression(Span);
 
 public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Span);
 

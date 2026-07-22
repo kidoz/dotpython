@@ -476,6 +476,7 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.BuildList:
             case PythonOpCode.BuildTuple:
             case PythonOpCode.BuildDictionary:
+            case PythonOpCode.BuildSet:
                 if (instruction.Operand < 0 || instruction.Operand > MaximumCollectionLength)
                 {
                     throw new InvalidDataException(
