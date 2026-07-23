@@ -311,6 +311,12 @@ internal static class ManagedObjectProtocols
             return iterator;
         }
 
+        if (value is PythonGeneratorValue)
+        {
+            // A generator is its own iterator.
+            return new PythonIteratorValue(value, -1);
+        }
+
         if (value is PythonTemplateValue template)
         {
             var items = new List<PythonValue>();
@@ -468,6 +474,17 @@ internal static class ManagedObjectProtocols
                 if (complete)
                 {
                     value = mapSource.Apply(row);
+                    return true;
+                }
+
+                break;
+            }
+            case PythonGeneratorValue generator:
+            {
+                var advanced = generator.Resume!();
+                if (advanced.HasValue)
+                {
+                    value = advanced.Value;
                     return true;
                 }
 
@@ -1105,6 +1122,7 @@ internal static class ManagedObjectProtocols
             PythonZipSourceValue => "zip",
             PythonMapSourceValue => "map",
             PythonFilterSourceValue => "filter",
+            PythonGeneratorValue => "generator",
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",

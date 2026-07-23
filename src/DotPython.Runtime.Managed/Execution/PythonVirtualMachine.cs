@@ -23,6 +23,7 @@ internal sealed class PythonVirtualMachine
             ["Exception"] = "BaseException",
             ["ArithmeticError"] = "Exception",
             ["LookupError"] = "Exception",
+            ["StopIteration"] = "Exception",
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
             ["TypeError"] = "Exception",
@@ -85,6 +86,7 @@ internal sealed class PythonVirtualMachine
             ["zip"] = new PythonBuiltinFunctionValue("zip", Zip),
             ["isinstance"] = new PythonBuiltinFunctionValue("isinstance", IsInstance),
             ["super"] = new PythonBuiltinFunctionValue("super", Super),
+            ["next"] = new PythonBuiltinFunctionValue("next", Next),
             ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
@@ -466,6 +468,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.DictionaryUpdate:
                 UpdateDictionaryOnStack(instruction);
+                break;
+            case PythonOpCode.Yield:
+                ApplyYield(instruction);
                 break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
@@ -1671,7 +1676,7 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        if (!function.Code.Definition.HasSimpleSignature)
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
         {
             var positional = PopArguments(instruction.Operand, instruction.Span);
             Pop(instruction.Span);
@@ -1872,6 +1877,199 @@ internal sealed class PythonVirtualMachine
         }
     }
 
+    private void ApplyYield(PythonInstruction instruction)
+    {
+        ref var frame = ref CurrentFrame;
+        var generator = frame.Generator;
+        if (generator is null)
+        {
+            throw Fault("DPY4007", "A yield executed outside a generator frame.", instruction.Span);
+        }
+
+        generator.YieldedValue = Pop(instruction.Span);
+        for (var index = 0; index < frame.LocalsCount; index++)
+        {
+            generator.SavedLocals[index] = _locals[frame.LocalsBase + index]!;
+        }
+
+        while (_evaluationStack.Count > frame.EvaluationStackBase)
+        {
+            generator.SavedEvaluationStack.Add(_evaluationStack.Pop());
+        }
+
+        generator.SavedEvaluationStack.Reverse();
+        generator.InstructionPointer = frame.InstructionPointer;
+        generator.State = PythonGeneratorState.Suspended;
+        Array.Clear(_locals, frame.LocalsBase, frame.LocalsCount);
+        _localsCount = frame.LocalsBase;
+        _frames[--_frameCount] = default;
+    }
+
+    private PythonGeneratorValue CreateGenerator(
+        PythonFunctionValue function,
+        PythonValue[] slots,
+        TextSpan span
+    )
+    {
+        var cells = CreateCells(function.Code, function.Closure, span);
+        var savedLocals = new PythonValue[function.Code.Definition.VariableNames.Count];
+        for (var index = 0; index < slots.Length; index++)
+        {
+            var cellIndex = function.Code.GetLocalCellIndex(index);
+            if (cellIndex >= 0)
+            {
+                cells[cellIndex].Value = slots[index];
+            }
+            else
+            {
+                savedLocals[index] = slots[index];
+            }
+        }
+
+        var generator = new PythonGeneratorValue(
+            function.Name,
+            function.Code,
+            function.Globals,
+            cells,
+            savedLocals
+        )
+        {
+            OwnedFrameState = new GeneratorFrameState(),
+        };
+        generator.Resume = () => ResumeGenerator(generator, span);
+        return generator;
+    }
+
+    private (bool HasValue, PythonValue Value) ResumeGenerator(
+        PythonGeneratorValue generator,
+        TextSpan span
+    )
+    {
+        switch (generator.State)
+        {
+            case PythonGeneratorState.Completed:
+                return (false, PythonNoneValue.Instance);
+            case PythonGeneratorState.Running:
+                throw Fault("DPY4035", "Generator already executing.", span, "ValueError");
+        }
+
+        var starting = generator.State == PythonGeneratorState.Created;
+        generator.State = PythonGeneratorState.Running;
+        var baseFrameCount = _frameCount;
+        var stackDepthBefore = _evaluationStack.Count;
+        var definition = generator.Code.Definition;
+        var localsBase = ReserveLocals(definition.VariableNames.Count);
+        for (var index = 0; index < definition.VariableNames.Count; index++)
+        {
+            _locals[localsBase + index] = generator.SavedLocals[index];
+        }
+
+        PushFrame(
+            generator.Code,
+            generator.Globals,
+            localsBase,
+            definition.VariableNames.Count,
+            generator.Cells,
+            generator: generator,
+            restoredState: (GeneratorFrameState)generator.OwnedFrameState!,
+            instructionPointer: generator.InstructionPointer
+        );
+        foreach (var saved in generator.SavedEvaluationStack)
+        {
+            _evaluationStack.Push(saved);
+        }
+
+        generator.SavedEvaluationStack.Clear();
+        if (!starting)
+        {
+            // Phase 1: the yield expression always resumes with None (no send()).
+            _evaluationStack.Push(PythonNoneValue.Instance);
+        }
+
+        try
+        {
+            while (_frameCount > baseFrameCount)
+            {
+                try
+                {
+                    if (_deferredControlFlowCount == 0)
+                    {
+                        _cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    else if (_deferredCleanupInstructions++ >= MaximumDeferredCleanupInstructions)
+                    {
+                        throw Fault(
+                            "DPY4032",
+                            $"Deferred cleanup exceeded the {MaximumDeferredCleanupInstructions} instruction limit.",
+                            GetCurrentSpan(CurrentFrame)
+                        );
+                    }
+
+                    ref var frame = ref CurrentFrame;
+                    if (frame.InstructionPointer >= frame.Code.Definition.Instructions.Count)
+                    {
+                        ReturnFromFrame(PythonNoneValue.Instance);
+                        continue;
+                    }
+
+                    var instructionIndex = frame.InstructionPointer;
+                    var instruction = frame.Code.Definition.Instructions[instructionIndex];
+                    frame.InstructionPointer++;
+                    if (
+                        _deferredControlFlowCount == 0
+                        && _instructionsExecuted++ >= _instructionLimit
+                    )
+                    {
+                        throw Fault(
+                            "DPY4001",
+                            "The managed instruction limit was exceeded.",
+                            instruction.Span
+                        );
+                    }
+
+                    ExecuteInstruction(ref frame, instruction, instructionIndex);
+                }
+                catch (Exception exception) when (IsManagedControlFlowException(exception))
+                {
+                    var dispatchException = PrepareExceptionalControlFlow(exception);
+                    if (!HandleExceptionalControlFlow(dispatchException, baseFrameCount))
+                    {
+                        System
+                            .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                                dispatchException
+                            )
+                            .Throw();
+                    }
+                }
+            }
+        }
+        catch
+        {
+            generator.State = PythonGeneratorState.Completed;
+            while (_evaluationStack.Count > stackDepthBefore)
+            {
+                _evaluationStack.Pop();
+            }
+
+            throw;
+        }
+
+        if (generator.State == PythonGeneratorState.Suspended)
+        {
+            return (true, generator.YieldedValue);
+        }
+
+        // The frame returned normally; discard the pushed return value (phase 1
+        // ignores generator return values) and complete.
+        while (_evaluationStack.Count > stackDepthBefore)
+        {
+            _evaluationStack.Pop();
+        }
+
+        generator.State = PythonGeneratorState.Completed;
+        return (false, PythonNoneValue.Instance);
+    }
+
     private PythonValue InvokeCallableNested(
         PythonValue callable,
         PythonValue[] arguments,
@@ -1890,6 +2088,15 @@ internal sealed class PythonVirtualMachine
         if (callable is not PythonFunctionValue function)
         {
             return ManagedObjectProtocols.Call(callable, arguments, span);
+        }
+
+        if (function.Code.Definition.IsGenerator)
+        {
+            return CreateGenerator(
+                function,
+                BindFunctionArguments(function, arguments, [], [], span),
+                span
+            );
         }
 
         var bound = BindFunctionArguments(function, arguments, [], [], span);
@@ -2101,6 +2308,12 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        if (function.Code.Definition.IsGenerator)
+        {
+            _evaluationStack.Push(CreateGenerator(function, slots, span));
+            return;
+        }
+
         var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
         var localsBase = ReserveLocals(function.Code.Definition.VariableNames.Count);
         var cells = CreateCells(function.Code, function.Closure, span);
@@ -2561,6 +2774,16 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", span);
         }
 
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
+        {
+            PushBoundArgumentsFrame(
+                function,
+                BindFunctionArguments(function, [], [], [], span),
+                span
+            );
+            return;
+        }
+
         ValidateArgumentCount(function, 0, span);
         code.RecordManagedCall(instructionIndex, function);
         PushFunctionFrameUnchecked(function, 0, span, popTarget: false);
@@ -2611,6 +2834,48 @@ internal sealed class PythonVirtualMachine
             1 => arguments[0].ToDisplayString(),
             _ => new PythonTupleValue(arguments).ToDisplayString(),
         };
+
+    private static PythonValue Next(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count is not (1 or 2))
+        {
+            throw Fault(
+                "DPY4003",
+                $"next expected at most 2 arguments, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        var advanced = arguments[0] switch
+        {
+            PythonGeneratorValue generator => generator.Resume!(),
+            PythonIteratorValue iterator => ManagedObjectProtocols.TryGetNext(
+                iterator,
+                out var element,
+                span
+            )
+                ? (true, element)
+                : (false, PythonNoneValue.Instance),
+            var other => throw Fault(
+                "DPY4003",
+                $"'{ManagedObjectProtocols.GetTypeName(other)}' object is not an iterator.",
+                span,
+                "TypeError"
+            ),
+        };
+        if (advanced.Item1)
+        {
+            return advanced.Item2;
+        }
+
+        if (arguments.Count == 2)
+        {
+            return arguments[1];
+        }
+
+        throw CreateRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+    }
 
     private PythonSuperProxyValue Super(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
@@ -2680,6 +2945,18 @@ internal sealed class PythonVirtualMachine
         bool captureReturnLocalContinuation = false
     )
     {
+        if (function.Code.Definition.IsGenerator && returnOverride is null)
+        {
+            _evaluationStack.Push(
+                CreateGenerator(
+                    function,
+                    BindFunctionArguments(function, [.. arguments], [], [], span),
+                    span
+                )
+            );
+            return;
+        }
+
         IReadOnlyList<PythonValue> bound;
         if (function.Code.Definition.HasSimpleSignature)
         {
@@ -2910,7 +3187,10 @@ internal sealed class PythonVirtualMachine
         PythonModuleValue? initializingModule = null,
         PythonManagedTypeValue? classNamespace = null,
         PythonValue? returnOverride = null,
-        bool requireNoneReturn = false
+        bool requireNoneReturn = false,
+        PythonGeneratorValue? generator = null,
+        GeneratorFrameState? restoredState = null,
+        int instructionPointer = 0
     )
     {
         if (_frameCount == _frames.Length)
@@ -2929,8 +3209,20 @@ internal sealed class PythonVirtualMachine
             initializingModule,
             classNamespace,
             returnOverride,
-            requireNoneReturn
+            requireNoneReturn,
+            generator,
+            restoredState
         );
+        _frames[_frameCount - 1].InstructionPointer = instructionPointer;
+    }
+
+    private sealed class GeneratorFrameState
+    {
+        internal Stack<PythonRaisedException> ActiveExceptions { get; } = new();
+
+        internal List<PythonExceptionBlock> ExceptionBlocks { get; } = [];
+
+        internal Stack<PythonPendingFinally> PendingFinalies { get; } = new();
     }
 
     private bool CaptureReturnLocalContinuation()
@@ -4910,9 +5202,12 @@ internal sealed class PythonVirtualMachine
             PythonModuleValue? initializingModule,
             PythonManagedTypeValue? classNamespace,
             PythonValue? returnOverride,
-            bool requireNoneReturn
+            bool requireNoneReturn,
+            PythonGeneratorValue? generator = null,
+            GeneratorFrameState? restoredState = null
         )
         {
+            Generator = generator;
             Code = code;
             Cells = cells;
             _encodedEvaluationStackBase = hasReturnLocalContinuation
@@ -4925,10 +5220,13 @@ internal sealed class PythonVirtualMachine
             ClassNamespace = classNamespace;
             ReturnOverride = returnOverride;
             RequireNoneReturn = requireNoneReturn;
-            ActiveExceptions = new Stack<PythonRaisedException>();
-            ExceptionBlocks = [];
-            PendingFinalies = new Stack<PythonPendingFinally>();
+            ActiveExceptions =
+                restoredState?.ActiveExceptions ?? new Stack<PythonRaisedException>();
+            ExceptionBlocks = restoredState?.ExceptionBlocks ?? [];
+            PendingFinalies = restoredState?.PendingFinalies ?? new Stack<PythonPendingFinally>();
         }
+
+        internal PythonGeneratorValue? Generator { get; }
 
         // A complemented base marks a return-local continuation without growing each frame.
         private readonly int _encodedEvaluationStackBase;

@@ -434,6 +434,23 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_MarksGeneratorFunctionsAndRejectsModuleLevelYield()
+    {
+        var result = Parse("def gen():\n    yield 1\n    yield\ndef plain():\n    return 1\n");
+
+        Assert.Empty(result.Diagnostics);
+        var generator = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.True(generator.IsGenerator);
+        var plain = Assert.IsType<PythonFunctionDefinitionStatement>(result.Module.Statements[1]);
+        Assert.False(plain.IsGenerator);
+
+        var invalid = Parse("yield 1\n");
+        Assert.Contains(invalid.Diagnostics, diagnostic => diagnostic.Code == "DPY2022");
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

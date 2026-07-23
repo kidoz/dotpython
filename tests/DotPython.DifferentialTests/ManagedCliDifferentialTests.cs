@@ -294,6 +294,21 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "bare: float\ntry:\n    print(bare)\nexcept UnboundLocalError:\n    print('unbound')\nexcept NameError:\n    print('name-error')\ndef scoped():\n    inner: int\n    try:\n        return inner\n    except UnboundLocalError:\n        return 'inner-unbound'\nprint(scoped())\nclass Config:\n    retries: int = 3\n    timeout: float\n    def __init__(self, url: str) -> None:\n        self.url: str = url\nc = Config('http://x')\nprint(c.retries, c.url)"
     )]
+    [InlineData(
+        "def counter(limit):\n    n = 0\n    while n < limit:\n        yield n\n        n = n + 1\ng = counter(3)\nprint(type(g).__name__)\nprint(next(g), next(g), next(g))\ntry:\n    next(g)\nexcept StopIteration:\n    print('exhausted')\nprint(next(g, 'default'))\nfor v in counter(4):\n    print('for', v)\nprint(list(counter(3)), sum(counter(5)), sorted(counter(3), reverse=True))"
+    )]
+    [InlineData(
+        "def fib():\n    a, b = 0, 1\n    while True:\n        yield a\n        a, b = b, a + b\nf = fib()\nprint([next(f) for _ in range(8)])\ndef tagged(prefix):\n    yield prefix + '1'\n    yield prefix + '2'\na = tagged('a')\nb = tagged('b')\nprint(next(a), next(b), next(a), next(b))\ndef echo():\n    got = yield 'first'\n    yield got\ne = echo()\nprint(next(e), next(e))"
+    )]
+    [InlineData(
+        "def guarded():\n    try:\n        yield 'in-try'\n        yield 'still-in-try'\n    finally:\n        print('finally-ran')\ngg = guarded()\nprint(next(gg), next(gg))\ntry:\n    next(gg)\nexcept StopIteration:\n    print('done')\ndef failing():\n    yield 1\n    raise ValueError('boom')\nfg = failing()\nprint(next(fg))\ntry:\n    next(fg)\nexcept ValueError as e:\n    print('caught', e)\ntry:\n    next(fg)\nexcept StopIteration:\n    print('completed-after-error')"
+    )]
+    [InlineData(
+        "def counter(limit):\n    n = 0\n    while n < limit:\n        yield n\n        n += 1\nprint(list(map(lambda v: v + 100, counter(3))), list(filter(None, counter(3))))\nprint(max(counter(4)), any(counter(2)), all(counter(2)))\nx, y, *rest = counter(5)\nprint(x, y, rest)\nclass Repo:\n    def __init__(self, items):\n        self.items = items\n    def scan(self):\n        for item in self.items:\n            yield item * 2\nr = Repo([1, 2, 3])\nprint(list(r.scan()), list(r.scan()))"
+    )]
+    [InlineData(
+        "def make_gen(start):\n    def gen():\n        v = start\n        while v < start + 3:\n            yield v\n            v += 1\n    return gen\ng1 = make_gen(10)\nprint(list(g1()), list(g1()))\ndef defaults_gen(base=100, *rest, scale=2):\n    yield base * scale\n    for r in rest:\n        yield r\nprint(list(defaults_gen()), list(defaults_gen(5, 7, 8, scale=3)))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

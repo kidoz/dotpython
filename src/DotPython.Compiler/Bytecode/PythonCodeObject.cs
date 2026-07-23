@@ -15,7 +15,8 @@ public sealed class PythonCodeObject
         int argumentCount,
         int keywordOnlyArgumentCount = 0,
         bool hasVariadicPositional = false,
-        bool hasVariadicKeywords = false
+        bool hasVariadicKeywords = false,
+        bool isGenerator = false
     )
     {
         ArgumentOutOfRangeException.ThrowIfNegative(keywordOnlyArgumentCount);
@@ -34,6 +35,7 @@ public sealed class PythonCodeObject
         KeywordOnlyArgumentCount = keywordOnlyArgumentCount;
         HasVariadicPositional = hasVariadicPositional;
         HasVariadicKeywords = hasVariadicKeywords;
+        IsGenerator = isGenerator;
         Instructions = new ReadOnlyCollection<PythonInstruction>(instructions);
         Constants = new ReadOnlyCollection<PythonConstant>(constants);
         Names = new ReadOnlyCollection<string>(names);
@@ -63,6 +65,9 @@ public sealed class PythonCodeObject
         - KeywordOnlyArgumentCount
         - (HasVariadicPositional ? 1 : 0)
         - (HasVariadicKeywords ? 1 : 0);
+
+    /// <summary>Whether calling this code creates a generator instead of running it.</summary>
+    public bool IsGenerator { get; }
 
     /// <summary>Whether the signature has no variadic or keyword-only parameters.</summary>
     public bool HasSimpleSignature =>

@@ -456,6 +456,64 @@ internal sealed record PythonTemplateValue(
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 }
 
+internal enum PythonGeneratorState
+{
+    Created,
+    Suspended,
+    Running,
+    Completed,
+}
+
+internal sealed record PythonGeneratorValue : PythonValue
+{
+    internal PythonGeneratorValue(
+        string name,
+        PreparedPythonCode code,
+        PythonGlobalNamespace globals,
+        PythonCell[] cells,
+        PythonValue[] savedLocals
+    )
+    {
+        Name = name;
+        Code = code;
+        Globals = globals;
+        Cells = cells;
+        SavedLocals = savedLocals;
+    }
+
+    internal string Name { get; }
+
+    internal PreparedPythonCode Code { get; }
+
+    internal PythonGlobalNamespace Globals { get; }
+
+    internal PythonCell[] Cells { get; }
+
+    internal PythonValue[] SavedLocals { get; }
+
+    internal List<PythonValue> SavedEvaluationStack { get; } = [];
+
+    internal int InstructionPointer { get; set; }
+
+    internal PythonGeneratorState State { get; set; } = PythonGeneratorState.Created;
+
+    internal PythonValue YieldedValue { get; set; } = PythonNoneValue.Instance;
+
+    /// <summary>
+    /// VM-owned frame collections (exception blocks, pending finalies, active
+    /// exceptions) carried across suspensions; the concrete type is private to the VM.
+    /// </summary>
+    internal object? OwnedFrameState { get; set; }
+
+    internal Func<(bool HasValue, PythonValue Value)>? Resume { get; set; }
+
+    internal override string ToDisplayString() => $"<generator object {Name}>";
+
+    public bool Equals(PythonGeneratorValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+}
+
 internal sealed record PythonSuperProxyValue(
     PythonManagedTypeValue DefiningType,
     PythonManagedObjectValue Instance

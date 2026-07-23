@@ -96,4 +96,5 @@ public enum PythonOpCode
     ListToTuple = 91,
     SetUpdate = 92,
     DictionaryUpdate = 93,
+    Yield = 94,
 }

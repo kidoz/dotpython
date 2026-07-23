@@ -205,6 +205,11 @@ internal sealed class PreparedPythonCode
 
     internal void RecordManagedCall(int instructionIndex, PythonFunctionValue function)
     {
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
+        {
+            return;
+        }
+
         ref var cache = ref GetCallCache(instructionIndex);
         if (cache.State == AdaptiveCallCacheState.Generic)
         {

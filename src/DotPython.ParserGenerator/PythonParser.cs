@@ -43,6 +43,7 @@ public static class PythonParser
         private readonly SourceText _source;
         private readonly SyntaxToken[] _tokens;
         private int _functionDepth;
+        private readonly List<bool> _functionYieldFlags = [];
         private int _position;
 
         internal Parser(TokenizationResult tokenization)
@@ -539,7 +540,9 @@ public static class PythonParser
 
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the function signature");
             _functionDepth++;
+            _functionYieldFlags.Add(false);
             IReadOnlyList<PythonStatement> body;
+            bool isGenerator;
             try
             {
                 body = ParseSuite();
@@ -547,6 +550,8 @@ public static class PythonParser
             finally
             {
                 _functionDepth--;
+                isGenerator = _functionYieldFlags[^1];
+                _functionYieldFlags.RemoveAt(_functionYieldFlags.Count - 1);
             }
 
             return new PythonFunctionDefinitionStatement(
@@ -555,7 +560,8 @@ public static class PythonParser
                 parameters,
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End)),
-                returnAnnotation
+                returnAnnotation,
+                isGenerator
             );
         }
 
@@ -602,6 +608,8 @@ public static class PythonParser
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the class name");
             var enclosingFunctionDepth = _functionDepth;
             _functionDepth = 0;
+            var enclosingYieldFlags = new List<bool>(_functionYieldFlags);
+            _functionYieldFlags.Clear();
             IReadOnlyList<PythonStatement> body;
             try
             {
@@ -610,6 +618,8 @@ public static class PythonParser
             finally
             {
                 _functionDepth = enclosingFunctionDepth;
+                _functionYieldFlags.Clear();
+                _functionYieldFlags.AddRange(enclosingYieldFlags);
             }
 
             return new PythonClassDefinitionStatement(
@@ -1319,7 +1329,7 @@ public static class PythonParser
         private bool StartsExpression() =>
             Current.Kind switch
             {
-                SyntaxTokenKind.Identifier => Current.Text is "not" or "lambda"
+                SyntaxTokenKind.Identifier => Current.Text is "not" or "lambda" or "yield"
                     || !IsExpressionKeyword(Current.Text),
                 SyntaxTokenKind.IntegerLiteral
                 or SyntaxTokenKind.FloatLiteral
@@ -1360,6 +1370,11 @@ public static class PythonParser
             if (IsKeyword("lambda"))
             {
                 return ParseLambdaExpression();
+            }
+
+            if (IsKeyword("yield"))
+            {
+                return ParseYieldExpression();
             }
 
             if (
@@ -1629,6 +1644,30 @@ public static class PythonParser
                     kind,
                     annotation
                 )
+            );
+        }
+
+        private PythonYieldExpression ParseYieldExpression()
+        {
+            var yieldToken = Advance();
+            if (_functionYieldFlags.Count == 0)
+            {
+                Report("DPY2022", "'yield' is only allowed inside a function.", yieldToken.Span);
+            }
+            else
+            {
+                _functionYieldFlags[^1] = true;
+            }
+
+            PythonExpression? value = null;
+            if (StartsExpression() || Current.Kind == SyntaxTokenKind.Star)
+            {
+                value = ParseExpressionListValue();
+            }
+
+            return new PythonYieldExpression(
+                value,
+                TextSpan.FromBounds(yieldToken.Span.Start, value?.Span.End ?? yieldToken.Span.End)
             );
         }
 
@@ -2975,8 +3014,7 @@ public static class PythonParser
                     or "raise"
                     or "return"
                     or "try"
-                    or "while"
-                    or "yield";
+                    or "while";
 
         private static bool IsReservedKeyword(string value) =>
             value

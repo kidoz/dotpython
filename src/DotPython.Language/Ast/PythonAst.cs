@@ -39,7 +39,8 @@ public sealed record PythonFunctionDefinitionStatement(
     IReadOnlyList<PythonParameter> Parameters,
     IReadOnlyList<PythonStatement> Body,
     TextSpan Span,
-    PythonExpression? ReturnAnnotation = null
+    PythonExpression? ReturnAnnotation = null,
+    bool IsGenerator = false
 ) : PythonStatement(Span);
 
 public sealed record PythonClassDefinitionStatement(
@@ -229,6 +230,9 @@ public sealed record PythonSetComprehensionExpression(
     IReadOnlyList<PythonComprehensionClause> Clauses,
     TextSpan Span
 ) : PythonExpression(Span);
+
+public sealed record PythonYieldExpression(PythonExpression? Value, TextSpan Span)
+    : PythonExpression(Span);
 
 public sealed record PythonAssignmentExpression(
     PythonNameExpression Target,

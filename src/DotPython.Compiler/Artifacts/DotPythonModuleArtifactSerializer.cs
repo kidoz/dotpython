@@ -186,7 +186,7 @@ public static class DotPythonModuleArtifactSerializer
         var argumentCount = reader.ReadNonNegativeInt32("argument count");
         var keywordOnlyArgumentCount = reader.ReadNonNegativeInt32("keyword-only argument count");
         var signatureFlags = reader.ReadNonNegativeInt32("signature flags");
-        if (signatureFlags > 3)
+        if (signatureFlags > 7)
         {
             throw new InvalidDataException($"Signature flags {signatureFlags} are invalid.");
         }
@@ -235,7 +235,8 @@ public static class DotPythonModuleArtifactSerializer
             argumentCount,
             keywordOnlyArgumentCount,
             hasVariadicPositional: (signatureFlags & 1) != 0,
-            hasVariadicKeywords: (signatureFlags & 2) != 0
+            hasVariadicKeywords: (signatureFlags & 2) != 0,
+            isGenerator: (signatureFlags & 4) != 0
         );
         ValidateCodeObject(code);
         return code;

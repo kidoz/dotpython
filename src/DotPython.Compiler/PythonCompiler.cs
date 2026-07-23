@@ -91,15 +91,19 @@ public static class PythonCompiler
         private PythonCodeObject CompileCode(
             IReadOnlyList<PythonStatement> statements,
             int endPosition,
-            IReadOnlyList<PythonParameter>? signature = null
+            IReadOnlyList<PythonParameter>? signature = null,
+            bool isGenerator = false
         )
         {
             CompileStatements(statements);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
-            return CreateCodeObject(signature);
+            return CreateCodeObject(signature, isGenerator);
         }
 
-        private PythonCodeObject CreateCodeObject(IReadOnlyList<PythonParameter>? signature)
+        private PythonCodeObject CreateCodeObject(
+            IReadOnlyList<PythonParameter>? signature,
+            bool isGenerator = false
+        )
         {
             var keywordOnlyCount = 0;
             var hasVariadicPositional = false;
@@ -131,7 +135,8 @@ public static class PythonCompiler
                 _scope.Parameters.Count,
                 keywordOnlyCount,
                 hasVariadicPositional,
-                hasVariadicKeywords
+                hasVariadicKeywords,
+                isGenerator
             );
         }
 
@@ -424,6 +429,24 @@ public static class PythonCompiler
                     break;
                 case PythonLambdaExpression lambdaExpression:
                     CompileLambdaExpression(lambdaExpression);
+                    break;
+                case PythonYieldExpression yieldExpression:
+                    if (yieldExpression.Value is null)
+                    {
+                        Emit(
+                            PythonOpCode.LoadConstant,
+                            AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                            yieldExpression.Span
+                        );
+                    }
+                    else
+                    {
+                        CompileExpression(yieldExpression.Value);
+                    }
+
+                    // The resume path pushes the yield expression's result (None in
+                    // phase 1) after the suspension point.
+                    Emit(PythonOpCode.Yield, 0, yieldExpression.Span);
                     break;
                 case PythonAssignmentExpression assignmentExpression:
                     CompileExpression(assignmentExpression.Value);
@@ -1134,7 +1157,8 @@ public static class PythonCompiler
             var childCode = childCompiler.CompileCode(
                 function.Body,
                 function.Span.End,
-                function.Parameters
+                function.Parameters,
+                function.IsGenerator
             );
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
