@@ -225,6 +225,12 @@ public sealed record PythonLambdaExpression(
     TextSpan Span
 ) : PythonExpression(Span);
 
+public sealed record PythonGeneratorExpression(
+    PythonExpression Element,
+    IReadOnlyList<PythonComprehensionClause> Clauses,
+    TextSpan Span
+) : PythonExpression(Span);
+
 public sealed record PythonSetComprehensionExpression(
     PythonExpression Element,
     IReadOnlyList<PythonComprehensionClause> Clauses,

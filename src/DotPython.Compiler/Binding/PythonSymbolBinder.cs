@@ -145,7 +145,8 @@ public static class PythonSymbolBinder
                     ),
                     PythonListComprehensionExpression
                     or PythonDictionaryComprehensionExpression
-                    or PythonSetComprehensionExpression => BindComprehensionScope(
+                    or PythonSetComprehensionExpression
+                    or PythonGeneratorExpression => BindComprehensionScope(
                         (PythonExpression)definitionNode,
                         childAncestors,
                         diagnostics
@@ -191,6 +192,11 @@ public static class PythonSymbolBinder
                 name = "<setcomp>";
                 clauses = setComprehension.Clauses;
                 innerExpressions.Add(setComprehension.Element);
+                break;
+            case PythonGeneratorExpression generatorExpression:
+                name = "<genexpr>";
+                clauses = generatorExpression.Clauses;
+                innerExpressions.Add(generatorExpression.Element);
                 break;
             default:
                 throw new InvalidOperationException("The comprehension kind is invalid.");
@@ -1037,6 +1043,9 @@ public static class PythonSymbolBinder
             case PythonSetComprehensionExpression setComprehension:
                 CollectFirstIterableReferences(setComprehension.Clauses, references);
                 break;
+            case PythonGeneratorExpression generatorExpression:
+                CollectFirstIterableReferences(generatorExpression.Clauses, references);
+                break;
             case PythonStarredExpression starred:
                 CollectReferences(starred.Operand, references);
                 break;
@@ -1316,6 +1325,16 @@ public static class PythonSymbolBinder
                 yield return setComprehension;
                 foreach (
                     var nested in EnumerateFirstIterableComprehensions(setComprehension.Clauses)
+                )
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonGeneratorExpression generatorExpression:
+                yield return generatorExpression;
+                foreach (
+                    var nested in EnumerateFirstIterableComprehensions(generatorExpression.Clauses)
                 )
                 {
                     yield return nested;

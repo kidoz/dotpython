@@ -2037,6 +2037,31 @@ public static class PythonParser
                                     );
                                 }
 
+                                if (IsKeyword("for"))
+                                {
+                                    var clauses = ParseComprehensionClauses();
+                                    argument = new PythonGeneratorExpression(
+                                        argument,
+                                        clauses,
+                                        TextSpan.FromBounds(
+                                            argument.Span.Start,
+                                            clauses[^1].Span.End
+                                        )
+                                    );
+                                    if (
+                                        arguments.Count != 0
+                                        || Current.Kind == SyntaxTokenKind.Comma
+                                    )
+                                    {
+                                        Report(
+                                            "DPY2023",
+                                            "A generator expression must be parenthesized "
+                                                + "when it is not the sole argument.",
+                                            argument.Span
+                                        );
+                                    }
+                                }
+
                                 arguments.Add(argument);
                             }
 
@@ -2507,6 +2532,21 @@ public static class PythonParser
             {
                 ReportExpected("an expression", Current.Span);
                 return null;
+            }
+
+            if (first is not PythonStarredExpression && IsKeyword("for"))
+            {
+                var clauses = ParseComprehensionClauses();
+                var comprehensionEnd = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightParenthesis,
+                    "')'",
+                    clauses[^1].Span.End
+                );
+                return new PythonGeneratorExpression(
+                    first,
+                    clauses,
+                    TextSpan.FromBounds(leftParenthesis.Span.Start, comprehensionEnd)
+                );
             }
 
             if (!Match(SyntaxTokenKind.Comma))

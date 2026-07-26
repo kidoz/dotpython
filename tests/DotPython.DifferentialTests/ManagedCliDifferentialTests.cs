@@ -309,6 +309,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def make_gen(start):\n    def gen():\n        v = start\n        while v < start + 3:\n            yield v\n            v += 1\n    return gen\ng1 = make_gen(10)\nprint(list(g1()), list(g1()))\ndef defaults_gen(base=100, *rest, scale=2):\n    yield base * scale\n    for r in rest:\n        yield r\nprint(list(defaults_gen()), list(defaults_gen(5, 7, 8, scale=3)))"
     )]
+    [InlineData(
+        "xs = [1, 2, 3, 4]\ng = (x * 2 for x in xs)\nprint(type(g).__name__)\nprint(list(g), list(g))\nprint(sum(x * x for x in xs), max(x for x in xs if x % 2 == 0))\nprint(list(x + y for x in [1, 2] for y in [10, 20]))\nprint(sorted(len(w) for w in ['aaa', 'b', 'cc']))"
+    )]
+    [InlineData(
+        "def trace(v):\n    print('eval', v)\n    return v\nlazy = (trace(x) for x in [1, 2])\nprint('created')\nprint(next(lazy))\nprint(next(lazy))\npairs = ((a, b) for a in 'xy' for b in [1, 2] if b > 1)\nprint(list(pairs))\nnested = list(list(inner for inner in range(n)) for n in [2, 3])\nprint(nested)"
+    )]
+    [InlineData(
+        "xs = [1, 2, 3, 4]\nprint(any(v > 3 for v in xs), all(v > 0 for v in xs))\nprint(sum(y for y in (x * 10 for x in xs)))\nprint(list((x if x > 2 else -x) for x in xs))\nprint(tuple(c.upper() for c in 'abc'), set(v % 2 for v in xs) == {0, 1})\nfirst, *others = (n * n for n in range(4))\nprint(first, others)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

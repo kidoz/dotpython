@@ -451,6 +451,24 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsGeneratorExpressions()
+    {
+        var result = Parse("g = (x * 2 for x in xs if x)\ntotal = sum(v for v in data)\n");
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        var generator = Assert.IsType<PythonGeneratorExpression>(assignment.Value);
+        Assert.Equal(2, generator.Clauses.Count);
+        var call = Assert.IsType<PythonCallExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]).Value
+        );
+        Assert.IsType<PythonGeneratorExpression>(Assert.Single(call.Arguments));
+
+        var invalid = Parse("f(x for x in y, 1)\n");
+        Assert.Contains(invalid.Diagnostics, diagnostic => diagnostic.Code == "DPY2023");
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

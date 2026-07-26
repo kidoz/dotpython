@@ -485,6 +485,13 @@ public static class PythonCompiler
                 case PythonSetComprehensionExpression setComprehension:
                     CompileComprehension(setComprehension, "<setcomp>", setComprehension.Clauses);
                     break;
+                case PythonGeneratorExpression generatorExpression:
+                    CompileComprehension(
+                        generatorExpression,
+                        "<genexpr>",
+                        generatorExpression.Clauses
+                    );
+                    break;
                 case PythonStarredExpression starred:
                     Report(
                         "DPY3113",
@@ -868,16 +875,20 @@ public static class PythonCompiler
             IReadOnlyList<PythonComprehensionClause> clauses
         )
         {
-            Emit(
-                comprehension switch
-                {
-                    PythonDictionaryComprehensionExpression => PythonOpCode.BuildDictionary,
-                    PythonSetComprehensionExpression => PythonOpCode.BuildSet,
-                    _ => PythonOpCode.BuildList,
-                },
-                0,
-                comprehension.Span
-            );
+            if (comprehension is not PythonGeneratorExpression)
+            {
+                Emit(
+                    comprehension switch
+                    {
+                        PythonDictionaryComprehensionExpression => PythonOpCode.BuildDictionary,
+                        PythonSetComprehensionExpression => PythonOpCode.BuildSet,
+                        _ => PythonOpCode.BuildList,
+                    },
+                    0,
+                    comprehension.Span
+                );
+            }
+
             Emit(PythonOpCode.LoadLocal, GetVariableIndex(".0"), comprehension.Span);
             Emit(PythonOpCode.GetIterator, 0, comprehension.Span);
             CompileComprehensionClauses(
@@ -887,17 +898,16 @@ public static class PythonCompiler
                 iteratorDepth: 0,
                 innermostLoopStart: 0
             );
-            Emit(PythonOpCode.ReturnValue, 0, comprehension.Span);
-            return new PythonCodeObject(
-                _codeName,
-                _instructions,
-                _constants,
-                _names,
-                [.. _scope.LocalNames],
-                [.. _scope.CellVariableNames],
-                [.. _scope.FreeVariableNames],
-                _scope.Parameters.Count
-            );
+            if (comprehension is PythonGeneratorExpression)
+            {
+                Emit(PythonOpCode.ReturnNone, 0, comprehension.Span);
+            }
+            else
+            {
+                Emit(PythonOpCode.ReturnValue, 0, comprehension.Span);
+            }
+
+            return CreateCodeObject(null, comprehension is PythonGeneratorExpression);
         }
 
         private void CompileComprehensionClauses(
@@ -932,6 +942,11 @@ public static class PythonCompiler
                     case PythonSetComprehensionExpression setComprehension:
                         CompileExpression(setComprehension.Element);
                         Emit(PythonOpCode.SetAdd, iteratorDepth, setComprehension.Element.Span);
+                        break;
+                    case PythonGeneratorExpression generatorExpression:
+                        CompileExpression(generatorExpression.Element);
+                        Emit(PythonOpCode.Yield, 0, generatorExpression.Element.Span);
+                        Emit(PythonOpCode.PopTop, 0, generatorExpression.Element.Span);
                         break;
                 }
 

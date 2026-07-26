@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "1021918c761f59162e021f90f22ef5aca810616fa6c640683481a759c9d9dccb";
+    internal const string SourceSha256 = "c8baa3d43d23faaa65d6fbc5880856d1aec4359af8594c75b9848b3d65b1ae5c";
     internal const int RuleCount = 75;
 
     private const string GrammarSource = """
@@ -71,7 +71,7 @@ internal static class GeneratedPythonGrammar
         subscript: slice | expression
         slice: [expression] ':' [expression] [':' [expression]]
         arguments: ','.argument+ [',']
-        argument: NAME '=' expression | '**' expression | '*' expression | expression
+        argument: NAME '=' expression | '**' expression | '*' expression | expression [comp_clauses]
         expression_list: ','.star_expression+ [',']
         star_expression: '*' expression | expression
         atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
@@ -83,7 +83,7 @@ internal static class GeneratedPythonGrammar
         comp_if: 'if' disjunction
         dict_items: ','.dict_item+ [',']
         dict_item: '**' expression | expression ':' expression
-        group: '(' expression ')'
+        group: '(' expression comp_clauses ')' | '(' expression ')'
         """;
 
     internal static PegGrammar Grammar { get; } = PegGrammar.Parse(GrammarSource);
