@@ -208,6 +208,9 @@ public static class PythonCompiler
                 case PythonWithStatement withStatement:
                     CompileWithStatement(withStatement, itemIndex: 0);
                     break;
+                case PythonMatchStatement matchStatement:
+                    CompileMatchStatement(matchStatement);
+                    break;
                 case PythonImportStatement importStatement:
                     CompileImportStatement(importStatement);
                     break;
@@ -1131,6 +1134,142 @@ public static class PythonCompiler
                     break;
             }
         }
+
+        private void CompileMatchStatement(PythonMatchStatement statement)
+        {
+            // The subject is evaluated once and stays on the stack across case tests;
+            // it is popped when a case is selected (before its body) or after the last
+            // failed test.
+            CompileExpression(statement.Subject);
+            var endJumps = new List<int>();
+            foreach (var matchCase in statement.Cases)
+            {
+                var failJumps = new List<int>();
+                Emit(PythonOpCode.CopyTop, 0, matchCase.Pattern.Span);
+                CompilePatternTest(matchCase.Pattern);
+                failJumps.Add(Emit(PythonOpCode.JumpIfFalse, 0, matchCase.Pattern.Span));
+                if (matchCase.Guard is not null)
+                {
+                    CompileExpression(matchCase.Guard);
+                    failJumps.Add(Emit(PythonOpCode.JumpIfFalse, 0, matchCase.Guard.Span));
+                }
+
+                Emit(PythonOpCode.PopTop, 0, matchCase.Span);
+                CompileStatements(matchCase.Body);
+                endJumps.Add(Emit(PythonOpCode.Jump, 0, matchCase.Span));
+                foreach (var failJump in failJumps)
+                {
+                    PatchJump(failJump, _instructions.Count);
+                }
+            }
+
+            Emit(PythonOpCode.PopTop, 0, statement.Span);
+            foreach (var endJump in endJumps)
+            {
+                PatchJump(endJump, _instructions.Count);
+            }
+        }
+
+        /// <summary>
+        /// Emits a pattern test with the contract: the subject copy on the stack top is
+        /// consumed and a boolean match result is left in its place. Capture bindings
+        /// are applied eagerly, matching CPython's visible partial-binding semantics.
+        /// </summary>
+        private void CompilePatternTest(PythonPattern pattern)
+        {
+            switch (pattern)
+            {
+                case PythonLiteralPattern literalPattern:
+                    CompileExpression(literalPattern.Literal);
+                    Emit(
+                        literalPattern.UseIdentity
+                            ? PythonOpCode.CompareIs
+                            : PythonOpCode.CompareEqual,
+                        0,
+                        literalPattern.Span
+                    );
+                    break;
+                case PythonValuePattern valuePattern:
+                    CompileExpression(valuePattern.DottedName);
+                    Emit(PythonOpCode.CompareEqual, 0, valuePattern.Span);
+                    break;
+                case PythonCapturePattern capturePattern:
+                    if (capturePattern.Name is null)
+                    {
+                        Emit(PythonOpCode.PopTop, 0, capturePattern.Span);
+                    }
+                    else
+                    {
+                        EmitStoreName(
+                            new PythonNameExpression(capturePattern.Name, capturePattern.Span)
+                        );
+                    }
+
+                    EmitLoadTrue(capturePattern.Span);
+                    break;
+                case PythonAsPattern asPattern:
+                {
+                    Emit(PythonOpCode.CopyTop, 0, asPattern.Span);
+                    CompilePatternTest(asPattern.Inner);
+                    var innerFail = Emit(PythonOpCode.JumpIfFalse, 0, asPattern.Span);
+                    EmitStoreName(new PythonNameExpression(asPattern.Name, asPattern.Span));
+                    EmitLoadTrue(asPattern.Span);
+                    var done = Emit(PythonOpCode.Jump, 0, asPattern.Span);
+                    PatchJump(innerFail, _instructions.Count);
+                    Emit(PythonOpCode.PopTop, 0, asPattern.Span);
+                    EmitLoadFalse(asPattern.Span);
+                    PatchJump(done, _instructions.Count);
+                    break;
+                }
+                case PythonOrPattern orPattern:
+                {
+                    var doneJumps = new List<int>();
+                    for (var index = 0; index < orPattern.Alternatives.Count - 1; index++)
+                    {
+                        var alternative = orPattern.Alternatives[index];
+                        Emit(PythonOpCode.CopyTop, 0, alternative.Span);
+                        CompilePatternTest(alternative);
+                        var nextAlternative = Emit(PythonOpCode.JumpIfFalse, 0, alternative.Span);
+                        Emit(PythonOpCode.PopTop, 0, alternative.Span);
+                        EmitLoadTrue(alternative.Span);
+                        doneJumps.Add(Emit(PythonOpCode.Jump, 0, alternative.Span));
+                        PatchJump(nextAlternative, _instructions.Count);
+                    }
+
+                    CompilePatternTest(orPattern.Alternatives[^1]);
+                    foreach (var doneJump in doneJumps)
+                    {
+                        PatchJump(doneJump, _instructions.Count);
+                    }
+
+                    break;
+                }
+                default:
+                    Report(
+                        "DPY3115",
+                        $"Pattern type '{pattern.GetType().Name}' is not supported in this "
+                            + "runtime slice.",
+                        pattern.Span
+                    );
+                    Emit(PythonOpCode.PopTop, 0, pattern.Span);
+                    EmitLoadFalse(pattern.Span);
+                    break;
+            }
+        }
+
+        private void EmitLoadTrue(TextSpan span) =>
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(new PythonConstant(PythonConstantType.TruthValue, true)),
+                span
+            );
+
+        private void EmitLoadFalse(TextSpan span) =>
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(new PythonConstant(PythonConstantType.TruthValue, false)),
+                span
+            );
 
         private void CompileIfStatement(PythonIfStatement statement)
         {

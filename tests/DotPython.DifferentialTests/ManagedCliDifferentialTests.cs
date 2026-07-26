@@ -318,6 +318,15 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "xs = [1, 2, 3, 4]\nprint(any(v > 3 for v in xs), all(v > 0 for v in xs))\nprint(sum(y for y in (x * 10 for x in xs)))\nprint(list((x if x > 2 else -x) for x in xs))\nprint(tuple(c.upper() for c in 'abc'), set(v % 2 for v in xs) == {0, 1})\nfirst, *others = (n * n for n in range(4))\nprint(first, others)"
     )]
+    [InlineData(
+        "def describe(v):\n    match v:\n        case 0:\n            return 'zero'\n        case 1 | 2 | 3:\n            return 'small'\n        case -1:\n            return 'negative one'\n        case 'hello':\n            return 'greeting'\n        case None:\n            return 'nothing'\n        case n if n > 100:\n            return 'big ' + str(n)\n        case n:\n            return 'other ' + str(n)\nprint(describe(0), describe(2), describe(-1))\nprint(describe('hello'), describe(None))\nprint(describe(500), describe(42))"
+    )]
+    [InlineData(
+        "class Color:\n    RED = 1\n    GREEN = 2\ndef name_of(c):\n    match c:\n        case Color.RED:\n            return 'red'\n        case Color.GREEN:\n            return 'green'\n        case _:\n            return 'unknown'\nprint(name_of(1), name_of(2), name_of(9))\nmatch 'x':\n    case ('a' | 'x') as letter:\n        print('letter', letter)\nmatch 99:\n    case 1:\n        print('never')\nprint('fell-through')\ndef order(v):\n    match v:\n        case 1 if False:\n            return 'guarded-out'\n        case 1:\n            return 'plain-one'\n    return 'none'\nprint(order(1), order(2))"
+    )]
+    [InlineData(
+        "match = 5\nprint(match)\ncase = match + 1\nprint(case)\nprint(len([match, case]))\ndef f(match):\n    return match * 2\nprint(f(3))\nmatch (10):\n    case 10:\n        print('paren-subject')\nvalue = 7\nmatch value + 1:\n    case 8 as got:\n        print('expr-subject', got)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

@@ -119,6 +119,10 @@ public static class PythonParser
                 {
                     statements.Add(ParseClassDefinition(Array.Empty<PythonExpression>()));
                 }
+                else if (LooksLikeMatchStatement())
+                {
+                    statements.Add(ParseMatchStatement());
+                }
                 else if (Current.Kind == SyntaxTokenKind.At)
                 {
                     var decorated = ParseDecoratedDefinition();
@@ -303,6 +307,304 @@ public static class PythonParser
             }
 
             return new PythonNameExpression(targetToken.Text, targetToken.Span);
+        }
+
+        /// <summary>
+        /// `match` is a soft keyword: this is a match statement only when the next token
+        /// can start a subject expression and the logical line ends with ':' at bracket
+        /// depth zero. `match = 5`, `match(x)`, and `match[0]: int = 5` stay expressions.
+        /// </summary>
+        private bool LooksLikeMatchStatement()
+        {
+            if (Current.Kind != SyntaxTokenKind.Identifier || Current.Text != "match")
+            {
+                return false;
+            }
+
+            var next = Peek(1);
+            var startsSubject = next.Kind switch
+            {
+                SyntaxTokenKind.Identifier => next.Text is "not" or "lambda"
+                    || !IsExpressionKeyword(next.Text),
+                SyntaxTokenKind.IntegerLiteral
+                or SyntaxTokenKind.FloatLiteral
+                or SyntaxTokenKind.ImaginaryLiteral
+                or SyntaxTokenKind.StringLiteral
+                or SyntaxTokenKind.BytesLiteral
+                or SyntaxTokenKind.FormattedStringLiteral
+                or SyntaxTokenKind.TemplateStringLiteral
+                or SyntaxTokenKind.LeftParenthesis
+                or SyntaxTokenKind.LeftBracket
+                or SyntaxTokenKind.LeftBrace
+                or SyntaxTokenKind.Minus
+                or SyntaxTokenKind.Plus
+                or SyntaxTokenKind.Star => true,
+                _ => false,
+            };
+            if (!startsSubject)
+            {
+                return false;
+            }
+
+            return LogicalLineEndsWithColon(offset: 1);
+        }
+
+        private bool LogicalLineEndsWithColon(int offset)
+        {
+            var depth = 0;
+            var sawColonLast = false;
+            for (var index = offset; ; index++)
+            {
+                var token = Peek(index);
+                switch (token.Kind)
+                {
+                    case SyntaxTokenKind.LeftParenthesis
+                    or SyntaxTokenKind.LeftBracket
+                    or SyntaxTokenKind.LeftBrace:
+                        depth++;
+                        sawColonLast = false;
+                        break;
+                    case SyntaxTokenKind.RightParenthesis
+                    or SyntaxTokenKind.RightBracket
+                    or SyntaxTokenKind.RightBrace:
+                        depth--;
+                        sawColonLast = false;
+                        break;
+                    case SyntaxTokenKind.NewLine or SyntaxTokenKind.EndOfFile:
+                        return sawColonLast;
+                    case SyntaxTokenKind.Colon when depth == 0:
+                        sawColonLast = true;
+                        break;
+                    default:
+                        sawColonLast = false;
+                        break;
+                }
+            }
+        }
+
+        private PythonMatchStatement ParseMatchStatement()
+        {
+            var start = Advance().Span.Start;
+            var subject = ParseRequiredExpressionList("a subject after 'match'");
+            Expect(SyntaxTokenKind.Colon, "':' after the match subject");
+            if (!Match(SyntaxTokenKind.NewLine))
+            {
+                ReportExpected("a new line after ':'", Current.Span);
+            }
+
+            SkipNewLines();
+            if (!Match(SyntaxTokenKind.Indent))
+            {
+                ReportExpected("an indented case block", Current.Span);
+                return new PythonMatchStatement(
+                    subject,
+                    [],
+                    TextSpan.FromBounds(start, subject.Span.End)
+                );
+            }
+
+            var cases = new List<PythonMatchCase>();
+            while (Current.Kind == SyntaxTokenKind.Identifier && Current.Text == "case")
+            {
+                cases.Add(ParseCaseBlock());
+                SkipNewLines();
+            }
+
+            if (cases.Count == 0)
+            {
+                Report("DPY2024", "A match statement requires at least one case.", Current.Span);
+            }
+
+            if (!Match(SyntaxTokenKind.Dedent))
+            {
+                ReportExpected("the end of the match statement", Current.Span);
+            }
+
+            var end = cases.Count == 0 ? subject.Span.End : cases[^1].Span.End;
+            return new PythonMatchStatement(
+                subject,
+                cases.AsReadOnly(),
+                TextSpan.FromBounds(start, end)
+            );
+        }
+
+        private PythonMatchCase ParseCaseBlock()
+        {
+            var start = Advance().Span.Start;
+            var pattern = ParseAsPattern();
+            if (Current.Kind == SyntaxTokenKind.Comma)
+            {
+                Report(
+                    "DPY2024",
+                    "Sequence patterns are not supported in this runtime slice.",
+                    Current.Span
+                );
+                SynchronizeLine();
+            }
+
+            PythonExpression? guard = null;
+            if (MatchKeyword("if", out _))
+            {
+                guard = ParseRequiredExpression("a guard condition after 'if'");
+            }
+
+            var colon = Expect(SyntaxTokenKind.Colon, "':' after the case pattern");
+            var body = ParseSuite();
+            return new PythonMatchCase(
+                pattern,
+                guard,
+                body,
+                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
+            );
+        }
+
+        private PythonPattern ParseAsPattern()
+        {
+            var pattern = ParseOrPattern();
+            if (MatchKeyword("as", out _))
+            {
+                var nameToken = Expect(SyntaxTokenKind.Identifier, "a name after 'as'");
+                if (IsReservedKeyword(nameToken.Text))
+                {
+                    Report(
+                        "DPY2010",
+                        $"The keyword '{nameToken.Text}' cannot be used as a capture name.",
+                        nameToken.Span
+                    );
+                }
+
+                return new PythonAsPattern(
+                    pattern,
+                    nameToken.Text,
+                    TextSpan.FromBounds(pattern.Span.Start, nameToken.Span.End)
+                );
+            }
+
+            return pattern;
+        }
+
+        private PythonPattern ParseOrPattern()
+        {
+            var first = ParseClosedPattern();
+            if (Current.Kind != SyntaxTokenKind.VerticalBar)
+            {
+                return first;
+            }
+
+            var alternatives = new List<PythonPattern> { first };
+            while (Match(SyntaxTokenKind.VerticalBar))
+            {
+                alternatives.Add(ParseClosedPattern());
+            }
+
+            return new PythonOrPattern(
+                alternatives.AsReadOnly(),
+                TextSpan.FromBounds(first.Span.Start, alternatives[^1].Span.End)
+            );
+        }
+
+        private PythonPattern ParseClosedPattern()
+        {
+            if (Match(SyntaxTokenKind.LeftParenthesis))
+            {
+                var inner = ParseAsPattern();
+                ExpectClosingDelimiter(SyntaxTokenKind.RightParenthesis, "')'", inner.Span.End);
+                return inner;
+            }
+
+            if (
+                Current.Kind
+                    is SyntaxTokenKind.IntegerLiteral
+                        or SyntaxTokenKind.FloatLiteral
+                        or SyntaxTokenKind.ImaginaryLiteral
+                        or SyntaxTokenKind.StringLiteral
+                        or SyntaxTokenKind.BytesLiteral
+                || (
+                    Current.Kind is SyntaxTokenKind.Minus or SyntaxTokenKind.Plus
+                    && Peek(1).Kind
+                        is SyntaxTokenKind.IntegerLiteral
+                            or SyntaxTokenKind.FloatLiteral
+                            or SyntaxTokenKind.ImaginaryLiteral
+                )
+            )
+            {
+                var literal = ParseDisjunction();
+                if (literal is null)
+                {
+                    ReportExpected("a literal pattern", Current.Span);
+                    return new PythonCapturePattern(null, Current.Span);
+                }
+
+                return new PythonLiteralPattern(literal, UseIdentity: false, literal.Span);
+            }
+
+            if (Current.Kind == SyntaxTokenKind.Identifier)
+            {
+                if (Current.Text is "None" or "True" or "False")
+                {
+                    var constant = ParseDisjunction()!;
+                    return new PythonLiteralPattern(constant, UseIdentity: true, constant.Span);
+                }
+
+                if (IsReservedKeyword(Current.Text) || IsExpressionKeyword(Current.Text))
+                {
+                    Report("DPY2024", $"'{Current.Text}' cannot start a pattern.", Current.Span);
+                    return new PythonCapturePattern(null, Advance().Span);
+                }
+
+                var nameToken = Advance();
+                if (Current.Kind == SyntaxTokenKind.Dot)
+                {
+                    PythonExpression value = new PythonNameExpression(
+                        nameToken.Text,
+                        nameToken.Span
+                    );
+                    while (Match(SyntaxTokenKind.Dot))
+                    {
+                        var attribute = Expect(
+                            SyntaxTokenKind.Identifier,
+                            "an attribute name after '.'"
+                        );
+                        value = new PythonAttributeExpression(
+                            value,
+                            attribute.Text,
+                            TextSpan.FromBounds(value.Span.Start, attribute.Span.End)
+                        );
+                    }
+
+                    return new PythonValuePattern(value, value.Span);
+                }
+
+                if (Current.Kind is SyntaxTokenKind.LeftParenthesis or SyntaxTokenKind.LeftBracket)
+                {
+                    Report(
+                        "DPY2024",
+                        "Class and sequence patterns are not supported in this runtime slice.",
+                        Current.Span
+                    );
+                    SynchronizeLine();
+                    return new PythonCapturePattern(null, nameToken.Span);
+                }
+
+                return new PythonCapturePattern(
+                    nameToken.Text == "_" ? null : nameToken.Text,
+                    nameToken.Span
+                );
+            }
+
+            if (Current.Kind is SyntaxTokenKind.LeftBracket or SyntaxTokenKind.LeftBrace)
+            {
+                Report(
+                    "DPY2024",
+                    "Sequence and mapping patterns are not supported in this runtime slice.",
+                    Current.Span
+                );
+                SynchronizeLine();
+                return new PythonCapturePattern(null, Current.Span);
+            }
+
+            ReportExpected("a pattern", Current.Span);
+            return new PythonCapturePattern(null, Current.Span);
         }
 
         private PythonWithStatement ParseWithStatement()

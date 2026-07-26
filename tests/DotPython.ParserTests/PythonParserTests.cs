@@ -469,6 +469,57 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_DisambiguatesMatchSoftKeyword()
+    {
+        var statement = Parse("match x:\n    case 1:\n        pass\n");
+        Assert.Empty(statement.Diagnostics);
+        var matchStatement = Assert.IsType<PythonMatchStatement>(
+            Assert.Single(statement.Module.Statements)
+        );
+        Assert.Single(matchStatement.Cases);
+
+        var assignment = Parse("match = 5\n");
+        Assert.Empty(assignment.Diagnostics);
+        Assert.IsType<PythonAssignmentStatement>(Assert.Single(assignment.Module.Statements));
+
+        var call = Parse("match(x)\n");
+        Assert.Empty(call.Diagnostics);
+        Assert.IsType<PythonExpressionStatement>(Assert.Single(call.Module.Statements));
+
+        var annotated = Parse("match[0]: int = 5\n");
+        Assert.Empty(annotated.Diagnostics);
+        Assert.IsType<PythonAnnotatedAssignmentStatement>(
+            Assert.Single(annotated.Module.Statements)
+        );
+    }
+
+    [Fact]
+    public void Parse_BuildsMatchPatterns()
+    {
+        var result = Parse(
+            "match v:\n"
+                + "    case (1 | 2) as small if flag:\n"
+                + "        pass\n"
+                + "    case Color.RED:\n"
+                + "        pass\n"
+                + "    case _:\n"
+                + "        pass\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var matchStatement = Assert.IsType<PythonMatchStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.Equal(3, matchStatement.Cases.Count);
+        var asPattern = Assert.IsType<PythonAsPattern>(matchStatement.Cases[0].Pattern);
+        Assert.Equal("small", asPattern.Name);
+        Assert.Equal(2, Assert.IsType<PythonOrPattern>(asPattern.Inner).Alternatives.Count);
+        Assert.NotNull(matchStatement.Cases[0].Guard);
+        Assert.IsType<PythonValuePattern>(matchStatement.Cases[1].Pattern);
+        Assert.Null(Assert.IsType<PythonCapturePattern>(matchStatement.Cases[2].Pattern).Name);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

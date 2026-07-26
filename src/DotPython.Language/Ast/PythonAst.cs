@@ -165,6 +165,35 @@ public sealed record PythonExceptHandler(
     TextSpan Span
 ) : PythonNode(Span);
 
+public sealed record PythonMatchStatement(
+    PythonExpression Subject,
+    IReadOnlyList<PythonMatchCase> Cases,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public sealed record PythonMatchCase(
+    PythonPattern Pattern,
+    PythonExpression? Guard,
+    IReadOnlyList<PythonStatement> Body,
+    TextSpan Span
+) : PythonNode(Span);
+
+public abstract record PythonPattern(TextSpan Span) : PythonNode(Span);
+
+public sealed record PythonLiteralPattern(PythonExpression Literal, bool UseIdentity, TextSpan Span)
+    : PythonPattern(Span);
+
+public sealed record PythonCapturePattern(string? Name, TextSpan Span) : PythonPattern(Span);
+
+public sealed record PythonValuePattern(PythonExpression DottedName, TextSpan Span)
+    : PythonPattern(Span);
+
+public sealed record PythonOrPattern(IReadOnlyList<PythonPattern> Alternatives, TextSpan Span)
+    : PythonPattern(Span);
+
+public sealed record PythonAsPattern(PythonPattern Inner, string Name, TextSpan Span)
+    : PythonPattern(Span);
+
 public abstract record PythonExpression(TextSpan Span) : PythonNode(Span);
 
 public sealed record PythonNameExpression(string Name, TextSpan Span) : PythonExpression(Span);

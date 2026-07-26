@@ -626,6 +626,19 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonMatchStatement matchStatement:
+                    foreach (var matchCase in matchStatement.Cases)
+                    {
+                        CollectPatternNames(
+                            matchCase.Pattern,
+                            localNames,
+                            localNameSet,
+                            excludedNames
+                        );
+                        CollectBoundNames(matchCase.Body, localNames, localNameSet, excludedNames);
+                    }
+
+                    break;
                 case PythonAugmentedAssignmentStatement augmented:
                     if (augmented.Target is PythonNameExpression augmentedTarget)
                     {
@@ -766,6 +779,20 @@ public static class PythonSymbolBinder
                     if (annotated.Target is not PythonNameExpression)
                     {
                         CollectTargetReferences(annotated.Target, references);
+                    }
+
+                    break;
+                case PythonMatchStatement matchStatement:
+                    CollectReferences(matchStatement.Subject, references);
+                    foreach (var matchCase in matchStatement.Cases)
+                    {
+                        CollectPatternReferences(matchCase.Pattern, references);
+                        if (matchCase.Guard is not null)
+                        {
+                            CollectReferences(matchCase.Guard, references);
+                        }
+
+                        CollectReferences(matchCase.Body, references, diagnostics, scopeKind);
                     }
 
                     break;
@@ -1052,6 +1079,36 @@ public static class PythonSymbolBinder
         }
     }
 
+    private static void CollectPatternReferences(
+        PythonPattern pattern,
+        List<NameReference> references
+    )
+    {
+        switch (pattern)
+        {
+            case PythonLiteralPattern literalPattern:
+                CollectReferences(literalPattern.Literal, references);
+                break;
+            case PythonValuePattern valuePattern:
+                CollectReferences(valuePattern.DottedName, references);
+                break;
+            case PythonCapturePattern { Name: { } captureName }:
+                references.Add(new NameReference(captureName, pattern.Span, IsBinding: true));
+                break;
+            case PythonAsPattern asPattern:
+                references.Add(new NameReference(asPattern.Name, pattern.Span, IsBinding: true));
+                CollectPatternReferences(asPattern.Inner, references);
+                break;
+            case PythonOrPattern orPattern:
+                foreach (var alternative in orPattern.Alternatives)
+                {
+                    CollectPatternReferences(alternative, references);
+                }
+
+                break;
+        }
+    }
+
     private static void CollectFirstIterableReferences(
         IReadOnlyList<PythonComprehensionClause> clauses,
         List<NameReference> references
@@ -1118,6 +1175,29 @@ public static class PythonSymbolBinder
                     if (annotated.Value is not null)
                     {
                         foreach (var nested in EnumerateComprehensions(annotated.Value))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    break;
+                case PythonMatchStatement matchStatement:
+                    foreach (var nested in EnumerateComprehensions(matchStatement.Subject))
+                    {
+                        yield return nested;
+                    }
+
+                    foreach (var matchCase in matchStatement.Cases)
+                    {
+                        if (matchCase.Guard is not null)
+                        {
+                            foreach (var nested in EnumerateComprehensions(matchCase.Guard))
+                            {
+                                yield return nested;
+                            }
+                        }
+
+                        foreach (var nested in EnumerateScopeDefinitions(matchCase.Body))
                         {
                             yield return nested;
                         }
@@ -1577,6 +1657,32 @@ public static class PythonSymbolBinder
         clauses.Count != 0 && clauses[0] is PythonComprehensionForClause firstClause
             ? EnumerateComprehensions(firstClause.Iterable)
             : [];
+
+    private static void CollectPatternNames(
+        PythonPattern pattern,
+        List<string> localNames,
+        HashSet<string> localNameSet,
+        HashSet<string> excludedNames
+    )
+    {
+        switch (pattern)
+        {
+            case PythonCapturePattern { Name: { } captureName }:
+                AddLocal(captureName, localNames, localNameSet, excludedNames);
+                break;
+            case PythonAsPattern asPattern:
+                AddLocal(asPattern.Name, localNames, localNameSet, excludedNames);
+                CollectPatternNames(asPattern.Inner, localNames, localNameSet, excludedNames);
+                break;
+            case PythonOrPattern orPattern:
+                foreach (var alternative in orPattern.Alternatives)
+                {
+                    CollectPatternNames(alternative, localNames, localNameSet, excludedNames);
+                }
+
+                break;
+        }
+    }
 
     private static void CollectTargetNames(
         PythonExpression target,

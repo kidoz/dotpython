@@ -5,14 +5,14 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "c8baa3d43d23faaa65d6fbc5880856d1aec4359af8594c75b9848b3d65b1ae5c";
-    internal const int RuleCount = 75;
+    internal const string SourceSha256 = "31976baffd78dcfa6fa5823c1872da54ae34b6b5f63a308d348b63b08162d6cf";
+    internal const int RuleCount = 79;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | class_def
+        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | class_def | match_stmt
         decorated: decorators (function_def | class_def)
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
@@ -48,6 +48,10 @@ internal static class GeneratedPythonGrammar
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
         class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
+        match_stmt: 'match' expression_list ':' NEWLINE INDENT case_block+ DEDENT
+        case_block: 'case' case_pattern ['if' expression] ':' block
+        case_pattern: '|'.closed_pattern+ ['as' NAME]
+        closed_pattern: '(' case_pattern ')' | '-' NUMBER | primary
         parameters: ','.parameter+ [',']
         parameter: '**' NAME [':' expression] | '*' [NAME [':' expression]] | NAME [':' expression] ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
