@@ -339,6 +339,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "class Point:\n    __match_args__ = ('x', 'y')\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\ndef nested(data):\n    match data:\n        case {'points': [Point(x=0, y=y1), *others]} if y1 > 0:\n            return 'starts-on-y ' + str(y1) + ' others=' + str(len(others))\n        case {'points': []}:\n            return 'no points'\n        case _:\n            return 'other'\nprint(nested({'points': [Point(0, 9), Point(1, 1)]}))\nprint(nested({'points': []}), nested({'points': [Point(3, 3)]}))\nmatch [1, [2, {'k': 'deep'}]]:\n    case [1, [2, {'k': found}]]:\n        print('deep', found)\ndef guarded_bind(v):\n    match v:\n        case [x, y] if x > y:\n            return 'gt ' + str(x)\n        case _:\n            return 'bound anyway ' + str(x) + ',' + str(y)\nprint(guarded_bind([1, 9]), guarded_bind([9, 1]))"
     )]
+    [InlineData(
+        "def echo():\n    while True:\n        got = yield 'ready'\n        if got == 'stop':\n            return 'finished'\n        print('got', got)\ne = echo()\nprint(next(e))\nprint(e.send('hello'))\nprint(e.send('world'))\ntry:\n    e.send('stop')\nexcept StopIteration:\n    print('stopped')\ne2 = echo()\ntry:\n    e2.send('x')\nexcept TypeError as err:\n    print('fresh-send:', err)"
+    )]
+    [InlineData(
+        "def g1():\n    yield 1\ng = g1()\ntry:\n    g.throw(ValueError('boom'))\nexcept ValueError as err:\n    print('fresh-throw:', err)\ntry:\n    next(g)\nexcept StopIteration:\n    print('closed-after-fresh-throw')\ndef catcher():\n    try:\n        yield 1\n    except ValueError:\n        yield 'caught'\nc = catcher()\nprint(next(c), c.throw(ValueError()))\ndef with_finally():\n    try:\n        yield 1\n    finally:\n        print('cleanup')\nw = with_finally()\nprint(next(w))\nprint(w.close())"
+    )]
+    [InlineData(
+        "def inner():\n    yield 'a'\n    got = yield 'b'\n    print('inner-got', got)\n    return 'inner-result'\ndef outer():\n    result = yield from inner()\n    yield 'outer:' + result\no = outer()\nprint(next(o), next(o))\nprint(o.send('sent-through'))\ndef delegate_list():\n    result = yield from [10, 20]\n    yield result\nprint(list(delegate_list()))"
+    )]
+    [InlineData(
+        "def counter(n):\n    total = 0\n    for i in range(n):\n        got = yield i\n        if got:\n            total += got\n    return total\ndef summing():\n    result = yield from counter(3)\n    yield 'sum:' + str(result)\ns = summing()\nprint(next(s), s.send(10), s.send(20), next(s))\ndef deep_inner():\n    yield 1\n    return 'deep'\ndef middle():\n    r = yield from deep_inner()\n    yield 'mid:' + r\n    return 'mid-done'\ndef top():\n    r = yield from middle()\n    yield 'top:' + r\nprint(list(top()))\ndef depths():\n    try:\n        yield 1\n        yield 2\n        yield 3\n    finally:\n        print('done')\ng = depths()\nprint(next(g))\nprint([next(g), len([next(g)])])\nprint(list(g))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

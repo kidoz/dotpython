@@ -1061,6 +1061,16 @@ public static class PythonSymbolBinder
                 );
                 CollectReferences(assignmentExpression.Value, references);
                 break;
+            case PythonYieldExpression yieldExpression:
+                if (yieldExpression.Value is not null)
+                {
+                    CollectReferences(yieldExpression.Value, references);
+                }
+
+                break;
+            case PythonYieldFromExpression yieldFromExpression:
+                CollectReferences(yieldFromExpression.Source, references);
+                break;
             case PythonListComprehensionExpression listComprehension:
                 CollectFirstIterableReferences(listComprehension.Clauses, references);
                 break;
@@ -1472,6 +1482,23 @@ public static class PythonSymbolBinder
                 break;
             case PythonAssignmentExpression assignmentExpression:
                 foreach (var nested in EnumerateComprehensions(assignmentExpression.Value))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonYieldExpression yieldExpression:
+                if (yieldExpression.Value is not null)
+                {
+                    foreach (var nested in EnumerateComprehensions(yieldExpression.Value))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+            case PythonYieldFromExpression yieldFromExpression:
+                foreach (var nested in EnumerateComprehensions(yieldFromExpression.Source))
                 {
                     yield return nested;
                 }

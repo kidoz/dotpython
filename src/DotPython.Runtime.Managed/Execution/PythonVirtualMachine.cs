@@ -24,6 +24,7 @@ internal sealed class PythonVirtualMachine
             ["ArithmeticError"] = "Exception",
             ["LookupError"] = "Exception",
             ["StopIteration"] = "Exception",
+            ["GeneratorExit"] = "BaseException",
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
             ["TypeError"] = "Exception",
@@ -491,6 +492,9 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.MatchClass:
                 ApplyMatchClass(instruction);
+                break;
+            case PythonOpCode.YieldFromStep:
+                ApplyYieldFromStep(instruction);
                 break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
@@ -1897,6 +1901,44 @@ internal sealed class PythonVirtualMachine
         }
     }
 
+    private void ApplyYieldFromStep(PythonInstruction instruction)
+    {
+        var sent = Pop(instruction.Span);
+        var target = Peek(instruction.Span);
+        if (target is not PythonIteratorValue iterator)
+        {
+            throw Fault("DPY4007", "The delegation iterator is invalid.", instruction.Span);
+        }
+
+        if (iterator.Iterable is PythonGeneratorValue generator)
+        {
+            var advanced = generator.ResumeCore!(sent is PythonNoneValue ? null : sent, null);
+            if (advanced.HasValue)
+            {
+                _evaluationStack.Push(advanced.Value);
+                _evaluationStack.Push(PythonTruthValue.True);
+            }
+            else
+            {
+                _evaluationStack.Push(generator.ReturnValue);
+                _evaluationStack.Push(PythonTruthValue.False);
+            }
+
+            return;
+        }
+
+        if (ManagedObjectProtocols.TryGetNext(iterator, out var element, instruction.Span))
+        {
+            _evaluationStack.Push(element);
+            _evaluationStack.Push(PythonTruthValue.True);
+        }
+        else
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+        }
+    }
+
     private void ApplyMatchKeys(PythonInstruction instruction)
     {
         if (Pop(instruction.Span) is not PythonTupleValue keys)
@@ -2132,6 +2174,17 @@ internal sealed class PythonVirtualMachine
         }
 
         generator.SavedEvaluationStack.Reverse();
+        // Exception-block depths are absolute stack positions; store them relative to
+        // the frame base so a resume from any consumer stack depth can rebase them.
+        for (var index = 0; index < frame.ExceptionBlocks.Count; index++)
+        {
+            frame.ExceptionBlocks[index] = frame.ExceptionBlocks[index] with
+            {
+                EvaluationStackDepth =
+                    frame.ExceptionBlocks[index].EvaluationStackDepth - frame.EvaluationStackBase,
+            };
+        }
+
         generator.InstructionPointer = frame.InstructionPointer;
         generator.State = PythonGeneratorState.Suspended;
         Array.Clear(_locals, frame.LocalsBase, frame.LocalsCount);
@@ -2170,12 +2223,14 @@ internal sealed class PythonVirtualMachine
         {
             OwnedFrameState = new GeneratorFrameState(),
         };
-        generator.Resume = () => ResumeGenerator(generator, span);
+        generator.ResumeCore = (sent, injected) => ResumeGenerator(generator, sent, injected, span);
         return generator;
     }
 
     private (bool HasValue, PythonValue Value) ResumeGenerator(
         PythonGeneratorValue generator,
+        PythonValue? sentValue,
+        PythonExceptionValue? injectedException,
         TextSpan span
     )
     {
@@ -2208,20 +2263,51 @@ internal sealed class PythonVirtualMachine
             restoredState: (GeneratorFrameState)generator.OwnedFrameState!,
             instructionPointer: generator.InstructionPointer
         );
+        var restoredBlocks = CurrentFrame.ExceptionBlocks;
+        var restoredBase = CurrentFrame.EvaluationStackBase;
+        if (!starting)
+        {
+            for (var index = 0; index < restoredBlocks.Count; index++)
+            {
+                restoredBlocks[index] = restoredBlocks[index] with
+                {
+                    EvaluationStackDepth =
+                        restoredBlocks[index].EvaluationStackDepth + restoredBase,
+                };
+            }
+        }
+
         foreach (var saved in generator.SavedEvaluationStack)
         {
             _evaluationStack.Push(saved);
         }
 
         generator.SavedEvaluationStack.Clear();
-        if (!starting)
+        if (!starting && injectedException is null)
         {
-            // Phase 1: the yield expression always resumes with None (no send()).
-            _evaluationStack.Push(PythonNoneValue.Instance);
+            // The yield expression resumes with the sent value (None for plain next()).
+            _evaluationStack.Push(sentValue ?? PythonNoneValue.Instance);
         }
 
         try
         {
+            if (injectedException is not null)
+            {
+                // throw()/close(): raise at the suspension point; the generator's own
+                // handlers may catch it and continue.
+                var injected = CreateRaisedException(injectedException);
+                if (!HandleExceptionalControlFlow(injected, baseFrameCount))
+                {
+                    generator.State = PythonGeneratorState.Completed;
+                    while (_evaluationStack.Count > stackDepthBefore)
+                    {
+                        _evaluationStack.Pop();
+                    }
+
+                    throw injected;
+                }
+            }
+
             while (_frameCount > baseFrameCount)
             {
                 try
@@ -2293,15 +2379,17 @@ internal sealed class PythonVirtualMachine
             return (true, generator.YieldedValue);
         }
 
-        // The frame returned normally; discard the pushed return value (phase 1
-        // ignores generator return values) and complete.
+        // The frame returned normally; capture the return value (PEP 380) before
+        // clearing the stack, then complete.
+        generator.ReturnValue =
+            _evaluationStack.Count > stackDepthBefore ? Peek(span) : PythonNoneValue.Instance;
         while (_evaluationStack.Count > stackDepthBefore)
         {
             _evaluationStack.Pop();
         }
 
         generator.State = PythonGeneratorState.Completed;
-        return (false, PythonNoneValue.Instance);
+        return (false, generator.ReturnValue);
     }
 
     private PythonValue InvokeCallableNested(
@@ -3083,7 +3171,7 @@ internal sealed class PythonVirtualMachine
 
         var advanced = arguments[0] switch
         {
-            PythonGeneratorValue generator => generator.Resume!(),
+            PythonGeneratorValue generator => generator.Resume(),
             PythonIteratorValue iterator => ManagedObjectProtocols.TryGetNext(
                 iterator,
                 out var element,

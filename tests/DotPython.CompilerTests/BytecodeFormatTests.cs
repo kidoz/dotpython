@@ -8,6 +8,6 @@ public sealed class BytecodeFormatTests
     [Fact]
     public void CurrentVersion_TracksContextManagerInstructions()
     {
-        Assert.Equal(21, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(22, DotPythonBytecodeFormat.CurrentVersion);
     }
 }

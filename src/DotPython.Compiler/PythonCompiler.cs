@@ -451,6 +451,29 @@ public static class PythonCompiler
                     // phase 1) after the suspension point.
                     Emit(PythonOpCode.Yield, 0, yieldExpression.Span);
                     break;
+                case PythonYieldFromExpression yieldFrom:
+                {
+                    // result = yield from e:
+                    //   iter; None; loop: step -> (value,True)|(return,False);
+                    //   yielded values re-yield and the sent value feeds the next step;
+                    //   on completion the delegate's return value is the result.
+                    CompileExpression(yieldFrom.Source);
+                    Emit(PythonOpCode.GetIterator, 0, yieldFrom.Span);
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                        yieldFrom.Span
+                    );
+                    var loopStart = _instructions.Count;
+                    Emit(PythonOpCode.YieldFromStep, 0, yieldFrom.Span);
+                    var finished = Emit(PythonOpCode.JumpIfFalse, 0, yieldFrom.Span);
+                    Emit(PythonOpCode.Yield, 0, yieldFrom.Span);
+                    Emit(PythonOpCode.Jump, loopStart, yieldFrom.Span);
+                    PatchJump(finished, _instructions.Count);
+                    Emit(PythonOpCode.RotateTwo, 0, yieldFrom.Span);
+                    Emit(PythonOpCode.PopTop, 0, yieldFrom.Span);
+                    break;
+                }
                 case PythonAssignmentExpression assignmentExpression:
                     CompileExpression(assignmentExpression.Value);
                     Emit(PythonOpCode.CopyTop, 0, assignmentExpression.Span);

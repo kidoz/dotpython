@@ -505,7 +505,20 @@ internal sealed record PythonGeneratorValue : PythonValue
     /// </summary>
     internal object? OwnedFrameState { get; set; }
 
-    internal Func<(bool HasValue, PythonValue Value)>? Resume { get; set; }
+    /// <summary>The generator's `return` value, captured at completion (PEP 380).</summary>
+    internal PythonValue ReturnValue { get; set; } = PythonNoneValue.Instance;
+
+    /// <summary>
+    /// Resumes the generator: pushes <c>sentValue</c> as the yield expression's result
+    /// (or None), or raises <c>injected</c> at the suspension point.
+    /// </summary>
+    internal Func<
+        PythonValue?,
+        PythonExceptionValue?,
+        (bool HasValue, PythonValue Value)
+    >? ResumeCore { get; set; }
+
+    internal (bool HasValue, PythonValue Value) Resume() => ResumeCore!(null, null);
 
     internal override string ToDisplayString() => $"<generator object {Name}>";
 

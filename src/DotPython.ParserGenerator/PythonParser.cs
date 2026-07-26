@@ -2165,7 +2165,7 @@ public static class PythonParser
             );
         }
 
-        private PythonYieldExpression ParseYieldExpression()
+        private PythonExpression ParseYieldExpression()
         {
             var yieldToken = Advance();
             if (_functionYieldFlags.Count == 0)
@@ -2175,6 +2175,15 @@ public static class PythonParser
             else
             {
                 _functionYieldFlags[^1] = true;
+            }
+
+            if (MatchKeyword("from", out _))
+            {
+                var source = ParseRequiredExpression("an iterable after 'yield from'");
+                return new PythonYieldFromExpression(
+                    source,
+                    TextSpan.FromBounds(yieldToken.Span.Start, source.Span.End)
+                );
             }
 
             PythonExpression? value = null;

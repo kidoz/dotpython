@@ -101,4 +101,5 @@ public enum PythonOpCode
     GetLength = 96,
     MatchKeys = 97,
     MatchClass = 98,
+    YieldFromStep = 99,
 }

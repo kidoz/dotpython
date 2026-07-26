@@ -143,6 +143,40 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
+            case PythonGeneratorValue generator:
+                return name switch
+                {
+                    "send" => new PythonBoundMethodValue(
+                        "send",
+                        generator,
+                        new PythonProtocolFunctionValue(
+                            "send",
+                            (_, arguments) => SendToGenerator(generator, arguments, span)
+                        )
+                    ),
+                    "throw" => new PythonBoundMethodValue(
+                        "throw",
+                        generator,
+                        new PythonProtocolFunctionValue(
+                            "throw",
+                            (_, arguments) => ThrowIntoGenerator(generator, arguments, span)
+                        )
+                    ),
+                    "close" => new PythonBoundMethodValue(
+                        "close",
+                        generator,
+                        new PythonProtocolFunctionValue(
+                            "close",
+                            (_, _) => CloseGenerator(generator, span)
+                        )
+                    ),
+                    _ => throw Fault(
+                        "DPY4023",
+                        $"'generator' object has no attribute '{name}'.",
+                        span,
+                        "AttributeError"
+                    ),
+                };
             case PythonInterpolationValue interpolation:
                 return name switch
                 {
@@ -303,6 +337,118 @@ internal static class ManagedObjectProtocols
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
+
+    private static PythonValue SendToGenerator(
+        PythonGeneratorValue generator,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"send() takes exactly one argument ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (generator.State == PythonGeneratorState.Created && arguments[0] is not PythonNoneValue)
+        {
+            throw Fault(
+                "DPY4003",
+                "can't send non-None value to a just-started generator",
+                span,
+                "TypeError"
+            );
+        }
+
+        var advanced = generator.ResumeCore!(
+            arguments[0] is PythonNoneValue ? null : arguments[0],
+            null
+        );
+        if (advanced.HasValue)
+        {
+            return advanced.Value;
+        }
+
+        throw new PythonRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+    }
+
+    private static PythonValue ThrowIntoGenerator(
+        PythonGeneratorValue generator,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"throw() takes exactly one argument ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        var exception = arguments[0] switch
+        {
+            PythonExceptionValue raised => raised,
+            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
+            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
+                new PythonExceptionValue(exceptionClass.Name, string.Empty),
+            _ => throw Fault(
+                "DPY4003",
+                "Exceptions must derive from BaseException.",
+                span,
+                "TypeError"
+            ),
+        };
+        if (generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed)
+        {
+            // A fresh or exhausted generator never runs its body: it closes and the
+            // exception propagates to the caller.
+            generator.State = PythonGeneratorState.Completed;
+            throw new PythonRaisedException(exception);
+        }
+
+        var advanced = generator.ResumeCore!(null, exception);
+        if (advanced.HasValue)
+        {
+            return advanced.Value;
+        }
+
+        throw new PythonRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+    }
+
+    private static PythonNoneValue CloseGenerator(PythonGeneratorValue generator, TextSpan span)
+    {
+        if (generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed)
+        {
+            generator.State = PythonGeneratorState.Completed;
+            return PythonNoneValue.Instance;
+        }
+
+        try
+        {
+            var advanced = generator.ResumeCore!(
+                null,
+                new PythonExceptionValue("GeneratorExit", string.Empty)
+            );
+            if (advanced.HasValue)
+            {
+                throw Fault("DPY4016", "Generator ignored GeneratorExit.", span, "RuntimeError");
+            }
+
+            return PythonNoneValue.Instance;
+        }
+        catch (PythonRaisedException raised)
+            when (string.Equals(raised.Value.TypeName, "GeneratorExit", StringComparison.Ordinal))
+        {
+            return PythonNoneValue.Instance;
+        }
+    }
 
     internal static PythonIteratorValue GetIterator(PythonValue value, TextSpan span = default)
     {
@@ -481,7 +627,7 @@ internal static class ManagedObjectProtocols
             }
             case PythonGeneratorValue generator:
             {
-                var advanced = generator.Resume!();
+                var advanced = generator.Resume();
                 if (advanced.HasValue)
                 {
                     value = advanced.Value;

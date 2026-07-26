@@ -298,6 +298,9 @@ public sealed record PythonSetComprehensionExpression(
 public sealed record PythonYieldExpression(PythonExpression? Value, TextSpan Span)
     : PythonExpression(Span);
 
+public sealed record PythonYieldFromExpression(PythonExpression Source, TextSpan Span)
+    : PythonExpression(Span);
+
 public sealed record PythonAssignmentExpression(
     PythonNameExpression Target,
     PythonExpression Value,

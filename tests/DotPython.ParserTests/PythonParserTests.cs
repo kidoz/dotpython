@@ -554,6 +554,20 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsYieldFromExpressions()
+    {
+        var result = Parse("def relay():\n    result = yield from source()\n    yield result\n");
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<PythonFunctionDefinitionStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        Assert.True(function.IsGenerator);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(function.Body[0]);
+        Assert.IsType<PythonYieldFromExpression>(assignment.Value);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");
