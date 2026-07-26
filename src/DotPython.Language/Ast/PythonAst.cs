@@ -188,6 +188,35 @@ public sealed record PythonCapturePattern(string? Name, TextSpan Span) : PythonP
 public sealed record PythonValuePattern(PythonExpression DottedName, TextSpan Span)
     : PythonPattern(Span);
 
+public sealed record PythonSequencePattern(
+    IReadOnlyList<PythonPattern> Patterns,
+    int StarIndex,
+    string? StarName,
+    TextSpan Span
+) : PythonPattern(Span);
+
+public sealed record PythonMappingPattern(
+    IReadOnlyList<PythonMappingPatternItem> Items,
+    string? RestName,
+    TextSpan Span
+) : PythonPattern(Span);
+
+public sealed record PythonMappingPatternItem(
+    PythonExpression Key,
+    PythonPattern Pattern,
+    TextSpan Span
+) : PythonNode(Span);
+
+public sealed record PythonClassPattern(
+    PythonExpression Cls,
+    IReadOnlyList<PythonPattern> Positional,
+    IReadOnlyList<PythonClassPatternKeyword> Keyword,
+    TextSpan Span
+) : PythonPattern(Span);
+
+public sealed record PythonClassPatternKeyword(string Name, PythonPattern Pattern, TextSpan Span)
+    : PythonNode(Span);
+
 public sealed record PythonOrPattern(IReadOnlyList<PythonPattern> Alternatives, TextSpan Span)
     : PythonPattern(Span);
 

@@ -327,6 +327,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "match = 5\nprint(match)\ncase = match + 1\nprint(case)\nprint(len([match, case]))\ndef f(match):\n    return match * 2\nprint(f(3))\nmatch (10):\n    case 10:\n        print('paren-subject')\nvalue = 7\nmatch value + 1:\n    case 8 as got:\n        print('expr-subject', got)"
     )]
+    [InlineData(
+        "def shape(v):\n    match v:\n        case []:\n            return 'empty'\n        case [x]:\n            return 'one:' + str(x)\n        case [x, y]:\n            return 'pair:' + str(x + y)\n        case [first, *rest]:\n            return 'head:' + str(first) + ' rest:' + str(rest)\n        case _:\n            return 'not-seq'\nprint(shape([]), shape([5]), shape([2, 3]), shape([1, 2, 3, 4]))\nprint(shape((7,)), shape('ab'), shape(9))\ndef route(cmd):\n    match cmd:\n        case ('go', direction):\n            return 'going ' + direction\n        case ('drop', *items):\n            return 'dropping ' + str(items)\n        case _:\n            return 'unknown'\nprint(route(('go', 'north')), route(('drop', 'a', 'b')), route(('sing',)))"
+    )]
+    [InlineData(
+        "def config(d):\n    match d:\n        case {'host': h, 'port': p}:\n            return h + ':' + str(p)\n        case {'host': h, **extra}:\n            return h + ' extra=' + str(sorted(extra.items()))\n        case {}:\n            return 'any-dict'\n        case _:\n            return 'not-dict'\nprint(config({'host': 'a', 'port': 80}))\nprint(config({'host': 'b', 'timeout': 5, 'retry': 2}))\nprint(config({'x': 1}), config([1]))"
+    )]
+    [InlineData(
+        "class Point:\n    __match_args__ = ('x', 'y')\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\ndef where(p):\n    match p:\n        case Point(0, 0):\n            return 'origin'\n        case Point(0, y):\n            return 'y-axis at ' + str(y)\n        case Point(x=x, y=0):\n            return 'x-axis at ' + str(x)\n        case Point(x, y):\n            return 'at ' + str(x) + ',' + str(y)\n        case _:\n            return 'not a point'\nprint(where(Point(0, 0)), where(Point(0, 5)), where(Point(3, 0)))\nprint(where(Point(2, 4)), where('hi'))\ndef kind(v):\n    match v:\n        case int(n):\n            return 'int:' + str(n)\n        case str(s):\n            return 'str:' + s\n        case _:\n            return 'other'\nprint(kind(42), kind('hey'), kind([1]))"
+    )]
+    [InlineData(
+        "class Point:\n    __match_args__ = ('x', 'y')\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\ndef nested(data):\n    match data:\n        case {'points': [Point(x=0, y=y1), *others]} if y1 > 0:\n            return 'starts-on-y ' + str(y1) + ' others=' + str(len(others))\n        case {'points': []}:\n            return 'no points'\n        case _:\n            return 'other'\nprint(nested({'points': [Point(0, 9), Point(1, 1)]}))\nprint(nested({'points': []}), nested({'points': [Point(3, 3)]}))\nmatch [1, [2, {'k': 'deep'}]]:\n    case [1, [2, {'k': found}]]:\n        print('deep', found)\ndef guarded_bind(v):\n    match v:\n        case [x, y] if x > y:\n            return 'gt ' + str(x)\n        case _:\n            return 'bound anyway ' + str(x) + ',' + str(y)\nprint(guarded_bind([1, 9]), guarded_bind([9, 1]))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "31976baffd78dcfa6fa5823c1872da54ae34b6b5f63a308d348b63b08162d6cf";
-    internal const int RuleCount = 79;
+    internal const string SourceSha256 = "28e5fc160e30b9209e6c03d7cd498eadc4f430b8e1dc0f847ccb446c9225c9e2";
+    internal const int RuleCount = 85;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -49,9 +49,15 @@ internal static class GeneratedPythonGrammar
         function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
         class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
         match_stmt: 'match' expression_list ':' NEWLINE INDENT case_block+ DEDENT
-        case_block: 'case' case_pattern ['if' expression] ':' block
+        case_block: 'case' case_patterns ['if' expression] ':' block
+        case_patterns: ','.star_case_pattern+ [',']
+        star_case_pattern: '*' NAME | case_pattern
         case_pattern: '|'.closed_pattern+ ['as' NAME]
-        closed_pattern: '(' case_pattern ')' | '-' NUMBER | primary
+        closed_pattern: '(' [case_patterns] ')' | '[' [case_patterns] ']' | '{' [mapping_pattern_items] '}' | primary ['(' [class_pattern_args] ')'] | '-' NUMBER
+        mapping_pattern_items: ','.mapping_pattern_item+ [',']
+        mapping_pattern_item: '**' NAME | ['-'] primary ':' case_pattern
+        class_pattern_args: ','.class_pattern_arg+ [',']
+        class_pattern_arg: NAME '=' case_pattern | case_pattern
         parameters: ','.parameter+ [',']
         parameter: '**' NAME [':' expression] | '*' [NAME [':' expression]] | NAME [':' expression] ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts

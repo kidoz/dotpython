@@ -520,6 +520,40 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsStructuralMatchPatterns()
+    {
+        var result = Parse(
+            "match v:\n"
+                + "    case [first, *rest, last]:\n"
+                + "        pass\n"
+                + "    case {'k': inner, **extra}:\n"
+                + "        pass\n"
+                + "    case Point(0, y=vertical):\n"
+                + "        pass\n"
+                + "    case a, b:\n"
+                + "        pass\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var matchStatement = Assert.IsType<PythonMatchStatement>(
+            Assert.Single(result.Module.Statements)
+        );
+        var sequence = Assert.IsType<PythonSequencePattern>(matchStatement.Cases[0].Pattern);
+        Assert.Equal(2, sequence.Patterns.Count);
+        Assert.Equal(1, sequence.StarIndex);
+        Assert.Equal("rest", sequence.StarName);
+        var mapping = Assert.IsType<PythonMappingPattern>(matchStatement.Cases[1].Pattern);
+        Assert.Single(mapping.Items);
+        Assert.Equal("extra", mapping.RestName);
+        var classPattern = Assert.IsType<PythonClassPattern>(matchStatement.Cases[2].Pattern);
+        Assert.Single(classPattern.Positional);
+        Assert.Equal("y", Assert.Single(classPattern.Keyword).Name);
+        var openSequence = Assert.IsType<PythonSequencePattern>(matchStatement.Cases[3].Pattern);
+        Assert.Equal(2, openSequence.Patterns.Count);
+        Assert.Equal(-1, openSequence.StarIndex);
+    }
+
+    [Fact]
     public void Parse_ReportsDecoratorsWithoutADefinition()
     {
         var result = Parse("@trace\nvalue = 1\n");

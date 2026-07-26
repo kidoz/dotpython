@@ -472,6 +472,26 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.Yield:
                 ApplyYield(instruction);
                 break;
+            case PythonOpCode.MatchSequenceCheck:
+                _evaluationStack.Push(
+                    PythonTruthValue.FromBoolean(
+                        Peek(instruction.Span) is PythonListValue or PythonTupleValue
+                    )
+                );
+                break;
+            case PythonOpCode.GetLength:
+                _evaluationStack.Push(
+                    PythonWholeNumberValue.Create(
+                        ManagedObjectProtocols.GetLength(Peek(instruction.Span), instruction.Span)
+                    )
+                );
+                break;
+            case PythonOpCode.MatchKeys:
+                ApplyMatchKeys(instruction);
+                break;
+            case PythonOpCode.MatchClass:
+                ApplyMatchClass(instruction);
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -1874,6 +1894,220 @@ internal sealed class PythonVirtualMachine
             when (exception.InnerException is PythonRuntimeException fault)
         {
             throw fault;
+        }
+    }
+
+    private void ApplyMatchKeys(PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonTupleValue keys)
+        {
+            throw Fault("DPY4007", "The mapping-pattern key tuple is invalid.", instruction.Span);
+        }
+
+        var wantRest = (instruction.Operand & 1) != 0;
+        if (Peek(instruction.Span) is not PythonDictionaryValue subject)
+        {
+            if (wantRest)
+            {
+                _evaluationStack.Push(PythonNoneValue.Instance);
+            }
+
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
+        var values = new PythonValue[keys.Elements.Length];
+        for (var index = 0; index < keys.Elements.Length; index++)
+        {
+            var found = false;
+            foreach (var item in subject.Items)
+            {
+                if (ManagedObjectProtocols.AreEqual(item.Key, keys.Elements[index]))
+                {
+                    values[index] = item.Value;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                if (wantRest)
+                {
+                    _evaluationStack.Push(PythonNoneValue.Instance);
+                }
+
+                _evaluationStack.Push(PythonNoneValue.Instance);
+                _evaluationStack.Push(PythonTruthValue.False);
+                return;
+            }
+        }
+
+        if (wantRest)
+        {
+            var rest = new PythonDictionaryValue([]);
+            foreach (var item in subject.Items)
+            {
+                var matched = false;
+                foreach (var key in keys.Elements)
+                {
+                    if (ManagedObjectProtocols.AreEqual(item.Key, key))
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (!matched)
+                {
+                    ManagedObjectProtocols.SetDictionaryItem(
+                        rest,
+                        item.Key,
+                        item.Value,
+                        instruction.Span
+                    );
+                }
+            }
+
+            _evaluationStack.Push(rest);
+        }
+
+        _evaluationStack.Push(new PythonTupleValue(values));
+        _evaluationStack.Push(PythonTruthValue.True);
+    }
+
+    private void ApplyMatchClass(PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonTupleValue keywordNames)
+        {
+            throw Fault("DPY4007", "The class-pattern keyword tuple is invalid.", instruction.Span);
+        }
+
+        var cls = Pop(instruction.Span);
+        var subject = Peek(instruction.Span);
+        var positionalCount = instruction.Operand;
+        if (!MatchesClassInfo(subject, cls, instruction.Span))
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
+        var extracted = new List<PythonValue>();
+        if (positionalCount > 0)
+        {
+            // Builtin self-capture: `case int(x):` binds the subject itself.
+            if (cls is PythonBuiltinTypeValue or PythonExceptionTypeValue)
+            {
+                if (positionalCount != 1)
+                {
+                    throw Fault(
+                        "DPY4003",
+                        "Builtin class patterns accept at most one positional sub-pattern.",
+                        instruction.Span,
+                        "TypeError"
+                    );
+                }
+
+                extracted.Add(subject);
+            }
+            else if (
+                cls is PythonManagedTypeValue managedType
+                && ManagedObjectProtocols.TryGetTypeAttribute(
+                    managedType,
+                    "__match_args__",
+                    out var matchArguments
+                )
+                && matchArguments is PythonTupleValue matchArgumentNames
+            )
+            {
+                if (positionalCount > matchArgumentNames.Elements.Length)
+                {
+                    throw Fault(
+                        "DPY4003",
+                        $"{managedType.Name}() accepts at most "
+                            + $"{matchArgumentNames.Elements.Length} positional sub-pattern(s).",
+                        instruction.Span,
+                        "TypeError"
+                    );
+                }
+
+                for (var index = 0; index < positionalCount; index++)
+                {
+                    if (matchArgumentNames.Elements[index] is not PythonTextValue argumentName)
+                    {
+                        throw Fault(
+                            "DPY4003",
+                            "__match_args__ elements must be strings.",
+                            instruction.Span,
+                            "TypeError"
+                        );
+                    }
+
+                    if (!TryGetMatchAttribute(subject, argumentName.Value, out var positionalValue))
+                    {
+                        _evaluationStack.Push(PythonNoneValue.Instance);
+                        _evaluationStack.Push(PythonTruthValue.False);
+                        return;
+                    }
+
+                    extracted.Add(positionalValue);
+                }
+            }
+            else
+            {
+                throw Fault(
+                    "DPY4003",
+                    $"'{ManagedObjectProtocols.GetTypeName(cls)}' accepts no positional "
+                        + "sub-patterns (no __match_args__).",
+                    instruction.Span,
+                    "TypeError"
+                );
+            }
+        }
+
+        foreach (var name in keywordNames.Elements)
+        {
+            if (name is not PythonTextValue keywordName)
+            {
+                throw Fault(
+                    "DPY4007",
+                    "The class-pattern keyword tuple is invalid.",
+                    instruction.Span
+                );
+            }
+
+            if (!TryGetMatchAttribute(subject, keywordName.Value, out var keywordValue))
+            {
+                _evaluationStack.Push(PythonNoneValue.Instance);
+                _evaluationStack.Push(PythonTruthValue.False);
+                return;
+            }
+
+            extracted.Add(keywordValue);
+        }
+
+        _evaluationStack.Push(new PythonTupleValue([.. extracted]));
+        _evaluationStack.Push(PythonTruthValue.True);
+    }
+
+    private static bool TryGetMatchAttribute(
+        PythonValue subject,
+        string name,
+        out PythonValue value
+    )
+    {
+        // A missing attribute during class-pattern matching means no-match, not an error.
+        try
+        {
+            value = ManagedObjectProtocols.GetAttribute(subject, name);
+            return true;
+        }
+        catch (PythonRuntimeException)
+        {
+            value = PythonNoneValue.Instance;
+            return false;
         }
     }
 

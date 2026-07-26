@@ -1244,6 +1244,15 @@ public static class PythonCompiler
 
                     break;
                 }
+                case PythonSequencePattern sequencePattern:
+                    CompileSequencePatternTest(sequencePattern);
+                    break;
+                case PythonMappingPattern mappingPattern:
+                    CompileMappingPatternTest(mappingPattern);
+                    break;
+                case PythonClassPattern classPattern:
+                    CompileClassPatternTest(classPattern);
+                    break;
                 default:
                     Report(
                         "DPY3115",
@@ -1254,6 +1263,235 @@ public static class PythonCompiler
                     Emit(PythonOpCode.PopTop, 0, pattern.Span);
                     EmitLoadFalse(pattern.Span);
                     break;
+            }
+        }
+
+        private void CompileSequencePatternTest(PythonSequencePattern pattern)
+        {
+            var span = pattern.Span;
+            var hasStar = pattern.StarIndex >= 0;
+            var fixedCount = pattern.Patterns.Count;
+            Emit(PythonOpCode.MatchSequenceCheck, 0, span);
+            var notSequence = Emit(PythonOpCode.JumpIfFalse, 0, span);
+            Emit(PythonOpCode.GetLength, 0, span);
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(
+                    new PythonConstant(
+                        PythonConstantType.WholeNumber,
+                        new System.Numerics.BigInteger(fixedCount)
+                    )
+                ),
+                span
+            );
+            Emit(
+                hasStar ? PythonOpCode.CompareGreaterThanOrEqual : PythonOpCode.CompareEqual,
+                0,
+                span
+            );
+            var lengthMismatch = Emit(PythonOpCode.JumpIfFalse, 0, span);
+
+            // Extraction pops the subject copy; the element order below matches the
+            // push order of the unpack opcodes (first element on top).
+            var elements = new List<PythonPattern>();
+            if (hasStar)
+            {
+                var afterCount = fixedCount - pattern.StarIndex;
+                Emit(
+                    PythonOpCode.UnpackSequenceStarred,
+                    (pattern.StarIndex << 8) | afterCount,
+                    span
+                );
+                elements.AddRange(pattern.Patterns.Take(pattern.StarIndex));
+                elements.Add(new PythonCapturePattern(pattern.StarName, span));
+                elements.AddRange(pattern.Patterns.Skip(pattern.StarIndex));
+            }
+            else
+            {
+                if (fixedCount == 0)
+                {
+                    Emit(PythonOpCode.PopTop, 0, span);
+                    EmitLoadTrue(span);
+                    var emptyDone = Emit(PythonOpCode.Jump, 0, span);
+                    PatchJump(notSequence, _instructions.Count);
+                    PatchJump(lengthMismatch, _instructions.Count);
+                    Emit(PythonOpCode.PopTop, 0, span);
+                    EmitLoadFalse(span);
+                    PatchJump(emptyDone, _instructions.Count);
+                    return;
+                }
+
+                Emit(PythonOpCode.UnpackSequence, fixedCount, span);
+                elements.AddRange(pattern.Patterns);
+            }
+
+            CompileExtractedElementTests(
+                elements,
+                span,
+                [notSequence, lengthMismatch],
+                trailingValues: 0
+            );
+        }
+
+        private void CompileMappingPatternTest(PythonMappingPattern pattern)
+        {
+            var span = pattern.Span;
+            var wantRest = pattern.RestName is not null;
+            foreach (var item in pattern.Items)
+            {
+                CompileExpression(item.Key);
+            }
+
+            Emit(PythonOpCode.BuildTuple, pattern.Items.Count, span);
+            Emit(PythonOpCode.MatchKeys, wantRest ? 1 : 0, span);
+            var noMatch = Emit(PythonOpCode.JumpIfFalse, 0, span);
+
+            // Stack on success: subject, [rest], valuesTuple.
+            var elements = pattern.Items.Select(item => item.Pattern).ToList();
+            if (elements.Count == 0)
+            {
+                Emit(PythonOpCode.PopTop, 0, span);
+            }
+            else
+            {
+                Emit(PythonOpCode.UnpackSequence, elements.Count, span);
+            }
+
+            var failJumps = new List<int>();
+            foreach (var element in elements)
+            {
+                CompilePatternTest(element);
+                failJumps.Add(Emit(PythonOpCode.JumpIfFalse, 0, element.Span));
+            }
+
+            if (wantRest)
+            {
+                EmitStoreName(new PythonNameExpression(pattern.RestName!, span));
+            }
+
+            Emit(PythonOpCode.PopTop, 0, span);
+            EmitLoadTrue(span);
+            var done = Emit(PythonOpCode.Jump, 0, span);
+
+            // Element-failure cleanups: pop the remaining values, the optional rest
+            // dictionary, and the retained subject copy.
+            for (var index = 0; index < failJumps.Count; index++)
+            {
+                PatchJump(failJumps[index], _instructions.Count);
+                var remaining = elements.Count - 1 - index + (wantRest ? 1 : 0) + 1;
+                for (var pop = 0; pop < remaining; pop++)
+                {
+                    Emit(PythonOpCode.PopTop, 0, span);
+                }
+
+                EmitLoadFalse(span);
+                failJumps[index] = Emit(PythonOpCode.Jump, 0, span);
+            }
+
+            // MatchKeys no-match: stack is subject, [None], None.
+            PatchJump(noMatch, _instructions.Count);
+            Emit(PythonOpCode.PopTop, 0, span);
+            if (wantRest)
+            {
+                Emit(PythonOpCode.PopTop, 0, span);
+            }
+
+            Emit(PythonOpCode.PopTop, 0, span);
+            EmitLoadFalse(span);
+            PatchJump(done, _instructions.Count);
+            foreach (var jump in failJumps)
+            {
+                PatchJump(jump, _instructions.Count);
+            }
+        }
+
+        private void CompileClassPatternTest(PythonClassPattern pattern)
+        {
+            var span = pattern.Span;
+            CompileExpression(pattern.Cls);
+            foreach (var keywordPattern in pattern.Keyword)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        new PythonConstant(PythonConstantType.TextValue, keywordPattern.Name)
+                    ),
+                    keywordPattern.Span
+                );
+            }
+
+            Emit(PythonOpCode.BuildTuple, pattern.Keyword.Count, span);
+            Emit(PythonOpCode.MatchClass, pattern.Positional.Count, span);
+            var noMatch = Emit(PythonOpCode.JumpIfFalse, 0, span);
+
+            // Stack on success: subject, extractedTuple.
+            var elements = new List<PythonPattern>();
+            elements.AddRange(pattern.Positional);
+            elements.AddRange(pattern.Keyword.Select(keywordPattern => keywordPattern.Pattern));
+            if (elements.Count == 0)
+            {
+                Emit(PythonOpCode.PopTop, 0, span);
+            }
+            else
+            {
+                Emit(PythonOpCode.UnpackSequence, elements.Count, span);
+            }
+
+            CompileExtractedElementTests(elements, span, [noMatch], trailingValues: 1);
+        }
+
+        /// <summary>
+        /// Emits sequential sub-pattern tests over extracted values (first value on the
+        /// stack top), with per-index failure cleanup that pops the remaining values plus
+        /// <paramref name="trailingValues"/> stack slots (e.g. a retained subject copy),
+        /// then pushes the boolean result. The <paramref name="preFailJumps"/> land on a
+        /// cleanup that pops one slot (the retained subject) before pushing False.
+        /// </summary>
+        private void CompileExtractedElementTests(
+            List<PythonPattern> elements,
+            TextSpan span,
+            List<int> preFailJumps,
+            int trailingValues
+        )
+        {
+            var failJumps = new List<int>();
+            foreach (var element in elements)
+            {
+                CompilePatternTest(element);
+                failJumps.Add(Emit(PythonOpCode.JumpIfFalse, 0, element.Span));
+            }
+
+            for (var pop = 0; pop < trailingValues; pop++)
+            {
+                Emit(PythonOpCode.PopTop, 0, span);
+            }
+
+            EmitLoadTrue(span);
+            var done = Emit(PythonOpCode.Jump, 0, span);
+            for (var index = 0; index < failJumps.Count; index++)
+            {
+                PatchJump(failJumps[index], _instructions.Count);
+                var remaining = elements.Count - 1 - index + trailingValues;
+                for (var pop = 0; pop < remaining; pop++)
+                {
+                    Emit(PythonOpCode.PopTop, 0, span);
+                }
+
+                EmitLoadFalse(span);
+                failJumps[index] = Emit(PythonOpCode.Jump, 0, span);
+            }
+
+            foreach (var preFail in preFailJumps)
+            {
+                PatchJump(preFail, _instructions.Count);
+            }
+
+            Emit(PythonOpCode.PopTop, 0, span);
+            EmitLoadFalse(span);
+            PatchJump(done, _instructions.Count);
+            foreach (var jump in failJumps)
+            {
+                PatchJump(jump, _instructions.Count);
             }
         }
 

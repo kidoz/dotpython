@@ -97,4 +97,8 @@ public enum PythonOpCode
     SetUpdate = 92,
     DictionaryUpdate = 93,
     Yield = 94,
+    MatchSequenceCheck = 95,
+    GetLength = 96,
+    MatchKeys = 97,
+    MatchClass = 98,
 }

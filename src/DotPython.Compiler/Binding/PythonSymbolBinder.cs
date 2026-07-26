@@ -1106,6 +1106,48 @@ public static class PythonSymbolBinder
                 }
 
                 break;
+            case PythonSequencePattern sequencePattern:
+                if (sequencePattern.StarName is not null)
+                {
+                    references.Add(
+                        new NameReference(sequencePattern.StarName, pattern.Span, IsBinding: true)
+                    );
+                }
+
+                foreach (var element in sequencePattern.Patterns)
+                {
+                    CollectPatternReferences(element, references);
+                }
+
+                break;
+            case PythonMappingPattern mappingPattern:
+                if (mappingPattern.RestName is not null)
+                {
+                    references.Add(
+                        new NameReference(mappingPattern.RestName, pattern.Span, IsBinding: true)
+                    );
+                }
+
+                foreach (var item in mappingPattern.Items)
+                {
+                    CollectReferences(item.Key, references);
+                    CollectPatternReferences(item.Pattern, references);
+                }
+
+                break;
+            case PythonClassPattern classPattern:
+                CollectReferences(classPattern.Cls, references);
+                foreach (var positional in classPattern.Positional)
+                {
+                    CollectPatternReferences(positional, references);
+                }
+
+                foreach (var keywordPattern in classPattern.Keyword)
+                {
+                    CollectPatternReferences(keywordPattern.Pattern, references);
+                }
+
+                break;
         }
     }
 
@@ -1678,6 +1720,47 @@ public static class PythonSymbolBinder
                 foreach (var alternative in orPattern.Alternatives)
                 {
                     CollectPatternNames(alternative, localNames, localNameSet, excludedNames);
+                }
+
+                break;
+            case PythonSequencePattern sequencePattern:
+                if (sequencePattern.StarName is not null)
+                {
+                    AddLocal(sequencePattern.StarName, localNames, localNameSet, excludedNames);
+                }
+
+                foreach (var element in sequencePattern.Patterns)
+                {
+                    CollectPatternNames(element, localNames, localNameSet, excludedNames);
+                }
+
+                break;
+            case PythonMappingPattern mappingPattern:
+                if (mappingPattern.RestName is not null)
+                {
+                    AddLocal(mappingPattern.RestName, localNames, localNameSet, excludedNames);
+                }
+
+                foreach (var item in mappingPattern.Items)
+                {
+                    CollectPatternNames(item.Pattern, localNames, localNameSet, excludedNames);
+                }
+
+                break;
+            case PythonClassPattern classPattern:
+                foreach (var positional in classPattern.Positional)
+                {
+                    CollectPatternNames(positional, localNames, localNameSet, excludedNames);
+                }
+
+                foreach (var keywordPattern in classPattern.Keyword)
+                {
+                    CollectPatternNames(
+                        keywordPattern.Pattern,
+                        localNames,
+                        localNameSet,
+                        excludedNames
+                    );
                 }
 
                 break;

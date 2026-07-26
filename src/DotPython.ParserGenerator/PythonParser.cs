@@ -431,15 +431,24 @@ public static class PythonParser
         private PythonMatchCase ParseCaseBlock()
         {
             var start = Advance().Span.Start;
-            var pattern = ParseAsPattern();
-            if (Current.Kind == SyntaxTokenKind.Comma)
+            var pattern = ParseStarCasePattern();
+            if (Current.Kind == SyntaxTokenKind.Comma || pattern is PythonSequenceStarMarker)
             {
-                Report(
-                    "DPY2024",
-                    "Sequence patterns are not supported in this runtime slice.",
-                    Current.Span
+                var elements = new List<PythonPattern> { pattern };
+                while (Match(SyntaxTokenKind.Comma))
+                {
+                    if (Current.Kind == SyntaxTokenKind.Colon || IsKeyword("if"))
+                    {
+                        break;
+                    }
+
+                    elements.Add(ParseStarCasePattern());
+                }
+
+                pattern = BuildSequencePattern(
+                    elements,
+                    TextSpan.FromBounds(elements[0].Span.Start, elements[^1].Span.End)
                 );
-                SynchronizeLine();
             }
 
             PythonExpression? guard = null;
@@ -455,6 +464,111 @@ public static class PythonParser
                 guard,
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
+            );
+        }
+
+        /// <summary>Internal marker for a parsed `*name` element; never leaves the parser.</summary>
+        private sealed record PythonSequenceStarMarker(string? Name, TextSpan Span)
+            : PythonPattern(Span);
+
+        private PythonPattern ParseStarCasePattern()
+        {
+            if (Match(SyntaxTokenKind.Star, out var starToken))
+            {
+                var nameToken = Expect(SyntaxTokenKind.Identifier, "a name after '*'");
+                return new PythonSequenceStarMarker(
+                    nameToken.Text == "_" ? null : nameToken.Text,
+                    TextSpan.FromBounds(starToken.Span.Start, nameToken.Span.End)
+                );
+            }
+
+            return ParseAsPattern();
+        }
+
+        private PythonSequencePattern BuildSequencePattern(
+            List<PythonPattern> elements,
+            TextSpan span
+        )
+        {
+            var starIndex = -1;
+            string? starName = null;
+            var patterns = new List<PythonPattern>();
+            for (var index = 0; index < elements.Count; index++)
+            {
+                if (elements[index] is PythonSequenceStarMarker marker)
+                {
+                    if (starIndex >= 0)
+                    {
+                        Report(
+                            "DPY2024",
+                            "Only one starred sub-pattern is allowed in a sequence pattern.",
+                            marker.Span
+                        );
+                        continue;
+                    }
+
+                    starIndex = patterns.Count;
+                    starName = marker.Name;
+                }
+                else
+                {
+                    patterns.Add(elements[index]);
+                }
+            }
+
+            return new PythonSequencePattern(patterns.AsReadOnly(), starIndex, starName, span);
+        }
+
+        private PythonClassPattern ParseClassPattern(PythonExpression cls)
+        {
+            Advance();
+            var positional = new List<PythonPattern>();
+            var keyword = new List<PythonClassPatternKeyword>();
+            while (Current.Kind != SyntaxTokenKind.RightParenthesis)
+            {
+                if (
+                    Current.Kind == SyntaxTokenKind.Identifier
+                    && Peek(1).Kind == SyntaxTokenKind.Equal
+                    && !IsReservedKeyword(Current.Text)
+                )
+                {
+                    var nameToken = Advance();
+                    Advance();
+                    var valuePattern = ParseAsPattern();
+                    keyword.Add(
+                        new PythonClassPatternKeyword(
+                            nameToken.Text,
+                            valuePattern,
+                            TextSpan.FromBounds(nameToken.Span.Start, valuePattern.Span.End)
+                        )
+                    );
+                }
+                else
+                {
+                    if (keyword.Count != 0)
+                    {
+                        Report(
+                            "DPY2024",
+                            "A positional sub-pattern follows a keyword sub-pattern.",
+                            Current.Span
+                        );
+                    }
+
+                    positional.Add(ParseAsPattern());
+                }
+
+                if (!Match(SyntaxTokenKind.Comma))
+                {
+                    break;
+                }
+            }
+
+            var end = ExpectClosingDelimiter(SyntaxTokenKind.RightParenthesis, "')'", cls.Span.End);
+            return new PythonClassPattern(
+                cls,
+                positional.AsReadOnly(),
+                keyword.AsReadOnly(),
+                TextSpan.FromBounds(cls.Span.Start, end)
             );
         }
 
@@ -505,11 +619,129 @@ public static class PythonParser
 
         private PythonPattern ParseClosedPattern()
         {
-            if (Match(SyntaxTokenKind.LeftParenthesis))
+            if (Match(SyntaxTokenKind.LeftParenthesis, out var leftParenthesisToken))
             {
-                var inner = ParseAsPattern();
-                ExpectClosingDelimiter(SyntaxTokenKind.RightParenthesis, "')'", inner.Span.End);
-                return inner;
+                if (Match(SyntaxTokenKind.RightParenthesis, out var emptyClose))
+                {
+                    return new PythonSequencePattern(
+                        [],
+                        -1,
+                        null,
+                        TextSpan.FromBounds(leftParenthesisToken.Span.Start, emptyClose.Span.End)
+                    );
+                }
+
+                var first = ParseStarCasePattern();
+                if (Current.Kind != SyntaxTokenKind.Comma && first is not PythonSequenceStarMarker)
+                {
+                    ExpectClosingDelimiter(SyntaxTokenKind.RightParenthesis, "')'", first.Span.End);
+                    return first;
+                }
+
+                var elements = new List<PythonPattern> { first };
+                while (Match(SyntaxTokenKind.Comma))
+                {
+                    if (Current.Kind == SyntaxTokenKind.RightParenthesis)
+                    {
+                        break;
+                    }
+
+                    elements.Add(ParseStarCasePattern());
+                }
+
+                var tupleEnd = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightParenthesis,
+                    "')'",
+                    elements[^1].Span.End
+                );
+                return BuildSequencePattern(
+                    elements,
+                    TextSpan.FromBounds(leftParenthesisToken.Span.Start, tupleEnd)
+                );
+            }
+
+            if (Match(SyntaxTokenKind.LeftBracket, out var leftBracketToken))
+            {
+                var elements = new List<PythonPattern>();
+                while (Current.Kind != SyntaxTokenKind.RightBracket)
+                {
+                    elements.Add(ParseStarCasePattern());
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+                }
+
+                var end = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightBracket,
+                    "']'",
+                    elements.Count == 0 ? leftBracketToken.Span.End : elements[^1].Span.End
+                );
+                return BuildSequencePattern(
+                    elements,
+                    TextSpan.FromBounds(leftBracketToken.Span.Start, end)
+                );
+            }
+
+            if (Match(SyntaxTokenKind.LeftBrace, out var leftBraceToken))
+            {
+                var items = new List<PythonMappingPatternItem>();
+                string? restName = null;
+                while (Current.Kind != SyntaxTokenKind.RightBrace)
+                {
+                    if (Match(SyntaxTokenKind.DoubleStar, out var restToken))
+                    {
+                        var restIdentifier = Expect(
+                            SyntaxTokenKind.Identifier,
+                            "a name after '**'"
+                        );
+                        if (restName is not null)
+                        {
+                            Report(
+                                "DPY2024",
+                                "Only one '**' rest sub-pattern is allowed.",
+                                restToken.Span
+                            );
+                        }
+
+                        restName = restIdentifier.Text;
+                    }
+                    else
+                    {
+                        var key = ParseDisjunction();
+                        if (key is null)
+                        {
+                            ReportExpected("a mapping pattern key", Current.Span);
+                            break;
+                        }
+
+                        Expect(SyntaxTokenKind.Colon, "':' after the mapping pattern key");
+                        var valuePattern = ParseAsPattern();
+                        items.Add(
+                            new PythonMappingPatternItem(
+                                key,
+                                valuePattern,
+                                TextSpan.FromBounds(key.Span.Start, valuePattern.Span.End)
+                            )
+                        );
+                    }
+
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+                }
+
+                var braceEnd = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightBrace,
+                    "'}'",
+                    items.Count == 0 ? leftBraceToken.Span.End : items[^1].Span.End
+                );
+                return new PythonMappingPattern(
+                    items.AsReadOnly(),
+                    restName,
+                    TextSpan.FromBounds(leftBraceToken.Span.Start, braceEnd)
+                );
             }
 
             if (
@@ -553,54 +785,38 @@ public static class PythonParser
                 }
 
                 var nameToken = Advance();
-                if (Current.Kind == SyntaxTokenKind.Dot)
+                PythonExpression reference = new PythonNameExpression(
+                    nameToken.Text,
+                    nameToken.Span
+                );
+                var isDotted = Current.Kind == SyntaxTokenKind.Dot;
+                while (Match(SyntaxTokenKind.Dot))
                 {
-                    PythonExpression value = new PythonNameExpression(
-                        nameToken.Text,
-                        nameToken.Span
+                    var attribute = Expect(
+                        SyntaxTokenKind.Identifier,
+                        "an attribute name after '.'"
                     );
-                    while (Match(SyntaxTokenKind.Dot))
-                    {
-                        var attribute = Expect(
-                            SyntaxTokenKind.Identifier,
-                            "an attribute name after '.'"
-                        );
-                        value = new PythonAttributeExpression(
-                            value,
-                            attribute.Text,
-                            TextSpan.FromBounds(value.Span.Start, attribute.Span.End)
-                        );
-                    }
-
-                    return new PythonValuePattern(value, value.Span);
+                    reference = new PythonAttributeExpression(
+                        reference,
+                        attribute.Text,
+                        TextSpan.FromBounds(reference.Span.Start, attribute.Span.End)
+                    );
                 }
 
-                if (Current.Kind is SyntaxTokenKind.LeftParenthesis or SyntaxTokenKind.LeftBracket)
+                if (Current.Kind == SyntaxTokenKind.LeftParenthesis)
                 {
-                    Report(
-                        "DPY2024",
-                        "Class and sequence patterns are not supported in this runtime slice.",
-                        Current.Span
-                    );
-                    SynchronizeLine();
-                    return new PythonCapturePattern(null, nameToken.Span);
+                    return ParseClassPattern(reference);
+                }
+
+                if (isDotted)
+                {
+                    return new PythonValuePattern(reference, reference.Span);
                 }
 
                 return new PythonCapturePattern(
                     nameToken.Text == "_" ? null : nameToken.Text,
                     nameToken.Span
                 );
-            }
-
-            if (Current.Kind is SyntaxTokenKind.LeftBracket or SyntaxTokenKind.LeftBrace)
-            {
-                Report(
-                    "DPY2024",
-                    "Sequence and mapping patterns are not supported in this runtime slice.",
-                    Current.Span
-                );
-                SynchronizeLine();
-                return new PythonCapturePattern(null, Current.Span);
             }
 
             ReportExpected("a pattern", Current.Span);
