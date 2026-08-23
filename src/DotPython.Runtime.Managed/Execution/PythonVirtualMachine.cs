@@ -52,6 +52,9 @@ internal sealed class PythonVirtualMachine
     private readonly PythonModuleRegistry _modules;
     private readonly TextWriter _output;
     private readonly Dictionary<string, string> _exceptionBaseOverlay = new(StringComparer.Ordinal);
+    private readonly UserIterationDispatcher _userIterationDispatcher;
+    private readonly ConditionalWeakTable<PythonValue, object> _identityTokens = new();
+    private long _nextIdentityToken = 4300000000;
     private PythonFrame[] _frames = new PythonFrame[4];
     private int _frameCount;
     private int _deferredControlFlowCount;
@@ -78,6 +81,7 @@ internal sealed class PythonVirtualMachine
         _instructionLimit = instructionLimit;
         _enableReturnLocalContinuation = enableReturnLocalContinuation;
         _cancellationToken = cancellationToken;
+        _userIterationDispatcher = ResolveUserIterator;
         _builtins = new Dictionary<string, PythonValue>(StringComparer.Ordinal)
         {
             ["len"] = new PythonBuiltinFunctionValue("len", Length),
@@ -103,6 +107,12 @@ internal sealed class PythonVirtualMachine
             ["map"] = new PythonBuiltinFunctionValue("map", Map),
             ["filter"] = new PythonBuiltinFunctionValue("filter", Filter),
             ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
+            ["iter"] = new PythonBuiltinFunctionValue("iter", Iterate),
+            ["getattr"] = new PythonBuiltinFunctionValue("getattr", GetAttributeBuiltin),
+            ["setattr"] = new PythonBuiltinFunctionValue("setattr", SetAttributeBuiltin),
+            ["hasattr"] = new PythonBuiltinFunctionValue("hasattr", HasAttributeBuiltin),
+            ["vars"] = new PythonBuiltinFunctionValue("vars", Variables),
+            ["id"] = new PythonBuiltinFunctionValue("id", Identity),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
         foreach (var builtinType in PythonBuiltinTypes.All)
@@ -1204,7 +1214,9 @@ internal sealed class PythonVirtualMachine
     private void GetIterator(TextSpan span)
     {
         var iterable = Pop(span);
-        _evaluationStack.Push(ManagedObjectProtocols.GetIterator(iterable, span));
+        _evaluationStack.Push(
+            ManagedObjectProtocols.GetIterator(iterable, span, _userIterationDispatcher)
+        );
     }
 
     private void ForIter(ref PythonFrame frame, PythonInstruction instruction)
@@ -1236,7 +1248,12 @@ internal sealed class PythonVirtualMachine
     {
         if (!IsHashable(key))
         {
-            throw Fault("DPY4014", "The dictionary key is not hashable.", span);
+            throw Fault(
+                "DPY4014",
+                $"cannot use '{ManagedObjectProtocols.GetTypeName(key)}' as a dict key (unhashable type: '{ManagedObjectProtocols.GetTypeName(key)}')",
+                span,
+                "TypeError"
+            );
         }
 
         if (TryFindDictionaryItem(dictionary, key, out var item))
@@ -1268,13 +1285,7 @@ internal sealed class PythonVirtualMachine
         return false;
     }
 
-    private static bool IsHashable(PythonValue value) =>
-        value switch
-        {
-            PythonListValue or PythonDictionaryValue => false,
-            PythonTupleValue tuple => tuple.Elements.All(IsHashable),
-            _ => true,
-        };
+    private static bool IsHashable(PythonValue value) => ManagedObjectProtocols.IsHashable(value);
 
     private PythonValue LoadName(
         PreparedPythonCode code,
@@ -1659,7 +1670,11 @@ internal sealed class PythonVirtualMachine
 
         if (target is PythonBuiltinTypeValue builtinType)
         {
-            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            var arguments = PreResolveIterableArguments(
+                builtinType,
+                PopArguments(instruction.Operand, instruction.Span),
+                instruction.Span
+            );
             Pop(instruction.Span);
             _evaluationStack.Push(builtinType.Construct(arguments, instruction.Span));
             code.RecordBuiltinCall(instructionIndex);
@@ -1704,7 +1719,11 @@ internal sealed class PythonVirtualMachine
                 or PythonExternalObjectValue
         )
         {
-            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            var arguments = PreResolveIterableArguments(
+                target,
+                PopArguments(instruction.Operand, instruction.Span),
+                instruction.Span
+            );
             Pop(instruction.Span);
             _evaluationStack.Push(ManagedObjectProtocols.Call(target, arguments, instruction.Span));
             code.RecordBuiltinCall(instructionIndex);
@@ -1806,6 +1825,35 @@ internal sealed class PythonVirtualMachine
                 ValidateBuiltinArgumentCount("sorted", positional, span);
                 return SortedWithKeywords(positional[0], key, reverse, span);
             }
+            case "min":
+            case "max":
+            {
+                PythonValue? key = null;
+                PythonValue? defaultValue = null;
+                for (var index = 0; index < keywordNames.Length; index++)
+                {
+                    switch (keywordNames[index])
+                    {
+                        case "key":
+                            key = keywordValues[index];
+                            break;
+                        case "default":
+                            defaultValue = keywordValues[index];
+                            break;
+                        default:
+                            throw UnexpectedBuiltinKeyword(builtin, keywordNames[index], span);
+                    }
+                }
+
+                return SelectExtremum(
+                    builtin.Name,
+                    positional,
+                    span,
+                    greater: builtin.Name == "max",
+                    key,
+                    defaultValue
+                );
+            }
             case "print":
             {
                 var separator = " ";
@@ -1879,7 +1927,11 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
-        var values = ManagedObjectProtocols.MaterializeValues(iterable, span);
+        var values = ManagedObjectProtocols.MaterializeValues(
+            iterable,
+            span,
+            _userIterationDispatcher
+        );
         var sortKeys = new PythonValue[values.Count];
         if (key is null or PythonNoneValue)
         {
@@ -1969,6 +2021,297 @@ internal sealed class PythonVirtualMachine
                     "TypeError"
                 );
         }
+    }
+
+    /// <summary>
+    /// Builtin constructors and iterable-consuming builtin methods run in static
+    /// protocol code that cannot execute user `__iter__` frames; materialize
+    /// user-iterable arguments here, where the VM is available.
+    /// </summary>
+    private PythonValue[] PreResolveIterableArguments(
+        PythonValue callable,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        var consumesIterable = callable switch
+        {
+            PythonBuiltinTypeValue type => type.Name
+                is "list"
+                    or "tuple"
+                    or "set"
+                    or "dict"
+                    or "frozenset",
+            PythonBoundMethodValue method => method.Function.Name is "join" or "extend",
+            _ => false,
+        };
+        if (
+            !consumesIterable
+            || arguments.Length != 1
+            || arguments[0] is not PythonManagedObjectValue instance
+        )
+        {
+            return arguments;
+        }
+
+        return
+        [
+            new PythonListValue(
+                ManagedObjectProtocols.MaterializeValues(instance, span, _userIterationDispatcher)
+            ),
+        ];
+    }
+
+    private PythonIteratorValue ResolveUserIterator(
+        PythonManagedObjectValue instance,
+        TextSpan span
+    )
+    {
+        if (!ManagedObjectProtocols.TryGetInstanceMethod(instance, "__iter__", out var iterMethod))
+        {
+            throw Fault(
+                "DPY4015",
+                $"'{instance.Type.Name}' object is not iterable",
+                span,
+                "TypeError"
+            );
+        }
+
+        return WrapUserIterator(InvokeCallableNested(iterMethod, [], span), span);
+    }
+
+    private PythonIteratorValue WrapUserIterator(PythonValue result, TextSpan span)
+    {
+        switch (result)
+        {
+            case PythonIteratorValue ready:
+                return ready;
+            case PythonGeneratorValue { IsCoroutine: false }:
+                return new PythonIteratorValue(result, -1);
+            case PythonManagedObjectValue iteratorInstance
+                when ManagedObjectProtocols.TryGetInstanceMethod(
+                    iteratorInstance,
+                    "__next__",
+                    out var nextMethod
+                ):
+                return new PythonIteratorValue(
+                    new PythonUserIteratorSourceValue(() => StepUserIterator(nextMethod, span)),
+                    -1
+                );
+            default:
+                throw Fault(
+                    "DPY4003",
+                    $"iter() returned non-iterator of type '{ManagedObjectProtocols.GetTypeName(result)}'",
+                    span,
+                    "TypeError"
+                );
+        }
+    }
+
+    private (bool HasValue, PythonValue Value) StepUserIterator(
+        PythonValue nextMethod,
+        TextSpan span
+    )
+    {
+        try
+        {
+            return (true, InvokeCallableNested(nextMethod, [], span));
+        }
+        catch (PythonRaisedException raised)
+            when (IsExceptionSubclass(raised.Value.TypeName, "StopIteration"))
+        {
+            return (false, PythonNoneValue.Instance);
+        }
+    }
+
+    private PythonValue Iterate(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"iter expected 1 argument, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        return arguments[0] switch
+        {
+            // Generators, coroutine-rejection, and user instances keep CPython's
+            // `iter(x) is x` identity for objects that are their own iterator.
+            PythonGeneratorValue => ManagedObjectProtocols.GetIterator(arguments[0], span).Iterable,
+            PythonIteratorValue iterator => iterator,
+            PythonManagedObjectValue instance => IterateUserInstance(instance, span),
+            var value => ManagedObjectProtocols.GetIterator(value, span),
+        };
+    }
+
+    private PythonValue IterateUserInstance(PythonManagedObjectValue instance, TextSpan span)
+    {
+        if (!ManagedObjectProtocols.TryGetInstanceMethod(instance, "__iter__", out var iterMethod))
+        {
+            throw Fault(
+                "DPY4015",
+                $"'{instance.Type.Name}' object is not iterable",
+                span,
+                "TypeError"
+            );
+        }
+
+        var result = InvokeCallableNested(iterMethod, [], span);
+        if (
+            result is PythonManagedObjectValue iteratorInstance
+            && ManagedObjectProtocols.TryGetInstanceMethod(iteratorInstance, "__next__", out _)
+        )
+        {
+            return iteratorInstance;
+        }
+
+        return WrapUserIterator(result, span);
+    }
+
+    private PythonValue GetAttributeBuiltin(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        RequireAttributeArguments("getattr", arguments, 2, 3, span, out var name);
+        try
+        {
+            return ManagedObjectProtocols.GetAttribute(arguments[0], name, span);
+        }
+        catch (Exception exception) when (arguments.Count == 3 && IsAttributeErrorFault(exception))
+        {
+            return arguments[2];
+        }
+    }
+
+    private PythonNoneValue SetAttributeBuiltin(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        RequireAttributeArguments("setattr", arguments, 3, 3, span, out var name);
+        ManagedObjectProtocols.SetAttribute(arguments[0], name, arguments[2], span);
+        return PythonNoneValue.Instance;
+    }
+
+    private PythonTruthValue HasAttributeBuiltin(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        RequireAttributeArguments("hasattr", arguments, 2, 2, span, out var name);
+        try
+        {
+            ManagedObjectProtocols.GetAttribute(arguments[0], name, span);
+            return PythonTruthValue.True;
+        }
+        catch (Exception exception) when (IsAttributeErrorFault(exception))
+        {
+            return PythonTruthValue.False;
+        }
+    }
+
+    private static bool IsAttributeErrorFault(Exception exception) =>
+        exception switch
+        {
+            PythonRuntimeException fault => string.Equals(
+                fault.PythonExceptionTypeName,
+                "AttributeError",
+                StringComparison.Ordinal
+            ),
+            PythonRaisedException raised => string.Equals(
+                raised.Value.TypeName,
+                "AttributeError",
+                StringComparison.Ordinal
+            ),
+            _ => false,
+        };
+
+    private static void RequireAttributeArguments(
+        string builtin,
+        IReadOnlyList<PythonValue> arguments,
+        int minimum,
+        int maximum,
+        TextSpan span,
+        out string name
+    )
+    {
+        if (arguments.Count < minimum || arguments.Count > maximum)
+        {
+            throw Fault(
+                "DPY4003",
+                $"{builtin} expected {(minimum == maximum ? $"{minimum}" : $"{minimum} to {maximum}")} arguments, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (arguments[1] is not PythonTextValue text)
+        {
+            throw Fault(
+                "DPY4003",
+                $"attribute name must be string, not '{ManagedObjectProtocols.GetTypeName(arguments[1])}'",
+                span,
+                "TypeError"
+            );
+        }
+
+        name = text.Value;
+    }
+
+    private static PythonDictionaryValue Variables(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"vars expected 1 argument, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (arguments[0] is not PythonManagedObjectValue instance)
+        {
+            throw Fault(
+                "DPY4003",
+                "vars() argument must have __dict__ attribute",
+                span,
+                "TypeError"
+            );
+        }
+
+        var dictionary = ManagedObjectProtocols.CreateDictionary();
+        foreach (var (attributeName, attributeValue) in instance.Attributes)
+        {
+            ManagedObjectProtocols.SetDictionaryItem(
+                dictionary,
+                new PythonTextValue(attributeName),
+                attributeValue,
+                span
+            );
+        }
+
+        return dictionary;
+    }
+
+    private PythonValue Identity(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"id expected 1 argument, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        var token = _identityTokens.GetValue(
+            arguments[0],
+            _ => PythonWholeNumberValue.Create(_nextIdentityToken += 16)
+        );
+        return (PythonValue)token;
     }
 
     private void ApplyAsyncWithSetup(PythonInstruction instruction)
@@ -2617,7 +2960,11 @@ internal sealed class PythonVirtualMachine
 
         if (callable is not PythonFunctionValue function)
         {
-            return ManagedObjectProtocols.Call(callable, arguments, span);
+            return ManagedObjectProtocols.Call(
+                callable,
+                PreResolveIterableArguments(callable, arguments, span),
+                span
+            );
         }
 
         if (function.Code.Definition.IsSuspendable)
@@ -2745,7 +3092,12 @@ internal sealed class PythonVirtualMachine
                     _evaluationStack.Push(builtin.Invoke(positional, span));
                     return;
                 case PythonBuiltinTypeValue builtinType:
-                    _evaluationStack.Push(builtinType.Construct(positional, span));
+                    _evaluationStack.Push(
+                        builtinType.Construct(
+                            PreResolveIterableArguments(builtinType, positional, span),
+                            span
+                        )
+                    );
                     return;
                 case PythonExceptionTypeValue exceptionType:
                     _evaluationStack.Push(CreateExceptionValue(exceptionType, positional));
@@ -2753,7 +3105,13 @@ internal sealed class PythonVirtualMachine
                 case PythonProtocolFunctionValue or PythonBoundMethodValue:
                 case PythonExternalObjectValue:
                 case PythonManagedTypeValue { Construct: not null }:
-                    _evaluationStack.Push(ManagedObjectProtocols.Call(target, positional, span));
+                    _evaluationStack.Push(
+                        ManagedObjectProtocols.Call(
+                            target,
+                            PreResolveIterableArguments(target, positional, span),
+                            span
+                        )
+                    );
                     return;
             }
         }
@@ -3049,7 +3407,11 @@ internal sealed class PythonVirtualMachine
         }
 
         accumulator.Elements.AddRange(
-            ManagedObjectProtocols.MaterializeValues(iterable, instruction.Span)
+            ManagedObjectProtocols.MaterializeValues(
+                iterable,
+                instruction.Span,
+                _userIterationDispatcher
+            )
         );
     }
 
@@ -3104,7 +3466,13 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4007", "The set accumulator is invalid.", instruction.Span);
         }
 
-        foreach (var value in ManagedObjectProtocols.MaterializeValues(iterable, instruction.Span))
+        foreach (
+            var value in ManagedObjectProtocols.MaterializeValues(
+                iterable,
+                instruction.Span,
+                _userIterationDispatcher
+            )
+        )
         {
             ManagedObjectProtocols.AddToSet(accumulator, value, instruction.Span);
         }
@@ -3144,7 +3512,8 @@ internal sealed class PythonVirtualMachine
         var afterCount = instruction.Operand & 0xFF;
         var values = ManagedObjectProtocols.MaterializeValues(
             Pop(instruction.Span),
-            instruction.Span
+            instruction.Span,
+            _userIterationDispatcher
         );
         if (values.Count < beforeCount + afterCount)
         {
@@ -3365,7 +3734,7 @@ internal sealed class PythonVirtualMachine
             _ => new PythonTupleValue(arguments).ToDisplayString(),
         };
 
-    private static PythonValue Next(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonValue Next(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count is not (1 or 2))
         {
@@ -3393,9 +3762,15 @@ internal sealed class PythonVirtualMachine
             )
                 ? (true, element)
                 : (false, PythonNoneValue.Instance),
+            PythonManagedObjectValue instance
+                when ManagedObjectProtocols.TryGetInstanceMethod(
+                    instance,
+                    "__next__",
+                    out var nextMethod
+                ) => StepUserIterator(nextMethod, span),
             var other => throw Fault(
                 "DPY4003",
-                $"'{ManagedObjectProtocols.GetTypeName(other)}' object is not an iterator.",
+                $"'{ManagedObjectProtocols.GetTypeName(other)}' object is not an iterator",
                 span,
                 "TypeError"
             ),
@@ -4219,10 +4594,7 @@ internal sealed class PythonVirtualMachine
         return new PythonRangeValue(bounds[0], bounds[1], bounds[2]);
     }
 
-    private static PythonIteratorValue Enumerate(
-        IReadOnlyList<PythonValue> arguments,
-        TextSpan span
-    )
+    private PythonIteratorValue Enumerate(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count is < 1 or > 2)
         {
@@ -4240,19 +4612,23 @@ internal sealed class PythonVirtualMachine
                 : BigInteger.Zero;
         return new PythonIteratorValue(
             new PythonEnumerateSourceValue(
-                ManagedObjectProtocols.GetIterator(arguments[0], span),
+                ManagedObjectProtocols.GetIterator(arguments[0], span, _userIterationDispatcher),
                 start
             ),
             -1
         );
     }
 
-    private static PythonIteratorValue Zip(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonIteratorValue Zip(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         var inners = new PythonIteratorValue[arguments.Count];
         for (var index = 0; index < arguments.Count; index++)
         {
-            inners[index] = ManagedObjectProtocols.GetIterator(arguments[index], span);
+            inners[index] = ManagedObjectProtocols.GetIterator(
+                arguments[index],
+                span,
+                _userIterationDispatcher
+            );
         }
 
         return new PythonIteratorValue(new PythonZipSourceValue(inners), -1);
@@ -4344,6 +4720,7 @@ internal sealed class PythonVirtualMachine
             PythonListValue => PythonBuiltinTypes.List,
             PythonTupleValue => PythonBuiltinTypes.Tuple,
             PythonDictionaryValue => PythonBuiltinTypes.Dict,
+            PythonSetValue { IsFrozen: true } => PythonBuiltinTypes.Frozenset,
             PythonSetValue => PythonBuiltinTypes.Set,
             PythonManagedObjectValue instance => instance.Type,
             PythonExceptionValue exception => _builtins.TryGetValue(
@@ -4356,7 +4733,7 @@ internal sealed class PythonVirtualMachine
         };
     }
 
-    private static PythonValue Sum(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonValue Sum(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count is < 1 or > 2)
         {
@@ -4380,7 +4757,11 @@ internal sealed class PythonVirtualMachine
             );
         }
 
-        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        var iterator = ManagedObjectProtocols.GetIterator(
+            arguments[0],
+            span,
+            _userIterationDispatcher
+        );
         while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
         {
             accumulator = ApplyBinary(PythonOpCode.BinaryAdd, accumulator, value, span);
@@ -4389,17 +4770,19 @@ internal sealed class PythonVirtualMachine
         return accumulator;
     }
 
-    private static PythonValue Minimum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+    private PythonValue Minimum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
         SelectExtremum("min", arguments, span, greater: false);
 
-    private static PythonValue Maximum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+    private PythonValue Maximum(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
         SelectExtremum("max", arguments, span, greater: true);
 
-    private static PythonValue SelectExtremum(
+    private PythonValue SelectExtremum(
         string name,
         IReadOnlyList<PythonValue> arguments,
         TextSpan span,
-        bool greater
+        bool greater,
+        PythonValue? key = null,
+        PythonValue? defaultValue = null
     )
     {
         if (arguments.Count == 0)
@@ -4414,20 +4797,35 @@ internal sealed class PythonVirtualMachine
 
         var candidates =
             arguments.Count == 1
-                ? ManagedObjectProtocols.MaterializeValues(arguments[0], span)
+                ? ManagedObjectProtocols.MaterializeValues(
+                    arguments[0],
+                    span,
+                    _userIterationDispatcher
+                )
                 : [.. arguments];
         if (candidates.Count == 0)
         {
-            throw Fault("DPY4012", $"{name}() arg is an empty sequence.", span, "ValueError");
+            if (defaultValue is not null)
+            {
+                return defaultValue;
+            }
+
+            throw Fault("DPY4012", $"{name}() iterable argument is empty", span, "ValueError");
         }
 
+        var useKey = key is not null and not PythonNoneValue;
         var best = candidates[0];
+        var bestKey = useKey ? InvokeCallableNested(key!, [best], span) : best;
         for (var index = 1; index < candidates.Count; index++)
         {
-            var comparison = ManagedObjectProtocols.CompareOrdered(candidates[index], best, span);
+            var candidateKey = useKey
+                ? InvokeCallableNested(key!, [candidates[index]], span)
+                : candidates[index];
+            var comparison = ManagedObjectProtocols.CompareOrdered(candidateKey, bestKey, span);
             if (greater ? comparison > 0 : comparison < 0)
             {
                 best = candidates[index];
+                bestKey = candidateKey;
             }
         }
 
@@ -4445,10 +4843,14 @@ internal sealed class PythonVirtualMachine
         );
     }
 
-    private static PythonTruthValue AnyTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonTruthValue AnyTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("any", arguments, span);
-        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        var iterator = ManagedObjectProtocols.GetIterator(
+            arguments[0],
+            span,
+            _userIterationDispatcher
+        );
         while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
         {
             if (IsTruthy(value))
@@ -4460,10 +4862,14 @@ internal sealed class PythonVirtualMachine
         return PythonTruthValue.False;
     }
 
-    private static PythonTruthValue AllTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonTruthValue AllTruthy(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("all", arguments, span);
-        var iterator = ManagedObjectProtocols.GetIterator(arguments[0], span);
+        var iterator = ManagedObjectProtocols.GetIterator(
+            arguments[0],
+            span,
+            _userIterationDispatcher
+        );
         while (ManagedObjectProtocols.TryGetNext(iterator, out var value, span))
         {
             if (!IsTruthy(value))
@@ -4760,7 +5166,11 @@ internal sealed class PythonVirtualMachine
         var inners = new PythonIteratorValue[arguments.Count - 1];
         for (var index = 1; index < arguments.Count; index++)
         {
-            inners[index - 1] = ManagedObjectProtocols.GetIterator(arguments[index], span);
+            inners[index - 1] = ManagedObjectProtocols.GetIterator(
+                arguments[index],
+                span,
+                _userIterationDispatcher
+            );
         }
 
         return new PythonIteratorValue(
@@ -4783,7 +5193,11 @@ internal sealed class PythonVirtualMachine
         }
 
         var predicate = arguments[0];
-        var inner = ManagedObjectProtocols.GetIterator(arguments[1], span);
+        var inner = ManagedObjectProtocols.GetIterator(
+            arguments[1],
+            span,
+            _userIterationDispatcher
+        );
         Func<PythonValue, bool> keep =
             predicate is PythonNoneValue
                 ? IsTruthy
@@ -4791,10 +5205,14 @@ internal sealed class PythonVirtualMachine
         return new PythonIteratorValue(new PythonFilterSourceValue(keep, inner), -1);
     }
 
-    private static PythonListValue Sorted(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonListValue Sorted(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("sorted", arguments, span);
-        var values = ManagedObjectProtocols.MaterializeValues(arguments[0], span);
+        var values = ManagedObjectProtocols.MaterializeValues(
+            arguments[0],
+            span,
+            _userIterationDispatcher
+        );
         try
         {
             return new PythonListValue([
@@ -4911,7 +5329,12 @@ internal sealed class PythonVirtualMachine
     {
         var container = Pop(instruction.Span);
         var item = Pop(instruction.Span);
-        var contains = ManagedObjectProtocols.Contains(container, item, instruction.Span);
+        var contains = ManagedObjectProtocols.Contains(
+            container,
+            item,
+            instruction.Span,
+            _userIterationDispatcher
+        );
         if (instruction.OpCode == PythonOpCode.CompareNotIn)
         {
             contains = !contains;
@@ -4956,7 +5379,7 @@ internal sealed class PythonVirtualMachine
         {
             var right = Pop(span);
             Pop(span);
-            ManagedObjectProtocols.ExtendList(list, right, span);
+            ManagedObjectProtocols.ExtendList(list, right, span, _userIterationDispatcher);
             _evaluationStack.Push(list);
             return;
         }
@@ -5053,7 +5476,11 @@ internal sealed class PythonVirtualMachine
         {
             PythonListValue list => list.Elements,
             PythonTupleValue tuple => tuple.Elements,
-            _ => ManagedObjectProtocols.MaterializeValues(value, instruction.Span),
+            _ => ManagedObjectProtocols.MaterializeValues(
+                value,
+                instruction.Span,
+                _userIterationDispatcher
+            ),
         };
         if (items.Count < instruction.Operand)
         {

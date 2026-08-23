@@ -553,6 +553,18 @@ internal static class PythonBuiltinMethods
         ["copy"] = Set("copy", 0, 0, (set, _) => new PythonSetValue([.. set.Elements])),
     };
 
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> FrozenSetMethods = new(
+        StringComparer.Ordinal
+    )
+    {
+        ["copy"] = Set(
+            "copy",
+            0,
+            0,
+            (set, _) => new PythonSetValue([.. set.Elements]) { IsFrozen = true }
+        ),
+    };
+
     internal static bool TryGet(
         PythonValue target,
         string name,
@@ -565,6 +577,7 @@ internal static class PythonBuiltinMethods
             PythonListValue => ListMethods,
             PythonDictionaryValue => DictionaryMethods,
             PythonTupleValue => TupleMethods,
+            PythonSetValue { IsFrozen: true } => FrozenSetMethods,
             PythonSetValue => SetMethods,
             _ => null,
         };

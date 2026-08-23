@@ -17,11 +17,15 @@ internal static class PythonBuiltinTypes
     internal static readonly PythonBuiltinTypeValue Int = new("int", ConstructInt);
     internal static readonly PythonBuiltinTypeValue List = new("list", ConstructList);
     internal static readonly PythonBuiltinTypeValue Set = new("set", ConstructSet);
+    internal static readonly PythonBuiltinTypeValue Frozenset = new(
+        "frozenset",
+        ConstructFrozenset
+    );
     internal static readonly PythonBuiltinTypeValue Str = new("str", ConstructStr);
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
-        [Bool, Dict, Float, Int, List, Set, Str, Tuple];
+        [Bool, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
         new(
@@ -45,7 +49,8 @@ internal static class PythonBuiltinTypes
             "list" => value is PythonListValue,
             "tuple" => value is PythonTupleValue,
             "dict" => value is PythonDictionaryValue,
-            "set" => value is PythonSetValue,
+            "set" => value is PythonSetValue { IsFrozen: false },
+            "frozenset" => value is PythonSetValue { IsFrozen: true },
             _ => false,
         };
 
@@ -198,6 +203,22 @@ internal static class PythonBuiltinTypes
                 ManagedObjectProtocols.MaterializeValues(arguments[0], span),
                 span
             );
+    }
+
+    private static PythonSetValue ConstructFrozenset(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        RequireArguments("frozenset", arguments, 0, 1, span);
+        var deduplicated =
+            arguments.Count == 0
+                ? new PythonSetValue([])
+                : ManagedObjectProtocols.CreateSet(
+                    ManagedObjectProtocols.MaterializeValues(arguments[0], span),
+                    span
+                );
+        return new PythonSetValue(deduplicated.Elements) { IsFrozen = true };
     }
 
     private static PythonTextValue ConstructStr(IReadOnlyList<PythonValue> arguments, TextSpan span)

@@ -24,6 +24,15 @@ internal enum PythonRichComparison
 }
 
 /// <summary>
+/// Resolves a user-defined instance into an iterator by running its `__iter__` on the
+/// owning VM; the static protocol layer cannot execute frames itself.
+/// </summary>
+internal delegate PythonIteratorValue UserIterationDispatcher(
+    PythonManagedObjectValue instance,
+    TextSpan span
+);
+
+/// <summary>
 /// Central protocol dispatch for managed values exposed through a native-compatibility boundary.
 /// </summary>
 internal static class ManagedObjectProtocols
@@ -139,7 +148,7 @@ internal static class ManagedObjectProtocols
             case PythonTemplateValue:
                 throw Fault(
                     "DPY4023",
-                    $"'Template' object has no attribute '{name}'.",
+                    $"'Template' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -172,7 +181,7 @@ internal static class ManagedObjectProtocols
                     ),
                     _ => throw Fault(
                         "DPY4023",
-                        $"'{generator.TypeName}' object has no attribute '{name}'.",
+                        $"'{generator.TypeName}' object has no attribute '{name}'",
                         span,
                         "AttributeError"
                     ),
@@ -188,7 +197,7 @@ internal static class ManagedObjectProtocols
                     "format_spec" => new PythonTextValue(interpolation.FormatSpecification),
                     _ => throw Fault(
                         "DPY4023",
-                        $"'Interpolation' object has no attribute '{name}'.",
+                        $"'Interpolation' object has no attribute '{name}'",
                         span,
                         "AttributeError"
                     ),
@@ -201,7 +210,7 @@ internal static class ManagedObjectProtocols
 
                 throw Fault(
                     "DPY4023",
-                    $"'{GetTypeName(builtin)}' object has no attribute '{name}'.",
+                    $"'{GetTypeName(builtin)}' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -470,11 +479,20 @@ internal static class ManagedObjectProtocols
         }
     }
 
-    internal static PythonIteratorValue GetIterator(PythonValue value, TextSpan span = default)
+    internal static PythonIteratorValue GetIterator(
+        PythonValue value,
+        TextSpan span = default,
+        UserIterationDispatcher? userIteration = null
+    )
     {
         if (value is PythonIteratorValue iterator)
         {
             return iterator;
+        }
+
+        if (value is PythonManagedObjectValue instance && userIteration is not null)
+        {
+            return userIteration(instance, span);
         }
 
         if (value is PythonGeneratorValue generatorValue)
@@ -525,7 +543,12 @@ internal static class ManagedObjectProtocols
             )
         )
         {
-            throw Fault("DPY4015", "This value is not iterable.", span, "TypeError");
+            throw Fault(
+                "DPY4015",
+                $"'{GetTypeName(value)}' object is not iterable",
+                span,
+                "TypeError"
+            );
         }
 
         return new PythonIteratorValue(
@@ -672,6 +695,17 @@ internal static class ManagedObjectProtocols
                 }
 
                 break;
+            case PythonUserIteratorSourceValue userSource:
+            {
+                var step = userSource.MoveNext();
+                if (step.HasValue)
+                {
+                    value = step.Value;
+                    return true;
+                }
+
+                break;
+            }
         }
 
         value = PythonNoneValue.Instance;
@@ -857,7 +891,12 @@ internal static class ManagedObjectProtocols
         tuple.Elements[index] = value;
     }
 
-    internal static bool Contains(PythonValue container, PythonValue item, TextSpan span = default)
+    internal static bool Contains(
+        PythonValue container,
+        PythonValue item,
+        TextSpan span = default,
+        UserIterationDispatcher? userIteration = null
+    )
     {
         ArgumentNullException.ThrowIfNull(container);
         ArgumentNullException.ThrowIfNull(item);
@@ -881,7 +920,7 @@ internal static class ManagedObjectProtocols
             return TryFindDictionaryItem(dictionary, item, out _);
         }
 
-        var iterator = GetIterator(container, span);
+        var iterator = GetIterator(container, span, userIteration);
         while (TryGetNext(iterator, out var candidate, span))
         {
             if (AreEqual(candidate, item))
@@ -1058,9 +1097,14 @@ internal static class ManagedObjectProtocols
         }
     }
 
-    internal static void ExtendList(PythonListValue list, PythonValue iterable, TextSpan span)
+    internal static void ExtendList(
+        PythonListValue list,
+        PythonValue iterable,
+        TextSpan span,
+        UserIterationDispatcher? userIteration = null
+    )
     {
-        var values = MaterializeValues(iterable, span);
+        var values = MaterializeValues(iterable, span, userIteration);
         list.Elements.AddRange(values);
     }
 
@@ -1094,7 +1138,12 @@ internal static class ManagedObjectProtocols
     {
         if (!IsHashable(value))
         {
-            throw Fault("DPY4014", $"Unhashable type: '{GetTypeName(value)}'.", span, "TypeError");
+            throw Fault(
+                "DPY4014",
+                $"cannot use '{GetTypeName(value)}' as a set element (unhashable type: '{GetTypeName(value)}')",
+                span,
+                "TypeError"
+            );
         }
 
         foreach (var element in set.Elements)
@@ -1119,10 +1168,14 @@ internal static class ManagedObjectProtocols
         return set;
     }
 
-    internal static List<PythonValue> MaterializeValues(PythonValue iterable, TextSpan span)
+    internal static List<PythonValue> MaterializeValues(
+        PythonValue iterable,
+        TextSpan span,
+        UserIterationDispatcher? userIteration = null
+    )
     {
         var values = new List<PythonValue>();
-        var iterator = GetIterator(iterable, span);
+        var iterator = GetIterator(iterable, span, userIteration);
         while (TryGetNext(iterator, out var value, span))
         {
             values.Add(value);
@@ -1250,14 +1303,27 @@ internal static class ManagedObjectProtocols
                 RuntimeHelpers.GetHashCode(method.Function)
             ),
             PythonModuleValue module => RuntimeHelpers.GetHashCode(module),
-            PythonListValue or PythonDictionaryValue => throw Fault(
+            PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
+            PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
                 "DPY4014",
-                "This managed value is not hashable.",
+                $"unhashable type: '{GetTypeName(value)}'",
                 span,
                 "TypeError"
             ),
             _ => RuntimeHelpers.GetHashCode(value),
         };
+    }
+
+    private static int GetFrozenSetHash(PythonSetValue frozen, TextSpan span)
+    {
+        // Order-insensitive combination so equal frozensets hash equally.
+        var hash = 0;
+        foreach (var element in frozen.Elements)
+        {
+            hash ^= GetPythonHash(element, span);
+        }
+
+        return HashCode.Combine(hash, frozen.Elements.Count);
     }
 
     internal static byte[] GetBytes(PythonByteSequenceValue value)
@@ -1286,7 +1352,7 @@ internal static class ManagedObjectProtocols
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
             PythonSliceValue => "slice",
-            PythonSetValue => "set",
+            PythonSetValue set => set.IsFrozen ? "frozenset" : "set",
             PythonDictionaryViewValue view => view.Kind,
             PythonRangeValue => "range",
             PythonEnumerateSourceValue => "enumerate",
@@ -1426,7 +1492,12 @@ internal static class ManagedObjectProtocols
     {
         if (!IsHashable(key))
         {
-            throw Fault("DPY4014", "The dictionary key is not hashable.", span, "TypeError");
+            throw Fault(
+                "DPY4014",
+                $"cannot use '{GetTypeName(key)}' as a dict key (unhashable type: '{GetTypeName(key)}')",
+                span,
+                "TypeError"
+            );
         }
 
         if (TryFindDictionaryItem(dictionary, key, out var item))
@@ -1461,7 +1532,8 @@ internal static class ManagedObjectProtocols
     internal static bool IsHashable(PythonValue value) =>
         value switch
         {
-            PythonListValue or PythonDictionaryValue or PythonSetValue => false,
+            PythonSetValue set => set.IsFrozen,
+            PythonListValue or PythonDictionaryValue => false,
             PythonTupleValue tuple => tuple.Elements.All(IsHashable),
             _ => true,
         };
@@ -1747,11 +1819,11 @@ internal static class ManagedObjectProtocols
             _ => throw new ArgumentOutOfRangeException(nameof(value)),
         };
 
-    private static PythonRuntimeException MissingAttribute(
+    internal static PythonRuntimeException MissingAttribute(
         string typeName,
         string name,
         TextSpan span
-    ) => Fault("DPY4022", $"'{typeName}' has no attribute '{name}'.", span, "AttributeError");
+    ) => Fault("DPY4022", $"'{typeName}' object has no attribute '{name}'", span, "AttributeError");
 
     internal static PythonRuntimeException Fault(
         string code,

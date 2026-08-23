@@ -597,29 +597,45 @@ internal sealed record PythonFilterSourceValue(
 
 internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
 {
+    /// <summary>Whether this value is a `frozenset` (immutable, hashable) rather than a `set`.</summary>
+    internal bool IsFrozen { get; init; }
+
     internal override string ToDisplayString()
     {
         if (Elements.Count == 0)
         {
-            return "set()";
+            return IsFrozen ? "frozenset()" : "set()";
         }
 
         if (!PythonRepresentationGuard.TryEnter(this))
         {
-            return "{...}";
+            return IsFrozen ? "frozenset({...})" : "{...}";
         }
 
         try
         {
-            return "{"
+            var elements =
+                "{"
                 + string.Join(", ", Elements.Select(element => element.ToRepresentationString()))
                 + "}";
+            return IsFrozen ? $"frozenset({elements})" : elements;
         }
         finally
         {
             PythonRepresentationGuard.Exit(this);
         }
     }
+}
+
+/// <summary>
+/// A lazy iteration source over a user-defined iterator: `MoveNext` captures the VM
+/// and the bound `__next__`, converting a raised StopIteration into exhaustion.
+/// </summary>
+internal sealed record PythonUserIteratorSourceValue(
+    Func<(bool HasValue, PythonValue Value)> MoveNext
+) : PythonValue
+{
+    internal override string ToDisplayString() => "<iterator>";
 }
 
 internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, PythonValue Step)
