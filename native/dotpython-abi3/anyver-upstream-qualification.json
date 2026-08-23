@@ -9,7 +9,7 @@
   "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
   "platform": "macos-arm64",
   "collector": {
-    "pythonVersion": "Python 3.14.6",
+    "pythonVersion": "Python 3.14.7",
     "pytestVersion": "pytest 9.1.1",
     "command": "python -B -m pytest -p no:cacheprovider --color=no --collect-only -q tests/test_anyver.py"
   },
@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 315,
-    "failed": 10,
+    "passed": 318,
+    "failed": 7,
     "skipped": 0
   },
   "cases": [
@@ -48,8 +48,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_empty_string",
-      "outcome": "failed",
-      "detail": "DPY4031: AssertionError"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestVersionConstruction::test_non_string_raises_typeerror",
@@ -169,8 +168,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSequence::test_bool_empty",
-      "outcome": "failed",
-      "detail": "DPY4031: AssertionError"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestHash::test_set_dedup",
@@ -1051,8 +1049,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestPickle::test_deepcopy",
-      "outcome": "failed",
-      "detail": "DPY4020: No managed module named \u0027copy\u0027 is registered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestStrComparison::test_eq_str",

@@ -18,7 +18,14 @@ internal sealed class PythonModuleCatalog
 
     private PythonModuleCatalog(IReadOnlyDictionary<string, PythonModuleDefinition> modules)
     {
-        Modules = modules;
+        // Runtime-native standard modules are available in every catalog and, like
+        // other internal modules, win over same-named discovered or host modules.
+        var merged = new Dictionary<string, PythonModuleDefinition>(
+            modules,
+            StringComparer.Ordinal
+        );
+        PythonStandardModules.AddTo(merged);
+        Modules = merged;
     }
 
     internal IReadOnlyDictionary<string, PythonModuleDefinition> Modules { get; }

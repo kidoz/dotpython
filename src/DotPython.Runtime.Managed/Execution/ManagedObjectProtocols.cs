@@ -1307,8 +1307,23 @@ internal static class ManagedObjectProtocols
             PythonRangeValue range => !range.Count.IsZero,
             PythonDictionaryViewValue view => view.Snapshot.Elements.Count != 0,
             PythonSetValue set => set.Elements.Count != 0,
+            PythonExternalObjectValue external => IsExternalTruthy(external),
             _ => true,
         };
+
+    private static bool IsExternalTruthy(PythonExternalObjectValue external)
+    {
+        // Native sequence-shaped objects define truthiness through their length;
+        // objects without a length protocol stay truthy like other opaque values.
+        try
+        {
+            return external.Protocol.GetLength(default) != 0;
+        }
+        catch (PythonRuntimeException)
+        {
+            return true;
+        }
+    }
 
     internal static PythonTruthValue RichCompare(
         PythonValue left,
