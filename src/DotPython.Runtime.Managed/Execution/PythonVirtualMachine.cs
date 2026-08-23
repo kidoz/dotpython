@@ -95,6 +95,7 @@ internal sealed class PythonVirtualMachine
             ["isinstance"] = new PythonBuiltinFunctionValue("isinstance", IsInstance),
             ["super"] = new PythonBuiltinFunctionValue("super", Super),
             ["next"] = new PythonBuiltinFunctionValue("next", Next),
+            ["anext"] = new PythonBuiltinFunctionValue("anext", ANext),
             ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
@@ -2279,6 +2280,13 @@ internal sealed class PythonVirtualMachine
             return;
         }
 
+        if (step is { Kind: PythonAsyncGeneratorStepKind.Next, ExhaustedDefault: { } fallback })
+        {
+            _evaluationStack.Push(fallback);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
         throw CreateRaisedException(new PythonExceptionValue("StopAsyncIteration", string.Empty));
     }
 
@@ -3301,7 +3309,9 @@ internal sealed class PythonVirtualMachine
     private PythonValue InvokeCallableNested(
         PythonValue callable,
         PythonValue[] arguments,
-        TextSpan span
+        TextSpan span,
+        string[]? keywordNames = null,
+        PythonValue[]? keywordValues = null
     )
     {
         if (callable is PythonBoundUserMethodValue boundMethod)
@@ -3326,12 +3336,24 @@ internal sealed class PythonVirtualMachine
         {
             return CreateGenerator(
                 function,
-                BindFunctionArguments(function, arguments, [], [], span),
+                BindFunctionArguments(
+                    function,
+                    arguments,
+                    keywordNames ?? [],
+                    keywordValues ?? [],
+                    span
+                ),
                 span
             );
         }
 
-        var bound = BindFunctionArguments(function, arguments, [], [], span);
+        var bound = BindFunctionArguments(
+            function,
+            arguments,
+            keywordNames ?? [],
+            keywordValues ?? [],
+            span
+        );
         var baseFrameCount = _frameCount;
         PushFunctionFrameWithArguments(function, bound, span);
         while (_frameCount > baseFrameCount)
@@ -4178,6 +4200,57 @@ internal sealed class PythonVirtualMachine
             _ => new PythonTupleValue(arguments).ToDisplayString(),
         };
 
+    private PythonValue ANext(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count is not (1 or 2))
+        {
+            throw Fault(
+                "DPY4003",
+                $"anext expected at most 2 arguments, got {arguments.Count}.",
+                span,
+                "TypeError"
+            );
+        }
+
+        switch (arguments[0])
+        {
+            case PythonGeneratorValue { IsAsyncGenerator: true } asyncGenerator:
+                return new PythonAsyncGeneratorStepValue(
+                    asyncGenerator,
+                    PythonAsyncGeneratorStepKind.Next,
+                    null,
+                    null
+                )
+                {
+                    ExhaustedDefault = arguments.Count == 2 ? arguments[1] : null,
+                };
+            case PythonManagedObjectValue instance
+                when ManagedObjectProtocols.TryGetInstanceMethod(
+                    instance,
+                    "__anext__",
+                    out var nextMethod
+                ):
+                if (arguments.Count == 2)
+                {
+                    throw Fault(
+                        "DPY4028",
+                        "anext() with a default is only supported for async generators in this runtime slice.",
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                return InvokeCallableNested(nextMethod, [], span);
+            default:
+                throw Fault(
+                    "DPY4003",
+                    $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}' object is not an async iterator",
+                    span,
+                    "TypeError"
+                );
+        }
+    }
+
     private PythonValue Next(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count is not (1 or 2))
@@ -4238,10 +4311,10 @@ internal sealed class PythonVirtualMachine
         if (
             arguments.Count == 2
             && arguments[0] is PythonManagedTypeValue definingType
-            && arguments[1] is PythonManagedObjectValue instance
+            && arguments[1] is PythonManagedObjectValue or PythonExceptionValue
         )
         {
-            return new PythonSuperProxyValue(definingType, instance);
+            return new PythonSuperProxyValue(definingType, arguments[1]);
         }
 
         throw Fault(
@@ -4349,6 +4422,46 @@ internal sealed class PythonVirtualMachine
         );
     }
 
+    private PythonExceptionValue ConstructExceptionInstance(
+        PythonManagedTypeValue type,
+        PythonValue[] arguments,
+        string[] keywordNames,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        // CPython sets `args` from the constructor call before __init__ runs; a
+        // super().__init__(...) call may rebind them afterwards.
+        var exception = new PythonExceptionValue(
+            type.Name,
+            ComposeExceptionMessage(type.Name, arguments)
+        )
+        {
+            Arguments = [.. arguments],
+        };
+        if (ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
+        {
+            if (initializer is not PythonFunctionValue initializerFunction)
+            {
+                throw Fault("DPY4009", $"{type.Name}.__init__ is not callable.", span, "TypeError");
+            }
+
+            InvokeCallableNested(
+                initializerFunction,
+                PrependArgument(exception, arguments),
+                span,
+                keywordNames,
+                keywordValues
+            );
+        }
+        else if (keywordNames.Length != 0)
+        {
+            throw Fault("DPY4009", $"{type.Name}() takes no keyword arguments.", span, "TypeError");
+        }
+
+        return exception;
+    }
+
     private void ConstructManagedInstance(
         PythonManagedTypeValue type,
         PythonValue[] arguments,
@@ -4357,12 +4470,7 @@ internal sealed class PythonVirtualMachine
     {
         if (type.ExceptionBaseName is not null)
         {
-            _evaluationStack.Push(
-                new PythonExceptionValue(type.Name, ComposeExceptionMessage(type.Name, arguments))
-                {
-                    Arguments = [.. arguments],
-                }
-            );
+            _evaluationStack.Push(ConstructExceptionInstance(type, arguments, [], [], span));
             return;
         }
 
@@ -4408,12 +4516,10 @@ internal sealed class PythonVirtualMachine
     {
         if (type.ExceptionBaseName is not null)
         {
-            throw Fault(
-                "DPY4034",
-                $"{type.Name}() does not accept keyword arguments in this runtime slice.",
-                span,
-                "TypeError"
+            _evaluationStack.Push(
+                ConstructExceptionInstance(type, positional, keywordNames, keywordValues, span)
             );
+            return;
         }
 
         var instance = new PythonManagedObjectValue(type);

@@ -115,6 +115,24 @@ internal static class ManagedObjectProtocols
                         : inherited;
                 }
 
+                if (name == "__init__" && proxy.Instance is PythonExceptionValue exceptionSelf)
+                {
+                    // The chain bottomed out at a builtin exception base:
+                    // BaseException.__init__ rebinds args and the derived message.
+                    return new PythonBoundMethodValue(
+                        "__init__",
+                        exceptionSelf,
+                        new PythonProtocolFunctionValue(
+                            "__init__",
+                            (_, initArguments) =>
+                            {
+                                ApplyBaseExceptionInit(exceptionSelf, initArguments);
+                                return PythonNoneValue.Instance;
+                            }
+                        )
+                    );
+                }
+
                 throw Fault(
                     "DPY4022",
                     $"'super' object has no attribute '{name}'.",
@@ -146,6 +164,11 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(group.Message);
             case PythonExceptionValue { GroupExceptions: { } nested } when name == "exceptions":
                 return new PythonTupleValue([.. nested.Cast<PythonValue>()]);
+            case PythonExceptionValue exceptionInstance
+                when exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
+                return exceptionAttribute;
+            case PythonExceptionValue missingAttributeException:
+                throw MissingAttribute(missingAttributeException.TypeName, name, span);
             case PythonTemplateValue template when name == "strings":
                 return new PythonTupleValue([
                     .. template.Strings.Select(text => (PythonValue)new PythonTextValue(text)),
@@ -313,6 +336,9 @@ internal static class ManagedObjectProtocols
             case PythonModuleValue module:
                 module.Globals.SetValue(name, value);
                 return;
+            case PythonExceptionValue exceptionInstance:
+                exceptionInstance.Attributes[name] = value;
+                return;
             case PythonManagedObjectValue instance:
                 if (
                     TryGetTypeAttribute(instance.Type, name, out var typeValue)
@@ -428,6 +454,21 @@ internal static class ManagedObjectProtocols
             {
                 Arguments = [returnValue],
             };
+
+    /// <summary>`BaseException.__init__(self, *args)`: rebinds args and the message.</summary>
+    internal static void ApplyBaseExceptionInit(
+        PythonExceptionValue exception,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        exception.Arguments = [.. arguments];
+        exception.Message = arguments.Count switch
+        {
+            0 => string.Empty,
+            1 => arguments[0].ToDisplayString(),
+            _ => new PythonTupleValue([.. arguments]).ToDisplayString(),
+        };
+    }
 
     /// <summary>A CPython-shaped KeyError carrying the missing key as its argument.</summary>
     internal static PythonRaisedException MissingKey(PythonValue key) =>

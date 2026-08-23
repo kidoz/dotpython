@@ -2675,7 +2675,7 @@ public static class PythonParser
                                     );
                                 }
 
-                                if (IsKeyword("for"))
+                                if (StartsComprehensionClause())
                                 {
                                     var clauses = ParseComprehensionClauses();
                                     argument = new PythonGeneratorExpression(
@@ -3172,7 +3172,7 @@ public static class PythonParser
                 return null;
             }
 
-            if (first is not PythonStarredExpression && IsKeyword("for"))
+            if (first is not PythonStarredExpression && StartsComprehensionClause())
             {
                 var clauses = ParseComprehensionClauses();
                 var comprehensionEnd = ExpectClosingDelimiter(
@@ -3240,7 +3240,7 @@ public static class PythonParser
                     break;
                 }
 
-                if (elements.Count == 0 && IsKeyword("for"))
+                if (elements.Count == 0 && StartsComprehensionClause())
                 {
                     var clauses = ParseComprehensionClauses();
                     var comprehensionEnd = ExpectClosingDelimiter(
@@ -3311,7 +3311,7 @@ public static class PythonParser
                     break;
                 }
 
-                if (items.Count == 0 && IsKeyword("for"))
+                if (items.Count == 0 && StartsComprehensionClause())
                 {
                     var setClauses = ParseComprehensionClauses();
                     var setEnd = ExpectClosingDelimiter(
@@ -3339,7 +3339,7 @@ public static class PythonParser
                     break;
                 }
 
-                if (items.Count == 0 && IsKeyword("for"))
+                if (items.Count == 0 && StartsComprehensionClause())
                 {
                     var clauses = ParseComprehensionClauses();
                     var comprehensionEnd = ExpectClosingDelimiter(
@@ -3407,11 +3407,38 @@ public static class PythonParser
             );
         }
 
+        private bool StartsComprehensionClause() =>
+            IsKeyword("for")
+            || (
+                IsKeyword("async")
+                && Peek(1).Kind == SyntaxTokenKind.Identifier
+                && Peek(1).Text == "for"
+            );
+
         private ReadOnlyCollection<PythonComprehensionClause> ParseComprehensionClauses()
         {
             var clauses = new List<PythonComprehensionClause>();
             while (true)
             {
+                var isAsync = false;
+                if (
+                    IsKeyword("async")
+                    && Peek(1).Kind == SyntaxTokenKind.Identifier
+                    && Peek(1).Text == "for"
+                )
+                {
+                    var asyncToken = Advance();
+                    isAsync = true;
+                    if (_functionAsyncFlags.Count == 0 || !_functionAsyncFlags[^1])
+                    {
+                        Report(
+                            "DPY2029",
+                            "asynchronous comprehension outside of an asynchronous function",
+                            asyncToken.Span
+                        );
+                    }
+                }
+
                 if (MatchKeyword("for", out var forToken))
                 {
                     var target = ParseForTargets();
@@ -3425,7 +3452,8 @@ public static class PythonParser
                         new PythonComprehensionForClause(
                             target,
                             iterable,
-                            TextSpan.FromBounds(forToken.Span.Start, iterable.Span.End)
+                            TextSpan.FromBounds(forToken.Span.Start, iterable.Span.End),
+                            isAsync
                         )
                     );
                     continue;

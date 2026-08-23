@@ -383,6 +383,12 @@ internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
 
 internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
 {
+    /// <summary>Mutable so `BaseException.__init__` can rebind the message.</summary>
+    public string Message { get; set; } = Message;
+
+    /// <summary>Instance attributes assigned by user exception-class `__init__` bodies.</summary>
+    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+
     internal PythonExceptionValue? Cause { get; set; }
 
     internal PythonExceptionValue? Context { get; set; }
@@ -396,7 +402,7 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
     /// The constructor arguments (`e.args`); null when the value was created from a
     /// bare message, in which case the args derive from <see cref="Message"/>.
     /// </summary>
-    internal IReadOnlyList<PythonValue>? Arguments { get; init; }
+    internal IReadOnlyList<PythonValue>? Arguments { get; set; }
 
     internal IReadOnlyList<PythonValue> EffectiveArguments =>
         Arguments
@@ -585,16 +591,16 @@ internal sealed record PythonGeneratorValue : PythonValue
 
 internal sealed record PythonSuperProxyValue(
     PythonManagedTypeValue DefiningType,
-    PythonManagedObjectValue Instance
+    PythonValue Instance
 ) : PythonValue
 {
     internal override string ToDisplayString() =>
-        $"<super: {DefiningType.Name}, {Instance.Type.Name}>";
+        $"<super: {DefiningType.Name}, {Instance switch { PythonManagedObjectValue managed => managed.Type.Name, PythonExceptionValue exception => exception.TypeName, _ => "object" }}>";
 }
 
 internal sealed record PythonBoundUserMethodValue(
     string Name,
-    PythonManagedObjectValue Target,
+    PythonValue Target,
     PythonFunctionValue Function
 ) : PythonValue
 {
@@ -718,6 +724,9 @@ internal sealed record PythonAsyncGeneratorStepValue(
 ) : PythonValue
 {
     internal bool Started { get; set; }
+
+    /// <summary>`anext(agen, default)`: completes with this instead of StopAsyncIteration.</summary>
+    internal PythonValue? ExhaustedDefault { get; init; }
 
     internal override string ToDisplayString() => $"<async_generator_{DisplayKind}>";
 

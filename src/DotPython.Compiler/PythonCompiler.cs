@@ -909,6 +909,21 @@ public static class PythonCompiler
                 return;
             }
 
+            var isAsync =
+                _isCoroutine
+                && (
+                    clauses.OfType<PythonComprehensionForClause>().Any(clause => clause.IsAsync)
+                    || ComprehensionContainsAwait(comprehension, clauses)
+                );
+            if (isAsync && comprehension is PythonGeneratorExpression)
+            {
+                Report(
+                    "DPY3119",
+                    "Asynchronous generator expressions are not supported in this runtime slice.",
+                    comprehension.Span
+                );
+            }
+
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, comprehension)
             );
@@ -919,21 +934,129 @@ public static class PythonCompiler
                 _enableReturnLocal,
                 _enableCallLocal
             );
-            var childCode = childCompiler.CompileComprehensionCode(comprehension, clauses);
+            var childCode = childCompiler.CompileComprehensionCode(comprehension, clauses, isAsync);
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
             Emit(PythonOpCode.MakeFunction, constantIndex, comprehension.Span);
             CompileExpression(firstClause.Iterable);
-            Emit(PythonOpCode.GetIterator, 0, firstClause.Iterable.Span);
+            if (!firstClause.IsAsync)
+            {
+                Emit(PythonOpCode.GetIterator, 0, firstClause.Iterable.Span);
+            }
+
             Emit(PythonOpCode.Call, 1, comprehension.Span);
+            if (isAsync)
+            {
+                // The comprehension body is an implicit coroutine; await it in place.
+                Emit(PythonOpCode.GetAwaitable, 0, comprehension.Span);
+                EmitAwaitLoop(comprehension.Span);
+            }
         }
 
-        private PythonCodeObject CompileComprehensionCode(
+        private static bool ComprehensionContainsAwait(
             PythonExpression comprehension,
             IReadOnlyList<PythonComprehensionClause> clauses
         )
         {
+            var elements = comprehension switch
+            {
+                PythonListComprehensionExpression list => new[] { list.Element },
+                PythonSetComprehensionExpression set => [set.Element],
+                PythonDictionaryComprehensionExpression dictionary =>
+                [
+                    dictionary.Key,
+                    dictionary.Value,
+                ],
+                PythonGeneratorExpression generator => [generator.Element],
+                _ => Array.Empty<PythonExpression>(),
+            };
+            if (elements.Any(ContainsAwait))
+            {
+                return true;
+            }
+
+            for (var index = 0; index < clauses.Count; index++)
+            {
+                switch (clauses[index])
+                {
+                    // The first iterable evaluates in the enclosing scope; its awaits
+                    // belong to the enclosing coroutine, not the comprehension.
+                    case PythonComprehensionForClause forClause
+                        when index != 0 && ContainsAwait(forClause.Iterable):
+                    case PythonComprehensionIfClause ifClause
+                        when ContainsAwait(ifClause.Condition):
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ContainsAwait(PythonExpression expression) =>
+            expression switch
+            {
+                PythonAwaitExpression => true,
+                PythonUnaryExpression unary => ContainsAwait(unary.Operand),
+                PythonBinaryExpression binary => ContainsAwait(binary.Left)
+                    || ContainsAwait(binary.Right),
+                PythonComparisonExpression comparison => ContainsAwait(comparison.Left)
+                    || comparison.Comparisons.Any(part => ContainsAwait(part.Right)),
+                PythonConditionalExpression conditional => ContainsAwait(conditional.Condition)
+                    || ContainsAwait(conditional.TrueResult)
+                    || ContainsAwait(conditional.FalseResult),
+                PythonCallExpression call => ContainsAwait(call.Target)
+                    || call.Arguments.Any(ContainsAwait)
+                    || call.KeywordArguments.Any(keyword => ContainsAwait(keyword.Value)),
+                PythonSubscriptionExpression subscription => ContainsAwait(subscription.Target)
+                    || ContainsAwait(subscription.Index),
+                PythonSliceExpression slice => (
+                    slice.Start is not null && ContainsAwait(slice.Start)
+                )
+                    || (slice.Stop is not null && ContainsAwait(slice.Stop))
+                    || (slice.Step is not null && ContainsAwait(slice.Step)),
+                PythonAttributeExpression attribute => ContainsAwait(attribute.Target),
+                PythonParenthesizedExpression parenthesized => ContainsAwait(
+                    parenthesized.Expression
+                ),
+                PythonStarredExpression starred => ContainsAwait(starred.Operand),
+                PythonListExpression list => list.Elements.Any(ContainsAwait),
+                PythonSetExpression set => set.Elements.Any(ContainsAwait),
+                PythonTupleExpression tuple => tuple.Elements.Any(ContainsAwait),
+                PythonDictionaryExpression dictionary => dictionary.Items.Any(item =>
+                    (item.Key is not null && ContainsAwait(item.Key)) || ContainsAwait(item.Value)
+                ),
+                PythonAssignmentExpression assignment => ContainsAwait(assignment.Value),
+                PythonFormattedStringExpression formatted => formatted
+                    .Parts.OfType<PythonFormattedStringInterpolationPart>()
+                    .Any(part => ContainsAwait(part.Expression)),
+                PythonTemplateStringExpression template => template
+                    .Parts.OfType<PythonFormattedStringInterpolationPart>()
+                    .Any(part => ContainsAwait(part.Expression)),
+                // A nested async comprehension makes the enclosing one async too.
+                PythonListComprehensionExpression nestedList => ComprehensionContainsAwait(
+                    nestedList,
+                    nestedList.Clauses
+                ) || nestedList.Clauses.OfType<PythonComprehensionForClause>().Any(c => c.IsAsync),
+                PythonSetComprehensionExpression nestedSet => ComprehensionContainsAwait(
+                    nestedSet,
+                    nestedSet.Clauses
+                ) || nestedSet.Clauses.OfType<PythonComprehensionForClause>().Any(c => c.IsAsync),
+                PythonDictionaryComprehensionExpression nestedDictionary =>
+                    ComprehensionContainsAwait(nestedDictionary, nestedDictionary.Clauses)
+                        || nestedDictionary
+                            .Clauses.OfType<PythonComprehensionForClause>()
+                            .Any(c => c.IsAsync),
+                _ => false,
+            };
+
+        private PythonCodeObject CompileComprehensionCode(
+            PythonExpression comprehension,
+            IReadOnlyList<PythonComprehensionClause> clauses,
+            bool isAsync = false
+        )
+        {
+            _isCoroutine = isAsync;
             if (comprehension is not PythonGeneratorExpression)
             {
                 Emit(
@@ -949,7 +1072,15 @@ public static class PythonCompiler
             }
 
             Emit(PythonOpCode.LoadLocal, GetVariableIndex(".0"), comprehension.Span);
-            Emit(PythonOpCode.GetIterator, 0, comprehension.Span);
+            if (clauses is [PythonComprehensionForClause { IsAsync: true }, ..])
+            {
+                Emit(PythonOpCode.GetAsyncIterator, 0, comprehension.Span);
+            }
+            else
+            {
+                Emit(PythonOpCode.GetIterator, 0, comprehension.Span);
+            }
+
             CompileComprehensionClauses(
                 comprehension,
                 clauses,
@@ -966,7 +1097,11 @@ public static class PythonCompiler
                 Emit(PythonOpCode.ReturnValue, 0, comprehension.Span);
             }
 
-            return CreateCodeObject(null, comprehension is PythonGeneratorExpression);
+            return CreateCodeObject(
+                null,
+                comprehension is PythonGeneratorExpression,
+                isCoroutine: isAsync
+            );
         }
 
         private void CompileComprehensionClauses(
@@ -1014,6 +1149,34 @@ public static class PythonCompiler
 
             switch (clauses[clauseIndex])
             {
+                case PythonComprehensionForClause { IsAsync: true } asyncClause:
+                {
+                    if (clauseIndex != 0)
+                    {
+                        CompileExpression(asyncClause.Iterable);
+                        Emit(PythonOpCode.GetAsyncIterator, 0, asyncClause.Iterable.Span);
+                    }
+
+                    var asyncLoopStart = _instructions.Count;
+                    var setupExcept = Emit(PythonOpCode.SetupExcept, 0, asyncClause.Span);
+                    Emit(PythonOpCode.CopyTop, 0, asyncClause.Span);
+                    Emit(PythonOpCode.GetAsyncNext, 0, asyncClause.Span);
+                    EmitAwaitLoop(asyncClause.Span);
+                    Emit(PythonOpCode.PopExceptionBlock, 0, asyncClause.Span);
+                    CompileAssignmentTarget(asyncClause.Target);
+                    CompileComprehensionClauses(
+                        comprehension,
+                        clauses,
+                        clauseIndex + 1,
+                        iteratorDepth + 1,
+                        asyncLoopStart
+                    );
+                    Emit(PythonOpCode.Jump, asyncLoopStart, asyncClause.Span);
+                    PatchJump(setupExcept, _instructions.Count);
+                    var asyncExit = Emit(PythonOpCode.EndAsyncFor, 0, asyncClause.Span);
+                    PatchJump(asyncExit, _instructions.Count);
+                    break;
+                }
                 case PythonComprehensionForClause forClause:
                     if (clauseIndex != 0)
                     {

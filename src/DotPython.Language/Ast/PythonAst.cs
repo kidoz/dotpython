@@ -351,7 +351,8 @@ public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Spa
 public sealed record PythonComprehensionForClause(
     PythonExpression Target,
     PythonExpression Iterable,
-    TextSpan Span
+    TextSpan Span,
+    bool IsAsync = false
 ) : PythonComprehensionClause(Span);
 
 public sealed record PythonComprehensionIfClause(PythonExpression Condition, TextSpan Span)
