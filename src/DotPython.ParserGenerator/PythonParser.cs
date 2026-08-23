@@ -222,9 +222,10 @@ public static class PythonParser
             );
         }
 
-        private PythonForStatement ParseForStatement()
+        private PythonForStatement ParseForStatement(int? asyncStart = null)
         {
-            var start = Advance().Span.Start;
+            var start = asyncStart ?? Current.Span.Start;
+            Advance();
             var target = ParseForTargets();
             if (!MatchKeyword("in", out _))
             {
@@ -249,7 +250,8 @@ public static class PythonParser
                 iterable,
                 body,
                 elseBody,
-                TextSpan.FromBounds(start, end)
+                TextSpan.FromBounds(start, end),
+                asyncStart is not null
             );
         }
 
@@ -832,9 +834,10 @@ public static class PythonParser
             return new PythonCapturePattern(null, Current.Span);
         }
 
-        private PythonWithStatement ParseWithStatement()
+        private PythonWithStatement ParseWithStatement(int? asyncStart = null)
         {
-            var start = Advance().Span.Start;
+            var start = asyncStart ?? Current.Span.Start;
+            Advance();
             var items = new List<PythonWithItem>();
             while (true)
             {
@@ -876,7 +879,8 @@ public static class PythonParser
             return new PythonWithStatement(
                 items.AsReadOnly(),
                 body,
-                TextSpan.FromBounds(start, end)
+                TextSpan.FromBounds(start, end),
+                asyncStart is not null
             );
         }
 
@@ -1056,12 +1060,18 @@ public static class PythonParser
 
             if (IsKeyword("for") || IsKeyword("with"))
             {
-                Report(
-                    "DPY2027",
-                    $"The 'async {Current.Text}' statement is not supported.",
-                    asyncToken.Span
-                );
-                return IsKeyword("for") ? ParseForStatement() : ParseWithStatement();
+                if (_functionAsyncFlags.Count == 0 || !_functionAsyncFlags[^1])
+                {
+                    Report(
+                        "DPY2027",
+                        $"'async {Current.Text}' is only allowed inside an async function.",
+                        asyncToken.Span
+                    );
+                }
+
+                return IsKeyword("for")
+                    ? ParseForStatement(asyncToken.Span.Start)
+                    : ParseWithStatement(asyncToken.Span.Start);
             }
 
             Report("DPY2027", "Expected 'def' after 'async'.", asyncToken.Span);

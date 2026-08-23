@@ -474,6 +474,35 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsAsyncForAndAsyncWithInsideAsyncFunctions()
+    {
+        var result = Parse(
+            "async def run():\n"
+                + "    async with make() as ctx:\n"
+                + "        async for item in ctx:\n"
+                + "            print(item)\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var coroutine = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        var asyncWith = Assert.IsType<PythonWithStatement>(coroutine.Body[0]);
+        Assert.True(asyncWith.IsAsync);
+        var asyncFor = Assert.IsType<PythonForStatement>(asyncWith.Body[0]);
+        Assert.True(asyncFor.IsAsync);
+
+        var syncStatements = Parse(
+            "async def run():\n    with make():\n        for item in xs:\n            pass\n"
+        );
+        Assert.Empty(syncStatements.Diagnostics);
+        var body = Assert.IsType<PythonFunctionDefinitionStatement>(
+            syncStatements.Module.Statements[0]
+        );
+        Assert.False(Assert.IsType<PythonWithStatement>(body.Body[0]).IsAsync);
+    }
+
+    [Fact]
     public void Parse_RejectsMisplacedAsyncAndAwait()
     {
         var moduleAwait = Parse("await task()\n");

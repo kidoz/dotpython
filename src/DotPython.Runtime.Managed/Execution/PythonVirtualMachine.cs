@@ -24,6 +24,7 @@ internal sealed class PythonVirtualMachine
             ["ArithmeticError"] = "Exception",
             ["LookupError"] = "Exception",
             ["StopIteration"] = "Exception",
+            ["StopAsyncIteration"] = "Exception",
             ["GeneratorExit"] = "BaseException",
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
@@ -498,6 +499,18 @@ internal sealed class PythonVirtualMachine
                 break;
             case PythonOpCode.GetAwaitable:
                 ApplyGetAwaitable(instruction);
+                break;
+            case PythonOpCode.AsyncWithSetup:
+                ApplyAsyncWithSetup(instruction);
+                break;
+            case PythonOpCode.GetAsyncIterator:
+                ApplyGetAsyncIterator(instruction);
+                break;
+            case PythonOpCode.GetAsyncNext:
+                ApplyGetAsyncNext(instruction);
+                break;
+            case PythonOpCode.EndAsyncFor:
+                EndAsyncFor(ref frame, instruction);
                 break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
@@ -1904,9 +1917,15 @@ internal sealed class PythonVirtualMachine
         }
     }
 
-    private void ApplyGetAwaitable(PythonInstruction instruction)
+    private void ApplyGetAwaitable(PythonInstruction instruction) =>
+        _evaluationStack.Push(ResolveAwaitable(Pop(instruction.Span), instruction.Span, null));
+
+    private PythonIteratorValue ResolveAwaitable(
+        PythonValue value,
+        TextSpan span,
+        string? notAwaitableMessage
+    )
     {
-        var value = Pop(instruction.Span);
         switch (value)
         {
             case PythonGeneratorValue { IsCoroutine: true } coroutine:
@@ -1915,13 +1934,12 @@ internal sealed class PythonVirtualMachine
                     throw Fault(
                         "DPY4036",
                         "cannot reuse already awaited coroutine",
-                        instruction.Span,
+                        span,
                         "RuntimeError"
                     );
                 }
 
-                _evaluationStack.Push(new PythonIteratorValue(coroutine, -1));
-                return;
+                return new PythonIteratorValue(coroutine, -1);
             case PythonManagedObjectValue instance
                 when ManagedObjectProtocols.TryGetInstanceMethod(
                     instance,
@@ -1929,28 +1947,137 @@ internal sealed class PythonVirtualMachine
                     out var awaitMethod
                 ):
             {
-                var awaitIterator = InvokeCallableNested(awaitMethod, [], instruction.Span);
+                var awaitIterator = InvokeCallableNested(awaitMethod, [], span);
                 if (awaitIterator is PythonGeneratorValue { IsCoroutine: false })
                 {
-                    _evaluationStack.Push(new PythonIteratorValue(awaitIterator, -1));
-                    return;
+                    return new PythonIteratorValue(awaitIterator, -1);
                 }
 
                 throw Fault(
                     "DPY4003",
                     $"__await__() returned non-iterator of type '{ManagedObjectProtocols.GetTypeName(awaitIterator)}'",
-                    instruction.Span,
+                    span,
                     "TypeError"
                 );
             }
             default:
                 throw Fault(
                     "DPY4003",
-                    $"'{ManagedObjectProtocols.GetTypeName(value)}' object can't be awaited",
-                    instruction.Span,
+                    notAwaitableMessage
+                        ?? $"'{ManagedObjectProtocols.GetTypeName(value)}' object can't be awaited",
+                    span,
                     "TypeError"
                 );
         }
+    }
+
+    private void ApplyAsyncWithSetup(PythonInstruction instruction)
+    {
+        var manager = Pop(instruction.Span);
+        if (
+            manager is not PythonManagedObjectValue instance
+            || !ManagedObjectProtocols.TryGetInstanceMethod(instance, "__aexit__", out var exit)
+        )
+        {
+            throw AsyncProtocolFault(manager, "__aexit__", instruction.Span);
+        }
+
+        if (!ManagedObjectProtocols.TryGetInstanceMethod(instance, "__aenter__", out var enter))
+        {
+            throw AsyncProtocolFault(manager, "__aenter__", instruction.Span);
+        }
+
+        _evaluationStack.Push(exit);
+        _evaluationStack.Push(enter);
+    }
+
+    private static PythonRuntimeException AsyncProtocolFault(
+        PythonValue manager,
+        string missingMethod,
+        TextSpan span
+    ) =>
+        Fault(
+            "DPY4003",
+            $"'{ManagedObjectProtocols.GetTypeName(manager)}' object does not support the asynchronous context manager protocol (missed {missingMethod} method)",
+            span,
+            "TypeError"
+        );
+
+    private void ApplyGetAsyncIterator(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        if (
+            value is not PythonManagedObjectValue instance
+            || !ManagedObjectProtocols.TryGetInstanceMethod(instance, "__aiter__", out var aiter)
+        )
+        {
+            throw Fault(
+                "DPY4003",
+                $"'async for' requires an object with __aiter__ method, got {ManagedObjectProtocols.GetTypeName(value)}",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        var iterator = InvokeCallableNested(aiter, [], instruction.Span);
+        if (
+            iterator is not PythonManagedObjectValue iteratorInstance
+            || !ManagedObjectProtocols.TryGetInstanceMethod(iteratorInstance, "__anext__", out _)
+        )
+        {
+            throw Fault(
+                "DPY4003",
+                $"'async for' received an object from __aiter__ that does not implement __anext__: {ManagedObjectProtocols.GetTypeName(iterator)}",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        _evaluationStack.Push(iterator);
+    }
+
+    private void ApplyGetAsyncNext(PythonInstruction instruction)
+    {
+        var iterator = Pop(instruction.Span);
+        if (
+            iterator is not PythonManagedObjectValue instance
+            || !ManagedObjectProtocols.TryGetInstanceMethod(instance, "__anext__", out var anext)
+        )
+        {
+            throw Fault(
+                "DPY4003",
+                $"'async for' received an object from __aiter__ that does not implement __anext__: {ManagedObjectProtocols.GetTypeName(iterator)}",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        var awaitable = InvokeCallableNested(anext, [], instruction.Span);
+        _evaluationStack.Push(
+            ResolveAwaitable(
+                awaitable,
+                instruction.Span,
+                $"'async for' received an invalid object from __anext__: {ManagedObjectProtocols.GetTypeName(awaitable)}"
+            )
+        );
+    }
+
+    private void EndAsyncFor(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        var active = GetActiveException(instruction.Span);
+        if (IsExceptionSubclass(active.Value.TypeName, "StopAsyncIteration"))
+        {
+            frame.ActiveExceptions.Pop();
+            Pop(instruction.Span);
+            frame.InstructionPointer = GetJumpTarget(
+                instruction,
+                frame.Code.Definition.Instructions.Count
+            );
+            return;
+        }
+
+        active.PreserveTracebackOnNextDispatch = true;
+        throw active;
     }
 
     private void ApplyYieldFromStep(PythonInstruction instruction)
@@ -2239,6 +2366,17 @@ internal sealed class PythonVirtualMachine
 
         generator.InstructionPointer = frame.InstructionPointer;
         generator.State = PythonGeneratorState.Suspended;
+        // Exception-carrying pending finalies suspend with the frame; release their
+        // deferred-control-flow accounting so the consumer's cancellation and
+        // instruction limits stay in force until the generator resumes.
+        foreach (var pending in frame.PendingFinalies)
+        {
+            if (pending.Exception is not null)
+            {
+                _deferredControlFlowCount--;
+            }
+        }
+
         Array.Clear(_locals, frame.LocalsBase, frame.LocalsCount);
         _localsCount = frame.LocalsBase;
         _frames[--_frameCount] = default;
@@ -2318,6 +2456,21 @@ internal sealed class PythonVirtualMachine
             restoredState: (GeneratorFrameState)generator.OwnedFrameState!,
             instructionPointer: generator.InstructionPointer
         );
+        // Re-adopt the deferred-control-flow accounting for exception-carrying pending
+        // finalies that suspended with this frame (released in ApplyYield).
+        foreach (var pending in CurrentFrame.PendingFinalies)
+        {
+            if (pending.Exception is not null)
+            {
+                if (_deferredControlFlowCount == 0)
+                {
+                    _deferredCleanupInstructions = 0;
+                }
+
+                _deferredControlFlowCount++;
+            }
+        }
+
         var restoredBlocks = CurrentFrame.ExceptionBlocks;
         var restoredBase = CurrentFrame.EvaluationStackBase;
         if (!starting)

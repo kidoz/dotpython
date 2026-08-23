@@ -136,13 +136,15 @@ public sealed record PythonForStatement(
     PythonExpression Iterable,
     IReadOnlyList<PythonStatement> Body,
     IReadOnlyList<PythonStatement> ElseBody,
-    TextSpan Span
+    TextSpan Span,
+    bool IsAsync = false
 ) : PythonStatement(Span);
 
 public sealed record PythonWithStatement(
     IReadOnlyList<PythonWithItem> Items,
     IReadOnlyList<PythonStatement> Body,
-    TextSpan Span
+    TextSpan Span,
+    bool IsAsync = false
 ) : PythonStatement(Span);
 
 public sealed record PythonWithItem(

@@ -494,19 +494,7 @@ public static class PythonCompiler
 
                     CompileExpression(awaitExpression.Operand);
                     Emit(PythonOpCode.GetAwaitable, 0, awaitExpression.Span);
-                    Emit(
-                        PythonOpCode.LoadConstant,
-                        AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
-                        awaitExpression.Span
-                    );
-                    var awaitLoopStart = _instructions.Count;
-                    Emit(PythonOpCode.YieldFromStep, 0, awaitExpression.Span);
-                    var awaitFinished = Emit(PythonOpCode.JumpIfFalse, 0, awaitExpression.Span);
-                    Emit(PythonOpCode.Yield, 0, awaitExpression.Span);
-                    Emit(PythonOpCode.Jump, awaitLoopStart, awaitExpression.Span);
-                    PatchJump(awaitFinished, _instructions.Count);
-                    Emit(PythonOpCode.RotateTwo, 0, awaitExpression.Span);
-                    Emit(PythonOpCode.PopTop, 0, awaitExpression.Span);
+                    EmitAwaitLoop(awaitExpression.Span);
                     break;
                 }
                 case PythonAssignmentExpression assignmentExpression:
@@ -1796,15 +1784,47 @@ public static class PythonCompiler
             Emit(PythonOpCode.Raise, 2, statement.Span);
         }
 
+        /// <summary>
+        /// Drives an awaitable-iterator already on the stack to completion: re-yields
+        /// every suspension to this frame's consumer and leaves the delegate's result.
+        /// </summary>
+        private void EmitAwaitLoop(TextSpan span)
+        {
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                span
+            );
+            var loopStart = _instructions.Count;
+            Emit(PythonOpCode.YieldFromStep, 0, span);
+            var finished = Emit(PythonOpCode.JumpIfFalse, 0, span);
+            Emit(PythonOpCode.Yield, 0, span);
+            Emit(PythonOpCode.Jump, loopStart, span);
+            PatchJump(finished, _instructions.Count);
+            Emit(PythonOpCode.RotateTwo, 0, span);
+            Emit(PythonOpCode.PopTop, 0, span);
+        }
+
         private void CompileWithStatement(PythonWithStatement statement, int itemIndex)
         {
             var item = statement.Items[itemIndex];
             CompileExpression(item.Context);
-            Emit(PythonOpCode.CopyTop, 0, item.Context.Span);
-            Emit(PythonOpCode.LoadAttribute, GetNameIndex("__exit__"), item.Context.Span);
-            Emit(PythonOpCode.RotateTwo, 0, item.Context.Span);
-            Emit(PythonOpCode.LoadAttribute, GetNameIndex("__enter__"), item.Context.Span);
-            Emit(PythonOpCode.Call, 0, item.Context.Span);
+            if (statement.IsAsync)
+            {
+                Emit(PythonOpCode.AsyncWithSetup, 0, item.Context.Span);
+                Emit(PythonOpCode.Call, 0, item.Context.Span);
+                Emit(PythonOpCode.GetAwaitable, 0, item.Context.Span);
+                EmitAwaitLoop(item.Context.Span);
+            }
+            else
+            {
+                Emit(PythonOpCode.CopyTop, 0, item.Context.Span);
+                Emit(PythonOpCode.LoadAttribute, GetNameIndex("__exit__"), item.Context.Span);
+                Emit(PythonOpCode.RotateTwo, 0, item.Context.Span);
+                Emit(PythonOpCode.LoadAttribute, GetNameIndex("__enter__"), item.Context.Span);
+                Emit(PythonOpCode.Call, 0, item.Context.Span);
+            }
+
             if (item.Target is not null)
             {
                 CompileAssignmentTarget(item.Target);
@@ -1814,7 +1834,11 @@ public static class PythonCompiler
                 Emit(PythonOpCode.PopTop, 0, item.Span);
             }
 
-            _protectionScopes.Add(WithProtection.Instance);
+            _protectionScopes.Add(
+                statement.IsAsync
+                    ? AsyncWithProtection.Instance
+                    : (ProtectionScope)WithProtection.Instance
+            );
             var setupFinally = Emit(PythonOpCode.SetupFinally, 0, statement.Span);
             if (itemIndex + 1 < statement.Items.Count)
             {
@@ -1831,6 +1855,12 @@ public static class PythonCompiler
             PatchJump(setupFinally, _instructions.Count);
             Emit(PythonOpCode.LoadExceptionInfo, 0, statement.Span);
             Emit(PythonOpCode.Call, 3, statement.Span);
+            if (statement.IsAsync)
+            {
+                Emit(PythonOpCode.GetAwaitable, 0, statement.Span);
+                EmitAwaitLoop(statement.Span);
+            }
+
             Emit(PythonOpCode.EndWith, 0, statement.Span);
         }
 
@@ -2033,6 +2063,12 @@ public static class PythonCompiler
 
         private void CompileForStatement(PythonForStatement statement)
         {
+            if (statement.IsAsync)
+            {
+                CompileAsyncForStatement(statement);
+                return;
+            }
+
             CompileExpression(statement.Iterable);
             Emit(PythonOpCode.GetIterator, 0, statement.Iterable.Span);
             var loopStart = _instructions.Count;
@@ -2042,6 +2078,31 @@ public static class PythonCompiler
             CompileStatements(statement.Body);
             PopLoopScope();
             Emit(PythonOpCode.Jump, loopStart, statement.Span);
+            PatchJump(exitJump, _instructions.Count);
+            CompileStatements(statement.ElseBody);
+            PatchBreakJumps(loop);
+        }
+
+        private void CompileAsyncForStatement(PythonForStatement statement)
+        {
+            // The async iterator stays on the stack across the loop (like ForIter's
+            // iterator). Each step protects only the __anext__ call and its await
+            // loop; EndAsyncFor consumes StopAsyncIteration and exits, or re-raises.
+            CompileExpression(statement.Iterable);
+            Emit(PythonOpCode.GetAsyncIterator, 0, statement.Iterable.Span);
+            var loopStart = _instructions.Count;
+            var setupExcept = Emit(PythonOpCode.SetupExcept, 0, statement.Iterable.Span);
+            Emit(PythonOpCode.CopyTop, 0, statement.Iterable.Span);
+            Emit(PythonOpCode.GetAsyncNext, 0, statement.Iterable.Span);
+            EmitAwaitLoop(statement.Iterable.Span);
+            Emit(PythonOpCode.PopExceptionBlock, 0, statement.Iterable.Span);
+            CompileAssignmentTarget(statement.Target);
+            var loop = PushLoopScope(isForLoop: true, continueTarget: loopStart);
+            CompileStatements(statement.Body);
+            PopLoopScope();
+            Emit(PythonOpCode.Jump, loopStart, statement.Span);
+            PatchJump(setupExcept, _instructions.Count);
+            var exitJump = Emit(PythonOpCode.EndAsyncFor, 0, statement.Span);
             PatchJump(exitJump, _instructions.Count);
             CompileStatements(statement.ElseBody);
             PatchBreakJumps(loop);
@@ -2124,7 +2185,7 @@ public static class PythonCompiler
                     case FinallyProtection finallyProtection:
                         CompileFinallyBody(finallyProtection.FinallyBody);
                         break;
-                    case WithProtection:
+                    case WithProtection or AsyncWithProtection:
                         for (var argument = 0; argument < 3; argument++)
                         {
                             Emit(
@@ -2135,6 +2196,12 @@ public static class PythonCompiler
                         }
 
                         Emit(PythonOpCode.Call, 3, span);
+                        if (_protectionScopes[index] is AsyncWithProtection)
+                        {
+                            Emit(PythonOpCode.GetAwaitable, 0, span);
+                            EmitAwaitLoop(span);
+                        }
+
                         Emit(PythonOpCode.PopTop, 0, span);
                         break;
                 }
@@ -2427,6 +2494,11 @@ public static class PythonCompiler
     private sealed record WithProtection : ProtectionScope
     {
         internal static readonly WithProtection Instance = new();
+    }
+
+    private sealed record AsyncWithProtection : ProtectionScope
+    {
+        internal static readonly AsyncWithProtection Instance = new();
     }
 
     private sealed record HandlerCleanupProtection(PythonNameExpression? Target) : ProtectionScope;

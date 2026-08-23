@@ -5,14 +5,14 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "d6c85a8ceba21b88b68cccbe43be540b02ff6e91f58297b4778e43164c8d7bad";
-    internal const int RuleCount = 87;
+    internal const string SourceSha256 = "6ab8570e312335ec629c1d1aaf697370e20afd76167b81a16ed8912b7dbdf640";
+    internal const int RuleCount = 88;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | async_function_def | class_def | match_stmt
+        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | async_stmt | class_def | match_stmt
         decorated: decorators (function_def | async_function_def | class_def)
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
@@ -48,6 +48,7 @@ internal static class GeneratedPythonGrammar
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
         async_function_def: 'async' function_def
+        async_stmt: async_function_def | 'async' for_stmt | 'async' with_stmt
         class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
         match_stmt: 'match' expression_list ':' NEWLINE INDENT case_block+ DEDENT
         case_block: 'case' case_patterns ['if' expression] ':' block

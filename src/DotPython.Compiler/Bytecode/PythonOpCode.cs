@@ -103,4 +103,8 @@ public enum PythonOpCode
     MatchClass = 98,
     YieldFromStep = 99,
     GetAwaitable = 100,
+    AsyncWithSetup = 101,
+    GetAsyncIterator = 102,
+    GetAsyncNext = 103,
+    EndAsyncFor = 104,
 }
