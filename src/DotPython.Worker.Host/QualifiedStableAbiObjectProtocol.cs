@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Numerics;
 using DotPython.Language.Text;
 using DotPython.Runtime.Managed.Execution;
@@ -175,6 +176,38 @@ internal sealed class QualifiedStableAbiObjectProtocol(
     public string ToRepresentationString() =>
         Invoke(() => Session.InvokeNative(NativeObject.ToRepresentationString), default);
 
+    public bool IsInstanceOf(PythonValue value, TextSpan span) =>
+        Invoke(
+            () =>
+                Session.InvokeNative(() =>
+                {
+                    if (NativeObject.Kind != StableAbiObjectKind.Type)
+                    {
+                        throw Fault(
+                            "isinstance() arg 2 must be a type or tuple of types.",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    if (
+                        value
+                            is PythonExternalObjectValue
+                            {
+                                Protocol: QualifiedStableAbiObjectProtocol external
+                            }
+                        && ReferenceEquals(Session, external.Session)
+                    )
+                    {
+                        return external.NativeObject.IsInstanceOf(NativeObject);
+                    }
+
+                    // Managed values are never instances of a native type.
+                    return false;
+                }),
+            span
+        );
+
     internal static PythonValue ToManaged(WorkerSessionState session, StableAbiObject value)
     {
         switch (value.Kind)
@@ -190,7 +223,7 @@ internal sealed class QualifiedStableAbiObjectProtocol(
             }
             case StableAbiObjectKind.Integer:
             {
-                var result = PythonWholeNumberValue.Create(value.AsInt64());
+                var result = ToManagedInteger(value);
                 value.Dispose();
                 return result;
             }
@@ -203,8 +236,9 @@ internal sealed class QualifiedStableAbiObjectProtocol(
             case StableAbiObjectKind.List:
             case StableAbiObjectKind.Tuple:
                 return ToManagedSequence(session, value);
-            case StableAbiObjectKind.Bytes:
             case StableAbiObjectKind.Dictionary:
+                return ToManagedDictionary(session, value);
+            case StableAbiObjectKind.Bytes:
             case StableAbiObjectKind.Module:
             case StableAbiObjectKind.Callable:
             case StableAbiObjectKind.Type:
@@ -244,6 +278,50 @@ internal sealed class QualifiedStableAbiObjectProtocol(
             : new PythonTupleValue(values);
     }
 
+    private static PythonWholeNumberValue ToManagedInteger(StableAbiObject value)
+    {
+        try
+        {
+            return PythonWholeNumberValue.Create(value.AsInt64());
+        }
+        catch (StableAbiLoadException exception)
+            when (string.Equals(exception.PythonErrorType, "ValueError", StringComparison.Ordinal))
+        {
+            // Values beyond the C-long range cross through their decimal text.
+            return PythonWholeNumberValue.Create(
+                BigInteger.Parse(value.ToDisplayString(), CultureInfo.InvariantCulture)
+            );
+        }
+    }
+
+    private static PythonDictionaryValue ToManagedDictionary(
+        WorkerSessionState session,
+        StableAbiObject dictionary
+    )
+    {
+        var size = dictionary.GetSize();
+        if (size > 4096)
+        {
+            dictionary.Dispose();
+            throw Fault("A native result sequence exceeds the 4096 item limit.", default);
+        }
+
+        var items = new List<PythonDictionaryItemValue>(checked((int)size));
+        for (var index = 0L; index < size; index++)
+        {
+            var (entryKey, entryValue) = dictionary.GetDictionaryEntry(index);
+            items.Add(
+                new PythonDictionaryItemValue(
+                    ToManaged(session, entryKey),
+                    ToManaged(session, entryValue)
+                )
+            );
+        }
+
+        dictionary.Dispose();
+        return new PythonDictionaryValue(items);
+    }
+
     private StableAbiObject ToNative(
         PythonValue value,
         List<StableAbiObject> temporary,
@@ -279,6 +357,7 @@ internal sealed class QualifiedStableAbiObjectProtocol(
                 temporary,
                 span
             ),
+            PythonDictionaryValue dictionary => CreateNativeDictionary(dictionary, temporary, span),
             _ => throw Fault(
                 "This managed value cannot cross the qualified Stable-ABI boundary.",
                 span,
@@ -303,6 +382,24 @@ internal sealed class QualifiedStableAbiObjectProtocol(
 
         var items = values.Select(value => ToNative(value, temporary, span)).ToArray();
         return GetModule().CreateSequence(kind, items);
+    }
+
+    private StableAbiObject CreateNativeDictionary(
+        PythonDictionaryValue dictionary,
+        List<StableAbiObject> temporary,
+        TextSpan span
+    )
+    {
+        if (dictionary.Items.Count > 4096)
+        {
+            throw Fault("A managed argument sequence exceeds the 4096 item limit.", span);
+        }
+
+        var keys = dictionary.Items.Select(item => ToNative(item.Key, temporary, span)).ToArray();
+        var values = dictionary
+            .Items.Select(item => ToNative(item.Value, temporary, span))
+            .ToArray();
+        return GetModule().CreateDictionary(keys, values);
     }
 
     private StableAbiModule GetModule()

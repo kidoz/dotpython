@@ -209,6 +209,116 @@ internal sealed class StableAbiModule : IDisposable
         }
     }
 
+    internal StableAbiObject CreateDictionary(
+        IReadOnlyList<StableAbiObject> keys,
+        IReadOnlyList<StableAbiObject> values
+    )
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(values);
+        if (keys.Count != values.Count)
+        {
+            throw InvalidArguments(
+                "A generic native dictionary requires matching key and value counts."
+            );
+        }
+
+        lock (_gate)
+        {
+            EnsureActive();
+            var keyHandles = ValidateHandles(keys);
+            var valueHandles = ValidateHandles(values);
+            nint keyPointer = 0;
+            nint valuePointer = 0;
+            try
+            {
+                if (keyHandles.Length != 0)
+                {
+                    keyPointer = Marshal.AllocHGlobal(checked(keyHandles.Length * IntPtr.Size));
+                    Marshal.Copy(keyHandles, 0, keyPointer, keyHandles.Length);
+                    valuePointer = Marshal.AllocHGlobal(checked(valueHandles.Length * IntPtr.Size));
+                    Marshal.Copy(valueHandles, 0, valuePointer, valueHandles.Length);
+                }
+
+                if (
+                    _generic.ObjectDictionary(
+                        keyPointer,
+                        valuePointer,
+                        keyHandles.Length,
+                        out var result
+                    ) != 0
+                    || result == 0
+                )
+                {
+                    throw InvocationFailure();
+                }
+
+                return Track(result);
+            }
+            finally
+            {
+                if (keyPointer != 0)
+                {
+                    Marshal.FreeHGlobal(keyPointer);
+                }
+
+                if (valuePointer != 0)
+                {
+                    Marshal.FreeHGlobal(valuePointer);
+                }
+            }
+        }
+    }
+
+    internal (StableAbiObject Key, StableAbiObject Value) GetDictionaryEntry(
+        StableAbiObject dictionary,
+        long index
+    )
+    {
+        lock (_gate)
+        {
+            var handle = ValidateHandle(dictionary);
+            if (
+                _generic.ObjectDictionaryEntry(handle, index, out var entryKey, out var entryValue)
+                    != 0
+                || entryKey == 0
+                || entryValue == 0
+            )
+            {
+                throw InvocationFailure();
+            }
+
+            StableAbiObject? trackedKey = null;
+            try
+            {
+                trackedKey = Track(entryKey);
+                var trackedValue = Track(entryValue);
+                var entry = (trackedKey, trackedValue);
+                trackedKey = null;
+                return entry;
+            }
+            finally
+            {
+                trackedKey?.Dispose();
+            }
+        }
+    }
+
+    internal bool IsInstance(StableAbiObject value, StableAbiObject classInfo)
+    {
+        lock (_gate)
+        {
+            var valueHandle = ValidateHandle(value);
+            var classHandle = ValidateHandle(classInfo);
+            if (_generic.ObjectIsInstance(valueHandle, classHandle, out var result) != 0)
+            {
+                throw InvocationFailure();
+            }
+
+            return result != 0;
+        }
+    }
+
     public void Dispose()
     {
         lock (_gate)
@@ -815,6 +925,20 @@ internal sealed class StableAbiModule : IDisposable
     private delegate int ObjectSequence(int kind, nint items, long count, out nint result);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectDictionary(nint keys, nint values, long pairCount, out nint result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectDictionaryEntry(
+        nint value,
+        long index,
+        out nint entryKey,
+        out nint entryValue
+    );
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ObjectIsInstance(nint value, nint classInfo, out int result);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int ObjectKind(nint value, out int kind);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -867,6 +991,9 @@ internal sealed class StableAbiModule : IDisposable
         ObjectFromBool ObjectFromBool,
         ObjectFromNone ObjectFromNone,
         ObjectSequence ObjectSequence,
+        ObjectDictionary ObjectDictionary,
+        ObjectDictionaryEntry ObjectDictionaryEntry,
+        ObjectIsInstance ObjectIsInstance,
         ObjectKind ObjectKind,
         ObjectAsInt64 ObjectAsInt64,
         ObjectAsBool ObjectAsBool,
@@ -891,6 +1018,9 @@ internal sealed class StableAbiModule : IDisposable
                 GetDelegate<ObjectFromBool>(library, "dp_abi3_object_from_bool"),
                 GetDelegate<ObjectFromNone>(library, "dp_abi3_object_from_none"),
                 GetDelegate<ObjectSequence>(library, "dp_abi3_object_sequence"),
+                GetDelegate<ObjectDictionary>(library, "dp_abi3_object_dict"),
+                GetDelegate<ObjectDictionaryEntry>(library, "dp_abi3_object_dict_entry"),
+                GetDelegate<ObjectIsInstance>(library, "dp_abi3_object_is_instance"),
                 GetDelegate<ObjectKind>(library, "dp_abi3_object_kind_of"),
                 GetDelegate<ObjectAsInt64>(library, "dp_abi3_object_as_int64"),
                 GetDelegate<ObjectAsBool>(library, "dp_abi3_object_as_bool"),
@@ -980,6 +1110,12 @@ internal sealed class StableAbiObject : IDisposable
 
     internal StableAbiObject GetItem(StableAbiObject key) =>
         RequireOwner().GetObjectItem(this, key);
+
+    internal (StableAbiObject Key, StableAbiObject Value) GetDictionaryEntry(long index) =>
+        RequireOwner().GetDictionaryEntry(this, index);
+
+    internal bool IsInstanceOf(StableAbiObject classInfo) =>
+        RequireOwner().IsInstance(this, classInfo);
 
     public void Dispose()
     {

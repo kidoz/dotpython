@@ -236,12 +236,11 @@ native symbol surface, and treats every skipped worker test as a failure. For lo
 harness additionally accepts its prepared module through `ANYVER_MODULE`. The checked-in
 `anyver-compatibility.json` records 1 successful unchanged-package import, 16 passing public checks,
 and links `anyver-upstream-qualification.json`, which attempts every one of the 325 upstream pytest
-node IDs through a managed pytest shim: 318 pass and 7 fail. Native CI checks out the pinned source
+node IDs through a managed pytest shim: 322 pass and 3 fail. Native CI checks out the pinned source
 revision, verifies the unchanged test-file hash, repeats pytest collection with pinned tool
 versions, and submits the unchanged suite to the isolated worker. The remaining failures are
-documented restrictions and open singletons (pickle and os imports, dictionary-shaped and >64-bit
-values at the Stable-ABI boundary, isinstance with a native type argument); no skipped or failed
-test is promoted to a pass. This remains a package-, artifact-, and platform-specific partial result;
+documented restrictions (the pickle and os stdlib imports); no skipped or failed test is promoted
+to a pass. This remains a package-, artifact-, and platform-specific partial result;
 `SupportsCpythonAbi` remains false, and this does not claim NumPy, HPy, or general `abi3`
 compatibility.
 

@@ -141,6 +141,63 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_CrossesDictionariesBigIntegersAndInstanceChecksOverTheBoundary()
+    {
+        SkipAnyverPackageWhenUnavailable();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
+        await using var session = await pool.OpenSessionAsync(
+            TestContext.Current.CancellationToken
+        );
+
+        var result = await session.ExecuteAsync(
+            """
+            import anyver
+            from anyver import Version
+            value = Version("1.2.3-rc.1+build.42")
+            snapshot = value.to_dict()
+            print(type(snapshot).__name__)
+            print(snapshot == {
+                "raw": "1.2.3-rc.1+build.42",
+                "ecosystem": value.ecosystem,
+                "epoch": 0,
+                "major": 1,
+                "minor": 2,
+                "patch": 3,
+                "build": "build.42",
+                "is_prerelease": True,
+                "is_postrelease": False,
+            })
+            affected = {
+                "package": {"ecosystem": "npm", "name": "demo"},
+                "ranges": [
+                    {"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.2.0"}]}
+                ],
+            }
+            print(anyver.osv_affected("1.1.0", affected), anyver.osv_affected("1.2.0", affected))
+            saturated = Version("99999999999999999999999999999999")
+            print(saturated.major > 0, saturated.major)
+            best = anyver.max_version(["1.0", Version("3.0"), "2.0"])
+            print(isinstance(best, Version), isinstance("3.0", Version), isinstance(value, str))
+            """,
+            fileName: "<generic-anyver-boundary>",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "dict",
+                "True",
+                "True False",
+                "True 18446744073709551615",
+                "True False False"
+            ) + Environment.NewLine,
+            result.StandardOutput
+        );
+    }
+
+    [Fact]
     public async Task Worker_ImportsUnchangedAnyverWheelThroughGenericStableAbiObjects()
     {
         SkipAnyverPackageWhenUnavailable();

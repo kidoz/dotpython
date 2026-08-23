@@ -273,6 +273,9 @@ internal interface PythonExternalObjectProtocol
 
     PythonTruthValue RichCompare(PythonValue other, PythonRichComparison comparison, TextSpan span);
 
+    /// <summary>Whether <paramref name="value"/> is an instance of this external type object.</summary>
+    bool IsInstanceOf(PythonValue value, TextSpan span);
+
     string ToDisplayString();
 
     string ToRepresentationString();

@@ -17,16 +17,16 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "a7b70f60c0fe49524bc60fc2bb0ffa4c6ecf1534f27e96ac5f330debdf6c89f3",
+    "evidenceSha256": "5e52f116b988666f2fdae6baf9bcf5b80007b0603a117478da02c549489d1507",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
-    "passed": 318,
-    "failed": 7,
+    "passed": 322,
+    "failed": 3,
     "skipped": 0,
-    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 318 of 325 cases pass. The 7 failures are documented restrictions and open singletons: 3 stdlib module imports (pickle x2, os), 2 dictionary-shaped values that cannot cross the Stable-ABI boundary, isinstance with a native type argument, and 64-bit integer overflow at the boundary. No skipped or failed case is counted as passed."
+    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 322 of 325 cases pass. The 3 failures are documented restrictions: 3 stdlib module imports (pickle x2, os). No skipped or failed case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",
@@ -38,6 +38,9 @@
     "string-and-representation-conversion",
     "length",
     "rich-comparison",
+    "dictionary-conversion",
+    "big-integer-text-conversion",
+    "native-type-instance-check",
     "explicit-owner-thread-release"
   ],
   "supportsCpythonAbi": false

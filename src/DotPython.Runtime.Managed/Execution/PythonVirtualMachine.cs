@@ -5146,6 +5146,8 @@ internal sealed class PythonVirtualMachine
 
                 return false;
             }
+            case PythonExternalObjectValue externalType:
+                return externalType.Protocol.IsInstanceOf(value, span);
             default:
                 throw Fault(
                     "DPY4003",

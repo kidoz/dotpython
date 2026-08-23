@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 318,
-    "failed": 7,
+    "passed": 322,
+    "failed": 3,
     "skipped": 0
   },
   "cases": [
@@ -664,8 +664,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestToDict::test_basic",
-      "outcome": "failed",
-      "detail": "DPY4029: This managed value cannot cross the qualified Stable-ABI boundary."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestToDict::test_from_dict_roundtrip",
@@ -733,8 +732,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestMixedTypes::test_max_version_returns_original_type",
-      "outcome": "failed",
-      "detail": "DPY4003: isinstance() arg 2 must be a type or tuple of types."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestMixedTypes::test_min_version_returns_original_type",
@@ -778,8 +776,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestOverflow::test_overflow_does_not_become_zero",
-      "outcome": "failed",
-      "detail": "DPY8005: ValueError: integer does not fit in C long"
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestOverflow::test_overflow_greater_than_normal",
@@ -1286,8 +1283,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestSecurityInterop::test_osv_affected_events",
-      "outcome": "failed",
-      "detail": "DPY4029: This managed value cannot cross the qualified Stable-ABI boundary."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestNewEcosystems::test_generic_new_ecosystem_modes[conda-1.0-1.1]",

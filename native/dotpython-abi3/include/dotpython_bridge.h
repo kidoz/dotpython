@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define DP_ABI3_BRIDGE_VERSION 5
+#define DP_ABI3_BRIDGE_VERSION 6
 
 typedef enum dp_abi3_object_kind {
     DP_ABI3_OBJECT_INVALID = 0,
@@ -64,6 +64,23 @@ DP_ABI3_EXPORT int dp_abi3_object_sequence(
     PyObject **result
 );
 DP_ABI3_EXPORT int dp_abi3_object_kind_of(PyObject *object, int *kind);
+/* Builds a dict from borrowed parallel key/value arrays; result is a new reference. */
+DP_ABI3_EXPORT int dp_abi3_object_dict(
+    PyObject *const *keys,
+    PyObject *const *values,
+    int64_t pair_count,
+    PyObject **result
+);
+/* Reads the insertion-ordered entry at index; key and value are new references. */
+DP_ABI3_EXPORT int dp_abi3_object_dict_entry(
+    PyObject *object,
+    int64_t index,
+    PyObject **key,
+    PyObject **value
+);
+/* Instance check against a native type object (borrowed inputs). */
+DP_ABI3_EXPORT int
+dp_abi3_object_is_instance(PyObject *object, PyObject *class_info, int *result);
 DP_ABI3_EXPORT int dp_abi3_object_as_int64(PyObject *object, int64_t *result);
 DP_ABI3_EXPORT int dp_abi3_object_as_bool(PyObject *object, int *result);
 DP_ABI3_EXPORT int dp_abi3_object_as_utf8(

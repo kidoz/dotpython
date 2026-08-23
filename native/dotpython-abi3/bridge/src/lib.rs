@@ -3687,3 +3687,109 @@ pub extern "C" fn dp_abi3_object_release(object: *mut PyObject) {
     require_owner!();
     release(object);
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_dict(
+    keys: *const *mut PyObject,
+    values: *const *mut PyObject,
+    pair_count: i64,
+    result: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(result)
+        || !(0..=MAX_BRIDGE_ARGUMENTS).contains(&pair_count)
+        || (pair_count != 0 && (keys.is_null() || values.is_null()))
+    {
+        if !result.is_null() {
+            set_error(unsafe { PyExc_TypeError }, "dictionary inputs are invalid");
+        }
+        return -1;
+    }
+    clear_error();
+    let dictionary = PyDict_New();
+    if dictionary.is_null() {
+        return -1;
+    }
+    for index in 0..pair_count {
+        let key = unsafe { *keys.add(index as usize) };
+        let value = unsafe { *values.add(index as usize) };
+        if key.is_null() || value.is_null() || PyDict_SetItem(dictionary, key, value) != 0 {
+            release(dictionary);
+            set_error(
+                unsafe { PyExc_TypeError },
+                "dictionary contains an invalid item",
+            );
+            return -1;
+        }
+    }
+    unsafe { *result = dictionary };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_dict_entry(
+    object: *mut PyObject,
+    index: i64,
+    key: *mut *mut PyObject,
+    value: *mut *mut PyObject,
+) -> c_int {
+    require_owner!(-1);
+    if !initialize_object_output(key) || !initialize_object_output(value) {
+        return -1;
+    }
+    clear_error();
+    let Some(meta) = find(object) else {
+        set_error(unsafe { PyExc_TypeError }, "expected dict");
+        return -1;
+    };
+    if meta.kind != Kind::Dict {
+        set_error(unsafe { PyExc_TypeError }, "expected dict");
+        return -1;
+    }
+    let Value::Dict { keys, values } = &meta.value else {
+        set_error(unsafe { PyExc_TypeError }, "expected dict");
+        return -1;
+    };
+    if index < 0 || index as usize >= keys.len() {
+        set_error(
+            unsafe { PyExc_IndexError },
+            "dictionary entry index is out of range",
+        );
+        return -1;
+    }
+    let entry_key = newref(keys[index as usize]);
+    let entry_value = newref(values[index as usize]);
+    unsafe {
+        *key = entry_key;
+        *value = entry_value;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dp_abi3_object_is_instance(
+    object: *mut PyObject,
+    class_info: *mut PyObject,
+    result: *mut c_int,
+) -> c_int {
+    require_owner!(-1);
+    if result.is_null() {
+        set_error(
+            unsafe { PyExc_TypeError },
+            "instance-check output is invalid",
+        );
+        return -1;
+    }
+    unsafe { *result = 0 };
+    clear_error();
+    if object.is_null() || generic_kind(class_info) != DP_OBJECT_TYPE {
+        set_error(
+            unsafe { PyExc_TypeError },
+            "isinstance() arg 2 must be a type or tuple of types",
+        );
+        return -1;
+    }
+    let matches = unsafe { PyType_IsSubtype((*object).ob_type, class_info as *mut PyTypeObject) };
+    unsafe { *result = c_int::from(matches != 0) };
+    0
+}
