@@ -172,7 +172,7 @@ internal static class ManagedObjectProtocols
                     ),
                     _ => throw Fault(
                         "DPY4023",
-                        $"'generator' object has no attribute '{name}'.",
+                        $"'{generator.TypeName}' object has no attribute '{name}'.",
                         span,
                         "AttributeError"
                     ),
@@ -338,6 +338,9 @@ internal static class ManagedObjectProtocols
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
 
+    private static PythonRuntimeException ReusedCoroutineFault(TextSpan span) =>
+        Fault("DPY4036", "cannot reuse already awaited coroutine", span, "RuntimeError");
+
     private static PythonValue SendToGenerator(
         PythonGeneratorValue generator,
         IReadOnlyList<PythonValue> arguments,
@@ -358,10 +361,15 @@ internal static class ManagedObjectProtocols
         {
             throw Fault(
                 "DPY4003",
-                "can't send non-None value to a just-started generator",
+                $"can't send non-None value to a just-started {generator.TypeName}",
                 span,
                 "TypeError"
             );
+        }
+
+        if (generator is { IsCoroutine: true, State: PythonGeneratorState.Completed })
+        {
+            throw ReusedCoroutineFault(span);
         }
 
         var advanced = generator.ResumeCore!(
@@ -405,6 +413,11 @@ internal static class ManagedObjectProtocols
                 "TypeError"
             ),
         };
+        if (generator is { IsCoroutine: true, State: PythonGeneratorState.Completed })
+        {
+            throw ReusedCoroutineFault(span);
+        }
+
         if (generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed)
         {
             // A fresh or exhausted generator never runs its body: it closes and the
@@ -438,7 +451,14 @@ internal static class ManagedObjectProtocols
             );
             if (advanced.HasValue)
             {
-                throw Fault("DPY4016", "Generator ignored GeneratorExit.", span, "RuntimeError");
+                throw Fault(
+                    "DPY4016",
+                    generator.IsCoroutine
+                        ? "coroutine ignored GeneratorExit"
+                        : "Generator ignored GeneratorExit.",
+                    span,
+                    "RuntimeError"
+                );
             }
 
             return PythonNoneValue.Instance;
@@ -457,8 +477,13 @@ internal static class ManagedObjectProtocols
             return iterator;
         }
 
-        if (value is PythonGeneratorValue)
+        if (value is PythonGeneratorValue generatorValue)
         {
+            if (generatorValue.IsCoroutine)
+            {
+                throw Fault("DPY4003", "'coroutine' object is not iterable", span, "TypeError");
+            }
+
             // A generator is its own iterator.
             return new PythonIteratorValue(value, -1);
         }
@@ -1268,7 +1293,7 @@ internal static class ManagedObjectProtocols
             PythonZipSourceValue => "zip",
             PythonMapSourceValue => "map",
             PythonFilterSourceValue => "filter",
-            PythonGeneratorValue => "generator",
+            PythonGeneratorValue generatorValue => generatorValue.TypeName,
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",
@@ -1307,6 +1332,29 @@ internal static class ManagedObjectProtocols
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         return new PythonModuleValue(name, new PythonGlobalNamespace());
+    }
+
+    internal static bool TryGetInstanceMethod(
+        PythonManagedObjectValue instance,
+        string name,
+        out PythonValue method
+    )
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        if (instance.Attributes.TryGetValue(name, out var direct))
+        {
+            method = direct;
+            return true;
+        }
+
+        if (TryGetTypeAttribute(instance.Type, name, out var typeValue))
+        {
+            method = BindDescriptor(typeValue, instance);
+            return true;
+        }
+
+        method = PythonNoneValue.Instance;
+        return false;
     }
 
     private static PythonValue BindDescriptor(

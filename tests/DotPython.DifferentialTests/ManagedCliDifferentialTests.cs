@@ -351,6 +351,30 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def counter(n):\n    total = 0\n    for i in range(n):\n        got = yield i\n        if got:\n            total += got\n    return total\ndef summing():\n    result = yield from counter(3)\n    yield 'sum:' + str(result)\ns = summing()\nprint(next(s), s.send(10), s.send(20), next(s))\ndef deep_inner():\n    yield 1\n    return 'deep'\ndef middle():\n    r = yield from deep_inner()\n    yield 'mid:' + r\n    return 'mid-done'\ndef top():\n    r = yield from middle()\n    yield 'top:' + r\nprint(list(top()))\ndef depths():\n    try:\n        yield 1\n        yield 2\n        yield 3\n    finally:\n        print('done')\ng = depths()\nprint(next(g))\nprint([next(g), len([next(g)])])\nprint(list(g))"
     )]
+    [InlineData(
+        "async def greet(name):\n    print('running', name)\n    return 'hi ' + name\nc = greet('ada')\nprint(type(c).__name__)\ntry:\n    c.send(None)\nexcept StopIteration:\n    print('done')\nc2 = greet('bob')\nc2.close()\nc2.close()\nprint('closed-fresh')"
+    )]
+    [InlineData(
+        "async def base(x):\n    return x * 2\nasync def mid(x):\n    v = await base(x)\n    return v + 1\nasync def top(x):\n    return await mid(x) + await mid(x + 1)\nasync def report(x):\n    print('result', await top(x))\nr = report(5)\ntry:\n    r.send(None)\nexcept StopIteration:\n    print('finished')"
+    )]
+    [InlineData(
+        "def trace(fn):\n    print('decorating', fn.__name__)\n    return fn\nclass Runner:\n    @trace\n    async def step(self, n=2, *extra, scale=10):\n        return n * scale + len(extra)\nasync def drive():\n    r = Runner()\n    print('a', await r.step())\n    print('b', await r.step(3, 'x', 'y', scale=100))\nd = drive()\ntry:\n    d.send(None)\nexcept StopIteration:\n    pass\ndef make(base):\n    async def add(n):\n        return base + n\n    return add\nasync def use():\n    print('c', await make(10)(5))\nu = use()\ntry:\n    u.send(None)\nexcept StopIteration:\n    pass"
+    )]
+    [InlineData(
+        "class Fut:\n    def __await__(self):\n        got = yield 'ready'\n        return got * 2\nasync def worker(name, count):\n    total = 0\n    for i in range(count):\n        total += await Fut()\n    print(name, 'total', total)\na = worker('a', 2)\nb = worker('b', 3)\nprint(a.send(None), b.send(None))\nprint(a.send(5), b.send(1))\ntry:\n    a.send(10)\nexcept StopIteration:\n    print('a done')\nprint(b.send(2))\ntry:\n    b.send(3)\nexcept StopIteration:\n    print('b done')"
+    )]
+    [InlineData(
+        "async def boom():\n    raise ValueError('boom')\nc = boom()\ntry:\n    c.send(None)\nexcept ValueError as e:\n    print('caught', e)\ntry:\n    c.send(None)\nexcept RuntimeError as e:\n    print('reuse:', e)\nasync def plain():\n    return 1\np = plain()\ntry:\n    p.send(1)\nexcept TypeError as e:\n    print('fresh:', e)\np.close()\ntry:\n    p.throw(ValueError('x'))\nexcept RuntimeError as e:\n    print('throw-closed:', e)"
+    )]
+    [InlineData(
+        "class Gate:\n    def __await__(self):\n        yield 'wait'\n        return 'open'\nasync def guarded():\n    try:\n        print('state', await Gate())\n        print('not-reached')\n    except ValueError as e:\n        print('caught inside:', e)\n    return 'done'\ng = guarded()\nprint('first', g.send(None))\ntry:\n    g.throw(ValueError('injected'))\nexcept StopIteration:\n    print('completed')\nasync def cleanup():\n    try:\n        await Gate()\n    finally:\n        print('cleanup ran')\nc = cleanup()\nc.send(None)\nprint('close', c.close())"
+    )]
+    [InlineData(
+        "async def bad():\n    await 1\nc = bad()\ntry:\n    c.send(None)\nexcept TypeError as e:\n    print('e1:', e)\ndef gen():\n    yield 1\nasync def badgen():\n    await gen()\nc2 = badgen()\ntry:\n    c2.send(None)\nexcept TypeError as e:\n    print('e2:', e)\nclass Bad:\n    def __await__(self):\n        return 42\nasync def badclass():\n    await Bad()\nc3 = badclass()\ntry:\n    c3.send(None)\nexcept TypeError as e:\n    print('e3:', e)"
+    )]
+    [InlineData(
+        "async def one():\n    return 1\nc = one()\ntry:\n    for x in c:\n        pass\nexcept TypeError as e:\n    print('e1:', e)\ntry:\n    next(c)\nexcept TypeError as e:\n    print('e2:', e)\nc.close()\nasync def two():\n    return 2\nasync def f():\n    print('pow', (await two()) ** 3)\nd = f()\ntry:\n    d.send(None)\nexcept StopIteration:\n    pass"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

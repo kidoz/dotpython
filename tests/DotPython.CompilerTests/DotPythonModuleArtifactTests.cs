@@ -60,11 +60,41 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":22,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":23,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
         Assert.Equal(json, DotPythonModuleManifestJson.Serialize(restored));
+    }
+
+    [Fact]
+    public void Deserialize_RoundTripsGeneratorAndCoroutineFlags()
+    {
+        const string source =
+            "def counter():\n"
+            + "    yield 1\n"
+            + "async def fetch():\n"
+            + "    return await other()\n"
+            + "async def other():\n"
+            + "    return 1\n";
+        var bytes = DotPythonModuleArtifactSerializer.Serialize(
+            DotPythonModuleArtifact.Create("suspendable", Compile(source))
+        );
+
+        var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
+
+        var codes = restored
+            .Code.Constants.Where(constant => constant.Type == PythonConstantType.CodeObject)
+            .Select(constant => Assert.IsType<PythonCodeObject>(constant.Value))
+            .ToDictionary(code => code.Name);
+        Assert.True(codes["counter"].IsGenerator);
+        Assert.False(codes["counter"].IsCoroutine);
+        Assert.True(codes["fetch"].IsCoroutine);
+        Assert.False(codes["fetch"].IsGenerator);
+        Assert.Contains(
+            codes["fetch"].Instructions,
+            instruction => instruction.OpCode == PythonOpCode.GetAwaitable
+        );
     }
 
     [Fact]
@@ -465,10 +495,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":22,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":23,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":22,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":23,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)

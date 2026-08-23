@@ -1071,6 +1071,9 @@ public static class PythonSymbolBinder
             case PythonYieldFromExpression yieldFromExpression:
                 CollectReferences(yieldFromExpression.Source, references);
                 break;
+            case PythonAwaitExpression awaitExpression:
+                CollectReferences(awaitExpression.Operand, references);
+                break;
             case PythonListComprehensionExpression listComprehension:
                 CollectFirstIterableReferences(listComprehension.Clauses, references);
                 break;
@@ -1499,6 +1502,13 @@ public static class PythonSymbolBinder
                 break;
             case PythonYieldFromExpression yieldFromExpression:
                 foreach (var nested in EnumerateComprehensions(yieldFromExpression.Source))
+                {
+                    yield return nested;
+                }
+
+                break;
+            case PythonAwaitExpression awaitExpression:
+                foreach (var nested in EnumerateComprehensions(awaitExpression.Operand))
                 {
                     yield return nested;
                 }

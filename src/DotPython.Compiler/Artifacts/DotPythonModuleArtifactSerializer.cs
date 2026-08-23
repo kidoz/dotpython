@@ -147,7 +147,10 @@ public static class DotPythonModuleArtifactSerializer
         writer.WriteInt32(code.ArgumentCount);
         writer.WriteInt32(code.KeywordOnlyArgumentCount);
         writer.WriteInt32(
-            (code.HasVariadicPositional ? 1 : 0) | (code.HasVariadicKeywords ? 2 : 0)
+            (code.HasVariadicPositional ? 1 : 0)
+                | (code.HasVariadicKeywords ? 2 : 0)
+                | (code.IsGenerator ? 4 : 0)
+                | (code.IsCoroutine ? 8 : 0)
         );
         writer.WriteStrings(code.Names);
         writer.WriteStrings(code.VariableNames);
@@ -186,7 +189,7 @@ public static class DotPythonModuleArtifactSerializer
         var argumentCount = reader.ReadNonNegativeInt32("argument count");
         var keywordOnlyArgumentCount = reader.ReadNonNegativeInt32("keyword-only argument count");
         var signatureFlags = reader.ReadNonNegativeInt32("signature flags");
-        if (signatureFlags > 7)
+        if (signatureFlags > 15)
         {
             throw new InvalidDataException($"Signature flags {signatureFlags} are invalid.");
         }
@@ -236,7 +239,8 @@ public static class DotPythonModuleArtifactSerializer
             keywordOnlyArgumentCount,
             hasVariadicPositional: (signatureFlags & 1) != 0,
             hasVariadicKeywords: (signatureFlags & 2) != 0,
-            isGenerator: (signatureFlags & 4) != 0
+            isGenerator: (signatureFlags & 4) != 0,
+            isCoroutine: (signatureFlags & 8) != 0
         );
         ValidateCodeObject(code);
         return code;

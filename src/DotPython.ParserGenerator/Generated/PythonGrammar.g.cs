@@ -5,15 +5,15 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "6bfa00bc11c87a0260b853a100fc2f956ed008f055f794aefa81b73f50f90720";
-    internal const int RuleCount = 85;
+    internal const string SourceSha256 = "d6c85a8ceba21b88b68cccbe43be540b02ff6e91f58297b4778e43164c8d7bad";
+    internal const int RuleCount = 87;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
         statements: statement+
         statement: compound_stmt | simple_stmts
-        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | class_def | match_stmt
-        decorated: decorators (function_def | class_def)
+        compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorated | function_def | async_function_def | class_def | match_stmt
+        decorated: decorators (function_def | async_function_def | class_def)
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
         simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
@@ -47,6 +47,7 @@ internal static class GeneratedPythonGrammar
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
         except_block: 'except' [expression ['as' NAME]] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
+        async_function_def: 'async' function_def
         class_def: 'class' NAME ['(' [expression_list] ')'] ':' block
         match_stmt: 'match' expression_list ':' NEWLINE INDENT case_block+ DEDENT
         case_block: 'case' case_patterns ['if' expression] ':' block
@@ -76,7 +77,8 @@ internal static class GeneratedPythonGrammar
         sum: term (('+' | '-') term)*
         term: factor (('*' | '/' | '//' | '%') factor)*
         factor: ('+' | '-' | '~') factor | power
-        power: primary ['**' factor]
+        power: await_primary ['**' factor]
+        await_primary: 'await' primary | primary
         primary: atom (('(' [arguments] ')') | ('[' subscript ']') | ('.' NAME))*
         subscript: slice | expression
         slice: [expression] ':' [expression] [':' [expression]]

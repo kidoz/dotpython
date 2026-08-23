@@ -205,7 +205,7 @@ internal sealed class PreparedPythonCode
 
     internal void RecordManagedCall(int instructionIndex, PythonFunctionValue function)
     {
-        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsSuspendable)
         {
             return;
         }

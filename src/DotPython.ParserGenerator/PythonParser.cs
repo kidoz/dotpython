@@ -44,6 +44,7 @@ public static class PythonParser
         private readonly SyntaxToken[] _tokens;
         private int _functionDepth;
         private readonly List<bool> _functionYieldFlags = [];
+        private readonly List<bool> _functionAsyncFlags = [];
         private int _position;
 
         internal Parser(TokenizationResult tokenization)
@@ -118,6 +119,14 @@ public static class PythonParser
                 else if (IsKeyword("class"))
                 {
                     statements.Add(ParseClassDefinition(Array.Empty<PythonExpression>()));
+                }
+                else if (IsKeyword("async"))
+                {
+                    var asyncStatement = ParseAsyncStatement();
+                    if (asyncStatement is not null)
+                    {
+                        statements.Add(asyncStatement);
+                    }
                 }
                 else if (LooksLikeMatchStatement())
                 {
@@ -1012,6 +1021,11 @@ public static class PythonParser
                 return ParseFunctionDefinition(decorators.AsReadOnly(), start);
             }
 
+            if (IsKeyword("async"))
+            {
+                return ParseAsyncStatement(decorators.AsReadOnly(), start);
+            }
+
             if (IsKeyword("class"))
             {
                 return ParseClassDefinition(decorators.AsReadOnly(), start);
@@ -1025,9 +1039,39 @@ public static class PythonParser
             return null;
         }
 
+        private PythonStatement? ParseAsyncStatement(
+            IReadOnlyList<PythonExpression>? decorators = null,
+            int? decoratedStart = null
+        )
+        {
+            var asyncToken = Advance();
+            if (IsKeyword("def"))
+            {
+                return ParseFunctionDefinition(
+                    decorators ?? Array.Empty<PythonExpression>(),
+                    decoratedStart ?? asyncToken.Span.Start,
+                    isAsync: true
+                );
+            }
+
+            if (IsKeyword("for") || IsKeyword("with"))
+            {
+                Report(
+                    "DPY2027",
+                    $"The 'async {Current.Text}' statement is not supported.",
+                    asyncToken.Span
+                );
+                return IsKeyword("for") ? ParseForStatement() : ParseWithStatement();
+            }
+
+            Report("DPY2027", "Expected 'def' after 'async'.", asyncToken.Span);
+            return null;
+        }
+
         private PythonFunctionDefinitionStatement ParseFunctionDefinition(
             IReadOnlyList<PythonExpression> decorators,
-            int? decoratedStart = null
+            int? decoratedStart = null,
+            bool isAsync = false
         )
         {
             var start = decoratedStart ?? Current.Span.Start;
@@ -1059,6 +1103,7 @@ public static class PythonParser
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the function signature");
             _functionDepth++;
             _functionYieldFlags.Add(false);
+            _functionAsyncFlags.Add(isAsync);
             IReadOnlyList<PythonStatement> body;
             bool isGenerator;
             try
@@ -1070,6 +1115,7 @@ public static class PythonParser
                 _functionDepth--;
                 isGenerator = _functionYieldFlags[^1];
                 _functionYieldFlags.RemoveAt(_functionYieldFlags.Count - 1);
+                _functionAsyncFlags.RemoveAt(_functionAsyncFlags.Count - 1);
             }
 
             return new PythonFunctionDefinitionStatement(
@@ -1079,7 +1125,8 @@ public static class PythonParser
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End)),
                 returnAnnotation,
-                isGenerator
+                isGenerator && !isAsync,
+                isAsync
             );
         }
 
@@ -1128,6 +1175,8 @@ public static class PythonParser
             _functionDepth = 0;
             var enclosingYieldFlags = new List<bool>(_functionYieldFlags);
             _functionYieldFlags.Clear();
+            var enclosingAsyncFlags = new List<bool>(_functionAsyncFlags);
+            _functionAsyncFlags.Clear();
             IReadOnlyList<PythonStatement> body;
             try
             {
@@ -1138,6 +1187,8 @@ public static class PythonParser
                 _functionDepth = enclosingFunctionDepth;
                 _functionYieldFlags.Clear();
                 _functionYieldFlags.AddRange(enclosingYieldFlags);
+                _functionAsyncFlags.Clear();
+                _functionAsyncFlags.AddRange(enclosingAsyncFlags);
             }
 
             return new PythonClassDefinitionStatement(
@@ -2172,6 +2223,14 @@ public static class PythonParser
             {
                 Report("DPY2022", "'yield' is only allowed inside a function.", yieldToken.Span);
             }
+            else if (_functionAsyncFlags[^1])
+            {
+                Report(
+                    "DPY2026",
+                    "'yield' inside an async function (an async generator) is not supported.",
+                    yieldToken.Span
+                );
+            }
             else
             {
                 _functionYieldFlags[^1] = true;
@@ -2430,7 +2489,7 @@ public static class PythonParser
 
         private PythonExpression? ParsePower()
         {
-            var left = ParsePrimary();
+            var left = IsKeyword("await") ? ParseAwaitExpression() : ParsePrimary();
             if (left is null || !Match(SyntaxTokenKind.DoubleStar))
             {
                 return left;
@@ -2448,6 +2507,31 @@ public static class PythonParser
                 PythonBinaryOperator.Power,
                 right,
                 TextSpan.FromBounds(left.Span.Start, right.Span.End)
+            );
+        }
+
+        private PythonAwaitExpression? ParseAwaitExpression()
+        {
+            var awaitToken = Advance();
+            if (_functionAsyncFlags.Count == 0 || !_functionAsyncFlags[^1])
+            {
+                Report(
+                    "DPY2025",
+                    "'await' is only allowed inside an async function.",
+                    awaitToken.Span
+                );
+            }
+
+            var operand = ParsePrimary();
+            if (operand is null)
+            {
+                ReportExpected("an expression after 'await'", Current.Span);
+                return null;
+            }
+
+            return new PythonAwaitExpression(
+                operand,
+                TextSpan.FromBounds(awaitToken.Span.Start, operand.Span.End)
             );
         }
 
@@ -3570,8 +3654,7 @@ public static class PythonParser
 
         private static bool IsUnsupportedStatementKeyword(string value) =>
             value
-                is "async"
-                    or "class"
+                is "class"
                     or "def"
                     or "elif"
                     or "else"

@@ -451,6 +451,48 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_MarksCoroutineFunctionsAndBuildsAwaitExpressions()
+    {
+        var result = Parse("async def fetch(url):\n    data = await load(url)\n    return data\n");
+
+        Assert.Empty(result.Diagnostics);
+        var coroutine = Assert.IsType<PythonFunctionDefinitionStatement>(
+            result.Module.Statements[0]
+        );
+        Assert.True(coroutine.IsCoroutine);
+        Assert.False(coroutine.IsGenerator);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(coroutine.Body[0]);
+        Assert.IsType<PythonAwaitExpression>(assignment.Value);
+
+        var decorated = Parse("@wrap\nasync def task():\n    return 1\n");
+        Assert.Empty(decorated.Diagnostics);
+        var decoratedCoroutine = Assert.IsType<PythonFunctionDefinitionStatement>(
+            decorated.Module.Statements[0]
+        );
+        Assert.True(decoratedCoroutine.IsCoroutine);
+        Assert.Single(decoratedCoroutine.Decorators);
+    }
+
+    [Fact]
+    public void Parse_RejectsMisplacedAsyncAndAwait()
+    {
+        var moduleAwait = Parse("await task()\n");
+        Assert.Contains(moduleAwait.Diagnostics, diagnostic => diagnostic.Code == "DPY2025");
+
+        var plainFunctionAwait = Parse("def f():\n    return await g()\n");
+        Assert.Contains(plainFunctionAwait.Diagnostics, diagnostic => diagnostic.Code == "DPY2025");
+
+        var asyncGenerator = Parse("async def f():\n    yield 1\n");
+        Assert.Contains(asyncGenerator.Diagnostics, diagnostic => diagnostic.Code == "DPY2026");
+
+        var asyncFor = Parse("async for item in source:\n    pass\n");
+        Assert.Contains(asyncFor.Diagnostics, diagnostic => diagnostic.Code == "DPY2027");
+
+        var asyncWith = Parse("async with resource:\n    pass\n");
+        Assert.Contains(asyncWith.Diagnostics, diagnostic => diagnostic.Code == "DPY2027");
+    }
+
+    [Fact]
     public void Parse_BuildsGeneratorExpressions()
     {
         var result = Parse("g = (x * 2 for x in xs if x)\ntotal = sum(v for v in data)\n");

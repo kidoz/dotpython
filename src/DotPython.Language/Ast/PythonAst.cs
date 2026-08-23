@@ -40,7 +40,8 @@ public sealed record PythonFunctionDefinitionStatement(
     IReadOnlyList<PythonStatement> Body,
     TextSpan Span,
     PythonExpression? ReturnAnnotation = null,
-    bool IsGenerator = false
+    bool IsGenerator = false,
+    bool IsCoroutine = false
 ) : PythonStatement(Span);
 
 public sealed record PythonClassDefinitionStatement(
@@ -299,6 +300,9 @@ public sealed record PythonYieldExpression(PythonExpression? Value, TextSpan Spa
     : PythonExpression(Span);
 
 public sealed record PythonYieldFromExpression(PythonExpression Source, TextSpan Span)
+    : PythonExpression(Span);
+
+public sealed record PythonAwaitExpression(PythonExpression Operand, TextSpan Span)
     : PythonExpression(Span);
 
 public sealed record PythonAssignmentExpression(

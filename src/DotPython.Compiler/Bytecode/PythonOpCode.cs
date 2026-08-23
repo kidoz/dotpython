@@ -102,4 +102,5 @@ public enum PythonOpCode
     MatchKeys = 97,
     MatchClass = 98,
     YieldFromStep = 99,
+    GetAwaitable = 100,
 }

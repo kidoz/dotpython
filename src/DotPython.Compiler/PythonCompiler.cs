@@ -64,6 +64,7 @@ public static class PythonCompiler
         private readonly bool _enableCallLocal;
         private readonly bool _enableReturnLocal;
         private readonly string? _enclosingClassName;
+        private bool _isCoroutine;
 
         internal Compiler(
             string codeName,
@@ -92,17 +93,20 @@ public static class PythonCompiler
             IReadOnlyList<PythonStatement> statements,
             int endPosition,
             IReadOnlyList<PythonParameter>? signature = null,
-            bool isGenerator = false
+            bool isGenerator = false,
+            bool isCoroutine = false
         )
         {
+            _isCoroutine = isCoroutine;
             CompileStatements(statements);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
-            return CreateCodeObject(signature, isGenerator);
+            return CreateCodeObject(signature, isGenerator, isCoroutine);
         }
 
         private PythonCodeObject CreateCodeObject(
             IReadOnlyList<PythonParameter>? signature,
-            bool isGenerator = false
+            bool isGenerator = false,
+            bool isCoroutine = false
         )
         {
             var keywordOnlyCount = 0;
@@ -136,7 +140,8 @@ public static class PythonCompiler
                 keywordOnlyCount,
                 hasVariadicPositional,
                 hasVariadicKeywords,
-                isGenerator
+                isGenerator,
+                isCoroutine
             );
         }
 
@@ -472,6 +477,36 @@ public static class PythonCompiler
                     PatchJump(finished, _instructions.Count);
                     Emit(PythonOpCode.RotateTwo, 0, yieldFrom.Span);
                     Emit(PythonOpCode.PopTop, 0, yieldFrom.Span);
+                    break;
+                }
+                case PythonAwaitExpression awaitExpression:
+                {
+                    // result = await e: same delegation loop as `yield from`, but
+                    // GetAwaitable resolves the awaitable instead of GetIterator.
+                    if (!_isCoroutine)
+                    {
+                        Report(
+                            "DPY3116",
+                            "'await' is only allowed directly inside an async function body.",
+                            awaitExpression.Span
+                        );
+                    }
+
+                    CompileExpression(awaitExpression.Operand);
+                    Emit(PythonOpCode.GetAwaitable, 0, awaitExpression.Span);
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                        awaitExpression.Span
+                    );
+                    var awaitLoopStart = _instructions.Count;
+                    Emit(PythonOpCode.YieldFromStep, 0, awaitExpression.Span);
+                    var awaitFinished = Emit(PythonOpCode.JumpIfFalse, 0, awaitExpression.Span);
+                    Emit(PythonOpCode.Yield, 0, awaitExpression.Span);
+                    Emit(PythonOpCode.Jump, awaitLoopStart, awaitExpression.Span);
+                    PatchJump(awaitFinished, _instructions.Count);
+                    Emit(PythonOpCode.RotateTwo, 0, awaitExpression.Span);
+                    Emit(PythonOpCode.PopTop, 0, awaitExpression.Span);
                     break;
                 }
                 case PythonAssignmentExpression assignmentExpression:
@@ -1573,7 +1608,8 @@ public static class PythonCompiler
                 function.Body,
                 function.Span.End,
                 function.Parameters,
-                function.IsGenerator
+                function.IsGenerator,
+                function.IsCoroutine
             );
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)

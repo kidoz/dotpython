@@ -491,6 +491,12 @@ internal sealed record PythonGeneratorValue : PythonValue
 
     internal PythonValue[] SavedLocals { get; }
 
+    /// <summary>Whether this value is a coroutine (from `async def`) rather than a generator.</summary>
+    internal bool IsCoroutine { get; init; }
+
+    /// <summary>The `generator` / `coroutine` type name used in messages.</summary>
+    internal string TypeName => IsCoroutine ? "coroutine" : "generator";
+
     internal List<PythonValue> SavedEvaluationStack { get; } = [];
 
     internal int InstructionPointer { get; set; }
@@ -520,7 +526,7 @@ internal sealed record PythonGeneratorValue : PythonValue
 
     internal (bool HasValue, PythonValue Value) Resume() => ResumeCore!(null, null);
 
-    internal override string ToDisplayString() => $"<generator object {Name}>";
+    internal override string ToDisplayString() => $"<{TypeName} object {Name}>";
 
     public bool Equals(PythonGeneratorValue? other) => ReferenceEquals(this, other);
 

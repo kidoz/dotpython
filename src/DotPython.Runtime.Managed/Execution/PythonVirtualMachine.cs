@@ -496,6 +496,9 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.YieldFromStep:
                 ApplyYieldFromStep(instruction);
                 break;
+            case PythonOpCode.GetAwaitable:
+                ApplyGetAwaitable(instruction);
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -1700,7 +1703,7 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
         }
 
-        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsSuspendable)
         {
             var positional = PopArguments(instruction.Operand, instruction.Span);
             Pop(instruction.Span);
@@ -1898,6 +1901,55 @@ internal sealed class PythonVirtualMachine
             when (exception.InnerException is PythonRuntimeException fault)
         {
             throw fault;
+        }
+    }
+
+    private void ApplyGetAwaitable(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        switch (value)
+        {
+            case PythonGeneratorValue { IsCoroutine: true } coroutine:
+                if (coroutine.State == PythonGeneratorState.Completed)
+                {
+                    throw Fault(
+                        "DPY4036",
+                        "cannot reuse already awaited coroutine",
+                        instruction.Span,
+                        "RuntimeError"
+                    );
+                }
+
+                _evaluationStack.Push(new PythonIteratorValue(coroutine, -1));
+                return;
+            case PythonManagedObjectValue instance
+                when ManagedObjectProtocols.TryGetInstanceMethod(
+                    instance,
+                    "__await__",
+                    out var awaitMethod
+                ):
+            {
+                var awaitIterator = InvokeCallableNested(awaitMethod, [], instruction.Span);
+                if (awaitIterator is PythonGeneratorValue { IsCoroutine: false })
+                {
+                    _evaluationStack.Push(new PythonIteratorValue(awaitIterator, -1));
+                    return;
+                }
+
+                throw Fault(
+                    "DPY4003",
+                    $"__await__() returned non-iterator of type '{ManagedObjectProtocols.GetTypeName(awaitIterator)}'",
+                    instruction.Span,
+                    "TypeError"
+                );
+            }
+            default:
+                throw Fault(
+                    "DPY4003",
+                    $"'{ManagedObjectProtocols.GetTypeName(value)}' object can't be awaited",
+                    instruction.Span,
+                    "TypeError"
+                );
         }
     }
 
@@ -2222,6 +2274,7 @@ internal sealed class PythonVirtualMachine
         )
         {
             OwnedFrameState = new GeneratorFrameState(),
+            IsCoroutine = function.Code.Definition.IsCoroutine,
         };
         generator.ResumeCore = (sent, injected) => ResumeGenerator(generator, sent, injected, span);
         return generator;
@@ -2238,6 +2291,8 @@ internal sealed class PythonVirtualMachine
         {
             case PythonGeneratorState.Completed:
                 return (false, PythonNoneValue.Instance);
+            case PythonGeneratorState.Running when generator.IsCoroutine:
+                throw Fault("DPY4035", "coroutine already executing", span, "RuntimeError");
             case PythonGeneratorState.Running:
                 throw Fault("DPY4035", "Generator already executing.", span, "ValueError");
         }
@@ -2412,7 +2467,7 @@ internal sealed class PythonVirtualMachine
             return ManagedObjectProtocols.Call(callable, arguments, span);
         }
 
-        if (function.Code.Definition.IsGenerator)
+        if (function.Code.Definition.IsSuspendable)
         {
             return CreateGenerator(
                 function,
@@ -2630,7 +2685,7 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
-        if (function.Code.Definition.IsGenerator)
+        if (function.Code.Definition.IsSuspendable)
         {
             _evaluationStack.Push(CreateGenerator(function, slots, span));
             return;
@@ -3096,7 +3151,7 @@ internal sealed class PythonVirtualMachine
             throw Fault("DPY4003", "The selected value is not callable.", span);
         }
 
-        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsGenerator)
+        if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsSuspendable)
         {
             PushBoundArgumentsFrame(
                 function,
@@ -3171,6 +3226,12 @@ internal sealed class PythonVirtualMachine
 
         var advanced = arguments[0] switch
         {
+            PythonGeneratorValue { IsCoroutine: true } => throw Fault(
+                "DPY4003",
+                "'coroutine' object is not an iterator",
+                span,
+                "TypeError"
+            ),
             PythonGeneratorValue generator => generator.Resume(),
             PythonIteratorValue iterator => ManagedObjectProtocols.TryGetNext(
                 iterator,
@@ -3267,7 +3328,7 @@ internal sealed class PythonVirtualMachine
         bool captureReturnLocalContinuation = false
     )
     {
-        if (function.Code.Definition.IsGenerator && returnOverride is null)
+        if (function.Code.Definition.IsSuspendable && returnOverride is null)
         {
             _evaluationStack.Push(
                 CreateGenerator(
