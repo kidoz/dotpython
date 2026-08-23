@@ -390,7 +390,7 @@ internal static class PythonBuiltinMethods
                     return arguments[1];
                 }
 
-                throw Fault("The dictionary key was not found.", "KeyError");
+                throw ManagedObjectProtocols.MissingKey(arguments[0]);
             }
         ),
         ["clear"] = Dictionary(
@@ -518,7 +518,7 @@ internal static class PythonBuiltinMethods
                 var index = FindElement(set.Elements, arguments[0]);
                 if (index < 0)
                 {
-                    throw Fault("The set element was not found.", "KeyError");
+                    throw ManagedObjectProtocols.MissingKey(arguments[0]);
                 }
 
                 set.Elements.RemoveAt(index);

@@ -135,6 +135,13 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(builtinTypeValue.Name);
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
+            case PythonExceptionValue exceptionValue when name == "args":
+                return new PythonTupleValue([.. exceptionValue.EffectiveArguments]);
+            case PythonExceptionValue { TypeName: "StopIteration" } stopIteration
+                when name == "value":
+                return stopIteration.EffectiveArguments.Count == 0
+                    ? PythonNoneValue.Instance
+                    : stopIteration.EffectiveArguments[0];
             case PythonExceptionValue { GroupExceptions: not null } group when name == "message":
                 return new PythonTextValue(group.Message);
             case PythonExceptionValue { GroupExceptions: { } nested } when name == "exceptions":
@@ -413,6 +420,21 @@ internal static class ManagedObjectProtocols
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
 
+    /// <summary>A StopIteration carrying the generator's return value (PEP 380).</summary>
+    internal static PythonExceptionValue CreateStopIteration(PythonValue returnValue) =>
+        returnValue is PythonNoneValue
+            ? new PythonExceptionValue("StopIteration", string.Empty)
+            : new PythonExceptionValue("StopIteration", returnValue.ToDisplayString())
+            {
+                Arguments = [returnValue],
+            };
+
+    /// <summary>A CPython-shaped KeyError carrying the missing key as its argument.</summary>
+    internal static PythonRaisedException MissingKey(PythonValue key) =>
+        new(
+            new PythonExceptionValue("KeyError", key.ToRepresentationString()) { Arguments = [key] }
+        );
+
     private static PythonRuntimeException ReusedCoroutineFault(TextSpan span) =>
         Fault("DPY4036", "cannot reuse already awaited coroutine", span, "RuntimeError");
 
@@ -504,7 +526,7 @@ internal static class ManagedObjectProtocols
             return advanced.Value;
         }
 
-        throw new PythonRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+        throw new PythonRaisedException(CreateStopIteration(advanced.Value));
     }
 
     private static PythonValue ThrowIntoGenerator(
@@ -543,7 +565,7 @@ internal static class ManagedObjectProtocols
             return advanced.Value;
         }
 
-        throw new PythonRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+        throw new PythonRaisedException(CreateStopIteration(advanced.Value));
     }
 
     private static PythonNoneValue CloseGenerator(PythonGeneratorValue generator, TextSpan span)
@@ -924,7 +946,7 @@ internal static class ManagedObjectProtocols
                 when TryFindDictionaryItem(dictionary, index, out var item):
                 return item.Value;
             case PythonDictionaryValue:
-                throw Fault("DPY4013", "The dictionary key was not found.", span, "KeyError");
+                throw MissingKey(index);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetItem(index, span);
             default:
@@ -1193,7 +1215,7 @@ internal static class ManagedObjectProtocols
                 dictionary.SizeVersion++;
                 return;
             case PythonDictionaryValue:
-                throw Fault("DPY4013", "The dictionary key was not found.", span, "KeyError");
+                throw MissingKey(index);
             default:
                 throw Fault(
                     "DPY4011",

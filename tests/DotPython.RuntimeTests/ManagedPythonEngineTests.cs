@@ -1526,7 +1526,7 @@ public sealed class ManagedPythonEngineTests
     )]
     [InlineData("values = (1,); values[0] = 2", "DPY4011")]
     [InlineData("print([1][2])", "DPY4012")]
-    [InlineData("print({}['missing'])", "DPY4013")]
+    [InlineData("print({}['missing'])", "DPY4031")]
     [InlineData("print({[]: 1})", "DPY4014")]
     [InlineData("for item in 1: print(item)", "DPY4015")]
     [InlineData("mapping = {'a': 1}\nfor key in mapping: mapping['b'] = 2", "DPY4016")]

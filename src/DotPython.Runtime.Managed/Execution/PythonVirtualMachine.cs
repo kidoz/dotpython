@@ -4082,7 +4082,17 @@ internal sealed class PythonVirtualMachine
     ) =>
         type.Name is "ExceptionGroup" or "BaseExceptionGroup"
             ? CreateExceptionGroupValue(type.Name, arguments)
-            : new(type.Name, ComposeExceptionMessage(arguments));
+            : new(type.Name, ComposeExceptionMessage(type.Name, arguments))
+            {
+                Arguments = [.. arguments],
+            };
+
+    private string ComposeExceptionMessage(string typeName, PythonValue[] arguments) =>
+        arguments.Length == 1 && IsExceptionSubclass(typeName, "KeyError")
+            // CPython's KeyError quirk: str() of a single-argument KeyError shows the
+            // key's repr so an empty-string key stays visible.
+            ? arguments[0].ToRepresentationString()
+            : ComposeExceptionMessage(arguments);
 
     private PythonExceptionValue CreateExceptionGroupValue(string name, PythonValue[] arguments)
     {
@@ -4156,6 +4166,7 @@ internal sealed class PythonVirtualMachine
         )
         {
             GroupExceptions = nested,
+            Arguments = [message, new PythonListValue([.. nested.Cast<PythonValue>()])],
         };
     }
 
@@ -4219,7 +4230,7 @@ internal sealed class PythonVirtualMachine
             return arguments[1];
         }
 
-        throw CreateRaisedException(new PythonExceptionValue("StopIteration", string.Empty));
+        throw CreateRaisedException(ManagedObjectProtocols.CreateStopIteration(advanced.Item2));
     }
 
     private PythonSuperProxyValue Super(IReadOnlyList<PythonValue> arguments, TextSpan span)
@@ -4347,7 +4358,10 @@ internal sealed class PythonVirtualMachine
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(
-                new PythonExceptionValue(type.Name, ComposeExceptionMessage(arguments))
+                new PythonExceptionValue(type.Name, ComposeExceptionMessage(type.Name, arguments))
+                {
+                    Arguments = [.. arguments],
+                }
             );
             return;
         }

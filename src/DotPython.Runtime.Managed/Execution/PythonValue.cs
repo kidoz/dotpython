@@ -389,6 +389,16 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
     /// <summary>The nested exceptions of an exception group; null for plain exceptions.</summary>
     internal IReadOnlyList<PythonExceptionValue>? GroupExceptions { get; init; }
 
+    /// <summary>
+    /// The constructor arguments (`e.args`); null when the value was created from a
+    /// bare message, in which case the args derive from <see cref="Message"/>.
+    /// </summary>
+    internal IReadOnlyList<PythonValue>? Arguments { get; init; }
+
+    internal IReadOnlyList<PythonValue> EffectiveArguments =>
+        Arguments
+        ?? (Message.Length == 0 ? Array.Empty<PythonValue>() : [new PythonTextValue(Message)]);
+
     public bool Equals(PythonExceptionValue? other) => ReferenceEquals(this, other);
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
@@ -409,9 +419,10 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
             return $"{TypeName}({new PythonTextValue(Message).ToRepresentationString()}, [{nested}])";
         }
 
-        return Message.Length == 0
-            ? $"{TypeName}()"
-            : $"{TypeName}({new PythonTextValue(Message).ToRepresentationString()})";
+        return $"{TypeName}({string.Join(
+            ", ",
+            EffectiveArguments.Select(argument => argument.ToRepresentationString())
+        )})";
     }
 }
 
