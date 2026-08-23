@@ -522,6 +522,9 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.EndAsyncFor:
                 EndAsyncFor(ref frame, instruction);
                 break;
+            case PythonOpCode.AsyncYieldWrap:
+                _evaluationStack.Push(new PythonAsyncGeneratorWrappedValue(Pop(instruction.Span)));
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -1969,6 +1972,130 @@ internal sealed class PythonVirtualMachine
         }
     }
 
+    private void DriveAsyncGeneratorStep(
+        PythonAsyncGeneratorStepValue step,
+        PythonValue sent,
+        TextSpan span
+    )
+    {
+        var generator = step.Generator;
+        (bool HasValue, PythonValue Value) advanced;
+        if (!step.Started)
+        {
+            step.Started = true;
+            if (
+                step.Kind == PythonAsyncGeneratorStepKind.Send
+                && generator.State == PythonGeneratorState.Created
+                && step.Argument is not (null or PythonNoneValue)
+            )
+            {
+                throw Fault(
+                    "DPY4003",
+                    "can't send non-None value to a just-started async generator",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            if (
+                generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed
+                && step.Kind is PythonAsyncGeneratorStepKind.Close
+            )
+            {
+                generator.State = PythonGeneratorState.Completed;
+                _evaluationStack.Push(PythonNoneValue.Instance);
+                _evaluationStack.Push(PythonTruthValue.False);
+                return;
+            }
+
+            if (
+                generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed
+                && step.Kind is PythonAsyncGeneratorStepKind.Throw
+            )
+            {
+                // Mirrors sync generators: a fresh or exhausted generator never runs
+                // its body — it closes and the exception propagates to the awaiter.
+                generator.State = PythonGeneratorState.Completed;
+                throw new PythonRaisedException(step.Injected!);
+            }
+
+            switch (step.Kind)
+            {
+                case PythonAsyncGeneratorStepKind.Send:
+                    advanced = generator.ResumeCore!(
+                        step.Argument is null or PythonNoneValue ? null : step.Argument,
+                        null
+                    );
+                    break;
+                case PythonAsyncGeneratorStepKind.Throw:
+                    advanced = generator.ResumeCore!(null, step.Injected);
+                    break;
+                case PythonAsyncGeneratorStepKind.Close:
+                    try
+                    {
+                        advanced = generator.ResumeCore!(
+                            null,
+                            new PythonExceptionValue("GeneratorExit", string.Empty)
+                        );
+                    }
+                    catch (PythonRaisedException raised)
+                        when (string.Equals(
+                                raised.Value.TypeName,
+                                "GeneratorExit",
+                                StringComparison.Ordinal
+                            )
+                        )
+                    {
+                        advanced = (false, PythonNoneValue.Instance);
+                    }
+
+                    break;
+                default:
+                    advanced = generator.ResumeCore!(null, null);
+                    break;
+            }
+        }
+        else
+        {
+            advanced = generator.ResumeCore!(sent is PythonNoneValue ? null : sent, null);
+        }
+
+        if (advanced.HasValue)
+        {
+            if (advanced.Value is PythonAsyncGeneratorWrappedValue wrapped)
+            {
+                if (step.Kind == PythonAsyncGeneratorStepKind.Close)
+                {
+                    throw Fault(
+                        "DPY4016",
+                        "async generator ignored GeneratorExit",
+                        span,
+                        "RuntimeError"
+                    );
+                }
+
+                // The generator's own yield completes this await with the value.
+                _evaluationStack.Push(wrapped.Value);
+                _evaluationStack.Push(PythonTruthValue.False);
+                return;
+            }
+
+            // An inner await suspended: pass the suspension through to the driver.
+            _evaluationStack.Push(advanced.Value);
+            _evaluationStack.Push(PythonTruthValue.True);
+            return;
+        }
+
+        if (step.Kind == PythonAsyncGeneratorStepKind.Close)
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
+        throw CreateRaisedException(new PythonExceptionValue("StopAsyncIteration", string.Empty));
+    }
+
     private void ApplyGetAwaitable(PythonInstruction instruction) =>
         _evaluationStack.Push(ResolveAwaitable(Pop(instruction.Span), instruction.Span, null));
 
@@ -1992,6 +2119,8 @@ internal sealed class PythonVirtualMachine
                 }
 
                 return new PythonIteratorValue(coroutine, -1);
+            case PythonAsyncGeneratorStepValue step:
+                return new PythonIteratorValue(step, -1);
             case PythonManagedObjectValue instance
                 when ManagedObjectProtocols.TryGetInstanceMethod(
                     instance,
@@ -2349,6 +2478,13 @@ internal sealed class PythonVirtualMachine
     private void ApplyGetAsyncIterator(PythonInstruction instruction)
     {
         var value = Pop(instruction.Span);
+        if (value is PythonGeneratorValue { IsAsyncGenerator: true })
+        {
+            // An async generator is its own async iterator.
+            _evaluationStack.Push(value);
+            return;
+        }
+
         if (
             value is not PythonManagedObjectValue instance
             || !ManagedObjectProtocols.TryGetInstanceMethod(instance, "__aiter__", out var aiter)
@@ -2363,6 +2499,12 @@ internal sealed class PythonVirtualMachine
         }
 
         var iterator = InvokeCallableNested(aiter, [], instruction.Span);
+        if (iterator is PythonGeneratorValue { IsAsyncGenerator: true })
+        {
+            _evaluationStack.Push(iterator);
+            return;
+        }
+
         if (
             iterator is not PythonManagedObjectValue iteratorInstance
             || !ManagedObjectProtocols.TryGetInstanceMethod(iteratorInstance, "__anext__", out _)
@@ -2382,6 +2524,22 @@ internal sealed class PythonVirtualMachine
     private void ApplyGetAsyncNext(PythonInstruction instruction)
     {
         var iterator = Pop(instruction.Span);
+        if (iterator is PythonGeneratorValue { IsAsyncGenerator: true } asyncGenerator)
+        {
+            _evaluationStack.Push(
+                new PythonIteratorValue(
+                    new PythonAsyncGeneratorStepValue(
+                        asyncGenerator,
+                        PythonAsyncGeneratorStepKind.Next,
+                        null,
+                        null
+                    ),
+                    -1
+                )
+            );
+            return;
+        }
+
         if (
             iterator is not PythonManagedObjectValue instance
             || !ManagedObjectProtocols.TryGetInstanceMethod(instance, "__anext__", out var anext)
@@ -2446,6 +2604,12 @@ internal sealed class PythonVirtualMachine
                 _evaluationStack.Push(PythonTruthValue.False);
             }
 
+            return;
+        }
+
+        if (iterator.Iterable is PythonAsyncGeneratorStepValue step)
+        {
+            DriveAsyncGeneratorStep(step, sent, instruction.Span);
             return;
         }
 
@@ -2755,7 +2919,10 @@ internal sealed class PythonVirtualMachine
         )
         {
             OwnedFrameState = new GeneratorFrameState(),
-            IsCoroutine = function.Code.Definition.IsCoroutine,
+            IsCoroutine =
+                function.Code.Definition.IsCoroutine && !function.Code.Definition.IsGenerator,
+            IsAsyncGenerator =
+                function.Code.Definition.IsCoroutine && function.Code.Definition.IsGenerator,
         };
         generator.ResumeCore = (sent, injected) => ResumeGenerator(generator, sent, injected, span);
         return generator;
@@ -2772,6 +2939,8 @@ internal sealed class PythonVirtualMachine
         {
             case PythonGeneratorState.Completed:
                 return (false, PythonNoneValue.Instance);
+            case PythonGeneratorState.Running when generator.IsAsyncGenerator:
+                throw Fault("DPY4035", "async generator already executing", span, "RuntimeError");
             case PythonGeneratorState.Running when generator.IsCoroutine:
                 throw Fault("DPY4035", "coroutine already executing", span, "RuntimeError");
             case PythonGeneratorState.Running:
@@ -3748,9 +3917,10 @@ internal sealed class PythonVirtualMachine
 
         var advanced = arguments[0] switch
         {
-            PythonGeneratorValue { IsCoroutine: true } => throw Fault(
+            PythonGeneratorValue { IsCoroutine: true }
+            or PythonGeneratorValue { IsAsyncGenerator: true } => throw Fault(
                 "DPY4003",
-                "'coroutine' object is not an iterator",
+                $"'{((PythonGeneratorValue)arguments[0]).TypeName}' object is not an iterator",
                 span,
                 "TypeError"
             ),

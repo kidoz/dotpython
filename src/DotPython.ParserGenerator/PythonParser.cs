@@ -1135,7 +1135,7 @@ public static class PythonParser
                 body,
                 TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End)),
                 returnAnnotation,
-                isGenerator && !isAsync,
+                isGenerator,
                 isAsync
             );
         }
@@ -2233,14 +2233,6 @@ public static class PythonParser
             {
                 Report("DPY2022", "'yield' is only allowed inside a function.", yieldToken.Span);
             }
-            else if (_functionAsyncFlags[^1])
-            {
-                Report(
-                    "DPY2026",
-                    "'yield' inside an async function (an async generator) is not supported.",
-                    yieldToken.Span
-                );
-            }
             else
             {
                 _functionYieldFlags[^1] = true;
@@ -2248,6 +2240,15 @@ public static class PythonParser
 
             if (MatchKeyword("from", out _))
             {
+                if (_functionAsyncFlags.Count != 0 && _functionAsyncFlags[^1])
+                {
+                    Report(
+                        "DPY2026",
+                        "'yield from' inside an async function is not supported.",
+                        yieldToken.Span
+                    );
+                }
+
                 var source = ParseRequiredExpression("an iterable after 'yield from'");
                 return new PythonYieldFromExpression(
                     source,

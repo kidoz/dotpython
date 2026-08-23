@@ -512,7 +512,15 @@ public sealed class PythonParserTests
         Assert.Contains(plainFunctionAwait.Diagnostics, diagnostic => diagnostic.Code == "DPY2025");
 
         var asyncGenerator = Parse("async def f():\n    yield 1\n");
-        Assert.Contains(asyncGenerator.Diagnostics, diagnostic => diagnostic.Code == "DPY2026");
+        Assert.Empty(asyncGenerator.Diagnostics);
+        var asyncGeneratorFunction = Assert.IsType<PythonFunctionDefinitionStatement>(
+            asyncGenerator.Module.Statements[0]
+        );
+        Assert.True(asyncGeneratorFunction.IsGenerator);
+        Assert.True(asyncGeneratorFunction.IsCoroutine);
+
+        var yieldFrom = Parse("async def f():\n    yield from source\n");
+        Assert.Contains(yieldFrom.Diagnostics, diagnostic => diagnostic.Code == "DPY2026");
 
         var asyncFor = Parse("async for item in source:\n    pass\n");
         Assert.Contains(asyncFor.Diagnostics, diagnostic => diagnostic.Code == "DPY2027");

@@ -65,6 +65,7 @@ public static class PythonCompiler
         private readonly bool _enableReturnLocal;
         private readonly string? _enclosingClassName;
         private bool _isCoroutine;
+        private bool _isAsyncGenerator;
 
         internal Compiler(
             string codeName,
@@ -98,6 +99,7 @@ public static class PythonCompiler
         )
         {
             _isCoroutine = isCoroutine;
+            _isAsyncGenerator = isGenerator && isCoroutine;
             CompileStatements(statements);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
             return CreateCodeObject(signature, isGenerator, isCoroutine);
@@ -453,7 +455,14 @@ public static class PythonCompiler
                     }
 
                     // The resume path pushes the yield expression's result (None in
-                    // phase 1) after the suspension point.
+                    // phase 1) after the suspension point. Async-generator yields wrap
+                    // the value so the __anext__ drive can tell a produced value from
+                    // an inner-await suspension passing through.
+                    if (_isAsyncGenerator)
+                    {
+                        Emit(PythonOpCode.AsyncYieldWrap, 0, yieldExpression.Span);
+                    }
+
                     Emit(PythonOpCode.Yield, 0, yieldExpression.Span);
                     break;
                 case PythonYieldFromExpression yieldFrom:
@@ -1671,6 +1680,12 @@ public static class PythonCompiler
             if (statement.Value is null || IsNoneLiteral(statement.Value))
             {
                 Emit(PythonOpCode.ReturnNone, 0, statement.Span);
+                return;
+            }
+
+            if (_isAsyncGenerator)
+            {
+                Report("DPY3117", "'return' with value in async generator.", statement.Span);
                 return;
             }
 

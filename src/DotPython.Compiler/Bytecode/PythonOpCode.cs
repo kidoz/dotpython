@@ -107,4 +107,5 @@ public enum PythonOpCode
     GetAsyncIterator = 102,
     GetAsyncNext = 103,
     EndAsyncFor = 104,
+    AsyncYieldWrap = 105,
 }

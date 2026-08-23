@@ -60,7 +60,7 @@ public sealed class DotPythonModuleArtifactTests
 
         Assert.Equal(
             "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
-                + "\"bytecodeFormatVersion\":24,\"exports\":[{\"pythonName\":\"calculate\","
+                + "\"bytecodeFormatVersion\":25,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
         );
@@ -76,7 +76,9 @@ public sealed class DotPythonModuleArtifactTests
             + "async def fetch():\n"
             + "    return await other()\n"
             + "async def other():\n"
-            + "    return 1\n";
+            + "    return 1\n"
+            + "async def stream():\n"
+            + "    yield 2\n";
         var bytes = DotPythonModuleArtifactSerializer.Serialize(
             DotPythonModuleArtifact.Create("suspendable", Compile(source))
         );
@@ -94,6 +96,12 @@ public sealed class DotPythonModuleArtifactTests
         Assert.Contains(
             codes["fetch"].Instructions,
             instruction => instruction.OpCode == PythonOpCode.GetAwaitable
+        );
+        Assert.True(codes["stream"].IsGenerator);
+        Assert.True(codes["stream"].IsCoroutine);
+        Assert.Contains(
+            codes["stream"].Instructions,
+            instruction => instruction.OpCode == PythonOpCode.AsyncYieldWrap
         );
     }
 
@@ -495,10 +503,10 @@ public sealed class DotPythonModuleArtifactTests
     {
         const string unsupportedLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.13\","
-            + "\"bytecodeFormatVersion\":24,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":25,\"exports\":[]}";
         const string nonCanonicalLanguage =
             "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.14.0\","
-            + "\"bytecodeFormatVersion\":24,\"exports\":[]}";
+            + "\"bytecodeFormatVersion\":25,\"exports\":[]}";
 
         var unsupportedFailure = Assert.Throws<InvalidDataException>(() =>
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)

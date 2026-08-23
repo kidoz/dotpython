@@ -152,6 +152,68 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
+            case PythonGeneratorValue { IsAsyncGenerator: true } asyncGenerator:
+                return name switch
+                {
+                    "asend" => AsyncGeneratorMethod(
+                        asyncGenerator,
+                        "asend",
+                        (arguments, methodSpan) =>
+                            new PythonAsyncGeneratorStepValue(
+                                asyncGenerator,
+                                PythonAsyncGeneratorStepKind.Send,
+                                RequireSingleArgument("asend", arguments, methodSpan),
+                                null
+                            )
+                    ),
+                    "athrow" => AsyncGeneratorMethod(
+                        asyncGenerator,
+                        "athrow",
+                        (arguments, methodSpan) =>
+                            new PythonAsyncGeneratorStepValue(
+                                asyncGenerator,
+                                PythonAsyncGeneratorStepKind.Throw,
+                                null,
+                                ConvertToExceptionValue(
+                                    RequireSingleArgument("athrow", arguments, methodSpan),
+                                    methodSpan
+                                )
+                            )
+                    ),
+                    "aclose" => AsyncGeneratorMethod(
+                        asyncGenerator,
+                        "aclose",
+                        (_, _) =>
+                            new PythonAsyncGeneratorStepValue(
+                                asyncGenerator,
+                                PythonAsyncGeneratorStepKind.Close,
+                                null,
+                                null
+                            )
+                    ),
+                    "__anext__" => AsyncGeneratorMethod(
+                        asyncGenerator,
+                        "__anext__",
+                        (_, _) =>
+                            new PythonAsyncGeneratorStepValue(
+                                asyncGenerator,
+                                PythonAsyncGeneratorStepKind.Next,
+                                null,
+                                null
+                            )
+                    ),
+                    "__aiter__" => new PythonBoundMethodValue(
+                        "__aiter__",
+                        asyncGenerator,
+                        new PythonProtocolFunctionValue("__aiter__", (_, _) => asyncGenerator)
+                    ),
+                    _ => throw Fault(
+                        "DPY4023",
+                        $"'{asyncGenerator.TypeName}' object has no attribute '{name}'",
+                        span,
+                        "AttributeError"
+                    ),
+                };
             case PythonGeneratorValue generator:
                 return name switch
                 {
@@ -350,6 +412,54 @@ internal static class ManagedObjectProtocols
     private static PythonRuntimeException ReusedCoroutineFault(TextSpan span) =>
         Fault("DPY4036", "cannot reuse already awaited coroutine", span, "RuntimeError");
 
+    private static PythonBoundMethodValue AsyncGeneratorMethod(
+        PythonGeneratorValue generator,
+        string name,
+        Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> createStep
+    ) =>
+        new(
+            name,
+            generator,
+            new PythonProtocolFunctionValue(name, (_, arguments) => createStep(arguments, default))
+        );
+
+    private static PythonValue RequireSingleArgument(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"{name}() takes exactly one argument ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        return arguments[0];
+    }
+
+    internal static PythonExceptionValue ConvertToExceptionValue(
+        PythonValue value,
+        TextSpan span
+    ) =>
+        value switch
+        {
+            PythonExceptionValue raised => raised,
+            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
+            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
+                new PythonExceptionValue(exceptionClass.Name, string.Empty),
+            _ => throw Fault(
+                "DPY4003",
+                "Exceptions must derive from BaseException.",
+                span,
+                "TypeError"
+            ),
+        };
+
     private static PythonValue SendToGenerator(
         PythonGeneratorValue generator,
         IReadOnlyList<PythonValue> arguments,
@@ -409,19 +519,7 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        var exception = arguments[0] switch
-        {
-            PythonExceptionValue raised => raised,
-            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
-            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                new PythonExceptionValue(exceptionClass.Name, string.Empty),
-            _ => throw Fault(
-                "DPY4003",
-                "Exceptions must derive from BaseException.",
-                span,
-                "TypeError"
-            ),
-        };
+        var exception = ConvertToExceptionValue(arguments[0], span);
         if (generator is { IsCoroutine: true, State: PythonGeneratorState.Completed })
         {
             throw ReusedCoroutineFault(span);
@@ -497,9 +595,14 @@ internal static class ManagedObjectProtocols
 
         if (value is PythonGeneratorValue generatorValue)
         {
-            if (generatorValue.IsCoroutine)
+            if (generatorValue.IsCoroutine || generatorValue.IsAsyncGenerator)
             {
-                throw Fault("DPY4003", "'coroutine' object is not iterable", span, "TypeError");
+                throw Fault(
+                    "DPY4003",
+                    $"'{generatorValue.TypeName}' object is not iterable",
+                    span,
+                    "TypeError"
+                );
             }
 
             // A generator is its own iterator.

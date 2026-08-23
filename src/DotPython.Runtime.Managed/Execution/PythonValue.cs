@@ -494,8 +494,14 @@ internal sealed record PythonGeneratorValue : PythonValue
     /// <summary>Whether this value is a coroutine (from `async def`) rather than a generator.</summary>
     internal bool IsCoroutine { get; init; }
 
-    /// <summary>The `generator` / `coroutine` type name used in messages.</summary>
-    internal string TypeName => IsCoroutine ? "coroutine" : "generator";
+    /// <summary>Whether this value is an async generator (`async def` containing `yield`).</summary>
+    internal bool IsAsyncGenerator { get; init; }
+
+    /// <summary>The `generator` / `coroutine` / `async_generator` type name used in messages.</summary>
+    internal string TypeName =>
+        IsAsyncGenerator ? "async_generator"
+        : IsCoroutine ? "coroutine"
+        : "generator";
 
     internal List<PythonValue> SavedEvaluationStack { get; } = [];
 
@@ -636,6 +642,53 @@ internal sealed record PythonUserIteratorSourceValue(
 ) : PythonValue
 {
     internal override string ToDisplayString() => "<iterator>";
+}
+
+/// <summary>
+/// Marks a value produced by an async generator's own `yield`, distinguishing it
+/// from an inner-await suspension passing through the same frame.
+/// </summary>
+internal sealed record PythonAsyncGeneratorWrappedValue(PythonValue Value) : PythonValue
+{
+    internal override string ToDisplayString() => Value.ToDisplayString();
+}
+
+internal enum PythonAsyncGeneratorStepKind
+{
+    Next,
+    Send,
+    Throw,
+    Close,
+}
+
+/// <summary>
+/// The awaitable produced by an async generator's `__anext__`/`asend`/`athrow`/
+/// `aclose`: driving it through the delegation loop resumes the generator until it
+/// yields a wrapped value (the await's result) or completes (StopAsyncIteration).
+/// </summary>
+internal sealed record PythonAsyncGeneratorStepValue(
+    PythonGeneratorValue Generator,
+    PythonAsyncGeneratorStepKind Kind,
+    PythonValue? Argument,
+    PythonExceptionValue? Injected
+) : PythonValue
+{
+    internal bool Started { get; set; }
+
+    internal override string ToDisplayString() => $"<async_generator_{DisplayKind}>";
+
+    private string DisplayKind =>
+        Kind switch
+        {
+            PythonAsyncGeneratorStepKind.Send => "asend",
+            PythonAsyncGeneratorStepKind.Throw => "athrow",
+            PythonAsyncGeneratorStepKind.Close => "aclose",
+            _ => "asend",
+        };
+
+    public bool Equals(PythonAsyncGeneratorStepValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 }
 
 internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, PythonValue Step)
