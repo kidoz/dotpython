@@ -2697,7 +2697,9 @@ public static class PythonParser
 
                                 if (StartsComprehensionClause())
                                 {
-                                    var clauses = ParseComprehensionClauses();
+                                    var clauses = ParseComprehensionClauses(
+                                        isGeneratorExpression: true
+                                    );
                                     argument = new PythonGeneratorExpression(
                                         argument,
                                         clauses,
@@ -3194,7 +3196,7 @@ public static class PythonParser
 
             if (first is not PythonStarredExpression && StartsComprehensionClause())
             {
-                var clauses = ParseComprehensionClauses();
+                var clauses = ParseComprehensionClauses(isGeneratorExpression: true);
                 var comprehensionEnd = ExpectClosingDelimiter(
                     SyntaxTokenKind.RightParenthesis,
                     "')'",
@@ -3435,7 +3437,9 @@ public static class PythonParser
                 && Peek(1).Text == "for"
             );
 
-        private ReadOnlyCollection<PythonComprehensionClause> ParseComprehensionClauses()
+        private ReadOnlyCollection<PythonComprehensionClause> ParseComprehensionClauses(
+            bool isGeneratorExpression = false
+        )
         {
             var clauses = new List<PythonComprehensionClause>();
             while (true)
@@ -3449,7 +3453,13 @@ public static class PythonParser
                 {
                     var asyncToken = Advance();
                     isAsync = true;
-                    if (_functionAsyncFlags.Count == 0 || !_functionAsyncFlags[^1])
+
+                    // Async generator expressions are lazy, so they are legal in any
+                    // scope; eager comprehensions need an enclosing async function.
+                    if (
+                        !isGeneratorExpression
+                        && (_functionAsyncFlags.Count == 0 || !_functionAsyncFlags[^1])
+                    )
                     {
                         Report(
                             "DPY2029",

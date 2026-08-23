@@ -914,20 +914,15 @@ public static class PythonCompiler
                 return;
             }
 
+            // A generator expression with async clauses or awaits is an async generator
+            // expression, legal even in sync scopes; other comprehensions only become
+            // async inside a coroutine (the parser rejects the remaining placements).
             var isAsync =
-                _isCoroutine
+                (_isCoroutine || comprehension is PythonGeneratorExpression)
                 && (
                     clauses.OfType<PythonComprehensionForClause>().Any(clause => clause.IsAsync)
                     || ComprehensionContainsAwait(comprehension, clauses)
                 );
-            if (isAsync && comprehension is PythonGeneratorExpression)
-            {
-                Report(
-                    "DPY3119",
-                    "Asynchronous generator expressions are not supported in this runtime slice.",
-                    comprehension.Span
-                );
-            }
 
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, comprehension)
@@ -951,9 +946,10 @@ public static class PythonCompiler
             }
 
             Emit(PythonOpCode.Call, 1, comprehension.Span);
-            if (isAsync)
+            if (isAsync && comprehension is not PythonGeneratorExpression)
             {
                 // The comprehension body is an implicit coroutine; await it in place.
+                // An async generator expression instead returns the generator itself.
                 Emit(PythonOpCode.GetAwaitable, 0, comprehension.Span);
                 EmitAwaitLoop(comprehension.Span);
             }
@@ -1062,6 +1058,7 @@ public static class PythonCompiler
         )
         {
             _isCoroutine = isAsync;
+            _isAsyncGenerator = isAsync && comprehension is PythonGeneratorExpression;
             if (comprehension is not PythonGeneratorExpression)
             {
                 Emit(
@@ -1144,6 +1141,11 @@ public static class PythonCompiler
                         break;
                     case PythonGeneratorExpression generatorExpression:
                         CompileExpression(generatorExpression.Element);
+                        if (_isAsyncGenerator)
+                        {
+                            Emit(PythonOpCode.AsyncYieldWrap, 0, generatorExpression.Element.Span);
+                        }
+
                         Emit(PythonOpCode.Yield, 0, generatorExpression.Element.Span);
                         Emit(PythonOpCode.PopTop, 0, generatorExpression.Element.Span);
                         break;

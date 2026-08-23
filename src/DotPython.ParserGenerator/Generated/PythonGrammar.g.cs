@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "b471a006948b1382450d20f9e9ce009fdacd7197ad003760439bfd8149c58197";
+    internal const string SourceSha256 = "62ad0a5d5150af224f7f4525562b40de0d74761548fc97ecdd3fd698441a40fd";
     internal const int RuleCount = 88;
 
     private const string GrammarSource = """

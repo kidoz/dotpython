@@ -489,6 +489,18 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "def g(a, b, /, c, *, d=4):\n    return (a, b, c, d)\nprint(g(1, 2, 3), g(1, 2, c=3, d=9))\ntry:\n    g(1, b=2, c=3)\nexcept TypeError as e:\n    print('p1:', e)\ndef kw_sink(a, /, **kw):\n    return (a, kw)\nprint(kw_sink(1, a=2))\ndef h(x, y, z=0):\n    return (x, y, z)\nrest = [5, 6]\nprint(h(z=9, *rest))\nlam = lambda a, /, b: (a, b)\nprint(lam(1, b=2))"
     )]
+    [InlineData(
+        "async def nums():\n    for i in range(4):\n        yield i\nasync def main():\n    g = (x * x async for x in nums())\n    print(type(g).__name__)\n    print([v async for v in g])\n    h = (x async for x in nums() if x % 2 == 0)\n    print(await anext(h), await anext(h))\n    try:\n        await anext(h)\n    except StopAsyncIteration:\n        print('done')\nc = main()\ntry:\n    c.send(None)\nexcept StopIteration:\n    print('finished')"
+    )]
+    [InlineData(
+        "async def nums():\n    for i in range(4):\n        yield i\ndef build():\n    return (x + 100 async for x in nums())\ng = (n * 2 async for n in nums())\nprint(type(g).__name__)\nasync def one(v):\n    return v * 10\nasync def main():\n    print([v async for v in build()])\n    print([v async for v in g])\n    inner = (x * 2 async for x in nums())\n    print([y + 1 async for y in inner])\n    e = (await one(i) async for i in nums())\n    print([v async for v in e])\n    try:\n        for v in build():\n            pass\n    except TypeError as err:\n        print('E:', err)\nc = main()\ntry:\n    c.send(None)\nexcept StopIteration:\n    pass"
+    )]
+    [InlineData(
+        "async def nums():\n    for i in range(3):\n        print('yield', i)\n        yield i\nasync def consume(agen):\n    total = 0\n    async for v in agen:\n        total += v\n    return total\nasync def main():\n    lazy = (x * x async for x in nums())\n    print('created')\n    print(await consume(lazy))\n    print(await consume(y + 1 async for y in nums()))\nc = main()\ntry:\n    c.send(None)\nexcept StopIteration:\n    pass"
+    )]
+    [InlineData(
+        "async def nums():\n    for i in range(3):\n        yield i\nasync def one(v):\n    return v * 10\nasync def main():\n    g = (x * 10 async for x in nums())\n    print(await g.asend(None))\n    print(await g.asend(None))\n    await g.aclose()\n    try:\n        await anext(g)\n    except StopAsyncIteration:\n        print('closed')\n    h = (x async for x in nums())\n    await anext(h)\n    try:\n        await h.athrow(ValueError('boom'))\n    except ValueError as e:\n        print('caught', e)\n    m = (i * j async for i in nums() for j in [1, 2])\n    print([v async for v in m])\n    a = (await one(i) for i in range(4))\n    print(type(a).__name__)\n    print([v async for v in a])\nc = main()\ntry:\n    c.send(None)\nexcept StopIteration:\n    pass"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
