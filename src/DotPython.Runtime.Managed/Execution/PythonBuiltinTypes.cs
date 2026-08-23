@@ -12,6 +12,7 @@ namespace DotPython.Runtime.Managed.Execution;
 internal static class PythonBuiltinTypes
 {
     internal static readonly PythonBuiltinTypeValue Bool = new("bool", ConstructBool);
+    internal static readonly PythonBuiltinTypeValue Bytes = new("bytes", ConstructBytes);
     internal static readonly PythonBuiltinTypeValue Dict = new("dict", ConstructDictionary);
     internal static readonly PythonBuiltinTypeValue Float = new("float", ConstructFloat);
     internal static readonly PythonBuiltinTypeValue Int = new("int", ConstructInt);
@@ -25,7 +26,7 @@ internal static class PythonBuiltinTypes
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
-        [Bool, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
+        [Bool, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
         new(
@@ -43,6 +44,7 @@ internal static class PythonBuiltinTypes
         type.Name switch
         {
             "bool" => value is PythonTruthValue,
+            "bytes" => value is PythonByteSequenceValue,
             "int" => value is PythonWholeNumberValue or PythonTruthValue,
             "float" => value is PythonFloatingPointValue,
             "str" => value is PythonTextValue,
@@ -53,6 +55,58 @@ internal static class PythonBuiltinTypes
             "frozenset" => value is PythonSetValue { IsFrozen: true },
             _ => false,
         };
+
+    private static PythonByteSequenceValue ConstructBytes(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        RequireArguments("bytes", arguments, 0, 1, span);
+        if (arguments.Count == 0)
+        {
+            return new PythonByteSequenceValue([]);
+        }
+
+        switch (arguments[0])
+        {
+            case PythonByteSequenceValue bytes:
+                return new PythonByteSequenceValue((byte[])bytes.Value.Clone());
+            case PythonWholeNumberValue { Value.Sign: >= 0 } size when size.Value <= 4096:
+                return new PythonByteSequenceValue(new byte[(int)size.Value]);
+            case PythonTextValue:
+                throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    "string argument without an encoding",
+                    span,
+                    "TypeError"
+                );
+            default:
+            {
+                var values = ManagedObjectProtocols.MaterializeValues(arguments[0], span);
+                var buffer = new byte[values.Count];
+                for (var index = 0; index < values.Count; index++)
+                {
+                    if (
+                        values[index] is not PythonWholeNumberValue item
+                        || item.Value.Sign < 0
+                        || item.Value > byte.MaxValue
+                    )
+                    {
+                        throw ManagedObjectProtocols.Fault(
+                            "DPY4003",
+                            "bytes must be in range(0, 256)",
+                            span,
+                            "ValueError"
+                        );
+                    }
+
+                    buffer[index] = (byte)item.Value;
+                }
+
+                return new PythonByteSequenceValue(buffer);
+            }
+        }
+    }
 
     private static PythonTruthValue ConstructBool(
         IReadOnlyList<PythonValue> arguments,

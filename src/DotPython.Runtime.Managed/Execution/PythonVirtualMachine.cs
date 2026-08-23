@@ -5167,6 +5167,7 @@ internal sealed class PythonVirtualMachine
             PythonWholeNumberValue => PythonBuiltinTypes.Int,
             PythonFloatingPointValue => PythonBuiltinTypes.Float,
             PythonTextValue => PythonBuiltinTypes.Str,
+            PythonByteSequenceValue => PythonBuiltinTypes.Bytes,
             PythonListValue => PythonBuiltinTypes.List,
             PythonTupleValue => PythonBuiltinTypes.Tuple,
             PythonDictionaryValue => PythonBuiltinTypes.Dict,

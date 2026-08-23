@@ -17,16 +17,16 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "5e52f116b988666f2fdae6baf9bcf5b80007b0603a117478da02c549489d1507",
+    "evidenceSha256": "e03e817d1099dcb3d6fbea85754c3089569a2cee574f5d19a0c236c70751f1d4",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
     "collector": "pytest 9.1.1 on Python 3.14.6",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
-    "passed": 322,
-    "failed": 3,
+    "passed": 325,
+    "failed": 0,
     "skipped": 0,
-    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). 322 of 325 cases pass. The 3 failures are documented restrictions: 3 stdlib module imports (pickle x2, os). No skipped or failed case is counted as passed."
+    "reason": "The unchanged suite is admitted and every collected case is attempted individually through a minimal managed pytest shim (pytest.raises context manager and pytest.mark.parametrize registry; shim file and SHA-256 are recorded in the evidence). All 325 collected cases pass. The runtime-native os.path surface is capability-scoped to registered module search roots, and pickle provides in-process round-trip tokens (not the CPython wire format); both restrictions are documented in the compatibility matrix. No skipped or failed case is counted as passed."
   },
   "qualifiedGenericProtocols": [
     "module-attribute-discovery",

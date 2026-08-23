@@ -16,7 +16,10 @@ internal sealed class PythonModuleCatalog
     private const int MaxSourceFileLength = 8 * 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    private PythonModuleCatalog(IReadOnlyDictionary<string, PythonModuleDefinition> modules)
+    private PythonModuleCatalog(
+        IReadOnlyDictionary<string, PythonModuleDefinition> modules,
+        IReadOnlyList<string>? searchRoots = null
+    )
     {
         // Runtime-native standard modules are available in every catalog and, like
         // other internal modules, win over same-named discovered or host modules.
@@ -24,7 +27,7 @@ internal sealed class PythonModuleCatalog
             modules,
             StringComparer.Ordinal
         );
-        PythonStandardModules.AddTo(merged);
+        PythonStandardModules.AddTo(merged, searchRoots ?? []);
         Modules = merged;
     }
 
@@ -39,7 +42,7 @@ internal sealed class PythonModuleCatalog
         ArgumentNullException.ThrowIfNull(options.SearchPaths);
         var builder = new Builder(options.SearchPaths, options.NativeExtensionResolver);
         builder.Discover();
-        return new PythonModuleCatalog(builder.CreateModules());
+        return new PythonModuleCatalog(builder.CreateModules(), [.. options.SearchPaths]);
     }
 
     internal static PythonModuleCatalog FromSources(

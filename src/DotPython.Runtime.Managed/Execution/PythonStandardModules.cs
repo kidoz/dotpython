@@ -13,7 +13,10 @@ internal static class PythonStandardModules
 {
     private const int MaximumFactorialInput = 100_000;
 
-    internal static void AddTo(Dictionary<string, PythonModuleDefinition> modules)
+    internal static void AddTo(
+        Dictionary<string, PythonModuleDefinition> modules,
+        IReadOnlyList<string> searchRoots
+    )
     {
         modules["math"] = PythonModuleDefinition.Native(
             "<dotpython math>",
@@ -24,6 +27,270 @@ internal static class PythonStandardModules
             "<dotpython copy>",
             isPackage: false,
             InitializeCopy
+        );
+        modules["pickle"] = PythonModuleDefinition.Native(
+            "<dotpython pickle>",
+            isPackage: false,
+            InitializePickle
+        );
+        modules["os"] = PythonModuleDefinition.Native(
+            "<dotpython os>",
+            isPackage: true,
+            globals => InitializeOs(globals, searchRoots)
+        );
+        modules["os.path"] = PythonModuleDefinition.Native(
+            "<dotpython os.path>",
+            isPackage: false,
+            globals => InitializeOsPath(globals, searchRoots)
+        );
+    }
+
+    private static void InitializeOs(
+        PythonGlobalNamespace globals,
+        IReadOnlyList<string> searchRoots
+    )
+    {
+        var pathGlobals = new PythonGlobalNamespace();
+        pathGlobals.SetValue("__name__", new PythonTextValue("os.path"));
+        pathGlobals.SetValue("__package__", new PythonTextValue("os"));
+        InitializeOsPath(pathGlobals, searchRoots);
+        globals.SetValue("path", new PythonModuleValue("os.path", pathGlobals));
+        globals.SetValue("sep", new PythonTextValue("/"));
+    }
+
+    private static void InitializeOsPath(
+        PythonGlobalNamespace globals,
+        IReadOnlyList<string> searchRoots
+    )
+    {
+        globals.SetValue(
+            "join",
+            new PythonBuiltinFunctionValue(
+                "join",
+                (arguments, span) =>
+                {
+                    if (arguments.Count == 0)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4028",
+                            "os.path.join() requires at least one argument.",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    var joined = RequirePathText("join", arguments[0], span);
+                    for (var index = 1; index < arguments.Count; index++)
+                    {
+                        var part = RequirePathText("join", arguments[index], span);
+                        if (part.StartsWith('/'))
+                        {
+                            joined = part;
+                        }
+                        else if (joined.Length == 0 || joined.EndsWith('/'))
+                        {
+                            joined += part;
+                        }
+                        else
+                        {
+                            joined = joined + "/" + part;
+                        }
+                    }
+
+                    return new PythonTextValue(joined);
+                }
+            )
+        );
+        globals.SetValue(
+            "dirname",
+            new PythonBuiltinFunctionValue(
+                "dirname",
+                (arguments, span) =>
+                {
+                    var path = RequireSinglePath("dirname", arguments, span);
+                    var separator = path.LastIndexOf('/');
+                    return new PythonTextValue(
+                        separator < 0 ? string.Empty
+                        : separator == 0 ? "/"
+                        : path[..separator]
+                    );
+                }
+            )
+        );
+        globals.SetValue(
+            "basename",
+            new PythonBuiltinFunctionValue(
+                "basename",
+                (arguments, span) =>
+                {
+                    var path = RequireSinglePath("basename", arguments, span);
+                    return new PythonTextValue(path[(path.LastIndexOf('/') + 1)..]);
+                }
+            )
+        );
+        globals.SetValue(
+            "exists",
+            PathProbe("exists", searchRoots, path => File.Exists(path) || Directory.Exists(path))
+        );
+        globals.SetValue("isfile", PathProbe("isfile", searchRoots, File.Exists));
+        globals.SetValue("isdir", PathProbe("isdir", searchRoots, Directory.Exists));
+    }
+
+    private static PythonBuiltinFunctionValue PathProbe(
+        string name,
+        IReadOnlyList<string> searchRoots,
+        Func<string, bool> probe
+    ) =>
+        new(
+            name,
+            (arguments, span) =>
+            {
+                var path = RequireSinglePath(name, arguments, span);
+                // Filesystem probes are a capability scoped to the registered module
+                // search roots; nothing outside them is observable.
+                var fullPath = Path.GetFullPath(path);
+                var permitted = searchRoots.Any(root =>
+                {
+                    var fullRoot = Path.GetFullPath(root);
+                    return fullPath.StartsWith(fullRoot, StringComparison.Ordinal)
+                        && (
+                            fullPath.Length == fullRoot.Length
+                            || fullRoot.EndsWith('/')
+                            || fullPath[fullRoot.Length] == '/'
+                        );
+                });
+                if (!permitted)
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4028",
+                        $"os.path.{name}() outside the registered module search roots is not permitted in this runtime slice.",
+                        span,
+                        "PermissionError"
+                    );
+                }
+
+                return PythonTruthValue.FromBoolean(probe(fullPath));
+            }
+        );
+
+    private static string RequireSinglePath(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                $"os.path.{name}() takes exactly one argument ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+
+        return RequirePathText(name, arguments[0], span);
+    }
+
+    private static string RequirePathText(string name, PythonValue value, TextSpan span) =>
+        value is PythonTextValue text
+            ? text.Value
+            : throw new PythonRuntimeException(
+                "DPY4028",
+                $"os.path.{name}() arguments must be str, not {ManagedObjectProtocols.GetTypeName(value)}.",
+                span,
+                "TypeError"
+            );
+
+    private static void InitializePickle(PythonGlobalNamespace globals)
+    {
+        // In-process round-trip pickling: dumps returns an opaque token that only
+        // this module instance's loads understands; loads reconstructs a deep copy
+        // through the same machinery as copy.deepcopy (native objects via
+        // __reduce__). The byte payload is deliberately not CPython's wire format.
+        var stash = new Dictionary<long, PythonValue>();
+        var nextToken = 0L;
+        globals.SetValue("HIGHEST_PROTOCOL", PythonWholeNumberValue.Create(5));
+        globals.SetValue(
+            "dumps",
+            new PythonBuiltinFunctionValue(
+                "dumps",
+                (arguments, span) =>
+                {
+                    if (arguments.Count is not (1 or 2))
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4028",
+                            $"pickle.dumps() takes 1 to 2 arguments ({arguments.Count} given).",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    if (stash.Count >= 1024)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4028",
+                            "pickle.dumps() exceeded the 1024 live-token limit of this runtime slice.",
+                            span,
+                            "RuntimeError"
+                        );
+                    }
+
+                    var token = nextToken++;
+                    stash[token] = arguments[0];
+                    return new PythonByteSequenceValue(
+                        System.Text.Encoding.ASCII.GetBytes(
+                            $"DPYPKL:{token.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                        )
+                    );
+                }
+            )
+        );
+        globals.SetValue(
+            "loads",
+            new PythonBuiltinFunctionValue(
+                "loads",
+                (arguments, span) =>
+                {
+                    if (arguments.Count != 1 || arguments[0] is not PythonByteSequenceValue payload)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4028",
+                            "pickle.loads() requires one bytes argument.",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    var text = System.Text.Encoding.ASCII.GetString(payload.Value);
+                    if (
+                        !text.StartsWith("DPYPKL:", StringComparison.Ordinal)
+                        || !long.TryParse(
+                            text["DPYPKL:".Length..],
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out var token
+                        )
+                        || !stash.TryGetValue(token, out var value)
+                    )
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4028",
+                            "pickle.loads() only accepts tokens produced by this runtime's pickle.dumps().",
+                            span,
+                            "ValueError"
+                        );
+                    }
+
+                    return DeepCopy(
+                        value,
+                        new Dictionary<PythonValue, PythonValue>(
+                            ReferenceEqualityComparer.Instance
+                        ),
+                        span
+                    );
+                }
+            )
         );
     }
 

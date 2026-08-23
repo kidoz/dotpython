@@ -29,8 +29,8 @@
   },
   "summary": {
     "collected": 325,
-    "passed": 322,
-    "failed": 3,
+    "passed": 325,
+    "failed": 0,
     "skipped": 0
   },
   "cases": [
@@ -1036,13 +1036,11 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestPickle::test_roundtrip",
-      "outcome": "failed",
-      "detail": "DPY4020: No managed module named \u0027pickle\u0027 is registered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPickle::test_roundtrip_auto",
-      "outcome": "failed",
-      "detail": "DPY4020: No managed module named \u0027pickle\u0027 is registered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPickle::test_deepcopy",
@@ -1190,8 +1188,7 @@
     },
     {
       "nodeId": "tests/test_anyver.py::TestModuleSurface::test_py_typed_marker_present",
-      "outcome": "failed",
-      "detail": "DPY4020: No managed module named \u0027os\u0027 is registered."
+      "outcome": "passed"
     },
     {
       "nodeId": "tests/test_anyver.py::TestPep440LocalVersion::test_local_sorts_after_release",

@@ -156,6 +156,11 @@ internal sealed class PythonModuleRegistry
         var globals = new PythonGlobalNamespace();
         globals.SetValue("__name__", new PythonTextValue(name));
         globals.SetValue("__package__", new PythonTextValue(GetPackageName(name)));
+        if (Path.IsPathRooted(definition.Origin))
+        {
+            globals.SetValue("__file__", new PythonTextValue(definition.Origin));
+        }
+
         var module = new PythonModuleValue(name, globals);
         if (definition.Initialize is not null)
         {

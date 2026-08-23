@@ -459,6 +459,12 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "d = {'a': 1}\ntry:\n    d['b']\nexcept KeyError as e:\n    print('sub:', e.args, str(e))\ntry:\n    d.pop('z')\nexcept KeyError as e:\n    print('pop:', e.args, str(e))\ntry:\n    del d['x']\nexcept KeyError as e:\n    print('del:', e.args, str(e))\ntry:\n    {1}.remove(2)\nexcept KeyError as e:\n    print('rem:', e.args, str(e))\ndef g():\n    yield 1\n    return 'result'\ngen = g()\nprint(next(gen))\ntry:\n    next(gen)\nexcept StopIteration as e:\n    print('si:', e.args, repr(e.value), str(e))\ndef g2():\n    yield 1\ngen2 = g2()\nnext(gen2)\ntry:\n    next(gen2)\nexcept StopIteration as e:\n    print('si-none:', e.args, repr(e.value))\ndef echo():\n    got = yield 'ready'\n    return got * 2\nec = echo()\nnext(ec)\ntry:\n    ec.send(21)\nexcept StopIteration as e:\n    print('send-si:', e.value)\nasync def coro():\n    return 99\nc = coro()\ntry:\n    c.send(None)\nexcept StopIteration as e:\n    print('coro-si:', e.value, e.args)"
     )]
+    [InlineData(
+        "import pickle\ndata = pickle.dumps([1, {'k': (2, 3)}, 'x'])\nprint(isinstance(data, bytes))\nrestored = pickle.loads(data)\nagain = pickle.loads(data)\nprint(restored, restored == [1, {'k': (2, 3)}, 'x'])\nprint(restored is not again, restored == again)\nclass Box:\n    def __init__(self, v):\n        self.v = v\nb = Box(9)\nrb = pickle.loads(pickle.dumps(b))\nprint(type(rb).__name__, rb.v, rb is b)\nimport os\nprint(os.path.join('a', 'b', 'c'), os.path.join('/x', 'y'), os.path.join('a', '/z'))\nprint(os.path.dirname('/a/b/c.py'), repr(os.path.dirname('name')), os.path.dirname('/top'))\nprint(os.path.basename('/a/b/c.py'), os.path.basename('plain'))"
+    )]
+    [InlineData(
+        "print(bytes(), bytes(3), bytes([65, 66, 67]), bytes(b'copy'))\ntry:\n    bytes('text')\nexcept TypeError as e:\n    print('b1:', e)\ntry:\n    bytes([300])\nexcept ValueError as e:\n    print('b2:', e)\nprint(isinstance(b'x', bytes), isinstance('x', bytes), type(b'x').__name__)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
