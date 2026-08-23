@@ -70,7 +70,8 @@ internal static class DotPythonCommand
             var result = engine.Execute(
                 source,
                 standardOutput,
-                cancellationToken: cancellationToken
+                new ManagedExecutionOptions { StandardInput = standardInput },
+                cancellationToken
             );
             if (result.Success)
             {

@@ -195,6 +195,131 @@ internal static class ManagedObjectProtocols
                 );
             case PythonExceptionValue missingAttributeException:
                 throw MissingAttribute(missingAttributeException.TypeName, name, span);
+            case PythonFileValue enterFile when name == "__enter__":
+                return new PythonBoundMethodValue(
+                    "__enter__",
+                    enterFile,
+                    new PythonProtocolFunctionValue(
+                        "__enter__",
+                        (_, _) =>
+                        {
+                            EnsureFileOpen(enterFile, span);
+                            return enterFile;
+                        }
+                    )
+                );
+            case PythonFileValue exitFile when name == "__exit__":
+                return new PythonBoundMethodValue(
+                    "__exit__",
+                    exitFile,
+                    new PythonProtocolFunctionValue(
+                        "__exit__",
+                        (_, _) =>
+                        {
+                            exitFile.IsClosed = true;
+                            return PythonNoneValue.Instance;
+                        }
+                    )
+                );
+            case PythonFileValue closeFile when name == "close":
+                return new PythonBoundMethodValue(
+                    "close",
+                    closeFile,
+                    new PythonProtocolFunctionValue(
+                        "close",
+                        (_, _) =>
+                        {
+                            closeFile.IsClosed = true;
+                            return PythonNoneValue.Instance;
+                        }
+                    )
+                );
+            case PythonFileValue nameFile when name == "name":
+                return new PythonTextValue(nameFile.Name);
+            case PythonFileValue modeFile when name == "mode":
+                return new PythonTextValue(modeFile.Mode);
+            case PythonFileValue closedFile when name == "closed":
+                return PythonTruthValue.FromBoolean(closedFile.IsClosed);
+            case PythonFileValue readFile when name == "read":
+                return new PythonBoundMethodValue(
+                    "read",
+                    readFile,
+                    new PythonProtocolFunctionValue(
+                        "read",
+                        (_, readArguments) =>
+                        {
+                            EnsureFileOpen(readFile, span);
+                            if (readArguments.Count > 1)
+                            {
+                                throw Fault(
+                                    "DPY4037",
+                                    $"read expected at most 1 argument, got {readArguments.Count}",
+                                    span,
+                                    "TypeError"
+                                );
+                            }
+
+                            var count = -1;
+                            if (readArguments.Count == 1)
+                            {
+                                count = readArguments[0] switch
+                                {
+                                    PythonNoneValue => -1,
+                                    PythonWholeNumberValue size => size.Value.Sign < 0
+                                        ? -1
+                                        : (int)BigInteger.Min(size.Value, int.MaxValue),
+                                    var other => throw Fault(
+                                        "DPY4037",
+                                        $"argument should be integer or None, not '{GetTypeName(other)}'",
+                                        span,
+                                        "TypeError"
+                                    ),
+                                };
+                            }
+
+                            return new PythonTextValue(readFile.Read(count));
+                        }
+                    )
+                );
+            case PythonFileValue readLineFile when name == "readline":
+                return new PythonBoundMethodValue(
+                    "readline",
+                    readLineFile,
+                    new PythonProtocolFunctionValue(
+                        "readline",
+                        (_, _) =>
+                        {
+                            EnsureFileOpen(readLineFile, span);
+                            return new PythonTextValue(readLineFile.ReadLine() ?? string.Empty);
+                        }
+                    )
+                );
+            case PythonFileValue readLinesFile when name == "readlines":
+                return new PythonBoundMethodValue(
+                    "readlines",
+                    readLinesFile,
+                    new PythonProtocolFunctionValue(
+                        "readlines",
+                        (_, _) =>
+                        {
+                            EnsureFileOpen(readLinesFile, span);
+                            var lines = new List<PythonValue>();
+                            while (readLinesFile.ReadLine() is { } line)
+                            {
+                                lines.Add(new PythonTextValue(line));
+                            }
+
+                            return new PythonListValue(lines);
+                        }
+                    )
+                );
+            case PythonFileValue:
+                throw Fault(
+                    "DPY4022",
+                    $"'_io.TextIOWrapper' object has no attribute '{name}'",
+                    span,
+                    "AttributeError"
+                );
             case PythonTemplateValue template when name == "strings":
                 return new PythonTupleValue([
                     .. template.Strings.Select(text => (PythonValue)new PythonTextValue(text)),
@@ -726,6 +851,13 @@ internal static class ManagedObjectProtocols
             return GetIterator(view.Snapshot, span);
         }
 
+        if (value is PythonFileValue file)
+        {
+            // A file is its own line cursor; the wrapper defers to it on each step.
+            EnsureFileOpen(file, span);
+            return new PythonIteratorValue(file, -1);
+        }
+
         if (
             value
             is not (
@@ -753,6 +885,14 @@ internal static class ManagedObjectProtocols
         );
     }
 
+    internal static void EnsureFileOpen(PythonFileValue file, TextSpan span)
+    {
+        if (file.IsClosed)
+        {
+            throw Fault("DPY4037", "I/O operation on closed file.", span, "ValueError");
+        }
+    }
+
     internal static bool TryGetNext(
         PythonIteratorValue iterator,
         out PythonValue value,
@@ -762,6 +902,17 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(iterator);
         switch (iterator.Iterable)
         {
+            case PythonFileValue file:
+            {
+                EnsureFileOpen(file, span);
+                if (file.ReadLine() is { } line)
+                {
+                    value = new PythonTextValue(line);
+                    return true;
+                }
+
+                break;
+            }
             case PythonListValue list when iterator.Index < list.Elements.Count:
                 value = list.Elements[iterator.Index++];
                 return true;
@@ -1571,6 +1722,7 @@ internal static class ManagedObjectProtocols
             PythonMapSourceValue => "map",
             PythonFilterSourceValue => "filter",
             PythonGeneratorValue generatorValue => generatorValue.TypeName,
+            PythonFileValue => "TextIOWrapper",
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",

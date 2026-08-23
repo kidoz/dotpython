@@ -624,6 +624,80 @@ public sealed class ManagedPythonEngineTests
     }
 
     [Fact]
+    public void Execute_ScopesTheOpenBuiltinToTheRegisteredSearchRoots()
+    {
+        var directory = CreateTemporaryDirectory();
+        var outsideDirectory = CreateTemporaryDirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "data.txt"), "alpha\nbeta\n");
+            var outsidePath = Path.Combine(outsideDirectory, "secret.txt");
+            File.WriteAllText(outsidePath, "secret");
+            using var output = new StringWriter();
+
+            var result = new ManagedPythonEngine(
+                new ManagedModuleDiscoveryOptions { SearchPaths = [directory] }
+            ).Execute(
+                $"with open('{Path.Combine(directory, "data.txt")}') as f:\n"
+                    + "    print(f.readlines())\n"
+                    + "try:\n"
+                    + $"    open('{outsidePath}')\n"
+                    + "except PermissionError as e:\n"
+                    + "    print('denied:', e)",
+                "main.py",
+                output,
+                cancellationToken: TestContext.Current.CancellationToken
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(
+                "['alpha\\n', 'beta\\n']"
+                    + Environment.NewLine
+                    + "denied: open() outside the registered module search roots "
+                    + "is not permitted in this runtime slice."
+                    + Environment.NewLine,
+                output.ToString()
+            );
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+            Directory.Delete(outsideDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Execute_ReadsStandardInputThroughTheInputBuiltin()
+    {
+        using var input = new StringReader("first\nsecond\n");
+        using var output = new StringWriter();
+
+        var result = new ManagedPythonEngine().Execute(
+            "print('a:', input())\n"
+                + "print('b:', input('ask> '))\n"
+                + "try:\n"
+                + "    input()\n"
+                + "except EOFError as e:\n"
+                + "    print('eof:', e)",
+            "main.py",
+            output,
+            new ManagedExecutionOptions { StandardInput = input },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            "a: first"
+                + Environment.NewLine
+                + "ask> b: second"
+                + Environment.NewLine
+                + "eof: EOF when reading a line"
+                + Environment.NewLine,
+            output.ToString()
+        );
+    }
+
+    [Fact]
     public void Execute_DoesNotFollowSymbolicLinkModulesOutsideTheSearchRoot()
     {
         var directory = CreateTemporaryDirectory();

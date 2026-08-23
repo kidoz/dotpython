@@ -13,6 +13,7 @@ public sealed class ManagedPythonEngine
     private readonly object _executionGate = new();
     private readonly PythonGlobalNamespace _globals = new();
     private readonly PythonModuleRegistry _modules;
+    private readonly IReadOnlyList<string> _searchRoots;
     private readonly ConditionalWeakTable<PythonCodeObject, PreparedPythonCode> _preparedCodes =
         new();
 
@@ -39,6 +40,7 @@ public sealed class ManagedPythonEngine
     {
         ArgumentNullException.ThrowIfNull(catalog);
         _modules = new PythonModuleRegistry(catalog.Modules, CompileModule);
+        _searchRoots = catalog.SearchRoots;
     }
 
     public ManagedExecutionResult Execute(
@@ -112,7 +114,9 @@ public sealed class ManagedPythonEngine
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation,
-                cancellationToken
+                cancellationToken,
+                _searchRoots,
+                options.StandardInput
             );
             try
             {
@@ -150,7 +154,9 @@ public sealed class ManagedPythonEngine
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation: false,
-                cancellationToken
+                cancellationToken,
+                _searchRoots,
+                options.StandardInput
             );
             try
             {
@@ -249,7 +255,9 @@ public sealed class ManagedPythonEngine
                 output,
                 options.InstructionLimit,
                 enableReturnLocalContinuation: true,
-                cancellationToken
+                cancellationToken,
+                _searchRoots,
+                options.StandardInput
             );
             virtualMachine.Execute(PrepareCode(code));
             return new ManagedExecutionResult(source, []);

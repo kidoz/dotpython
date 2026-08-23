@@ -501,6 +501,9 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "async def nums():\n    for i in range(3):\n        yield i\nasync def one(v):\n    return v * 10\nasync def main():\n    g = (x * 10 async for x in nums())\n    print(await g.asend(None))\n    print(await g.asend(None))\n    await g.aclose()\n    try:\n        await anext(g)\n    except StopAsyncIteration:\n        print('closed')\n    h = (x async for x in nums())\n    await anext(h)\n    try:\n        await h.athrow(ValueError('boom'))\n    except ValueError as e:\n        print('caught', e)\n    m = (i * j async for i in nums() for j in [1, 2])\n    print([v async for v in m])\n    a = (await one(i) for i in range(4))\n    print(type(a).__name__)\n    print([v async for v in a])\nc = main()\ntry:\n    c.send(None)\nexcept StopIteration:\n    pass"
     )]
+    [InlineData(
+        "try:\n    open('dotpython_missing_file_84129.txt')\nexcept FileNotFoundError as e:\n    print('fnf:', isinstance(e, OSError), e)\ntry:\n    open('dotpython_missing_file_84129.txt', 'z')\nexcept ValueError as e:\n    print('vm:', e)\ntry:\n    open()\nexcept TypeError as e:\n    print('t:', e)\ntry:\n    open(None)\nexcept TypeError as e:\n    print('t2:', e)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
@@ -713,6 +716,136 @@ public sealed class ManagedCliDifferentialTests
     }
 
     [Fact]
+    public void ScriptFileReads_MatchReferencePythonForTheOpenBuiltin()
+    {
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-open-differential-{Guid.NewGuid():N}"
+        );
+        Directory.CreateDirectory(directory);
+        var scriptPath = Path.Combine(directory, "main.py");
+        try
+        {
+            var dataPath = Path.Combine(directory, "data.txt");
+            var crlfPath = Path.Combine(directory, "crlf.txt");
+            var missingPath = Path.Combine(directory, "missing.txt");
+            var subdirPath = Path.Combine(directory, "subdir");
+            File.WriteAllText(dataPath, "alpha\nbeta\ngamma");
+            File.WriteAllText(crlfPath, "a\r\nb\r\nc");
+            Directory.CreateDirectory(subdirPath);
+            File.WriteAllText(
+                scriptPath,
+                $"f = open('{dataPath}')\n"
+                    + "print(repr(f))\n"
+                    + "print(f.mode, f.closed)\n"
+                    + "print(repr(f.read(3)), repr(f.read()))\n"
+                    + "f.close()\n"
+                    + "print(f.closed)\n"
+                    + "try:\n"
+                    + "    f.readline()\n"
+                    + "except ValueError as e:\n"
+                    + "    print('closed:', e)\n"
+                    + $"with open('{dataPath}') as g:\n"
+                    + "    print(g.readlines())\n"
+                    + "print(g.closed)\n"
+                    + $"h = open('{crlfPath}')\n"
+                    + "print(repr(h.read()))\n"
+                    + "h.close()\n"
+                    + "count = 0\n"
+                    + "joined = ''\n"
+                    + $"with open('{dataPath}') as it:\n"
+                    + "    for line in it:\n"
+                    + "        count += 1\n"
+                    + "        joined += line\n"
+                    + "print(count, repr(joined))\n"
+                    + $"n = open('{dataPath}')\n"
+                    + "print(repr(next(n)), repr(n.readline()))\n"
+                    + "n.close()\n"
+                    + "try:\n"
+                    + $"    open('{missingPath}')\n"
+                    + "except FileNotFoundError as e:\n"
+                    + "    print('fnf:', isinstance(e, OSError), e)\n"
+                    + "try:\n"
+                    + $"    open('{subdirPath}')\n"
+                    + "except IsADirectoryError as e:\n"
+                    + "    print('dir:', e)\n"
+                    + "try:\n"
+                    + $"    open('{dataPath}', 'q')\n"
+                    + "except ValueError as e:\n"
+                    + "    print('mode:', e)\n"
+            );
+            var reference = RunReferenceScript(python, scriptPath);
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            var exitCode = DotPythonCommand.Run(
+                [scriptPath],
+                TextReader.Null,
+                output,
+                error,
+                TestContext.Current.CancellationToken
+            );
+
+            Assert.Equal(reference.ExitCode, exitCode);
+            Assert.Equal(reference.StandardOutput, output.ToString());
+            Assert.Equal(string.Empty, error.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StandardInputScripts_MatchReferencePythonForTheInputBuiltin()
+    {
+        const string code =
+            "print('x:', input())\n"
+            + "print('y:', repr(input('p> ')))\n"
+            + "try:\n"
+            + "    input('q> ')\n"
+            + "except EOFError as e:\n"
+            + "    print('eof:', e)\n"
+            + "try:\n"
+            + "    input('a', 'b')\n"
+            + "except TypeError as e:\n"
+            + "    print('args:', e)\n";
+        const string standardInput = "one\ntwo\n";
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        var reference = RunReference(python, code, standardInput: standardInput);
+        using var input = new StringReader(standardInput);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = DotPythonCommand.Run(
+            ["-c", code],
+            input,
+            output,
+            error,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(reference.ExitCode, exitCode);
+        Assert.Equal(reference.StandardOutput, output.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
     public void RaisedExceptionHandlersAndFinally_MatchReferencePython()
     {
         const string code =
@@ -765,13 +898,15 @@ public sealed class ManagedCliDifferentialTests
     private static ReferenceResult RunReference(
         string executable,
         string code,
-        string? workingDirectory = null
+        string? workingDirectory = null,
+        string? standardInput = null
     )
     {
         var startInfo = new ProcessStartInfo(executable)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
             UseShellExecute = false,
             WorkingDirectory = workingDirectory ?? string.Empty,
         };
@@ -780,6 +915,12 @@ public sealed class ManagedCliDifferentialTests
 
         using var process = Process.Start(startInfo);
         Assert.NotNull(process);
+        if (standardInput is not null)
+        {
+            process.StandardInput.Write(standardInput);
+            process.StandardInput.Close();
+        }
+
         var standardOutput = process.StandardOutput.ReadToEnd();
         process.WaitForExit();
         return new ReferenceResult(process.ExitCode, standardOutput);

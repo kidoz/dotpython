@@ -877,6 +877,42 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDic
     internal override string ToDisplayString() => "<collection_iterator>";
 }
 
+/// <summary>A read-only text file handle over content snapshotted at open time.</summary>
+internal sealed record PythonFileValue(string Name, string Mode, string Content) : PythonValue
+{
+    internal int Position { get; set; }
+
+    internal bool IsClosed { get; set; }
+
+    /// <summary>Reads up to the next newline (inclusive); null at end of file.</summary>
+    internal string? ReadLine()
+    {
+        if (Position >= Content.Length)
+        {
+            return null;
+        }
+
+        var newlineIndex = Content.IndexOf('\n', Position);
+        var end = newlineIndex < 0 ? Content.Length : newlineIndex + 1;
+        var line = Content[Position..end];
+        Position = end;
+        return line;
+    }
+
+    /// <summary>Reads at most <paramref name="count"/> characters; negative reads the rest.</summary>
+    internal string Read(int count)
+    {
+        var end =
+            count < 0 || Position + count > Content.Length ? Content.Length : Position + count;
+        var text = Content[Position..end];
+        Position = end;
+        return text;
+    }
+
+    internal override string ToDisplayString() =>
+        $"<_io.TextIOWrapper name='{Name}' mode='{Mode}' encoding='UTF-8'>";
+}
+
 internal static class PythonRepresentationGuard
 {
     [ThreadStatic]

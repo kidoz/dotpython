@@ -43,6 +43,11 @@ internal sealed class PythonVirtualMachine
             ["KeyError"] = "LookupError",
             ["OverflowError"] = "ArithmeticError",
             ["ZeroDivisionError"] = "ArithmeticError",
+            ["OSError"] = "Exception",
+            ["FileNotFoundError"] = "OSError",
+            ["IsADirectoryError"] = "OSError",
+            ["PermissionError"] = "OSError",
+            ["EOFError"] = "Exception",
         };
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
@@ -53,6 +58,7 @@ internal sealed class PythonVirtualMachine
     private readonly long _instructionLimit;
     private readonly PythonModuleRegistry _modules;
     private readonly TextWriter _output;
+    private readonly TextReader? _standardInput;
     private readonly Dictionary<string, string> _exceptionBaseOverlay = new(StringComparer.Ordinal);
     private readonly UserIterationDispatcher _userIterationDispatcher;
     private readonly ConditionalWeakTable<PythonValue, object> _identityTokens = new();
@@ -74,12 +80,15 @@ internal sealed class PythonVirtualMachine
         TextWriter output,
         long instructionLimit,
         bool enableReturnLocalContinuation,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? searchRoots = null,
+        TextReader? standardInput = null
     )
     {
         _globals = globals;
         _modules = modules;
         _output = output;
+        _standardInput = standardInput;
         _instructionLimit = instructionLimit;
         _enableReturnLocalContinuation = enableReturnLocalContinuation;
         _cancellationToken = cancellationToken;
@@ -118,6 +127,8 @@ internal sealed class PythonVirtualMachine
             ["hasattr"] = new PythonBuiltinFunctionValue("hasattr", HasAttributeBuiltin),
             ["vars"] = new PythonBuiltinFunctionValue("vars", Variables),
             ["id"] = new PythonBuiltinFunctionValue("id", Identity),
+            ["open"] = PythonStandardModules.CreateOpenBuiltin(searchRoots ?? []),
+            ["input"] = new PythonBuiltinFunctionValue("input", Input),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
         foreach (var builtinType in PythonBuiltinTypes.All)
@@ -4374,6 +4385,28 @@ internal sealed class PythonVirtualMachine
         }
     }
 
+    private PythonTextValue Input(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count > 1)
+        {
+            throw Fault(
+                "DPY4037",
+                $"input expected at most 1 argument, got {arguments.Count}",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (arguments.Count == 1)
+        {
+            _output.Write(arguments[0].ToDisplayString());
+        }
+
+        return _standardInput?.ReadLine() is { } line
+            ? new PythonTextValue(line)
+            : throw Fault("DPY4037", "EOF when reading a line", span, "EOFError");
+    }
+
     private PythonValue Next(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count is not (1 or 2))
@@ -4396,6 +4429,7 @@ internal sealed class PythonVirtualMachine
                 "TypeError"
             ),
             PythonGeneratorValue generator => generator.Resume(),
+            PythonFileValue file => NextFileLine(file, span),
             PythonIteratorValue iterator => ManagedObjectProtocols.TryGetNext(
                 iterator,
                 out var element,
@@ -4427,6 +4461,14 @@ internal sealed class PythonVirtualMachine
         }
 
         throw CreateRaisedException(ManagedObjectProtocols.CreateStopIteration(advanced.Item2));
+    }
+
+    private static (bool, PythonValue) NextFileLine(PythonFileValue file, TextSpan span)
+    {
+        ManagedObjectProtocols.EnsureFileOpen(file, span);
+        return file.ReadLine() is { } line
+            ? (true, new PythonTextValue(line))
+            : (false, PythonNoneValue.Instance);
     }
 
     private PythonSuperProxyValue Super(IReadOnlyList<PythonValue> arguments, TextSpan span)

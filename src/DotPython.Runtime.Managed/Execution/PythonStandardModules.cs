@@ -12,6 +12,162 @@ namespace DotPython.Runtime.Managed.Execution;
 internal static class PythonStandardModules
 {
     private const int MaximumFactorialInput = 100_000;
+    private const int MaximumOpenFileLength = 8 * 1024 * 1024;
+
+    private static bool IsWithinSearchRoots(string fullPath, IReadOnlyList<string> searchRoots) =>
+        searchRoots.Any(root =>
+        {
+            var fullRoot = Path.GetFullPath(root);
+            return fullPath.StartsWith(fullRoot, StringComparison.Ordinal)
+                && (
+                    fullPath.Length == fullRoot.Length
+                    || fullRoot.EndsWith('/')
+                    || fullPath[fullRoot.Length] == '/'
+                );
+        });
+
+    /// <summary>
+    /// Creates the `open` builtin: read-only text mode, a capability scoped to the
+    /// registered module search roots like the os.path probes.
+    /// </summary>
+    internal static PythonBuiltinFunctionValue CreateOpenBuiltin(
+        IReadOnlyList<string> searchRoots
+    ) =>
+        new(
+            "open",
+            (arguments, span) =>
+            {
+                if (arguments.Count == 0)
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        "open() missing required argument 'file' (pos 1)",
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                if (arguments.Count > 2)
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        "open() arguments beyond file and mode are not supported in this runtime slice.",
+                        span
+                    );
+                }
+
+                if (arguments[0] is not PythonTextValue pathText)
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        $"expected str, bytes or os.PathLike object, not {ManagedObjectProtocols.GetTypeName(arguments[0])}",
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                var mode = "r";
+                if (arguments.Count == 2)
+                {
+                    if (arguments[1] is not PythonTextValue modeText)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4037",
+                            $"open() argument 'mode' must be str, not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    mode = modeText.Value;
+                }
+
+                ValidateOpenMode(mode, span);
+                var fullPath = Path.GetFullPath(pathText.Value);
+                if (!IsWithinSearchRoots(fullPath, searchRoots))
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        "open() outside the registered module search roots is not permitted in this runtime slice.",
+                        span,
+                        "PermissionError"
+                    );
+                }
+
+                if (Directory.Exists(fullPath))
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        $"[Errno 21] Is a directory: '{pathText.Value}'",
+                        span,
+                        "IsADirectoryError"
+                    );
+                }
+
+                if (!File.Exists(fullPath))
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4037",
+                        $"[Errno 2] No such file or directory: '{pathText.Value}'",
+                        span,
+                        "FileNotFoundError"
+                    );
+                }
+
+                string content;
+                try
+                {
+                    if (new FileInfo(fullPath).Length > MaximumOpenFileLength)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4037",
+                            $"open() beyond the {MaximumOpenFileLength} byte limit is not supported in this runtime slice.",
+                            span
+                        );
+                    }
+
+                    content = File.ReadAllText(fullPath);
+                }
+                catch (IOException exception)
+                {
+                    throw new PythonRuntimeException("DPY4037", exception.Message, span, "OSError");
+                }
+
+                // Universal newlines: text mode translates both CRLF and lone CR.
+                content = content
+                    .Replace("\r\n", "\n", StringComparison.Ordinal)
+                    .Replace('\r', '\n');
+                return new PythonFileValue(pathText.Value, mode, content);
+            }
+        );
+
+    private static void ValidateOpenMode(string mode, TextSpan span)
+    {
+        // CPython-invalid modes get CPython's ValueError; CPython-valid modes beyond
+        // the read-only text subset are a restriction of this slice.
+        var seen = new HashSet<char>();
+        foreach (var character in mode)
+        {
+            if (!"rwxab+t".Contains(character, StringComparison.Ordinal) || !seen.Add(character))
+            {
+                throw new PythonRuntimeException(
+                    "DPY4037",
+                    $"invalid mode: '{mode}'",
+                    span,
+                    "ValueError"
+                );
+            }
+        }
+
+        if (mode is not ("r" or "rt" or "tr"))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                $"open() mode '{mode}' is not supported in this runtime slice.",
+                span
+            );
+        }
+    }
 
     internal static void AddTo(
         Dictionary<string, PythonModuleDefinition> modules,
@@ -149,17 +305,7 @@ internal static class PythonStandardModules
                 // Filesystem probes are a capability scoped to the registered module
                 // search roots; nothing outside them is observable.
                 var fullPath = Path.GetFullPath(path);
-                var permitted = searchRoots.Any(root =>
-                {
-                    var fullRoot = Path.GetFullPath(root);
-                    return fullPath.StartsWith(fullRoot, StringComparison.Ordinal)
-                        && (
-                            fullPath.Length == fullRoot.Length
-                            || fullRoot.EndsWith('/')
-                            || fullPath[fullRoot.Length] == '/'
-                        );
-                });
-                if (!permitted)
+                if (!IsWithinSearchRoots(fullPath, searchRoots))
                 {
                     throw new PythonRuntimeException(
                         "DPY4028",

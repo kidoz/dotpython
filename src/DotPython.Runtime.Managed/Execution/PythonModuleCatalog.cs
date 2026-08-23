@@ -29,9 +29,13 @@ internal sealed class PythonModuleCatalog
         );
         PythonStandardModules.AddTo(merged, searchRoots ?? []);
         Modules = merged;
+        SearchRoots = searchRoots ?? [];
     }
 
     internal IReadOnlyDictionary<string, PythonModuleDefinition> Modules { get; }
+
+    /// <summary>Registered module search roots; the capability boundary for filesystem access.</summary>
+    internal IReadOnlyList<string> SearchRoots { get; }
 
     internal static PythonModuleCatalog Empty { get; } =
         new(new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal));
