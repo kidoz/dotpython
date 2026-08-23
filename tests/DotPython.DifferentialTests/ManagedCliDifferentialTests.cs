@@ -477,6 +477,12 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "class Fut:\n    def __await__(self):\n        got = yield 'tick'\n        return got\nasync def paced():\n    for i in range(2):\n        v = await Fut()\n        yield i * 100 + len(v)\nasync def suspended_comp():\n    values = [x async for x in paced()]\n    print('collected', values)\ns = suspended_comp()\nprint(s.send(None))\nprint(s.send('ab'))\ntry:\n    s.send('xyz')\nexcept StopIteration:\n    pass\nasync def nums():\n    for i in range(4):\n        yield i\nasync def nested_comp():\n    grid = [[y async for y in nums()] for _ in range(2)]\n    print(grid)\nn = nested_comp()\ntry:\n    n.send(None)\nexcept StopIteration:\n    pass"
     )]
+    [InlineData(
+        "class A:\n    def who(self): return 'A'\n    tag = 'a'\nclass B(A):\n    def who(self): return 'B'\nclass C(A):\n    def who(self): return 'C'\n    tag = 'c'\nclass D(B, C):\n    pass\nprint([t.__name__ for t in D.__mro__ if t.__name__ != 'object'])\nprint([t.__name__ for t in D.__bases__])\nd = D()\nprint(d.who(), d.tag, D().who())\nprint(isinstance(d, A), isinstance(d, B), isinstance(d, C))\ntry:\n    class Bad(A, A):\n        pass\nexcept TypeError as e:\n    print('e1:', e)\nclass X: pass\nclass Y(X): pass\ntry:\n    class Z(X, Y):\n        pass\nexcept TypeError as e:\n    print('e2:', e)\nmatch d:\n    case C():\n        print('pattern-matches-C')"
+    )]
+    [InlineData(
+        "class WA:\n    def __init__(self):\n        self.trail = ['A']\nclass WB(WA):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('B')\nclass WC(WA):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('C')\nclass WD(WB, WC):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('D')\nprint(WD().trail)\nclass M1:\n    def name(self): return 'M1'\nclass M2(M1):\n    def name(self): return 'M2+' + super().name()\nclass M3(M1):\n    def name(self): return 'M3+' + super().name()\nclass M4(M2, M3):\n    def name(self): return 'M4+' + super().name()\nprint(M4().name())\nclass Mix:\n    def helper(self): return 'mix:' + self.base()\nclass Base:\n    def base(self): return 'base'\nclass App(Mix, Base):\n    pass\nprint(App().helper())\nclass Wide(M2, M3, Mix, Base):\n    pass\nprint(Wide().name(), Wide().helper())\nprint([t.__name__ for t in Wide.__mro__ if t.__name__ != 'object'])"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

@@ -6,8 +6,8 @@ namespace DotPython.CompilerTests;
 public sealed class BytecodeFormatTests
 {
     [Fact]
-    public void CurrentVersion_TracksExceptionGroupInstructions()
+    public void CurrentVersion_TracksMultipleInheritanceClassBases()
     {
-        Assert.Equal(26, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(27, DotPythonBytecodeFormat.CurrentVersion);
     }
 }

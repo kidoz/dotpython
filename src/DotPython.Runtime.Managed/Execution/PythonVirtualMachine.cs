@@ -4893,6 +4893,18 @@ internal sealed class PythonVirtualMachine
             closure[index] = CurrentFrame.Cells[cellIndex];
         }
 
+        if (baseValue is PythonTupleValue { Elements.Length: > 1 } baseTuple)
+        {
+            var multiType = CreateMultiBaseClass(code.Definition.Name, baseTuple, instruction.Span);
+            PushClassBodyFrame(multiType, code, closure);
+            return;
+        }
+
+        if (baseValue is PythonTupleValue singleTuple)
+        {
+            baseValue = singleTuple.Elements.Length == 1 ? singleTuple.Elements[0] : null;
+        }
+
         PythonManagedTypeValue type;
         switch (baseValue)
         {
@@ -4937,8 +4949,17 @@ internal sealed class PythonVirtualMachine
             _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName;
         }
 
+        PushClassBodyFrame(type, code, closure);
+    }
+
+    private void PushClassBodyFrame(
+        PythonManagedTypeValue type,
+        PreparedPythonCode code,
+        PythonCell[] closure
+    )
+    {
         var hasReturnLocalContinuation = CaptureReturnLocalContinuation();
-        var cells = CreateCells(code, closure, instruction.Span);
+        var cells = CreateCells(code, closure, default);
         PushFrame(
             code,
             CurrentFrame.Globals,
@@ -4949,6 +4970,110 @@ internal sealed class PythonVirtualMachine
             classNamespace: type,
             returnOverride: type
         );
+    }
+
+    private static PythonManagedTypeValue CreateMultiBaseClass(
+        string name,
+        PythonTupleValue baseTuple,
+        TextSpan span
+    )
+    {
+        var bases = new List<PythonManagedTypeValue>(baseTuple.Elements.Length);
+        foreach (var element in baseTuple.Elements)
+        {
+            switch (element)
+            {
+                case PythonManagedTypeValue { ExceptionBaseName: null } managedBase:
+                    if (bases.Contains(managedBase))
+                    {
+                        throw Fault(
+                            "DPY4034",
+                            $"duplicate base class {managedBase.Name}",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    bases.Add(managedBase);
+                    break;
+                case PythonManagedTypeValue or PythonExceptionTypeValue:
+                    throw Fault(
+                        "DPY3114",
+                        "Multiple inheritance with exception bases is not supported in this runtime slice.",
+                        span,
+                        "TypeError"
+                    );
+                default:
+                    throw Fault(
+                        "DPY4034",
+                        $"'{ManagedObjectProtocols.GetTypeName(element)}' is not an "
+                            + "acceptable base type.",
+                        span,
+                        "TypeError"
+                    );
+            }
+        }
+
+        return new PythonManagedTypeValue(name, bases, LinearizeBases(bases, span));
+    }
+
+    /// <summary>
+    /// C3 merge over the bases' linearizations plus the base list itself: repeatedly
+    /// take the first head that appears in no other sequence's tail.
+    /// </summary>
+    private static List<PythonManagedTypeValue> LinearizeBases(
+        List<PythonManagedTypeValue> bases,
+        TextSpan span
+    )
+    {
+        var sequences = bases
+            .Select(baseType => new List<PythonManagedTypeValue>(baseType.Mro))
+            .ToList();
+        sequences.Add([.. bases]);
+        var result = new List<PythonManagedTypeValue>();
+        while (sequences.Any(sequence => sequence.Count != 0))
+        {
+            PythonManagedTypeValue? selected = null;
+            foreach (var sequence in sequences)
+            {
+                if (sequence.Count == 0)
+                {
+                    continue;
+                }
+
+                var head = sequence[0];
+                var appearsInTail = sequences.Any(other =>
+                    other.Count != 0 && other.IndexOf(head) > 0
+                );
+                if (!appearsInTail)
+                {
+                    selected = head;
+                    break;
+                }
+            }
+
+            if (selected is null)
+            {
+                throw Fault(
+                    "DPY4034",
+                    "Cannot create a consistent method resolution order (MRO) for bases "
+                        + string.Join(", ", bases.Select(baseType => baseType.Name)),
+                    span,
+                    "TypeError"
+                );
+            }
+
+            result.Add(selected);
+            foreach (var sequence in sequences)
+            {
+                if (sequence.Count != 0 && ReferenceEquals(sequence[0], selected))
+                {
+                    sequence.RemoveAt(0);
+                }
+            }
+        }
+
+        return result;
     }
 
     private static PythonCell[] CreateCells(
@@ -5242,15 +5367,7 @@ internal sealed class PythonVirtualMachine
                     return false;
                 }
 
-                for (var current = instance.Type; current is not null; current = current.BaseType)
-                {
-                    if (ReferenceEquals(current, managedType))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
+                return instance.Type.Mro.Any(current => ReferenceEquals(current, managedType));
             }
             case PythonExternalObjectValue externalType:
                 return externalType.Protocol.IsInstanceOf(value, span);

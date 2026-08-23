@@ -105,10 +105,7 @@ internal static class ManagedObjectProtocols
 
                 throw MissingAttribute(instance.Type.Name, name, span);
             case PythonSuperProxyValue proxy:
-                if (
-                    proxy.DefiningType.BaseType is { } baseType
-                    && TryGetTypeAttribute(baseType, name, out var inherited)
-                )
+                if (TryResolveSuperAttribute(proxy, name, out var inherited))
                 {
                     return inherited is PythonFunctionValue inheritedMethod
                         ? new PythonBoundUserMethodValue(name, proxy.Instance, inheritedMethod)
@@ -143,6 +140,10 @@ internal static class ManagedObjectProtocols
                 return value;
             case PythonManagedTypeValue type when name == "__name__":
                 return new PythonTextValue(type.Name);
+            case PythonManagedTypeValue type when name == "__mro__":
+                return new PythonTupleValue([.. type.Mro.Cast<PythonValue>()]);
+            case PythonManagedTypeValue type when name == "__bases__":
+                return new PythonTupleValue([.. type.Bases.Cast<PythonValue>()]);
             case PythonManagedTypeValue type:
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
@@ -1628,13 +1629,48 @@ internal static class ManagedObjectProtocols
             _ => value,
         };
 
+    /// <summary>
+    /// `super()` resolution: search the attribute in the classes after the defining
+    /// class in the instance's dynamic-type MRO (falling back to the defining class's
+    /// own MRO when the instance is not a managed object of a related type).
+    /// </summary>
+    private static bool TryResolveSuperAttribute(
+        PythonSuperProxyValue proxy,
+        string name,
+        out PythonValue value
+    )
+    {
+        var mro =
+            proxy.Instance is PythonManagedObjectValue managed
+            && managed.Type.Mro.Contains(proxy.DefiningType)
+                ? managed.Type.Mro
+                : proxy.DefiningType.Mro;
+        var searching = false;
+        foreach (var current in mro)
+        {
+            if (!searching)
+            {
+                searching = ReferenceEquals(current, proxy.DefiningType);
+                continue;
+            }
+
+            if (current.Attributes.TryGetValue(name, out value!))
+            {
+                return true;
+            }
+        }
+
+        value = null!;
+        return false;
+    }
+
     internal static bool TryGetTypeAttribute(
         PythonManagedTypeValue type,
         string name,
         out PythonValue value
     )
     {
-        for (var current = type; current is not null; current = current.BaseType)
+        foreach (var current in type.Mro)
         {
             if (current.Attributes.TryGetValue(name, out value!))
             {

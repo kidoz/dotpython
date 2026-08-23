@@ -1806,22 +1806,18 @@ public static class PythonCompiler
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            if (@class.Bases.Count > 1)
-            {
-                Report(
-                    "DPY3114",
-                    "Multiple inheritance is not supported in this runtime slice.",
-                    @class.Span
-                );
-            }
-
             if (@class.Bases.Count == 0)
             {
                 Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
             }
             else
             {
-                CompileExpression(@class.Bases[0]);
+                foreach (var baseExpression in @class.Bases)
+                {
+                    CompileExpression(baseExpression);
+                }
+
+                Emit(PythonOpCode.BuildTuple, @class.Bases.Count, @class.Span);
                 Emit(PythonOpCode.MakeClassWithBases, constantIndex, @class.Span);
             }
 

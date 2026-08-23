@@ -328,17 +328,39 @@ internal sealed record PythonManagedTypeValue : PythonValue
         Func<IReadOnlyList<PythonValue>, PythonValue>? construct = null,
         string? exceptionBaseName = null
     )
+        : this(
+            name,
+            baseType is null ? [] : [baseType],
+            baseType?.Mro,
+            construct,
+            exceptionBaseName
+        ) { }
+
+    internal PythonManagedTypeValue(
+        string name,
+        IReadOnlyList<PythonManagedTypeValue> bases,
+        IReadOnlyList<PythonManagedTypeValue>? linearizedBases,
+        Func<IReadOnlyList<PythonValue>, PythonValue>? construct = null,
+        string? exceptionBaseName = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         Name = name;
-        BaseType = baseType;
+        Bases = bases;
+        Mro = [this, .. linearizedBases ?? []];
         Construct = construct;
         ExceptionBaseName = exceptionBaseName;
     }
 
     internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
 
-    internal PythonManagedTypeValue? BaseType { get; }
+    /// <summary>The declared base classes, in source order.</summary>
+    internal IReadOnlyList<PythonManagedTypeValue> Bases { get; }
+
+    /// <summary>The C3 method resolution order, starting with this type (no `object` terminus).</summary>
+    internal IReadOnlyList<PythonManagedTypeValue> Mro { get; }
+
+    internal PythonManagedTypeValue? BaseType => Bases.Count == 0 ? null : Bases[0];
 
     /// <summary>The builtin exception type this class derives from, when it is an exception class.</summary>
     internal string? ExceptionBaseName { get; }
