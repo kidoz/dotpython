@@ -135,6 +135,10 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(builtinTypeValue.Name);
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
+            case PythonExceptionValue { GroupExceptions: not null } group when name == "message":
+                return new PythonTextValue(group.Message);
+            case PythonExceptionValue { GroupExceptions: { } nested } when name == "exceptions":
+                return new PythonTupleValue([.. nested.Cast<PythonValue>()]);
             case PythonTemplateValue template when name == "strings":
                 return new PythonTupleValue([
                     .. template.Strings.Select(text => (PythonValue)new PythonTextValue(text)),

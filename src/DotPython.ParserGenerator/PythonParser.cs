@@ -895,6 +895,21 @@ public static class PythonParser
 
             while (MatchKeyword("except", out var exceptToken))
             {
+                var isStar = Match(SyntaxTokenKind.Star);
+                if (handlers.Count != 0 && handlers[0].IsStar != isStar)
+                {
+                    Report(
+                        "DPY2028",
+                        "cannot have both 'except' and 'except*' on the same 'try'",
+                        exceptToken.Span
+                    );
+                }
+
+                if (isStar && Current.Kind == SyntaxTokenKind.Colon)
+                {
+                    Report("DPY2028", "expected one or more exception types", Current.Span);
+                }
+
                 PythonExpression? type = null;
                 PythonNameExpression? target = null;
                 if (Current.Kind != SyntaxTokenKind.Colon)
@@ -937,7 +952,8 @@ public static class PythonParser
                         type,
                         target,
                         handlerBody,
-                        TextSpan.FromBounds(exceptToken.Span.Start, end)
+                        TextSpan.FromBounds(exceptToken.Span.Start, end),
+                        isStar
                     )
                 );
 

@@ -386,16 +386,46 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal bool SuppressContext { get; set; }
 
+    /// <summary>The nested exceptions of an exception group; null for plain exceptions.</summary>
+    internal IReadOnlyList<PythonExceptionValue>? GroupExceptions { get; init; }
+
     public bool Equals(PythonExceptionValue? other) => ReferenceEquals(this, other);
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
-    internal override string ToDisplayString() => Message;
+    internal override string ToDisplayString() =>
+        GroupExceptions is { } group
+            ? $"{Message} ({group.Count} sub-exception{(group.Count == 1 ? "" : "s")})"
+            : Message;
 
-    internal override string ToRepresentationString() =>
-        Message.Length == 0
+    internal override string ToRepresentationString()
+    {
+        if (GroupExceptions is { } group)
+        {
+            var nested = string.Join(
+                ", ",
+                group.Select(exception => exception.ToRepresentationString())
+            );
+            return $"{TypeName}({new PythonTextValue(Message).ToRepresentationString()}, [{nested}])";
+        }
+
+        return Message.Length == 0
             ? $"{TypeName}()"
             : $"{TypeName}({new PythonTextValue(Message).ToRepresentationString()})";
+    }
+}
+
+/// <summary>
+/// Threads `except*` handler state through the clause chain on the evaluation stack:
+/// the unmatched remainder plus exceptions raised by clause bodies.
+/// </summary>
+internal sealed record PythonExceptStarStateValue : PythonValue
+{
+    internal PythonExceptionValue? Rest { get; set; }
+
+    internal List<PythonExceptionValue> Raised { get; } = [];
+
+    internal override string ToDisplayString() => "<except* state>";
 }
 
 internal sealed record PythonFunctionValue(

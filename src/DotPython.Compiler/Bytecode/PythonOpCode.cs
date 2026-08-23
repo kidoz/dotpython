@@ -108,4 +108,8 @@ public enum PythonOpCode
     GetAsyncNext = 103,
     EndAsyncFor = 104,
     AsyncYieldWrap = 105,
+    ExceptStarInit = 106,
+    ExceptStarMatch = 107,
+    ExceptStarCollect = 108,
+    ExceptStarFinish = 109,
 }

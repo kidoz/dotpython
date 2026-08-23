@@ -26,6 +26,8 @@ internal sealed class PythonVirtualMachine
             ["StopIteration"] = "Exception",
             ["StopAsyncIteration"] = "Exception",
             ["GeneratorExit"] = "BaseException",
+            ["BaseExceptionGroup"] = "BaseException",
+            ["ExceptionGroup"] = "BaseExceptionGroup",
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
             ["TypeError"] = "Exception",
@@ -525,6 +527,23 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.AsyncYieldWrap:
                 _evaluationStack.Push(new PythonAsyncGeneratorWrappedValue(Pop(instruction.Span)));
                 break;
+            case PythonOpCode.ExceptStarInit:
+                _evaluationStack.Push(
+                    new PythonExceptStarStateValue
+                    {
+                        Rest = GetActiveException(instruction.Span).Value,
+                    }
+                );
+                break;
+            case PythonOpCode.ExceptStarMatch:
+                ApplyExceptStarMatch(instruction);
+                break;
+            case PythonOpCode.ExceptStarCollect:
+                ApplyExceptStarCollect(ref frame, instruction);
+                break;
+            case PythonOpCode.ExceptStarFinish:
+                ApplyExceptStarFinish(ref frame, instruction);
+                break;
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
@@ -960,6 +979,17 @@ internal sealed class PythonVirtualMachine
         for (string? current = candidate; current is not null; )
         {
             if (string.Equals(current, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            // CPython's ExceptionGroup derives from both BaseExceptionGroup and
+            // Exception; the single-parent chain carries the group side, so the
+            // Exception edge is added here.
+            if (
+                string.Equals(current, "ExceptionGroup", StringComparison.Ordinal)
+                && string.Equals(expected, "Exception", StringComparison.Ordinal)
+            )
             {
                 return true;
             }
@@ -1970,6 +2000,162 @@ internal sealed class PythonVirtualMachine
         {
             throw fault;
         }
+    }
+
+    private void ApplyExceptStarMatch(PythonInstruction instruction)
+    {
+        var handlerType = Pop(instruction.Span);
+        if (Peek(instruction.Span) is not PythonExceptStarStateValue state)
+        {
+            throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+        }
+
+        if (state.Rest is null)
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
+        var (matched, rest) = SplitExceptionByType(state.Rest, handlerType, instruction.Span);
+        state.Rest = rest;
+        if (matched is null)
+        {
+            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTruthValue.False);
+            return;
+        }
+
+        // A matched naked exception binds wrapped in a single-element group.
+        var bound = matched.GroupExceptions is null
+            ? new PythonExceptionValue(
+                IsExceptionSubclass(matched.TypeName, "Exception")
+                    ? "ExceptionGroup"
+                    : "BaseExceptionGroup",
+                string.Empty
+            )
+            {
+                GroupExceptions = [matched],
+            }
+            : matched;
+        _evaluationStack.Push(bound);
+        _evaluationStack.Push(PythonTruthValue.True);
+    }
+
+    private (PythonExceptionValue? Matched, PythonExceptionValue? Remainder) SplitExceptionByType(
+        PythonExceptionValue exception,
+        PythonValue handlerType,
+        TextSpan span
+    )
+    {
+        // The condition applies to group nodes as a whole first (PEP 654 split), then
+        // recurses, rebuilding matched/rest groups that preserve message and type.
+        if (MatchesExceptionType(exception, handlerType, span))
+        {
+            return (exception, null);
+        }
+
+        if (exception.GroupExceptions is null)
+        {
+            return (null, exception);
+        }
+
+        var matchedChildren = new List<PythonExceptionValue>();
+        var restChildren = new List<PythonExceptionValue>();
+        foreach (var child in exception.GroupExceptions)
+        {
+            var (matched, rest) = SplitExceptionByType(child, handlerType, span);
+            if (matched is not null)
+            {
+                matchedChildren.Add(matched);
+            }
+
+            if (rest is not null)
+            {
+                restChildren.Add(rest);
+            }
+        }
+
+        return (
+            matchedChildren.Count == 0
+                ? null
+                : new PythonExceptionValue(exception.TypeName, exception.Message)
+                {
+                    GroupExceptions = matchedChildren,
+                },
+            restChildren.Count == 0
+                ? null
+                : new PythonExceptionValue(exception.TypeName, exception.Message)
+                {
+                    GroupExceptions = restChildren,
+                }
+        );
+    }
+
+    private void ApplyExceptStarCollect(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        if (frame.ActiveExceptions.Count == 0)
+        {
+            throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+        }
+
+        var raised = frame.ActiveExceptions.Pop();
+        if (Peek(instruction.Span) is not PythonExceptStarStateValue state)
+        {
+            throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+        }
+
+        state.Raised.Add(raised.Value);
+    }
+
+    private void ApplyExceptStarFinish(ref PythonFrame frame, PythonInstruction instruction)
+    {
+        if (Pop(instruction.Span) is not PythonExceptStarStateValue state)
+        {
+            throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+        }
+
+        if (state.Raised.Count == 0 && state.Rest is null)
+        {
+            // Fully handled: consume the active exception like ClearException.
+            if (frame.ActiveExceptions.Count == 0)
+            {
+                throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+            }
+
+            frame.ActiveExceptions.Pop();
+            return;
+        }
+
+        if (state.Raised.Count == 0)
+        {
+            // Nothing matched or handler bodies were clean: the remainder re-raises
+            // with its original structure.
+            throw CreateRaisedException(state.Rest!);
+        }
+
+        if (state.Raised.Count == 1 && state.Rest is null)
+        {
+            // A single handler-raised exception propagates raw.
+            throw CreateRaisedException(state.Raised[0]);
+        }
+
+        var items = new List<PythonExceptionValue>(state.Raised);
+        if (state.Rest is not null)
+        {
+            items.Add(state.Rest);
+        }
+
+        var allExceptions = items.All(item => IsExceptionSubclass(item.TypeName, "Exception"));
+        throw CreateRaisedException(
+            new PythonExceptionValue(
+                allExceptions ? "ExceptionGroup" : "BaseExceptionGroup",
+                string.Empty
+            )
+            {
+                GroupExceptions = items,
+            }
+        );
     }
 
     private void DriveAsyncGeneratorStep(
@@ -3890,10 +4076,88 @@ internal sealed class PythonVirtualMachine
         return arguments;
     }
 
-    private static PythonExceptionValue CreateExceptionValue(
+    private PythonExceptionValue CreateExceptionValue(
         PythonExceptionTypeValue type,
         PythonValue[] arguments
-    ) => new(type.Name, ComposeExceptionMessage(arguments));
+    ) =>
+        type.Name is "ExceptionGroup" or "BaseExceptionGroup"
+            ? CreateExceptionGroupValue(type.Name, arguments)
+            : new(type.Name, ComposeExceptionMessage(arguments));
+
+    private PythonExceptionValue CreateExceptionGroupValue(string name, PythonValue[] arguments)
+    {
+        if (arguments.Length != 2)
+        {
+            throw CreateRaisedException(
+                new PythonExceptionValue(
+                    "TypeError",
+                    $"{name}.__new__() takes exactly 2 arguments ({arguments.Length} given)"
+                )
+            );
+        }
+
+        if (arguments[0] is not PythonTextValue message)
+        {
+            throw CreateRaisedException(
+                new PythonExceptionValue(
+                    "TypeError",
+                    $"BaseExceptionGroup.__new__() argument 1 must be str, not {ManagedObjectProtocols.GetTypeName(arguments[0])}"
+                )
+            );
+        }
+
+        var elements = ManagedObjectProtocols.MaterializeValues(
+            arguments[1],
+            default,
+            _userIterationDispatcher
+        );
+        if (elements.Count == 0)
+        {
+            throw CreateRaisedException(
+                new PythonExceptionValue(
+                    "ValueError",
+                    "second argument (exceptions) must be a non-empty sequence"
+                )
+            );
+        }
+
+        var nested = new List<PythonExceptionValue>(elements.Count);
+        for (var index = 0; index < elements.Count; index++)
+        {
+            if (elements[index] is not PythonExceptionValue exception)
+            {
+                throw CreateRaisedException(
+                    new PythonExceptionValue(
+                        "ValueError",
+                        $"Item {index} of second argument (exceptions) is not an exception"
+                    )
+                );
+            }
+
+            nested.Add(exception);
+        }
+
+        var allExceptions = nested.All(exception =>
+            IsExceptionSubclass(exception.TypeName, "Exception")
+        );
+        if (name == "ExceptionGroup" && !allExceptions)
+        {
+            throw CreateRaisedException(
+                new PythonExceptionValue(
+                    "TypeError",
+                    "Cannot nest BaseExceptions in an ExceptionGroup"
+                )
+            );
+        }
+
+        return new PythonExceptionValue(
+            allExceptions ? "ExceptionGroup" : "BaseExceptionGroup",
+            message.Value
+        )
+        {
+            GroupExceptions = nested,
+        };
+    }
 
     private static string ComposeExceptionMessage(PythonValue[] arguments) =>
         arguments.Length switch

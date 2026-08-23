@@ -160,6 +160,33 @@ public sealed class PythonParserTests
     }
 
     [Fact]
+    public void Parse_BuildsExceptStarHandlersAndRejectsMixing()
+    {
+        var result = Parse(
+            "try:\n"
+                + "    work()\n"
+                + "except* ValueError as e:\n"
+                + "    print(e)\n"
+                + "except* (KeyError, TypeError):\n"
+                + "    pass\n"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var statement = Assert.IsType<PythonTryStatement>(Assert.Single(result.Module.Statements));
+        Assert.Equal(2, statement.Handlers.Count);
+        Assert.All(statement.Handlers, handler => Assert.True(handler.IsStar));
+        Assert.Equal("e", statement.Handlers[0].Target?.Name);
+
+        var mixed = Parse(
+            "try:\n    pass\nexcept ValueError:\n    pass\nexcept* TypeError:\n    pass\n"
+        );
+        Assert.Contains(mixed.Diagnostics, diagnostic => diagnostic.Code == "DPY2028");
+
+        var bare = Parse("try:\n    pass\nexcept*:\n    pass\n");
+        Assert.Contains(bare.Diagnostics, diagnostic => diagnostic.Code == "DPY2028");
+    }
+
+    [Fact]
     public void Parse_RejectsAHandlerAfterBareExcept()
     {
         var result = Parse(

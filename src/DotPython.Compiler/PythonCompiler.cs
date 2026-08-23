@@ -66,6 +66,7 @@ public static class PythonCompiler
         private readonly string? _enclosingClassName;
         private bool _isCoroutine;
         private bool _isAsyncGenerator;
+        private int _exceptStarBodyDepth;
 
         internal Compiler(
             string codeName,
@@ -1677,6 +1678,11 @@ public static class PythonCompiler
                 return;
             }
 
+            if (ReportExceptStarControlFlow(statement.Span))
+            {
+                return;
+            }
+
             if (statement.Value is null || IsNoneLiteral(statement.Value))
             {
                 Emit(PythonOpCode.ReturnNone, 0, statement.Span);
@@ -1906,6 +1912,12 @@ public static class PythonCompiler
                 return;
             }
 
+            if (statement.Handlers[0].IsStar)
+            {
+                CompileTryExceptStar(statement);
+                return;
+            }
+
             _protectionScopes.Add(ExceptProtection.Instance);
             var setupExcept = Emit(PythonOpCode.SetupExcept, 0, statement.Span);
             CompileStatements(statement.Body);
@@ -1968,6 +1980,78 @@ public static class PythonCompiler
             {
                 PatchJump(handledExit, end);
             }
+        }
+
+        private void CompileTryExceptStar(PythonTryStatement statement)
+        {
+            // PEP 654: every clause splits the remaining exception by its type, runs
+            // with the matched subgroup, and the remainder plus any exceptions raised
+            // by clause bodies re-raise (combined) after the chain. The chain threads
+            // a single state value on the evaluation stack.
+            _protectionScopes.Add(ExceptProtection.Instance);
+            var setupExcept = Emit(PythonOpCode.SetupExcept, 0, statement.Span);
+            CompileStatements(statement.Body);
+            Emit(PythonOpCode.PopExceptionBlock, 0, statement.Span);
+            _protectionScopes.RemoveAt(_protectionScopes.Count - 1);
+            CompileStatements(statement.ElseBody);
+            var normalExit = Emit(PythonOpCode.Jump, 0, statement.Span);
+            PatchJump(setupExcept, _instructions.Count);
+
+            Emit(PythonOpCode.ExceptStarInit, 0, statement.Span);
+            foreach (var handler in statement.Handlers)
+            {
+                if (handler.Type is null)
+                {
+                    continue;
+                }
+
+                CompileExpression(handler.Type);
+                Emit(PythonOpCode.ExceptStarMatch, 0, handler.Type.Span);
+                var skipClause = Emit(PythonOpCode.JumpIfFalse, 0, handler.Type.Span);
+                if (handler.Target is not null)
+                {
+                    EmitStoreName(handler.Target);
+                }
+                else
+                {
+                    Emit(PythonOpCode.PopTop, 0, handler.Span);
+                }
+
+                var clauseCatch = Emit(PythonOpCode.SetupExcept, 0, handler.Span);
+                _exceptStarBodyDepth++;
+                CompileStatements(handler.Body);
+                _exceptStarBodyDepth--;
+                Emit(PythonOpCode.PopExceptionBlock, 0, handler.Span);
+                EmitExceptStarTargetCleanup(handler);
+                var bodyDone = Emit(PythonOpCode.Jump, 0, handler.Span);
+                PatchJump(clauseCatch, _instructions.Count);
+                Emit(PythonOpCode.ExceptStarCollect, 0, handler.Span);
+                EmitExceptStarTargetCleanup(handler);
+                var collectDone = Emit(PythonOpCode.Jump, 0, handler.Span);
+                PatchJump(skipClause, _instructions.Count);
+                Emit(PythonOpCode.PopTop, 0, handler.Span);
+                PatchJump(bodyDone, _instructions.Count);
+                PatchJump(collectDone, _instructions.Count);
+            }
+
+            Emit(PythonOpCode.ExceptStarFinish, 0, statement.Span);
+            PatchJump(normalExit, _instructions.Count);
+        }
+
+        private void EmitExceptStarTargetCleanup(PythonExceptHandler handler)
+        {
+            if (handler.Target is null)
+            {
+                return;
+            }
+
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(new PythonConstant(PythonConstantType.NoneValue, null)),
+                handler.Target.Span
+            );
+            EmitStoreName(handler.Target);
+            EmitDeleteName(handler.Target);
         }
 
         private void CompileImportStatement(PythonImportStatement statement)
@@ -2123,8 +2207,28 @@ public static class PythonCompiler
             PatchBreakJumps(loop);
         }
 
+        private bool ReportExceptStarControlFlow(TextSpan span)
+        {
+            if (_exceptStarBodyDepth == 0)
+            {
+                return false;
+            }
+
+            Report(
+                "DPY3118",
+                "'break', 'continue' and 'return' cannot appear in an except* block.",
+                span
+            );
+            return true;
+        }
+
         private void CompileBreakStatement(PythonBreakStatement statement)
         {
+            if (ReportExceptStarControlFlow(statement.Span))
+            {
+                return;
+            }
+
             var loop = GetTargetLoop("break", "DPY3104", statement.Span);
             if (loop is null)
             {
@@ -2142,6 +2246,11 @@ public static class PythonCompiler
 
         private void CompileContinueStatement(PythonContinueStatement statement)
         {
+            if (ReportExceptStarControlFlow(statement.Span))
+            {
+                return;
+            }
+
             var loop = GetTargetLoop("continue", "DPY3105", statement.Span);
             if (loop is null)
             {

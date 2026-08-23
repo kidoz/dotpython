@@ -165,7 +165,8 @@ public sealed record PythonExceptHandler(
     PythonExpression? Type,
     PythonNameExpression? Target,
     IReadOnlyList<PythonStatement> Body,
-    TextSpan Span
+    TextSpan Span,
+    bool IsStar = false
 ) : PythonNode(Span);
 
 public sealed record PythonMatchStatement(
