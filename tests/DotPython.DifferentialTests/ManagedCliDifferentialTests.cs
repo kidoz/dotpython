@@ -483,6 +483,12 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "class WA:\n    def __init__(self):\n        self.trail = ['A']\nclass WB(WA):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('B')\nclass WC(WA):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('C')\nclass WD(WB, WC):\n    def __init__(self):\n        super().__init__()\n        self.trail.append('D')\nprint(WD().trail)\nclass M1:\n    def name(self): return 'M1'\nclass M2(M1):\n    def name(self): return 'M2+' + super().name()\nclass M3(M1):\n    def name(self): return 'M3+' + super().name()\nclass M4(M2, M3):\n    def name(self): return 'M4+' + super().name()\nprint(M4().name())\nclass Mix:\n    def helper(self): return 'mix:' + self.base()\nclass Base:\n    def base(self): return 'base'\nclass App(Mix, Base):\n    pass\nprint(App().helper())\nclass Wide(M2, M3, Mix, Base):\n    pass\nprint(Wide().name(), Wide().helper())\nprint([t.__name__ for t in Wide.__mro__ if t.__name__ != 'object'])"
     )]
+    [InlineData(
+        "print(callable(len), callable(print), callable(int), callable(lambda: 1), callable(5), callable('x'))\nclass NoCall: pass\nprint(callable(NoCall()), callable(NoCall))\nclass Box: pass\nb = Box()\nb.v = 1\ndelattr(b, 'v')\nprint(hasattr(b, 'v'))\ntry:\n    delattr(b, 'v')\nexcept AttributeError as e:\n    print('d1:', e)\ncounter = [0]\ndef step():\n    counter[0] += 1\n    return counter[0]\nprint(list(iter(step, 4)))\ndef f():\n    a = 1\n    b = 'x'\n    return vars()\nprint(f())\ne = ValueError('v')\nprint(e.with_traceback(None) is e)\ntry:\n    try:\n        raise OverflowError('inner')\n    except OverflowError:\n        raise ValueError('outer')\nexcept ValueError as exc:\n    print(type(exc.__context__).__name__, exc.__cause__, exc.__suppress_context__)\ntry:\n    raise ValueError('x') from TypeError('cause')\nexcept ValueError as exc:\n    print(type(exc.__cause__).__name__, exc.__suppress_context__)"
+    )]
+    [InlineData(
+        "def g(a, b, /, c, *, d=4):\n    return (a, b, c, d)\nprint(g(1, 2, 3), g(1, 2, c=3, d=9))\ntry:\n    g(1, b=2, c=3)\nexcept TypeError as e:\n    print('p1:', e)\ndef kw_sink(a, /, **kw):\n    return (a, kw)\nprint(kw_sink(1, a=2))\ndef h(x, y, z=0):\n    return (x, y, z)\nrest = [5, 6]\nprint(h(z=9, *rest))\nlam = lambda a, /, b: (a, b)\nprint(lam(1, b=2))"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

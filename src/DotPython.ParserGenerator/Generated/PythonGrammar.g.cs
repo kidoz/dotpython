@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "0b8b9bfee6e4c058eb60b07cbd3e9516e3e2533660017ea3d36337bd700b7659";
+    internal const string SourceSha256 = "b471a006948b1382450d20f9e9ce009fdacd7197ad003760439bfd8149c58197";
     internal const int RuleCount = 88;
 
     private const string GrammarSource = """
@@ -61,7 +61,7 @@ internal static class GeneratedPythonGrammar
         class_pattern_args: ','.class_pattern_arg+ [',']
         class_pattern_arg: NAME '=' case_pattern | case_pattern
         parameters: ','.parameter+ [',']
-        parameter: '**' NAME [':' expression] | '*' [NAME [':' expression]] | NAME [':' expression] ['=' expression]
+        parameter: '/' | '**' NAME [':' expression] | '*' [NAME [':' expression]] | NAME [':' expression] ['=' expression]
         block: NEWLINE INDENT statements DEDENT | simple_stmts
         expression: lambda_expression | assignment_expression | yield_expression | conditional_expression
         yield_expression: 'yield' 'from' expression | 'yield' [expression_list]
@@ -69,7 +69,7 @@ internal static class GeneratedPythonGrammar
         conditional_expression: disjunction ['if' disjunction 'else' expression]
         lambda_expression: 'lambda' [lambda_parameters] ':' expression
         lambda_parameters: ','.lambda_parameter+ [',']
-        lambda_parameter: '**' NAME | '*' [NAME] | NAME ['=' expression]
+        lambda_parameter: '/' | '**' NAME | '*' [NAME] | NAME ['=' expression]
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
         inversion: 'not' inversion | comparison

@@ -54,6 +54,7 @@ public sealed record PythonClassDefinitionStatement(
 
 public enum PythonParameterKind
 {
+    PositionalOnly,
     Positional,
     VariadicPositional,
     KeywordOnly,

@@ -113,12 +113,16 @@ public static class PythonCompiler
         )
         {
             var keywordOnlyCount = 0;
+            var positionalOnlyCount = 0;
             var hasVariadicPositional = false;
             var hasVariadicKeywords = false;
             foreach (var parameter in signature ?? [])
             {
                 switch (parameter.Kind)
                 {
+                    case PythonParameterKind.PositionalOnly:
+                        positionalOnlyCount++;
+                        break;
                     case PythonParameterKind.KeywordOnly:
                         keywordOnlyCount++;
                         break;
@@ -141,6 +145,7 @@ public static class PythonCompiler
                 [.. _scope.FreeVariableNames],
                 _scope.Parameters.Count,
                 keywordOnlyCount,
+                positionalOnlyCount,
                 hasVariadicPositional,
                 hasVariadicKeywords,
                 isGenerator,

@@ -168,6 +168,31 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue exceptionInstance
                 when exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
                 return exceptionAttribute;
+            case PythonExceptionValue contextSource when name == "__context__":
+                return (PythonValue?)contextSource.Context ?? PythonNoneValue.Instance;
+            case PythonExceptionValue causeSource when name == "__cause__":
+                return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
+            case PythonExceptionValue suppressSource when name == "__suppress_context__":
+                return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
+            case PythonExceptionValue tracebackSource when name == "with_traceback":
+                // The managed model does not carry traceback objects; the method
+                // accepts and ignores its argument, returning the exception itself.
+                return new PythonBoundMethodValue(
+                    "with_traceback",
+                    tracebackSource,
+                    new PythonProtocolFunctionValue(
+                        "with_traceback",
+                        (_, tracebackArguments) =>
+                            tracebackArguments.Count == 1
+                                ? tracebackSource
+                                : throw Fault(
+                                    "DPY4003",
+                                    $"with_traceback() takes exactly one argument ({tracebackArguments.Count} given).",
+                                    default,
+                                    "TypeError"
+                                )
+                    )
+                );
             case PythonExceptionValue missingAttributeException:
                 throw MissingAttribute(missingAttributeException.TypeName, name, span);
             case PythonTemplateValue template when name == "strings":

@@ -6,6 +6,10 @@ internal sealed class PythonGlobalNamespace
 
     internal long KeysVersion { get; private set; }
 
+    /// <summary>Name/value pairs in insertion order (for `vars()` at module level).</summary>
+    internal IEnumerable<(string Name, PythonValue Value)> Entries =>
+        _slots.Select(pair => (pair.Key, pair.Value.Value));
+
     internal void SetValue(string name, PythonValue value)
     {
         if (_slots.TryGetValue(name, out var slot))

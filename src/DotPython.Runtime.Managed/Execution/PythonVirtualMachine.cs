@@ -96,6 +96,8 @@ internal sealed class PythonVirtualMachine
             ["super"] = new PythonBuiltinFunctionValue("super", Super),
             ["next"] = new PythonBuiltinFunctionValue("next", Next),
             ["anext"] = new PythonBuiltinFunctionValue("anext", ANext),
+            ["callable"] = new PythonBuiltinFunctionValue("callable", Callable),
+            ["delattr"] = new PythonBuiltinFunctionValue("delattr", DeleteAttributeBuiltin),
             ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
@@ -2449,13 +2451,30 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue Iterate(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        if (arguments.Count != 1)
+        if (arguments.Count is not (1 or 2))
         {
             throw Fault(
                 "DPY4003",
-                $"iter expected 1 argument, got {arguments.Count}.",
+                $"iter expected 1 or 2 arguments, got {arguments.Count}.",
                 span,
                 "TypeError"
+            );
+        }
+
+        if (arguments.Count == 2)
+        {
+            // iter(callable, sentinel): call until the result equals the sentinel.
+            var producer = arguments[0];
+            var sentinel = arguments[1];
+            return new PythonIteratorValue(
+                new PythonUserIteratorSourceValue(() =>
+                {
+                    var produced = InvokeCallableNested(producer, [], span);
+                    return ManagedObjectProtocols.AreEqual(produced, sentinel)
+                        ? (false, PythonNoneValue.Instance)
+                        : (true, produced);
+                }),
+                -1
             );
         }
 
@@ -2579,19 +2598,21 @@ internal sealed class PythonVirtualMachine
         name = text.Value;
     }
 
-    private static PythonDictionaryValue Variables(
-        IReadOnlyList<PythonValue> arguments,
-        TextSpan span
-    )
+    private PythonDictionaryValue Variables(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        if (arguments.Count != 1)
+        if (arguments.Count > 1)
         {
             throw Fault(
                 "DPY4003",
-                $"vars expected 1 argument, got {arguments.Count}.",
+                $"vars expected at most 1 argument, got {arguments.Count}.",
                 span,
                 "TypeError"
             );
+        }
+
+        if (arguments.Count == 0)
+        {
+            return CurrentFrameLocals(span);
         }
 
         if (arguments[0] is not PythonManagedObjectValue instance)
@@ -2613,6 +2634,48 @@ internal sealed class PythonVirtualMachine
                 attributeValue,
                 span
             );
+        }
+
+        return dictionary;
+    }
+
+    private PythonDictionaryValue CurrentFrameLocals(TextSpan span)
+    {
+        ref var frame = ref CurrentFrame;
+        var dictionary = ManagedObjectProtocols.CreateDictionary();
+        var definition = frame.Code.Definition;
+        if (definition.VariableNames.Count == 0)
+        {
+            // Module level: locals are the globals, per CPython.
+            foreach (var (name, value) in frame.Globals.Entries)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    new PythonTextValue(name),
+                    value,
+                    span
+                );
+            }
+
+            return dictionary;
+        }
+
+        for (var index = 0; index < definition.VariableNames.Count; index++)
+        {
+            var cellIndex = frame.Code.GetLocalCellIndex(index);
+            var value =
+                cellIndex >= 0 && (uint)cellIndex < (uint)frame.Cells.Length
+                    ? frame.Cells[cellIndex].Value
+                    : _locals[frame.LocalsBase + index];
+            if (value is not null)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    new PythonTextValue(definition.VariableNames[index]),
+                    value,
+                    span
+                );
+            }
         }
 
         return dictionary;
@@ -3657,6 +3720,7 @@ internal sealed class PythonVirtualMachine
         }
 
         var variableNames = definition.VariableNames;
+        List<string>? positionalOnlyKeywords = null;
         for (var index = 0; index < keywordNames.Length; index++)
         {
             var name = keywordNames[index];
@@ -3668,6 +3732,20 @@ internal sealed class PythonVirtualMachine
                     slotIndex = parameter;
                     break;
                 }
+            }
+
+            if (slotIndex >= 0 && slotIndex < definition.PositionalOnlyArgumentCount)
+            {
+                // PEP 570: a positional-only name used as a keyword either flows into
+                // **kwargs or raises CPython's dedicated TypeError.
+                if (extraKeywords is not null)
+                {
+                    extraKeywords[new PythonTextValue(name)] = keywordValues[index];
+                    continue;
+                }
+
+                (positionalOnlyKeywords ??= []).Add(name);
+                continue;
             }
 
             if (slotIndex < 0)
@@ -3714,6 +3792,17 @@ internal sealed class PythonVirtualMachine
 
             slots[slotIndex] = keywordValues[index];
             assigned[slotIndex] = true;
+        }
+
+        if (positionalOnlyKeywords is not null)
+        {
+            throw Fault(
+                "DPY4009",
+                $"{function.Name}() got some positional-only arguments passed as "
+                    + $"keyword arguments: '{string.Join("', '", positionalOnlyKeywords)}'",
+                span,
+                "TypeError"
+            );
         }
 
         if (variadicKeywordsIndex >= 0)
@@ -4199,6 +4288,40 @@ internal sealed class PythonVirtualMachine
             1 => arguments[0].ToDisplayString(),
             _ => new PythonTupleValue(arguments).ToDisplayString(),
         };
+
+    private static PythonTruthValue Callable(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        ValidateBuiltinArgumentCount("callable", arguments, span);
+        return PythonTruthValue.FromBoolean(
+            arguments[0] switch
+            {
+                PythonFunctionValue
+                or PythonBuiltinFunctionValue
+                or PythonBuiltinTypeValue
+                or PythonExceptionTypeValue
+                or PythonManagedTypeValue
+                or PythonProtocolFunctionValue
+                or PythonBoundMethodValue
+                or PythonBoundUserMethodValue => true,
+                PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetInstanceMethod(
+                    instance,
+                    "__call__",
+                    out _
+                ),
+                _ => false,
+            }
+        );
+    }
+
+    private static PythonNoneValue DeleteAttributeBuiltin(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        RequireAttributeArguments("delattr", arguments, 2, 2, span, out var name);
+        ManagedObjectProtocols.DeleteAttribute(arguments[0], name, span);
+        return PythonNoneValue.Instance;
+    }
 
     private PythonValue ANext(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {

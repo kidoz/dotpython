@@ -14,6 +14,7 @@ public sealed class PythonCodeObject
         IList<string> freeVariableNames,
         int argumentCount,
         int keywordOnlyArgumentCount = 0,
+        int positionalOnlyArgumentCount = 0,
         bool hasVariadicPositional = false,
         bool hasVariadicKeywords = false,
         bool isGenerator = false,
@@ -34,6 +35,7 @@ public sealed class PythonCodeObject
         Name = name;
         ArgumentCount = argumentCount;
         KeywordOnlyArgumentCount = keywordOnlyArgumentCount;
+        PositionalOnlyArgumentCount = positionalOnlyArgumentCount;
         HasVariadicPositional = hasVariadicPositional;
         HasVariadicKeywords = hasVariadicKeywords;
         IsGenerator = isGenerator;
@@ -54,6 +56,9 @@ public sealed class PythonCodeObject
 
     /// <summary>Keyword-only parameter slot count within <see cref="ArgumentCount"/>.</summary>
     public int KeywordOnlyArgumentCount { get; }
+
+    /// <summary>Leading parameter slots that reject keyword binding (PEP 570 `/`).</summary>
+    public int PositionalOnlyArgumentCount { get; }
 
     /// <summary>Whether a `*args` slot exists (in source order, before keyword-only slots).</summary>
     public bool HasVariadicPositional { get; }

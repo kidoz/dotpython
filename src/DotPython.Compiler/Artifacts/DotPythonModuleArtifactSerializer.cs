@@ -146,6 +146,7 @@ public static class DotPythonModuleArtifactSerializer
         writer.WriteString(code.Name);
         writer.WriteInt32(code.ArgumentCount);
         writer.WriteInt32(code.KeywordOnlyArgumentCount);
+        writer.WriteInt32(code.PositionalOnlyArgumentCount);
         writer.WriteInt32(
             (code.HasVariadicPositional ? 1 : 0)
                 | (code.HasVariadicKeywords ? 2 : 0)
@@ -188,6 +189,9 @@ public static class DotPythonModuleArtifactSerializer
         var name = reader.ReadString();
         var argumentCount = reader.ReadNonNegativeInt32("argument count");
         var keywordOnlyArgumentCount = reader.ReadNonNegativeInt32("keyword-only argument count");
+        var positionalOnlyArgumentCount = reader.ReadNonNegativeInt32(
+            "positional-only argument count"
+        );
         var signatureFlags = reader.ReadNonNegativeInt32("signature flags");
         if (signatureFlags > 15)
         {
@@ -237,6 +241,7 @@ public static class DotPythonModuleArtifactSerializer
             freeVariableNames,
             argumentCount,
             keywordOnlyArgumentCount,
+            positionalOnlyArgumentCount,
             hasVariadicPositional: (signatureFlags & 1) != 0,
             hasVariadicKeywords: (signatureFlags & 2) != 0,
             isGenerator: (signatureFlags & 4) != 0,

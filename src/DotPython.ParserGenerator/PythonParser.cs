@@ -2052,9 +2052,11 @@ public static class PythonParser
             var sawBareStar = false;
             var sawDoubleStar = false;
             var sawKeywordOnly = false;
+            var sawSlash = false;
             while (
                 Current.Kind == SyntaxTokenKind.Star
                 || Current.Kind == SyntaxTokenKind.DoubleStar
+                || Current.Kind == SyntaxTokenKind.Slash
                 || (
                     Current.Kind == SyntaxTokenKind.Identifier
                     && (!IsExpressionKeyword(Current.Text) || IsReservedKeyword(Current.Text))
@@ -2066,7 +2068,34 @@ public static class PythonParser
                     Report("DPY2021", "No parameters may follow the '**' parameter.", Current.Span);
                 }
 
-                if (Match(SyntaxTokenKind.DoubleStar))
+                if (Current.Kind == SyntaxTokenKind.Slash)
+                {
+                    var slashToken = Advance();
+                    if (sawSlash || sawStar || parameters.Count == 0)
+                    {
+                        Report(
+                            "DPY2030",
+                            "The '/' marker requires preceding parameters and must appear "
+                                + "once, before any '*' parameter.",
+                            slashToken.Span
+                        );
+                    }
+                    else
+                    {
+                        sawSlash = true;
+                        for (var index = 0; index < parameters.Count; index++)
+                        {
+                            if (parameters[index].Kind == PythonParameterKind.Positional)
+                            {
+                                parameters[index] = parameters[index] with
+                                {
+                                    Kind = PythonParameterKind.PositionalOnly,
+                                };
+                            }
+                        }
+                    }
+                }
+                else if (Match(SyntaxTokenKind.DoubleStar))
                 {
                     var nameToken = Expect(
                         SyntaxTokenKind.Identifier,
@@ -2589,15 +2618,6 @@ public static class PythonParser
                                 {
                                     ReportExpected("an iterable after '*'", Current.Span);
                                     break;
-                                }
-
-                                if (keywordArguments.Count != 0)
-                                {
-                                    Report(
-                                        "DPY2017",
-                                        "An iterable unpacking follows a keyword argument.",
-                                        unpacked.Span
-                                    );
                                 }
 
                                 arguments.Add(

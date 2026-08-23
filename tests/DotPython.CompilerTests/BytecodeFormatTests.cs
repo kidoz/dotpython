@@ -6,8 +6,8 @@ namespace DotPython.CompilerTests;
 public sealed class BytecodeFormatTests
 {
     [Fact]
-    public void CurrentVersion_TracksMultipleInheritanceClassBases()
+    public void CurrentVersion_TracksPositionalOnlySignatures()
     {
-        Assert.Equal(27, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(28, DotPythonBytecodeFormat.CurrentVersion);
     }
 }
