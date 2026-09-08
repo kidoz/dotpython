@@ -5,7 +5,7 @@ namespace DotPython.Worker.Host;
 
 internal sealed class WorkerSessionState : IAsyncDisposable
 {
-    private readonly NativeExecutionLane _nativeLane = new();
+    private readonly NativeExecutionLane _nativeLane;
     private readonly Dictionary<long, StableAbiModule> _nativeModules = [];
     private readonly List<long> _nativeOrder = [];
     private readonly Dictionary<string, StableAbiModuleCatalogEntry> _stableAbiModules;
@@ -15,11 +15,14 @@ internal sealed class WorkerSessionState : IAsyncDisposable
 
     internal WorkerSessionState(
         IReadOnlyList<string> packageRoots,
-        IReadOnlyList<StableAbiModuleCatalogEntry> stableAbiModules
+        IReadOnlyList<StableAbiModuleCatalogEntry> stableAbiModules,
+        NativeExecutionLane nativeLane
     )
     {
         ArgumentNullException.ThrowIfNull(packageRoots);
         ArgumentNullException.ThrowIfNull(stableAbiModules);
+        ArgumentNullException.ThrowIfNull(nativeLane);
+        _nativeLane = nativeLane;
         _stableAbiModules = stableAbiModules.ToDictionary(
             entry => entry.Manifest.ModuleName,
             StringComparer.Ordinal
@@ -81,7 +84,6 @@ internal sealed class WorkerSessionState : IAsyncDisposable
                 CancellationToken.None
             )
             .ConfigureAwait(false);
-        await _nativeLane.DisposeAsync().ConfigureAwait(false);
     }
 
     private StableAbiModule GetModule(long objectId)

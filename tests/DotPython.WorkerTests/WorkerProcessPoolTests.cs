@@ -484,6 +484,39 @@ public sealed class WorkerProcessPoolTests
     }
 
     [Fact]
+    public async Task Worker_SharesPinnedAnyverOwnerThreadAcrossOverlappingSessions()
+    {
+        SkipAnyverPackageWhenUnavailable();
+        await using var pool = new WorkerProcessPool(CreateQualifiedAnyverOptions());
+        await using var first = await pool.OpenSessionAsync(TestContext.Current.CancellationToken);
+        var firstResult = await first.ExecuteAsync(
+            "import anyver\nprint(anyver.compare('1.0', '2.0'))",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        Assert.True(firstResult.Success, string.Join(Environment.NewLine, firstResult.Diagnostics));
+
+        await using var second = await pool.OpenSessionAsync(TestContext.Current.CancellationToken);
+        var secondResult = await second.ExecuteAsync(
+            "import anyver\nprint(anyver.compare('2.0', '1.0'))",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+        var firstAgain = await first.ExecuteAsync(
+            "import anyver\nprint(anyver.compare('3.0', '3.0'))",
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        Assert.True(
+            secondResult.Success,
+            string.Join(Environment.NewLine, secondResult.Diagnostics)
+        );
+        Assert.True(firstAgain.Success, string.Join(Environment.NewLine, firstAgain.Diagnostics));
+        Assert.Equal("-1" + Environment.NewLine, firstResult.StandardOutput);
+        Assert.Equal("1" + Environment.NewLine, secondResult.StandardOutput);
+        Assert.Equal("0" + Environment.NewLine, firstAgain.StandardOutput);
+        Assert.Equal(WorkerProcessState.Running, pool.State);
+    }
+
+    [Fact]
     public async Task Worker_HashesAndDeduplicatesNativeValuesInManagedCollections()
     {
         SkipAnyverPackageWhenUnavailable();

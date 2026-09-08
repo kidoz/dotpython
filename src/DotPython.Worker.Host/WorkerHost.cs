@@ -12,6 +12,10 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
     private readonly WorkerFrameCodec _codec = new(options.Limits.MaxMessageBytes);
     private readonly SemaphoreSlim _writerGate = new(1, 1);
     private readonly SemaphoreSlim _executionGate = new(options.Limits.MaxConcurrentRequests);
+
+    // The Stable-ABI bridge pins itself to the first thread that touches it for the lifetime of
+    // the process-pinned library, so every session must share this single owner lane.
+    private readonly NativeExecutionLane _nativeLane = new();
     private readonly ConcurrentDictionary<Guid, WorkerSessionState> _sessions = new();
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _activeRequests = new();
     private readonly ConcurrentBag<Task> _executionTasks = [];
@@ -138,7 +142,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
         if (
             !_sessions.TryAdd(
                 request.SessionId,
-                new WorkerSessionState(options.PackageRoots, options.StableAbiModules)
+                new WorkerSessionState(options.PackageRoots, options.StableAbiModules, _nativeLane)
             )
         )
         {
@@ -497,6 +501,7 @@ internal sealed class WorkerHost(WorkerHostOptions options) : IAsyncDisposable
             await session.DisposeAsync().ConfigureAwait(false);
         }
         _sessions.Clear();
+        await _nativeLane.DisposeAsync().ConfigureAwait(false);
 
         _executionGate.Dispose();
         _writerGate.Dispose();
