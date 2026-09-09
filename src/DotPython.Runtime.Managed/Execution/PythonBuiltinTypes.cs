@@ -87,6 +87,8 @@ internal static class PythonBuiltinTypes
             "set" => value is PythonSetValue { IsFrozen: false },
             "frozenset" => value is PythonSetValue { IsFrozen: true },
             "complex" => value is PythonComplexValue,
+            "Template" => value is PythonTemplateValue,
+            "Interpolation" => value is PythonInterpolationValue,
             "object" => true,
             _ => false,
         };

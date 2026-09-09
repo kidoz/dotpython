@@ -15,6 +15,175 @@ internal static class PythonStandardModules
     private const int MaximumFactorialInput = 100_000;
     private const int MaximumOpenFileLength = 8 * 1024 * 1024;
 
+    internal static readonly PythonBuiltinTypeValue TemplateType = new(
+        "Template",
+        ConstructTemplate,
+        (positional, names, _, span) =>
+            names.Count == 0
+                ? ConstructTemplate(positional, span)
+                : throw TemplateArgumentError("Template.__new__ only accepts *args arguments", span)
+    )
+    {
+        ModuleName = "string.templatelib",
+        MatchArguments = new PythonTupleValue([]),
+    };
+
+    internal static readonly PythonBuiltinTypeValue InterpolationType = new(
+        "Interpolation",
+        ConstructInterpolation,
+        PythonKeywordArguments.Adapt(
+            "Interpolation",
+            ["value", "expression", "conversion", "format_spec"],
+            [
+                null,
+                new PythonTextValue(string.Empty),
+                PythonNoneValue.Instance,
+                new PythonTextValue(string.Empty),
+            ],
+            ConstructInterpolation,
+            typeStyleErrors: true
+        )
+    )
+    {
+        ModuleName = "string.templatelib",
+        MatchArguments = new PythonTupleValue([
+            new PythonTextValue("value"),
+            new PythonTextValue("expression"),
+            new PythonTextValue("conversion"),
+            new PythonTextValue("format_spec"),
+        ]),
+    };
+
+    private static void InitializeTemplateLibrary(PythonGlobalNamespace globals)
+    {
+        globals.SetValue("Template", TemplateType);
+        globals.SetValue("Interpolation", InterpolationType);
+        globals.SetValue(
+            "convert",
+            new PythonBuiltinFunctionValue("convert", ConvertInterpolation).WithSignature(
+                ["obj", "conversion"],
+                [null, null],
+                positionalOnly: 1
+            )
+        );
+    }
+
+    private static PythonTemplateValue ConstructTemplate(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        var strings = new List<string> { string.Empty };
+        var interpolations = new List<PythonInterpolationValue>();
+        foreach (var argument in arguments)
+        {
+            switch (argument)
+            {
+                case PythonTextValue text:
+                    strings[^1] += text.Value;
+                    break;
+                case PythonInterpolationValue interpolation:
+                    interpolations.Add(interpolation);
+                    strings.Add(string.Empty);
+                    break;
+                default:
+                    throw TemplateArgumentError(
+                        $"Template.__new__ *args need to be of type 'str' or 'Interpolation', got {ManagedObjectProtocols.GetTypeName(argument)}",
+                        span
+                    );
+            }
+        }
+
+        return new PythonTemplateValue([.. strings], [.. interpolations]);
+    }
+
+    private static PythonValue ConstructInterpolation(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count == 0)
+        {
+            throw TemplateArgumentError(
+                "Interpolation() missing required argument 'value' (pos 1)",
+                span
+            );
+        }
+
+        if (arguments.Count > 4)
+        {
+            throw TemplateArgumentError(
+                $"Interpolation() takes at most 4 arguments ({arguments.Count} given)",
+                span
+            );
+        }
+
+        var expression =
+            arguments.Count > 1
+                ? RequireInterpolationText("expression", arguments[1], span)
+                : string.Empty;
+        char? conversion = null;
+        if (arguments.Count > 2 && arguments[2] is not PythonNoneValue)
+        {
+            var text = RequireInterpolationText("conversion", arguments[2], span);
+            if (text is not ("s" or "r" or "a"))
+            {
+                throw new PythonRuntimeException(
+                    "DPY4028",
+                    "Interpolation() argument 'conversion' must be one of 's', 'a' or 'r'",
+                    span,
+                    "ValueError"
+                );
+            }
+
+            conversion = text[0];
+        }
+
+        var format =
+            arguments.Count > 3
+                ? RequireInterpolationText("format_spec", arguments[3], span)
+                : string.Empty;
+        return new PythonInterpolationValue(arguments[0], expression, conversion, format);
+    }
+
+    private static string RequireInterpolationText(string name, PythonValue value, TextSpan span) =>
+        value is PythonTextValue text
+            ? text.Value
+            : throw TemplateArgumentError(
+                $"Interpolation() argument '{name}' must be str, not {ManagedObjectProtocols.GetTypeName(value)}",
+                span
+            );
+
+    private static PythonValue ConvertInterpolation(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 2)
+        {
+            throw TemplateArgumentError("convert() requires an object and a conversion", span);
+        }
+
+        return arguments[1] switch
+        {
+            PythonNoneValue => arguments[0],
+            PythonTextValue { Value: "s" } => new PythonTextValue(arguments[0].ToDisplayString()),
+            PythonTextValue { Value: "r" } => new PythonTextValue(
+                arguments[0].ToRepresentationString()
+            ),
+            PythonTextValue { Value: "a" } => PythonBuiltinFunctions.Ascii([arguments[0]], span),
+            var invalid => throw new PythonRuntimeException(
+                "DPY4028",
+                $"invalid conversion specifier: {invalid.ToDisplayString()}",
+                span,
+                "ValueError"
+            ),
+        };
+    }
+
+    private static PythonRuntimeException TemplateArgumentError(string message, TextSpan span) =>
+        new("DPY4028", message, span, "TypeError");
+
     private static bool IsWithinSearchRoots(string fullPath, IReadOnlyList<string> searchRoots) =>
         searchRoots.Any(root =>
         {
@@ -209,6 +378,18 @@ internal static class PythonStandardModules
             "<dotpython __future__>",
             isPackage: false,
             InitializeFuture
+        );
+        // Only the template-string API is provided; the rest of string's API is
+        // not part of the managed standard-library slice yet.
+        modules["string"] = PythonModuleDefinition.Native(
+            "<dotpython string>",
+            isPackage: true,
+            _ => { }
+        );
+        modules["string.templatelib"] = PythonModuleDefinition.Native(
+            "<dotpython string.templatelib>",
+            isPackage: false,
+            InitializeTemplateLibrary
         );
     }
 
@@ -531,10 +712,12 @@ internal static class PythonStandardModules
     private static void InitializePickle(PythonGlobalNamespace globals)
     {
         // In-process round-trip pickling: dumps returns an opaque token that only
-        // this module instance's loads understands; loads reconstructs a deep copy
+        // this module instance's loads understands; dumps snapshots the object
+        // graph and loads reconstructs a fresh deep copy of that snapshot
         // through the same machinery as copy.deepcopy (native objects via
         // __reduce__). The byte payload is deliberately not CPython's wire format.
         var stash = new Dictionary<long, PythonValue>();
+        var tokenPrefix = $"DPYPKL:{Guid.NewGuid():N}:";
         var nextToken = 0L;
         globals.SetValue("HIGHEST_PROTOCOL", PythonWholeNumberValue.Create(5));
         globals.SetValue(
@@ -563,11 +746,19 @@ internal static class PythonStandardModules
                         );
                     }
 
+                    var snapshot = DeepCopy(
+                        arguments[0],
+                        new Dictionary<PythonValue, PythonValue>(
+                            ReferenceEqualityComparer.Instance
+                        ),
+                        span,
+                        pickleSnapshot: true
+                    );
                     var token = nextToken++;
-                    stash[token] = arguments[0];
+                    stash[token] = snapshot;
                     return new PythonByteSequenceValue(
                         System.Text.Encoding.ASCII.GetBytes(
-                            $"DPYPKL:{token.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                            $"{tokenPrefix}{token.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
                         )
                     );
                 }
@@ -591,9 +782,9 @@ internal static class PythonStandardModules
 
                     var text = System.Text.Encoding.ASCII.GetString(payload.Value);
                     if (
-                        !text.StartsWith("DPYPKL:", StringComparison.Ordinal)
+                        !text.StartsWith(tokenPrefix, StringComparison.Ordinal)
                         || !long.TryParse(
-                            text["DPYPKL:".Length..],
+                            text[tokenPrefix.Length..],
                             System.Globalization.CultureInfo.InvariantCulture,
                             out var token
                         )
@@ -1187,6 +1378,11 @@ internal static class PythonStandardModules
                 )),
             ]),
             PythonSetValue { IsFrozen: false } set => new PythonSetValue([.. set.Elements]),
+            PythonTemplateValue template => new PythonTemplateValue(
+                template.Strings,
+                template.Interpolations
+            ),
+            PythonInterpolationValue interpolation => interpolation with { },
             PythonManagedObjectValue instance => CopyInstance(instance, deep: false, null, span),
             PythonExternalObjectValue external => ReconstructExternal(external, null, span),
             _ => value,
@@ -1195,11 +1391,22 @@ internal static class PythonStandardModules
     private static PythonValue DeepCopy(
         PythonValue value,
         Dictionary<PythonValue, PythonValue> memo,
-        TextSpan span
+        TextSpan span,
+        bool pickleSnapshot = false
     )
     {
         if (memo.TryGetValue(value, out var existing))
         {
+            if (!pickleSnapshot && existing is PythonPickleReductionValue)
+            {
+                throw new PythonRuntimeException(
+                    "DPY4028",
+                    "pickle.loads() does not support recursive native reduction arguments.",
+                    span,
+                    "ValueError"
+                );
+            }
+
             return existing;
         }
 
@@ -1211,7 +1418,7 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var element in list.Elements)
                 {
-                    copy.Elements.Add(DeepCopy(element, memo, span));
+                    copy.Elements.Add(DeepCopy(element, memo, span, pickleSnapshot));
                 }
 
                 return copy;
@@ -1224,8 +1431,8 @@ internal static class PythonStandardModules
                 {
                     copy.Items.Add(
                         new PythonDictionaryItemValue(
-                            DeepCopy(item.Key, memo, span),
-                            DeepCopy(item.Value, memo, span)
+                            DeepCopy(item.Key, memo, span, pickleSnapshot),
+                            DeepCopy(item.Value, memo, span, pickleSnapshot)
                         )
                     );
                 }
@@ -1238,7 +1445,7 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var element in set.Elements)
                 {
-                    copy.Elements.Add(DeepCopy(element, memo, span));
+                    copy.Elements.Add(DeepCopy(element, memo, span, pickleSnapshot));
                 }
 
                 return copy;
@@ -1249,8 +1456,15 @@ internal static class PythonStandardModules
                 var unchanged = true;
                 for (var index = 0; index < tuple.Elements.Length; index++)
                 {
-                    elements[index] = DeepCopy(tuple.Elements[index], memo, span);
+                    elements[index] = DeepCopy(tuple.Elements[index], memo, span, pickleSnapshot);
                     unchanged &= ReferenceEquals(elements[index], tuple.Elements[index]);
+                }
+
+                // A mutable descendant may have recursively copied this tuple
+                // already. Reuse that copy so tuple/list cycles retain identity.
+                if (memo.TryGetValue(value, out var recursiveCopy))
+                {
+                    return recursiveCopy;
                 }
 
                 if (unchanged)
@@ -1263,7 +1477,59 @@ internal static class PythonStandardModules
                 return copy;
             }
             case PythonManagedObjectValue instance:
-                return CopyInstance(instance, deep: true, memo, span);
+                return CopyInstance(instance, deep: true, memo, span, pickleSnapshot);
+            case PythonInterpolationValue interpolation:
+            {
+                var copiedValue = DeepCopy(interpolation.Value, memo, span, pickleSnapshot);
+                if (memo.TryGetValue(value, out var recursiveCopy))
+                {
+                    return recursiveCopy;
+                }
+
+                var copy = interpolation with { Value = copiedValue };
+                memo[value] = copy;
+                return copy;
+            }
+            case PythonTemplateValue template:
+            {
+                var interpolations = template
+                    .Interpolations.Select(item =>
+                        (PythonInterpolationValue)DeepCopy(item, memo, span, pickleSnapshot)
+                    )
+                    .ToArray();
+                if (memo.TryGetValue(value, out var recursiveCopy))
+                {
+                    return recursiveCopy;
+                }
+
+                var copy = new PythonTemplateValue(template.Strings, interpolations);
+                memo[value] = copy;
+                return copy;
+            }
+            case PythonExternalObjectValue external when pickleSnapshot:
+            {
+                var (factory, arguments) = GetExternalReduction(external, span);
+                var snapshot = new PythonPickleReductionValue(factory);
+                memo[value] = snapshot;
+                snapshot.Arguments = arguments
+                    .Elements.Select(argument =>
+                        DeepCopy(argument, memo, span, pickleSnapshot: true)
+                    )
+                    .ToArray();
+                return snapshot;
+            }
+            case PythonPickleReductionValue reduction:
+            {
+                // Mark an in-progress constructor so cycles through its arguments
+                // fail explicitly: there is no instance to memoize before the call.
+                memo[value] = reduction;
+                var arguments = reduction
+                    .Arguments.Select(argument => DeepCopy(argument, memo, span))
+                    .ToArray();
+                var restored = ManagedObjectProtocols.Call(reduction.Factory, arguments, span);
+                memo[value] = restored;
+                return restored;
+            }
             case PythonExternalObjectValue external:
             {
                 var copy = ReconstructExternal(external, memo, span);
@@ -1279,7 +1545,8 @@ internal static class PythonStandardModules
         PythonManagedObjectValue instance,
         bool deep,
         Dictionary<PythonValue, PythonValue>? memo,
-        TextSpan span
+        TextSpan span,
+        bool pickleSnapshot = false
     )
     {
         var copy = new PythonManagedObjectValue(instance.Type);
@@ -1290,7 +1557,9 @@ internal static class PythonStandardModules
 
         foreach (var (name, attribute) in instance.Attributes)
         {
-            copy.Attributes[name] = deep ? DeepCopy(attribute, memo!, span) : attribute;
+            copy.Attributes[name] = deep
+                ? DeepCopy(attribute, memo!, span, pickleSnapshot)
+                : attribute;
         }
 
         return copy;
@@ -1299,6 +1568,23 @@ internal static class PythonStandardModules
     private static PythonValue ReconstructExternal(
         PythonExternalObjectValue external,
         Dictionary<PythonValue, PythonValue>? memo,
+        TextSpan span
+    )
+    {
+        var (factory, factoryArguments) = GetExternalReduction(external, span);
+        var arguments = new PythonValue[factoryArguments.Elements.Length];
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            arguments[index] = memo is null
+                ? factoryArguments.Elements[index]
+                : DeepCopy(factoryArguments.Elements[index], memo, span);
+        }
+
+        return ManagedObjectProtocols.Call(factory, arguments, span);
+    }
+
+    private static (PythonValue Factory, PythonTupleValue Arguments) GetExternalReduction(
+        PythonExternalObjectValue external,
         TextSpan span
     )
     {
@@ -1320,14 +1606,6 @@ internal static class PythonStandardModules
             );
         }
 
-        var arguments = new PythonValue[factoryArguments.Elements.Length];
-        for (var index = 0; index < arguments.Length; index++)
-        {
-            arguments[index] = memo is null
-                ? factoryArguments.Elements[index]
-                : DeepCopy(factoryArguments.Elements[index], memo, span);
-        }
-
-        return ManagedObjectProtocols.Call(factory, arguments, span);
+        return (factory, factoryArguments);
     }
 }

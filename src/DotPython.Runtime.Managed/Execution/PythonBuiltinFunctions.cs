@@ -116,7 +116,7 @@ internal static class PythonBuiltinFunctions
         return new PythonTextValue(PythonValueFormatter.Format(arguments[0], specification, span));
     }
 
-    private static PythonTextValue Ascii(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    internal static PythonTextValue Ascii(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         RequireArgumentCount("ascii", arguments, 1, 1, span);
         var representation = arguments[0].ToRepresentationString();

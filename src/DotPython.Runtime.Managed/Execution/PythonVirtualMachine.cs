@@ -3226,39 +3226,33 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         var extracted = new List<PythonValue>();
+        var usedAttributes = new HashSet<string>(StringComparer.Ordinal);
+        var matchArguments = cls switch
+        {
+            PythonBuiltinTypeValue builtin => builtin.MatchArguments,
+            PythonManagedTypeValue managed
+                when ManagedObjectProtocols.TryGetTypeAttribute(
+                    managed,
+                    "__match_args__",
+                    out var names
+                ) => names as PythonTupleValue,
+            _ => null,
+        };
+        var className = cls switch
+        {
+            PythonBuiltinTypeValue builtin => builtin.Name,
+            PythonManagedTypeValue managed => managed.Name,
+            _ => ManagedObjectProtocols.GetTypeName(cls),
+        };
         if (positionalCount > 0)
         {
-            // Builtin self-capture: `case int(x):` binds the subject itself.
-            if (cls is PythonBuiltinTypeValue or PythonExceptionTypeValue)
+            if (matchArguments is not null)
             {
-                if (positionalCount != 1)
+                if (positionalCount > matchArguments.Elements.Length)
                 {
                     throw Fault(
                         "DPY4003",
-                        "Builtin class patterns accept at most one positional sub-pattern.",
-                        instruction.Span,
-                        "TypeError"
-                    );
-                }
-
-                extracted.Add(subject);
-            }
-            else if (
-                cls is PythonManagedTypeValue managedType
-                && ManagedObjectProtocols.TryGetTypeAttribute(
-                    managedType,
-                    "__match_args__",
-                    out var matchArguments
-                )
-                && matchArguments is PythonTupleValue matchArgumentNames
-            )
-            {
-                if (positionalCount > matchArgumentNames.Elements.Length)
-                {
-                    throw Fault(
-                        "DPY4003",
-                        $"{managedType.Name}() accepts at most "
-                            + $"{matchArgumentNames.Elements.Length} positional sub-pattern(s).",
+                        $"{className}() accepts {matchArguments.Elements.Length} positional sub-patterns ({positionalCount} given)",
                         instruction.Span,
                         "TypeError"
                     );
@@ -3266,11 +3260,21 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
                 for (var index = 0; index < positionalCount; index++)
                 {
-                    if (matchArgumentNames.Elements[index] is not PythonTextValue argumentName)
+                    if (matchArguments.Elements[index] is not PythonTextValue argumentName)
                     {
                         throw Fault(
                             "DPY4003",
                             "__match_args__ elements must be strings.",
+                            instruction.Span,
+                            "TypeError"
+                        );
+                    }
+
+                    if (!usedAttributes.Add(argumentName.Value))
+                    {
+                        throw Fault(
+                            "DPY4003",
+                            $"{className}() got multiple sub-patterns for attribute '{argumentName.Value}'",
                             instruction.Span,
                             "TypeError"
                         );
@@ -3286,12 +3290,25 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                     extracted.Add(positionalValue);
                 }
             }
+            else if (cls is PythonBuiltinTypeValue or PythonExceptionTypeValue)
+            {
+                if (positionalCount != 1)
+                {
+                    throw Fault(
+                        "DPY4003",
+                        "Builtin class patterns accept at most one positional sub-pattern.",
+                        instruction.Span,
+                        "TypeError"
+                    );
+                }
+
+                extracted.Add(subject);
+            }
             else
             {
                 throw Fault(
                     "DPY4003",
-                    $"'{ManagedObjectProtocols.GetTypeName(cls)}' accepts no positional "
-                        + "sub-patterns (no __match_args__).",
+                    $"'{className}' accepts no positional sub-patterns (no __match_args__).",
                     instruction.Span,
                     "TypeError"
                 );
@@ -3306,6 +3323,16 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                     "DPY4007",
                     "The class-pattern keyword tuple is invalid.",
                     instruction.Span
+                );
+            }
+
+            if (!usedAttributes.Add(keywordName.Value))
+            {
+                throw Fault(
+                    "DPY4003",
+                    $"{className}() got multiple sub-patterns for attribute '{keywordName.Value}'",
+                    instruction.Span,
+                    "TypeError"
                 );
             }
 
@@ -6050,6 +6077,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonComplexValue => PythonBuiltinFunctions.Complex,
             PythonTextValue => PythonBuiltinTypes.Str,
             PythonByteSequenceValue => PythonBuiltinTypes.Bytes,
+            PythonTemplateValue => PythonStandardModules.TemplateType,
+            PythonInterpolationValue => PythonStandardModules.InterpolationType,
             PythonListValue => PythonBuiltinTypes.List,
             PythonTupleValue => PythonBuiltinTypes.Tuple,
             PythonDictionaryValue => PythonBuiltinTypes.Dict,
@@ -7286,6 +7315,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 leftModule,
                 rightModule
             ),
+            (PythonTemplateValue, PythonTemplateValue) => ReferenceEquals(left, right),
+            (PythonInterpolationValue, PythonInterpolationValue) => ReferenceEquals(left, right),
             _ => false,
         };
     }

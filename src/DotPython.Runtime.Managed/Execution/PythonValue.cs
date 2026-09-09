@@ -304,7 +304,12 @@ internal sealed record PythonBuiltinTypeValue(
     BuiltinKeywordInvoker? ConstructWithKeywords = null
 ) : PythonValue
 {
-    internal override string ToDisplayString() => $"<class '{Name}'>";
+    internal string ModuleName { get; init; } = "builtins";
+
+    internal PythonTupleValue? MatchArguments { get; init; }
+
+    internal override string ToDisplayString() =>
+        $"<class '{(ModuleName == "builtins" ? Name : ModuleName + "." + Name)}'>";
 }
 
 internal interface PythonExternalObjectProtocol
@@ -346,6 +351,14 @@ internal sealed record PythonExternalObjectValue(PythonExternalObjectProtocol Pr
     public bool Equals(PythonExternalObjectValue? other) => ReferenceEquals(this, other);
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+}
+
+/// <summary>Private pickle snapshot: reduction is evaluated at dumps, its factory at loads.</summary>
+internal sealed record PythonPickleReductionValue(PythonValue Factory) : PythonValue
+{
+    internal PythonValue[] Arguments { get; set; } = [];
+
+    internal override string ToDisplayString() => "<pickle reduction snapshot>";
 }
 
 internal sealed record PythonProtocolFunctionValue(
@@ -632,6 +645,10 @@ internal sealed record PythonInterpolationValue(
     string FormatSpecification
 ) : PythonValue
 {
+    public bool Equals(PythonInterpolationValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
     internal override string ToDisplayString() =>
         "Interpolation("
         + Value.ToRepresentationString()

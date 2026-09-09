@@ -238,6 +238,13 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(builtinFunction.Name);
             case PythonBuiltinTypeValue builtinTypeValue when name == "__name__":
                 return new PythonTextValue(builtinTypeValue.Name);
+            case PythonBuiltinTypeValue builtinTypeValue when name == "__qualname__":
+                return new PythonTextValue(builtinTypeValue.Name);
+            case PythonBuiltinTypeValue builtinTypeValue when name == "__module__":
+                return new PythonTextValue(builtinTypeValue.ModuleName);
+            case PythonBuiltinTypeValue { MatchArguments: { Elements.Length: > 0 } matchArguments }
+                when name == "__match_args__":
+                return matchArguments;
             case PythonBuiltinTypeValue { Name: "dict" } when name == "fromkeys":
                 return new PythonBuiltinFunctionValue(
                     "fromkeys",
