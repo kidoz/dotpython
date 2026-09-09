@@ -44,7 +44,7 @@ jobs:
       - name: Run the language and runtime test suites
         run: |
           set -eu
-          for project in ParserTests CompilerTests RuntimeTests InteropTests \
+          for project in ParserTests CompilerTests RuntimeTests HostingTests InteropTests \
               PackageCompatibilityTests BuildIntegrationTests; do
             dotnet run --project "tests/DotPython.$project" --configuration Release --no-build
           done
@@ -55,3 +55,21 @@ jobs:
         run: >
           dotnet run --project tests/DotPython.DifferentialTests
           --configuration Release --no-build -- -failSkips
+
+      - name: Install the Python 3.14 regression oracle
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Verify the Python 3.14 compatibility fixes without skips
+        env:
+          DOTPYTHON_REFERENCE_PYTHON: python3.14
+          DOTPYTHON_REFERENCE_PYTHON_VERSION: '3.14'
+        run: >
+          dotnet run --project tests/DotPython.DifferentialTests
+          --configuration Release --no-build -- -failSkips
+          -class '*RuntimeCompatibilityGapTests'
+          -class '*Python314FrontendDifferentialTests'
+          -class '*ClassBindingCompatibilityTests'
+          -class '*PickleAndTemplateDifferentialTests'
+          -class '*CommandDedentationTests'
