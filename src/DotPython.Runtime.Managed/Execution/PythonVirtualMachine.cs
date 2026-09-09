@@ -131,6 +131,7 @@ internal sealed class PythonVirtualMachine
             ["input"] = new PythonBuiltinFunctionValue("input", Input),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
+        _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
         foreach (var builtinType in PythonBuiltinTypes.All)
         {
             _builtins.Add(builtinType.Name, builtinType);
@@ -374,6 +375,12 @@ internal sealed class PythonVirtualMachine
             case PythonOpCode.BinaryFloorDivide:
             case PythonOpCode.BinaryModulo:
             case PythonOpCode.BinaryPower:
+            case PythonOpCode.BinaryMatrixMultiply:
+            case PythonOpCode.BinaryAnd:
+            case PythonOpCode.BinaryOr:
+            case PythonOpCode.BinaryXor:
+            case PythonOpCode.BinaryLeftShift:
+            case PythonOpCode.BinaryRightShift:
                 ApplyBinary(instruction);
                 break;
             case PythonOpCode.CompareEqual:
@@ -6542,6 +6549,7 @@ internal sealed class PythonVirtualMachine
         return (left, right) switch
         {
             (PythonNoneValue, PythonNoneValue) => true,
+            (PythonEllipsisValue, PythonEllipsisValue) => true,
             (PythonTextValue leftText, PythonTextValue rightText) => string.Equals(
                 leftText.Value,
                 rightText.Value,
@@ -6634,6 +6642,22 @@ internal sealed class PythonVirtualMachine
             );
         }
 
+        if (
+            left is PythonTruthValue leftTruth
+            && right is PythonTruthValue rightTruth
+            && opCode is PythonOpCode.BinaryAnd or PythonOpCode.BinaryOr or PythonOpCode.BinaryXor
+        )
+        {
+            return PythonTruthValue.FromBoolean(
+                opCode switch
+                {
+                    PythonOpCode.BinaryAnd => leftTruth.Value & rightTruth.Value,
+                    PythonOpCode.BinaryOr => leftTruth.Value | rightTruth.Value,
+                    _ => leftTruth.Value ^ rightTruth.Value,
+                }
+            );
+        }
+
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 
@@ -6717,7 +6741,49 @@ internal sealed class PythonVirtualMachine
             }
         }
 
+        if (left is PythonSetValue leftSet && right is PythonSetValue rightSet)
+        {
+            var setResult = ApplySetAlgebra(opCode, leftSet, rightSet, span);
+            if (setResult is not null)
+            {
+                return setResult;
+            }
+        }
+
+        if (
+            opCode == PythonOpCode.BinaryOr
+            && left is PythonDictionaryValue leftDictionary
+            && right is PythonDictionaryValue rightDictionary
+        )
+        {
+            var merged = new PythonDictionaryValue([]);
+            foreach (var item in leftDictionary.Items)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(merged, item.Key, item.Value, span);
+            }
+
+            foreach (var item in rightDictionary.Items)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(merged, item.Key, item.Value, span);
+            }
+
+            return merged;
+        }
+
         if (!IsNumeric(left) || !IsNumeric(right))
+        {
+            throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
+        }
+
+        if (IsBitwiseOperator(opCode))
+        {
+            // Bitwise operators are integer-only; floats and complex numbers reject them.
+            if (left is not PythonWholeNumberValue || right is not PythonWholeNumberValue)
+            {
+                throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
+            }
+        }
+        else if (opCode == PythonOpCode.BinaryMatrixMultiply)
         {
             throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
         }
@@ -6738,6 +6804,57 @@ internal sealed class PythonVirtualMachine
             ((PythonWholeNumberValue)right).Value,
             span
         );
+    }
+
+    private static bool IsBitwiseOperator(PythonOpCode opCode) =>
+        opCode
+            is PythonOpCode.BinaryAnd
+                or PythonOpCode.BinaryOr
+                or PythonOpCode.BinaryXor
+                or PythonOpCode.BinaryLeftShift
+                or PythonOpCode.BinaryRightShift;
+
+    /// <summary>`|`, `&amp;`, `-`, `^` on sets; the result takes the left operand's frozenness.</summary>
+    private static PythonSetValue? ApplySetAlgebra(
+        PythonOpCode opCode,
+        PythonSetValue left,
+        PythonSetValue right,
+        TextSpan span
+    )
+    {
+        IEnumerable<PythonValue> elements = opCode switch
+        {
+            PythonOpCode.BinaryOr => [.. left.Elements, .. right.Elements],
+            PythonOpCode.BinaryAnd => left.Elements.Where(element =>
+                right.Elements.Any(candidate => ManagedObjectProtocols.AreEqual(candidate, element))
+            ),
+            PythonOpCode.BinarySubtract => left.Elements.Where(element =>
+                !right.Elements.Any(candidate =>
+                    ManagedObjectProtocols.AreEqual(candidate, element)
+                )
+            ),
+            PythonOpCode.BinaryXor =>
+            [
+                .. left.Elements.Where(element =>
+                    !right.Elements.Any(candidate =>
+                        ManagedObjectProtocols.AreEqual(candidate, element)
+                    )
+                ),
+                .. right.Elements.Where(element =>
+                    !left.Elements.Any(candidate =>
+                        ManagedObjectProtocols.AreEqual(candidate, element)
+                    )
+                ),
+            ],
+            _ => null!,
+        };
+        if (elements is null)
+        {
+            return null;
+        }
+
+        var result = ManagedObjectProtocols.CreateSet([.. elements], span);
+        return left.IsFrozen ? new PythonSetValue(result.Elements) { IsFrozen = true } : result;
     }
 
     private static PythonValue RepeatSequence(
@@ -6835,8 +6952,61 @@ internal sealed class PythonVirtualMachine
             PythonOpCode.BinaryPower => new PythonFloatingPointValue(
                 Math.Pow((double)left, (double)right)
             ),
+            PythonOpCode.BinaryAnd => PythonWholeNumberValue.Create(left & right),
+            PythonOpCode.BinaryOr => PythonWholeNumberValue.Create(left | right),
+            PythonOpCode.BinaryXor => PythonWholeNumberValue.Create(left ^ right),
+            PythonOpCode.BinaryLeftShift => ShiftLeft(left, right, span),
+            PythonOpCode.BinaryRightShift => ShiftRight(left, right, span),
             _ => throw Fault("DPY4005", "Unsupported numeric operator.", span),
         };
+    }
+
+    private const int MaximumShiftBits = 1 << 24;
+
+    private static PythonWholeNumberValue ShiftLeft(
+        BigInteger left,
+        BigInteger right,
+        TextSpan span
+    )
+    {
+        if (right.Sign < 0)
+        {
+            throw Fault("DPY4005", "negative shift count", span, "ValueError");
+        }
+
+        if (left.IsZero)
+        {
+            return PythonWholeNumberValue.Create(BigInteger.Zero);
+        }
+
+        if (right > MaximumShiftBits)
+        {
+            // DoS guard: builtins run outside instruction accounting.
+            throw Fault("DPY4005", "too many digits in integer", span, "OverflowError");
+        }
+
+        return PythonWholeNumberValue.Create(left << (int)right);
+    }
+
+    private static PythonWholeNumberValue ShiftRight(
+        BigInteger left,
+        BigInteger right,
+        TextSpan span
+    )
+    {
+        if (right.Sign < 0)
+        {
+            throw Fault("DPY4005", "negative shift count", span, "ValueError");
+        }
+
+        if (right > int.MaxValue)
+        {
+            return PythonWholeNumberValue.Create(
+                left.Sign < 0 ? BigInteger.MinusOne : BigInteger.Zero
+            );
+        }
+
+        return PythonWholeNumberValue.Create(left >> (int)right);
     }
 
     private static PythonFloatingPointValue ApplyFloatingPoint(

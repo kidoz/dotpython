@@ -12,4 +12,5 @@ public enum PythonConstantType
     TextValue = 5,
     ByteSequence = 6,
     CodeObject = 7,
+    Ellipsis = 8,
 }

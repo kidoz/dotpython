@@ -22,6 +22,10 @@ internal static class PythonLiteralDecoder
                     PythonConstantType.NoneValue,
                     null
                 ),
+                PythonConstantKind.EllipsisLiteral => new PythonConstant(
+                    PythonConstantType.Ellipsis,
+                    null
+                ),
                 PythonConstantKind.BooleanLiteral => new PythonConstant(
                     PythonConstantType.TruthValue,
                     expression.TokenText == "True"

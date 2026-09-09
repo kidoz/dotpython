@@ -112,4 +112,10 @@ public enum PythonOpCode
     ExceptStarMatch = 107,
     ExceptStarCollect = 108,
     ExceptStarFinish = 109,
+    BinaryMatrixMultiply = 110,
+    BinaryAnd = 111,
+    BinaryOr = 112,
+    BinaryXor = 113,
+    BinaryLeftShift = 114,
+    BinaryRightShift = 115,
 }

@@ -257,6 +257,7 @@ public static class DotPythonModuleArtifactSerializer
         switch (constant.Type)
         {
             case PythonConstantType.NoneValue:
+            case PythonConstantType.Ellipsis:
                 break;
             case PythonConstantType.TruthValue:
                 writer.WriteByte((bool)constant.Value! ? (byte)1 : (byte)0);
@@ -302,6 +303,7 @@ public static class DotPythonModuleArtifactSerializer
         object? value = type switch
         {
             PythonConstantType.NoneValue => null,
+            PythonConstantType.Ellipsis => null,
             PythonConstantType.TruthValue => ReadTruthValue(ref reader),
             PythonConstantType.WholeNumber => new BigInteger(
                 reader.ReadByteArray(MaximumStringLength, "integer"),

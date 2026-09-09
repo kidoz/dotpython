@@ -617,7 +617,11 @@ public static class PythonSymbolBinder
             switch (statement)
             {
                 case PythonAssignmentStatement assignment:
-                    CollectTargetNames(assignment.Target, localNames, localNameSet, excludedNames);
+                    foreach (var target in assignment.Targets)
+                    {
+                        CollectTargetNames(target, localNames, localNameSet, excludedNames);
+                    }
+
                     break;
                 case PythonAnnotatedAssignmentStatement annotated:
                     if (annotated.Target is PythonNameExpression annotatedName)
@@ -798,7 +802,11 @@ public static class PythonSymbolBinder
                     break;
                 case PythonAssignmentStatement assignment:
                     CollectReferences(assignment.Value, references);
-                    CollectTargetReferences(assignment.Target, references);
+                    foreach (var target in assignment.Targets)
+                    {
+                        CollectTargetReferences(target, references);
+                    }
+
                     break;
                 case PythonAugmentedAssignmentStatement augmented:
                     CollectReferences(augmented.Target, references);
@@ -1265,9 +1273,12 @@ public static class PythonSymbolBinder
                         yield return nested;
                     }
 
-                    foreach (var nested in EnumerateComprehensions(assignment.Target))
+                    foreach (var target in assignment.Targets)
                     {
-                        yield return nested;
+                        foreach (var nested in EnumerateComprehensions(target))
+                        {
+                            yield return nested;
+                        }
                     }
 
                     break;

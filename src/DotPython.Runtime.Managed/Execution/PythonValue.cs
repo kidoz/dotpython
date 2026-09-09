@@ -23,6 +23,15 @@ internal sealed record PythonNoneValue : PythonValue
     internal override string ToDisplayString() => "None";
 }
 
+internal sealed record PythonEllipsisValue : PythonValue
+{
+    internal static PythonEllipsisValue Instance { get; } = new();
+
+    private PythonEllipsisValue() { }
+
+    internal override string ToDisplayString() => "Ellipsis";
+}
+
 internal sealed record PythonTruthValue : PythonValue
 {
     internal static PythonTruthValue False { get; } = new(false);

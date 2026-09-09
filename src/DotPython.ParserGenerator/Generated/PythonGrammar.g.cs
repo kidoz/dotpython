@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "62ad0a5d5150af224f7f4525562b40de0d74761548fc97ecdd3fd698441a40fd";
-    internal const int RuleCount = 88;
+    internal const string SourceSha256 = "2422ca43db2f4fdd506ce463ff653b91eea7c7eb2e9a12db9f6595f13645406d";
+    internal const int RuleCount = 93;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -17,9 +17,9 @@ internal static class GeneratedPythonGrammar
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
         simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
-        assignment: expression_list '=' expression_list
+        assignment: (expression_list '=')+ expression_list
         annotated_assignment: primary ':' expression ['=' expression_list]
-        augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=') expression_list
+        augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=' | '@=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression_list
         return_stmt: 'return' [expression_list]
         break_stmt: 'break'
         continue_stmt: 'continue'
@@ -73,21 +73,26 @@ internal static class GeneratedPythonGrammar
         disjunction: conjunction ('or' conjunction)*
         conjunction: inversion ('and' inversion)*
         inversion: 'not' inversion | comparison
-        comparison: sum (comparison_operator sum)*
+        comparison: bitwise_or (comparison_operator bitwise_or)*
         comparison_operator: '==' | '!=' | '<=' | '<' | '>=' | '>' | 'not' 'in' | 'in' | 'is' 'not' | 'is'
+        bitwise_or: bitwise_xor ('|' bitwise_xor)*
+        bitwise_xor: bitwise_and ('^' bitwise_and)*
+        bitwise_and: shift_expr ('&' shift_expr)*
+        shift_expr: sum (('<<' | '>>') sum)*
         sum: term (('+' | '-') term)*
-        term: factor (('*' | '/' | '//' | '%') factor)*
+        term: factor (('*' | '/' | '//' | '%' | '@') factor)*
         factor: ('+' | '-' | '~') factor | power
         power: await_primary ['**' factor]
         await_primary: 'await' primary | primary
         primary: atom (('(' [arguments] ')') | ('[' subscript ']') | ('.' NAME))*
-        subscript: slice | expression
+        subscript: ','.slice_item+ [',']
+        slice_item: slice | expression
         slice: [expression] ':' [expression] [':' [expression]]
         arguments: ','.argument+ [',']
         argument: NAME '=' expression | '**' expression | '*' expression | expression [comp_clauses]
         expression_list: ','.star_expression+ [',']
         star_expression: '*' expression | expression
-        atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | list_display | tuple_display | dict_display | group
+        atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | '...' | list_display | tuple_display | dict_display | group
         list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' star_expression ',' [expression_list] ')'
         dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'

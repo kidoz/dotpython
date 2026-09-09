@@ -1704,6 +1704,7 @@ internal static class ManagedObjectProtocols
         value switch
         {
             PythonNoneValue => "NoneType",
+            PythonEllipsisValue => "ellipsis",
             PythonTruthValue => "bool",
             PythonWholeNumberValue => "int",
             PythonFloatingPointValue => "float",

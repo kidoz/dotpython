@@ -8,6 +8,6 @@ public sealed class BytecodeFormatTests
     [Fact]
     public void CurrentVersion_TracksPositionalOnlySignatures()
     {
-        Assert.Equal(28, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(29, DotPythonBytecodeFormat.CurrentVersion);
     }
 }

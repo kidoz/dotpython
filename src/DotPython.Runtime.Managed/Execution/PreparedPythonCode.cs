@@ -369,6 +369,7 @@ internal sealed class PreparedPythonCode
         constant.Type switch
         {
             PythonConstantType.NoneValue => PythonNoneValue.Instance,
+            PythonConstantType.Ellipsis => PythonEllipsisValue.Instance,
             PythonConstantType.TruthValue => PythonTruthValue.FromBoolean((bool)constant.Value!),
             PythonConstantType.WholeNumber => PythonWholeNumberValue.Create(
                 (BigInteger)constant.Value!

@@ -504,6 +504,24 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "try:\n    open('dotpython_missing_file_84129.txt')\nexcept FileNotFoundError as e:\n    print('fnf:', isinstance(e, OSError), e)\ntry:\n    open('dotpython_missing_file_84129.txt', 'z')\nexcept ValueError as e:\n    print('vm:', e)\ntry:\n    open()\nexcept TypeError as e:\n    print('t:', e)\ntry:\n    open(None)\nexcept TypeError as e:\n    print('t2:', e)"
     )]
+    [InlineData(
+        "print(5 | 3, 5 & 3, 5 ^ 3, 1 << 4, 256 >> 2, ~5, -8 >> 1, -1 << 3, True | False, True & 1, 6 ^ True, type(True ^ True).__name__, type(True << 1).__name__)\nprint(1 + 2 << 1, 1 | 2 & 3, 1 ^ 3 | 4, 2 * 3 >> 1, 1 < 2 | 4, not 1 & 0, 5 & 3 == 1, 1 << 2 + 1, 0xFF & 0x0F, 0b1010 | 0b0101, (1 << 10) - 1)\nprint(1 << 100, (1 << 100) >> 99, 12345678901234567890 & 0xFFFF, -12345678901234567890 | 1, (1 << 64) ^ (1 << 63), 3 << 0, 7 >> 100, -7 >> 100)"
+    )]
+    [InlineData(
+        "x = 5\nx |= 2; x &= 6; x ^= 1; x <<= 1; x >>= 1\nl = [12]; l[0] |= 3\nclass C: pass\nc = C(); c.v = 12; c.v &= 10; c.v ^= 3\nprint(x, l, c.v)\ntry:\n    1 << -1\nexcept ValueError as e:\n    print(e)\ntry:\n    1 >> -2\nexcept ValueError as e:\n    print(e)\nfor bad in (lambda: 1.5 | 2, lambda: 'a' << 1, lambda: [1] @ [2], lambda: None & 1):\n    try:\n        bad()\n    except TypeError:\n        print('TypeError')"
+    )]
+    [InlineData(
+        "x = ...\ndef f(): ...\nclass C: ...\nprint(x, f(), x is Ellipsis, type(x).__name__, bool(...), [1, ...], (..., ...) == (..., ...), ... is ...)"
+    )]
+    [InlineData(
+        "d = {(1, 2): 'a', (3,): 'b'}\nprint(d[1, 2], d[3,], {(0, 1): 9}[0, 1], d.get((1, 2)))\ndef f(x: dict[str, int], y: list[tuple[int, ...]] | None = None) -> tuple[int, str]:\n    return (1, 'a')\nv: dict[str, list[int]] = {}\nprint(f({}), v)"
+    )]
+    [InlineData(
+        "a = b = c = 3\nx = y = [1]\ny.append(2)\nd = {}\nd['k'] = e = 5\ni, j = k = (7, 8)\nprint(a, b, c, x, y, x is y, d, e, i, j, k)\ndef mark(v):\n    print('eval', v)\n    return v\nm = n = mark(1)\nprint(m, n)\ndef f():\n    p = q = 2\n    return p + q\nprint(f())"
+    )]
+    [InlineData(
+        "a = {'x': 1, 'y': 2}\nb = {'y': 3, 'z': 4}\nprint(a | b, b | a, a, {} | a, a | {})\nc = dict(a)\nc |= b\nprint(c)\ns = {1, 2, 3}\nt = {2, 3, 4}\nprint(sorted(s | t), sorted(s & t), sorted(s - t), sorted(s ^ t), s | set(), set() & s)\nf = frozenset({1, 2})\nprint(f | {3}, type(f | {3}).__name__, type({3} | f).__name__, f & {2}, f - {1}, sorted(f ^ {2, 9}))\nu = {1}\nu |= {2}\nu &= {2, 3}\nprint(u)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();

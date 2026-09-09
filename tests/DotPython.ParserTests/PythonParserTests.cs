@@ -1015,6 +1015,84 @@ public sealed class PythonParserTests
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == expectedCode);
     }
 
+    [Fact]
+    public void Parse_BuildsBitwiseShiftAndMatrixOperatorsWithPrecedence()
+    {
+        var result = Parse(
+            "value = 1 | 2 ^ 3 & 4 << 5 + 6 @ 7\nvalue |= 1; value <<= 2; value @= 3"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var assignment = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        var or = Assert.IsType<PythonBinaryExpression>(assignment.Value);
+        Assert.Equal(PythonBinaryOperator.BitwiseOr, or.Operator);
+        var xor = Assert.IsType<PythonBinaryExpression>(or.Right);
+        Assert.Equal(PythonBinaryOperator.BitwiseXor, xor.Operator);
+        var and = Assert.IsType<PythonBinaryExpression>(xor.Right);
+        Assert.Equal(PythonBinaryOperator.BitwiseAnd, and.Operator);
+        var shift = Assert.IsType<PythonBinaryExpression>(and.Right);
+        Assert.Equal(PythonBinaryOperator.LeftShift, shift.Operator);
+        var sum = Assert.IsType<PythonBinaryExpression>(shift.Right);
+        Assert.Equal(PythonBinaryOperator.Add, sum.Operator);
+        var matmul = Assert.IsType<PythonBinaryExpression>(sum.Right);
+        Assert.Equal(PythonBinaryOperator.MatrixMultiply, matmul.Operator);
+
+        Assert.Equal(
+            [
+                PythonBinaryOperator.BitwiseOr,
+                PythonBinaryOperator.LeftShift,
+                PythonBinaryOperator.MatrixMultiply,
+            ],
+            result
+                .Module.Statements.Skip(1)
+                .Select(statement =>
+                    Assert.IsType<PythonAugmentedAssignmentStatement>(statement).Operator
+                )
+        );
+    }
+
+    [Fact]
+    public void Parse_BuildsChainedAssignmentsEllipsisAndTupleSubscripts()
+    {
+        var result = Parse("first = second, third = ...\nvalue = grid[1:2, ..., 3]");
+
+        Assert.Empty(result.Diagnostics);
+        var chained = Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[0]);
+        Assert.Equal("first", Assert.IsType<PythonNameExpression>(chained.Target).Name);
+        var chainedTarget = Assert.IsType<PythonTupleExpression>(
+            Assert.Single(chained.ChainedTargets!)
+        );
+        Assert.Equal(2, chainedTarget.Elements.Count);
+        Assert.Equal(
+            PythonConstantKind.EllipsisLiteral,
+            Assert.IsType<PythonConstantExpression>(chained.Value).ConstantKind
+        );
+        Assert.Equal(2, chained.Targets.Count());
+
+        var subscription = Assert.IsType<PythonSubscriptionExpression>(
+            Assert.IsType<PythonAssignmentStatement>(result.Module.Statements[1]).Value
+        );
+        var index = Assert.IsType<PythonTupleExpression>(subscription.Index);
+        Assert.Equal(3, index.Elements.Count);
+        Assert.IsType<PythonSliceExpression>(index.Elements[0]);
+        Assert.IsType<PythonConstantExpression>(index.Elements[1]);
+    }
+
+    [Fact]
+    public void Parse_KeepsOrPatternsSeparateFromBitwiseOr()
+    {
+        var result = Parse(
+            "match value:\n    case 1 | 2 | -3:\n        pass\n    case x if x | 1:\n        pass"
+        );
+
+        Assert.Empty(result.Diagnostics);
+        var match = Assert.IsType<PythonMatchStatement>(Assert.Single(result.Module.Statements));
+        var orPattern = Assert.IsType<PythonOrPattern>(match.Cases[0].Pattern);
+        Assert.Equal(3, orPattern.Alternatives.Count);
+        var guard = Assert.IsType<PythonBinaryExpression>(match.Cases[1].Guard);
+        Assert.Equal(PythonBinaryOperator.BitwiseOr, guard.Operator);
+    }
+
     private static PythonParseResult Parse(string code) =>
         PythonParser.Parse(new SourceText(code, "test.py"));
 }

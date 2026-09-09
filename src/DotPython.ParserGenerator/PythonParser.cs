@@ -43,6 +43,7 @@ public static class PythonParser
         private readonly SourceText _source;
         private readonly SyntaxToken[] _tokens;
         private int _functionDepth;
+        private int _patternLiteralDepth;
         private readonly List<bool> _functionYieldFlags = [];
         private readonly List<bool> _functionAsyncFlags = [];
         private int _position;
@@ -719,7 +720,7 @@ public static class PythonParser
                     }
                     else
                     {
-                        var key = ParseDisjunction();
+                        var key = ParsePatternLiteral();
                         if (key is null)
                         {
                             ReportExpected("a mapping pattern key", Current.Span);
@@ -771,7 +772,7 @@ public static class PythonParser
                 )
             )
             {
-                var literal = ParseDisjunction();
+                var literal = ParsePatternLiteral();
                 if (literal is null)
                 {
                     ReportExpected("a literal pattern", Current.Span);
@@ -785,7 +786,7 @@ public static class PythonParser
             {
                 if (Current.Text is "None" or "True" or "False")
                 {
-                    var constant = ParseDisjunction()!;
+                    var constant = ParsePatternLiteral()!;
                     return new PythonLiteralPattern(constant, UseIdentity: true, constant.Span);
                 }
 
@@ -1443,10 +1444,30 @@ public static class PythonParser
                     return null;
                 }
 
+                // `a = b = value`: every expression before the last '=' is a target.
+                List<PythonExpression>? chainedTargets = null;
+                while (Match(SyntaxTokenKind.Equal))
+                {
+                    if (!IsAssignableTarget(value))
+                    {
+                        Report("DPY2005", "This expression cannot be assigned to.", value.Span);
+                        return null;
+                    }
+
+                    (chainedTargets ??= []).Add(value);
+                    value = ParseExpressionListValue();
+                    if (value is null)
+                    {
+                        ReportExpected("an expression after '='", Current.Span);
+                        return null;
+                    }
+                }
+
                 return new PythonAssignmentStatement(
                     expression,
                     value,
-                    TextSpan.FromBounds(expression.Span.Start, value.Span.End)
+                    TextSpan.FromBounds(expression.Span.Start, value.Span.End),
+                    chainedTargets?.AsReadOnly()
                 );
             }
 
@@ -1459,6 +1480,12 @@ public static class PythonParser
                 SyntaxTokenKind.DoubleSlashEqual => PythonBinaryOperator.FloorDivide,
                 SyntaxTokenKind.PercentEqual => PythonBinaryOperator.Modulo,
                 SyntaxTokenKind.DoubleStarEqual => PythonBinaryOperator.Power,
+                SyntaxTokenKind.AtEqual => PythonBinaryOperator.MatrixMultiply,
+                SyntaxTokenKind.AmpersandEqual => PythonBinaryOperator.BitwiseAnd,
+                SyntaxTokenKind.VerticalBarEqual => PythonBinaryOperator.BitwiseOr,
+                SyntaxTokenKind.CaretEqual => PythonBinaryOperator.BitwiseXor,
+                SyntaxTokenKind.LeftShiftEqual => PythonBinaryOperator.LeftShift,
+                SyntaxTokenKind.RightShiftEqual => PythonBinaryOperator.RightShift,
                 _ => (PythonBinaryOperator?)null,
             };
             if (augmentedOperator is not null)
@@ -1936,6 +1963,7 @@ public static class PythonParser
                 or SyntaxTokenKind.LeftParenthesis
                 or SyntaxTokenKind.LeftBracket
                 or SyntaxTokenKind.LeftBrace
+                or SyntaxTokenKind.Ellipsis
                 or SyntaxTokenKind.Plus
                 or SyntaxTokenKind.Minus
                 or SyntaxTokenKind.Tilde => true,
@@ -2416,7 +2444,7 @@ public static class PythonParser
 
         private PythonExpression? ParseComparison()
         {
-            var left = ParseSum();
+            var left = ParseBitwiseOr();
             if (left is null)
             {
                 return null;
@@ -2425,7 +2453,7 @@ public static class PythonParser
             var comparisons = new List<PythonComparisonPart>();
             while (TryReadComparisonOperator(out var @operator, out var operatorToken))
             {
-                var right = ParseSum();
+                var right = ParseBitwiseOr();
                 if (right is null)
                 {
                     ReportExpected("an expression after the comparison operator", Current.Span);
@@ -2448,6 +2476,110 @@ public static class PythonParser
                     comparisons.AsReadOnly(),
                     TextSpan.FromBounds(left.Span.Start, comparisons[^1].Span.End)
                 );
+        }
+
+        private PythonExpression? ParseBitwiseOr() =>
+            _patternLiteralDepth > 0
+                ? ParseBitwiseXor()
+                : ParseLeftAssociative(
+                    ParseBitwiseXor,
+                    SyntaxTokenKind.VerticalBar,
+                    PythonBinaryOperator.BitwiseOr
+                );
+
+        /// <summary>
+        /// Parses an expression inside a `case` pattern, where `|` separates or-pattern
+        /// alternatives instead of forming a bitwise-or expression.
+        /// </summary>
+        private PythonExpression? ParsePatternLiteral()
+        {
+            _patternLiteralDepth++;
+            try
+            {
+                return ParseDisjunction();
+            }
+            finally
+            {
+                _patternLiteralDepth--;
+            }
+        }
+
+        private PythonExpression? ParseBitwiseXor() =>
+            ParseLeftAssociative(
+                ParseBitwiseAnd,
+                SyntaxTokenKind.Caret,
+                PythonBinaryOperator.BitwiseXor
+            );
+
+        private PythonExpression? ParseBitwiseAnd() =>
+            ParseLeftAssociative(
+                ParseShift,
+                SyntaxTokenKind.Ampersand,
+                PythonBinaryOperator.BitwiseAnd
+            );
+
+        private PythonExpression? ParseShift()
+        {
+            var left = ParseSum();
+            if (left is null)
+            {
+                return null;
+            }
+
+            while (Current.Kind is SyntaxTokenKind.LeftShift or SyntaxTokenKind.RightShift)
+            {
+                var operatorToken = Advance();
+                var right = ParseSum();
+                if (right is null)
+                {
+                    ReportExpected("an expression after the operator", Current.Span);
+                    return left;
+                }
+
+                left = new PythonBinaryExpression(
+                    left,
+                    operatorToken.Kind == SyntaxTokenKind.LeftShift
+                        ? PythonBinaryOperator.LeftShift
+                        : PythonBinaryOperator.RightShift,
+                    right,
+                    TextSpan.FromBounds(left.Span.Start, right.Span.End)
+                );
+            }
+
+            return left;
+        }
+
+        private PythonExpression? ParseLeftAssociative(
+            Func<PythonExpression?> parseOperand,
+            SyntaxTokenKind operatorKind,
+            PythonBinaryOperator @operator
+        )
+        {
+            var left = parseOperand();
+            if (left is null)
+            {
+                return null;
+            }
+
+            while (Current.Kind == operatorKind)
+            {
+                Advance();
+                var right = parseOperand();
+                if (right is null)
+                {
+                    ReportExpected("an expression after the operator", Current.Span);
+                    return left;
+                }
+
+                left = new PythonBinaryExpression(
+                    left,
+                    @operator,
+                    right,
+                    TextSpan.FromBounds(left.Span.Start, right.Span.End)
+                );
+            }
+
+            return left;
         }
 
         private PythonExpression? ParseSum()
@@ -2495,6 +2627,7 @@ public static class PythonParser
                         or SyntaxTokenKind.Slash
                         or SyntaxTokenKind.DoubleSlash
                         or SyntaxTokenKind.Percent
+                        or SyntaxTokenKind.At
             )
             {
                 var operatorToken = Advance();
@@ -3070,6 +3203,41 @@ public static class PythonParser
 
         private PythonExpression? ParseSubscript(SyntaxToken leftBracket)
         {
+            var first = ParseSubscriptItem(leftBracket);
+            if (first is null || Current.Kind != SyntaxTokenKind.Comma)
+            {
+                return first;
+            }
+
+            // `a[i, j]` and `a[1:2, ::3]`: the items form a tuple index.
+            var items = new List<PythonExpression> { first };
+            var end = first.Span.End;
+            while (Match(SyntaxTokenKind.Comma, out var comma))
+            {
+                end = comma.Span.End;
+                if (Current.Kind == SyntaxTokenKind.RightBracket)
+                {
+                    break;
+                }
+
+                var item = ParseSubscriptItem(leftBracket);
+                if (item is null)
+                {
+                    break;
+                }
+
+                items.Add(item);
+                end = item.Span.End;
+            }
+
+            return new PythonTupleExpression(
+                items.AsReadOnly(),
+                TextSpan.FromBounds(first.Span.Start, end)
+            );
+        }
+
+        private PythonExpression? ParseSubscriptItem(SyntaxToken leftBracket)
+        {
             PythonExpression? start = null;
             if (Current.Kind != SyntaxTokenKind.Colon)
             {
@@ -3163,6 +3331,11 @@ public static class PythonParser
                 SyntaxTokenKind.TemplateStringLiteral => PythonConstantKind.TemplateStringLiteral,
                 _ => (PythonConstantKind?)null,
             };
+
+            if (Current.Kind == SyntaxTokenKind.Ellipsis)
+            {
+                return Constant(Advance(), PythonConstantKind.EllipsisLiteral);
+            }
 
             if (Current.Kind == SyntaxTokenKind.FormattedStringLiteral)
             {
@@ -3709,6 +3882,7 @@ public static class PythonParser
                 SyntaxTokenKind.Slash => PythonBinaryOperator.TrueDivide,
                 SyntaxTokenKind.DoubleSlash => PythonBinaryOperator.FloorDivide,
                 SyntaxTokenKind.Percent => PythonBinaryOperator.Modulo,
+                SyntaxTokenKind.At => PythonBinaryOperator.MatrixMultiply,
                 _ => throw new ArgumentOutOfRangeException(nameof(kind)),
             };
 

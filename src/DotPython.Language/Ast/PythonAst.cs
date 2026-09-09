@@ -13,8 +13,14 @@ public abstract record PythonStatement(TextSpan Span) : PythonNode(Span);
 public sealed record PythonAssignmentStatement(
     PythonExpression Target,
     PythonExpression Value,
-    TextSpan Span
-) : PythonStatement(Span);
+    TextSpan Span,
+    IReadOnlyList<PythonExpression>? ChainedTargets = null
+) : PythonStatement(Span)
+{
+    /// <summary>Every assignment target in source order (`a = b = value` binds `a` then `b`).</summary>
+    public IEnumerable<PythonExpression> Targets =>
+        ChainedTargets is null ? [Target] : [Target, .. ChainedTargets];
+}
 
 public sealed record PythonAugmentedAssignmentStatement(
     PythonExpression Target,
@@ -419,6 +425,7 @@ public enum PythonConstantKind
     BytesLiteral,
     FormattedStringLiteral,
     TemplateStringLiteral,
+    EllipsisLiteral,
 }
 
 public enum PythonUnaryOperator
@@ -438,6 +445,12 @@ public enum PythonBinaryOperator
     FloorDivide,
     Modulo,
     Power,
+    MatrixMultiply,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    LeftShift,
+    RightShift,
     And,
     Or,
 }

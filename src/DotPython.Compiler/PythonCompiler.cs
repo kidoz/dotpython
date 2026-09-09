@@ -159,6 +159,24 @@ public static class PythonCompiler
             {
                 case PythonAssignmentStatement assignment:
                     CompileExpression(assignment.Value);
+                    if (assignment.ChainedTargets is { Count: > 0 } chainedTargets)
+                    {
+                        // `a = b = value` evaluates once and binds left to right.
+                        Emit(PythonOpCode.CopyTop, 0, assignment.Span);
+                        CompileAssignmentTarget(assignment.Target);
+                        for (var index = 0; index < chainedTargets.Count; index++)
+                        {
+                            if (index < chainedTargets.Count - 1)
+                            {
+                                Emit(PythonOpCode.CopyTop, 0, assignment.Span);
+                            }
+
+                            CompileAssignmentTarget(chainedTargets[index]);
+                        }
+
+                        break;
+                    }
+
                     CompileAssignmentTarget(assignment.Target);
                     break;
                 case PythonAugmentedAssignmentStatement augmented:
@@ -2739,6 +2757,12 @@ public static class PythonCompiler
                 PythonBinaryOperator.FloorDivide => PythonOpCode.BinaryFloorDivide,
                 PythonBinaryOperator.Modulo => PythonOpCode.BinaryModulo,
                 PythonBinaryOperator.Power => PythonOpCode.BinaryPower,
+                PythonBinaryOperator.MatrixMultiply => PythonOpCode.BinaryMatrixMultiply,
+                PythonBinaryOperator.BitwiseAnd => PythonOpCode.BinaryAnd,
+                PythonBinaryOperator.BitwiseOr => PythonOpCode.BinaryOr,
+                PythonBinaryOperator.BitwiseXor => PythonOpCode.BinaryXor,
+                PythonBinaryOperator.LeftShift => PythonOpCode.BinaryLeftShift,
+                PythonBinaryOperator.RightShift => PythonOpCode.BinaryRightShift,
                 _ => throw new ArgumentOutOfRangeException(nameof(@operator)),
             };
 
