@@ -131,8 +131,17 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["input"] = new PythonBuiltinFunctionValue("input", Input),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
+        _builtins.Add("pow", new PythonBuiltinFunctionValue("pow", Power));
+        _builtins.Add("issubclass", new PythonBuiltinFunctionValue("issubclass", IsSubclass));
         _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
         _builtins.Add("NotImplemented", PythonNotImplementedValue.Instance);
+        _builtins.Add("object", PythonBuiltinFunctions.Object);
+        _builtins.Add("complex", PythonBuiltinFunctions.Complex);
+        foreach (var builtinFunction in PythonBuiltinFunctions.All)
+        {
+            _builtins.Add(builtinFunction.Name, builtinFunction);
+        }
+
         foreach (var builtinType in PythonBuiltinTypes.All)
         {
             _builtins.Add(builtinType.Name, builtinType);
@@ -1341,7 +1350,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     {
         foreach (var candidate in dictionary.Items)
         {
-            if (ReferenceEquals(candidate.Key, key) || AreEqual(candidate.Key, key))
+            if (ManagedObjectProtocols.KeysMatch(candidate.Key, key))
             {
                 item = candidate;
                 return true;
@@ -1800,6 +1809,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 or PythonBoundMethodValue
                 or PythonManagedTypeValue
                 or PythonExternalObjectValue
+                or PythonStaticMethodValue
+                or PythonClassMethodValue
         )
         {
             var arguments = PreResolveIterableArguments(
@@ -3609,6 +3620,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                     _evaluationStack.Push(CreateExceptionValue(exceptionType, positional));
                     return;
                 case PythonProtocolFunctionValue or PythonBoundMethodValue:
+                case PythonStaticMethodValue or PythonClassMethodValue:
                 case PythonExternalObjectValue:
                 case PythonManagedTypeValue { Construct: not null }:
                     _evaluationStack.Push(
@@ -4382,7 +4394,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 or PythonManagedTypeValue
                 or PythonProtocolFunctionValue
                 or PythonBoundMethodValue
-                or PythonBoundUserMethodValue => true,
+                or PythonBoundUserMethodValue
+                or PythonStaticMethodValue
+                or PythonClassMethodValue => true,
                 PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetInstanceMethod(
                     instance,
                     "__call__",
@@ -4551,6 +4565,18 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return new PythonSuperProxyValue(definingType, arguments[1]);
         }
 
+        if (
+            arguments.Count == 2
+            && arguments[0] is PythonManagedTypeValue definingClass
+            && arguments[1] is PythonManagedTypeValue subtype
+            && subtype.Mro.Any(candidate => ReferenceEquals(candidate, definingClass))
+        )
+        {
+            // super(C, cls) inside classmethods and __new__: attributes resolve
+            // through the subclass's MRO and bind to the class, not an instance.
+            return new PythonSuperProxyValue(definingClass, subtype);
+        }
+
         throw Fault(
             "DPY4034",
             arguments.Count == 0
@@ -4708,6 +4734,12 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
+        if (TryConstructThroughNew(type, arguments, [], [], span, out var created))
+        {
+            _evaluationStack.Push(created);
+            return;
+        }
+
         var instance = new PythonManagedObjectValue(type);
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
@@ -4753,6 +4785,21 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             _evaluationStack.Push(
                 ConstructExceptionInstance(type, positional, keywordNames, keywordValues, span)
             );
+            return;
+        }
+
+        if (
+            TryConstructThroughNew(
+                type,
+                positional,
+                keywordNames,
+                keywordValues,
+                span,
+                out var created
+            )
+        )
+        {
+            _evaluationStack.Push(created);
             return;
         }
 
@@ -4820,6 +4867,64 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         target is PythonManagedObjectValue instance
             ? Fault("DPY4003", $"'{instance.Type.Name}' object is not callable", span, "TypeError")
             : Fault("DPY4003", "The selected value is not callable.", span);
+
+    /// <summary>
+    /// `type(...)` for classes defining `__new__`: calls it with the class first (it is
+    /// implicitly static), then runs `__init__` only when the result is an instance of
+    /// the class, as CPython's `type.__call__` does.
+    /// </summary>
+    private bool TryConstructThroughNew(
+        PythonManagedTypeValue type,
+        PythonValue[] positional,
+        string[] keywordNames,
+        PythonValue[] keywordValues,
+        TextSpan span,
+        out PythonValue created
+    )
+    {
+        created = null!;
+        if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__new__", out var constructor))
+        {
+            return false;
+        }
+
+        var callable = constructor is PythonStaticMethodValue staticMethod
+            ? staticMethod.Function
+            : constructor;
+        created = InvokeCallableNested(
+            callable,
+            PrependArgument(type, positional),
+            span,
+            keywordNames,
+            keywordValues
+        );
+        if (
+            created is PythonManagedObjectValue instance
+            && instance.Type.Mro.Any(candidate => ReferenceEquals(candidate, type))
+            && ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer)
+            && initializer is PythonFunctionValue initFunction
+        )
+        {
+            var initResult = InvokeCallableNested(
+                initFunction,
+                PrependArgument(instance, positional),
+                span,
+                keywordNames,
+                keywordValues
+            );
+            if (initResult is not PythonNoneValue)
+            {
+                throw Fault(
+                    "DPY4003",
+                    $"__init__() should return None, not '{ManagedObjectProtocols.GetTypeName(initResult)}'",
+                    span,
+                    "TypeError"
+                );
+            }
+        }
+
+        return true;
+    }
 
     private static PythonValue[] PrependArgument(PythonValue first, PythonValue[] arguments)
     {
@@ -5159,6 +5264,17 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             closure[index] = CurrentFrame.Cells[cellIndex];
         }
 
+        if (baseValue is PythonTupleValue explicitBases)
+        {
+            baseValue = new PythonTupleValue([
+                .. explicitBases.Elements.Where(element => !IsObjectBase(element)),
+            ]);
+        }
+        else if (baseValue is not null && IsObjectBase(baseValue))
+        {
+            baseValue = null;
+        }
+
         if (baseValue is PythonTupleValue { Elements.Length: > 1 } baseTuple)
         {
             var multiType = CreateMultiBaseClass(code.Definition.Name, baseTuple, instruction.Span);
@@ -5217,6 +5333,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
         PushClassBodyFrame(type, code, closure);
     }
+
+    private static bool IsObjectBase(PythonValue value) =>
+        value is PythonBuiltinTypeValue { Name: "object" };
 
     private void PushClassBodyFrame(
         PythonManagedTypeValue type,
@@ -5618,6 +5737,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         {
             case PythonTupleValue tuple:
                 return tuple.Elements.Any(element => MatchesClassInfo(value, element, span));
+            case PythonBuiltinTypeValue { Name: "object" }:
+                return true;
             case PythonBuiltinTypeValue builtinType:
                 return PythonBuiltinTypes.IsInstance(value, builtinType);
             case PythonExceptionTypeValue exceptionType:
@@ -5655,6 +5776,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonTruthValue => PythonBuiltinTypes.Bool,
             PythonWholeNumberValue => PythonBuiltinTypes.Int,
             PythonFloatingPointValue => PythonBuiltinTypes.Float,
+            PythonComplexValue => PythonBuiltinFunctions.Complex,
             PythonTextValue => PythonBuiltinTypes.Str,
             PythonByteSequenceValue => PythonBuiltinTypes.Bytes,
             PythonListValue => PythonBuiltinTypes.List,
@@ -6168,6 +6290,138 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             throw;
         }
     }
+
+    private static PythonValue Power(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        PythonBuiltinFunctions.RequireArgumentCount("pow", arguments, 2, 3, span);
+        if (arguments.Count == 2 || arguments[2] is PythonNoneValue)
+        {
+            return ApplyBinary(PythonOpCode.BinaryPower, arguments[0], arguments[1], span);
+        }
+
+        if (
+            PromoteTruthValue(arguments[0]) is not PythonWholeNumberValue baseValue
+            || PromoteTruthValue(arguments[1]) is not PythonWholeNumberValue exponent
+            || PromoteTruthValue(arguments[2]) is not PythonWholeNumberValue modulus
+        )
+        {
+            throw Fault(
+                "DPY4003",
+                "pow() 3rd argument not allowed unless all arguments are integers",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (modulus.Value.IsZero)
+        {
+            throw Fault("DPY4003", "pow() 3rd argument cannot be 0", span, "ValueError");
+        }
+
+        var absoluteModulus = BigInteger.Abs(modulus.Value);
+        var baseResidue = baseValue.Value;
+        var power = exponent.Value;
+        if (power.Sign < 0)
+        {
+            // Negative exponents use the modular inverse (Python 3.8+).
+            baseResidue =
+                ModularInverse(baseResidue, absoluteModulus)
+                ?? throw Fault(
+                    "DPY4003",
+                    "base is not invertible for the given modulus",
+                    span,
+                    "ValueError"
+                );
+            power = -power;
+        }
+
+        var result = BigInteger.ModPow(baseResidue, power, absoluteModulus);
+        if (result.Sign < 0)
+        {
+            result += absoluteModulus;
+        }
+
+        if (modulus.Value.Sign < 0 && !result.IsZero)
+        {
+            result -= absoluteModulus;
+        }
+
+        return PythonWholeNumberValue.Create(result);
+    }
+
+    private static BigInteger? ModularInverse(BigInteger value, BigInteger modulus)
+    {
+        var (previous, current) = (BigInteger.Zero, BigInteger.One);
+        var (previousRemainder, remainder) = (modulus, ((value % modulus) + modulus) % modulus);
+        while (!remainder.IsZero)
+        {
+            var quotient = BigInteger.DivRem(previousRemainder, remainder, out var nextRemainder);
+            (previousRemainder, remainder) = (remainder, nextRemainder);
+            (previous, current) = (current, previous - quotient * current);
+        }
+
+        if (!previousRemainder.IsOne)
+        {
+            return null;
+        }
+
+        return ((previous % modulus) + modulus) % modulus;
+    }
+
+    private PythonTruthValue IsSubclass(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 2)
+        {
+            throw Fault(
+                "DPY4003",
+                $"issubclass expected 2 arguments, got {arguments.Count}",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (
+            arguments[0]
+            is not (PythonManagedTypeValue or PythonBuiltinTypeValue or PythonExceptionTypeValue)
+        )
+        {
+            throw Fault("DPY4003", "issubclass() arg 1 must be a class", span, "TypeError");
+        }
+
+        return PythonTruthValue.FromBoolean(IsSubclassOf(arguments[0], arguments[1], span));
+    }
+
+    private bool IsSubclassOf(PythonValue cls, PythonValue classInfo, TextSpan span) =>
+        classInfo switch
+        {
+            PythonTupleValue tuple => tuple.Elements.Any(element =>
+                IsSubclassOf(cls, element, span)
+            ),
+            PythonBuiltinTypeValue { Name: "object" } => true,
+            PythonBuiltinTypeValue builtinType => cls is PythonBuiltinTypeValue candidate
+                && (
+                    candidate.Name == builtinType.Name
+                    || candidate.Name == "bool" && builtinType.Name == "int"
+                ),
+            PythonExceptionTypeValue exceptionType => cls switch
+            {
+                PythonExceptionTypeValue candidate => IsExceptionSubclass(
+                    candidate.Name,
+                    exceptionType.Name
+                ),
+                PythonManagedTypeValue { ExceptionBaseName: not null } managed =>
+                    IsExceptionSubclass(managed.Name, exceptionType.Name),
+                _ => false,
+            },
+            PythonManagedTypeValue managedType => cls is PythonManagedTypeValue candidateType
+                && candidateType.Mro.Any(current => ReferenceEquals(current, managedType)),
+            _ => throw Fault(
+                "DPY4003",
+                "issubclass() arg 2 must be a class, a tuple of classes, or a union",
+                span,
+                "TypeError"
+            ),
+        };
 
     private static PythonValue Absolute(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {

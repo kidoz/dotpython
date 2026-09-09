@@ -101,6 +101,11 @@ internal static class UserObjectProtocols
                     managed,
                     function
                 ),
+                PythonProtocolFunctionValue protocolFunction => new PythonBoundMethodValue(
+                    name,
+                    managed,
+                    protocolFunction
+                ),
                 _ => attribute,
             };
             instance = managed;

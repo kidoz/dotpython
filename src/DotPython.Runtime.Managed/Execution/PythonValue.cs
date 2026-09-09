@@ -338,6 +338,34 @@ internal sealed record PythonDescriptorValue(
     internal override string ToDisplayString() => $"<descriptor '{Name}'>";
 }
 
+/// <summary>A `property` descriptor: getter, setter, and deleter callables.</summary>
+internal sealed record PythonPropertyValue(
+    PythonValue? Getter,
+    PythonValue? Setter,
+    PythonValue? Deleter
+) : PythonValue
+{
+    internal override string ToDisplayString() => "<property object>";
+
+    public bool Equals(PythonPropertyValue? other) => ReferenceEquals(this, other);
+
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+}
+
+/// <summary>A `staticmethod` wrapper: attribute access yields the function unbound.</summary>
+internal sealed record PythonStaticMethodValue(PythonValue Function) : PythonValue
+{
+    internal override string ToDisplayString() =>
+        $"<staticmethod({Function.ToRepresentationString()})>";
+}
+
+/// <summary>A `classmethod` wrapper: attribute access binds the function to the class.</summary>
+internal sealed record PythonClassMethodValue(PythonValue Function) : PythonValue
+{
+    internal override string ToDisplayString() =>
+        $"<classmethod({Function.ToRepresentationString()})>";
+}
+
 internal sealed record PythonManagedTypeValue : PythonValue
 {
     internal PythonManagedTypeValue(

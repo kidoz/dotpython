@@ -53,6 +53,8 @@ internal static class PythonBuiltinTypes
             "dict" => value is PythonDictionaryValue,
             "set" => value is PythonSetValue { IsFrozen: false },
             "frozenset" => value is PythonSetValue { IsFrozen: true },
+            "complex" => value is PythonComplexValue,
+            "object" => true,
             _ => false,
         };
 
