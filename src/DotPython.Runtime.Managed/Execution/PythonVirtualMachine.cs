@@ -51,6 +51,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["UnicodeError"] = "ValueError",
             ["UnicodeDecodeError"] = "UnicodeError",
             ["UnicodeEncodeError"] = "UnicodeError",
+            ["SystemExit"] = "BaseException",
+            ["KeyboardInterrupt"] = "BaseException",
         };
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
@@ -61,7 +63,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     private readonly long _instructionLimit;
     private readonly PythonModuleRegistry _modules;
     private readonly TextWriter _output;
+    private readonly TextWriter _standardError;
     private readonly TextReader? _standardInput;
+    private readonly IReadOnlyList<string> _arguments;
+    private readonly IReadOnlyList<string> _searchRoots;
     private readonly Dictionary<string, string> _exceptionBaseOverlay = new(StringComparer.Ordinal);
     private readonly UserIterationDispatcher _userIterationDispatcher;
     private readonly ConditionalWeakTable<PythonValue, object> _identityTokens = new();
@@ -85,13 +90,18 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         bool enableReturnLocalContinuation,
         CancellationToken cancellationToken,
         IReadOnlyList<string>? searchRoots = null,
-        TextReader? standardInput = null
+        TextReader? standardInput = null,
+        TextWriter? standardError = null,
+        IReadOnlyList<string>? arguments = null
     )
     {
         _globals = globals;
         _modules = modules;
         _output = output;
+        _standardError = standardError ?? TextWriter.Null;
         _standardInput = standardInput;
+        _arguments = arguments ?? [];
+        _searchRoots = searchRoots ?? [];
         _instructionLimit = instructionLimit;
         _enableReturnLocalContinuation = enableReturnLocalContinuation;
         _cancellationToken = cancellationToken;
@@ -179,6 +189,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
         _builtins.Add("NotImplemented", PythonNotImplementedValue.Instance);
         _builtins.Add("object", PythonBuiltinFunctions.Object);
+        _builtins.Add("exit", PythonStandardModules.CreateExitBuiltin("exit"));
+        _builtins.Add("quit", PythonStandardModules.CreateExitBuiltin("quit"));
         _builtins.Add("complex", PythonBuiltinFunctions.Complex);
         foreach (var builtinFunction in PythonBuiltinFunctions.All)
         {
@@ -242,6 +254,16 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         PythonValue[] arguments,
         TextSpan span
     ) => InvokeCallableNested(callable, arguments, span);
+
+    TextWriter IUserObjectDispatcher.StandardOutput => _output;
+
+    TextWriter IUserObjectDispatcher.StandardError => _standardError;
+
+    TextReader? IUserObjectDispatcher.StandardInput => _standardInput;
+
+    IReadOnlyList<string> IUserObjectDispatcher.Arguments => _arguments;
+
+    IReadOnlyList<string> IUserObjectDispatcher.SearchRoots => _searchRoots;
 
     private PythonValue RunCore(PythonExecutionProfile? profile)
     {
@@ -1073,7 +1095,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    private bool IsExceptionSubclass(string candidate, string expected)
+    internal bool IsExceptionSubclass(string candidate, string expected)
     {
         for (string? current = candidate; current is not null; )
         {
@@ -5418,6 +5440,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         if (baseValue is PythonTupleValue { Elements.Length: > 1 } baseTuple)
         {
             var multiType = CreateMultiBaseClass(code.Definition.Name, baseTuple, instruction.Span);
+            multiType.Module = CurrentModuleName();
             PushClassBodyFrame(multiType, code, closure);
             return;
         }
@@ -5471,8 +5494,16 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName;
         }
 
+        type.Module = CurrentModuleName();
         PushClassBodyFrame(type, code, closure);
     }
+
+    /// <summary>The `__name__` of the executing module, for `__module__` and class reprs.</summary>
+    private string? CurrentModuleName() =>
+        CurrentFrame.Globals.TryGetValue("__name__", out var moduleName)
+        && moduleName is PythonTextValue moduleText
+            ? moduleText.Value
+            : null;
 
     private static bool IsObjectBase(PythonValue value) =>
         value is PythonBuiltinTypeValue { Name: "object" };

@@ -596,7 +596,7 @@ internal static class PythonBuiltinFunctions
                     RequireArgumentCount("__repr__", arguments, 0, 0, span);
                     return new PythonTextValue(
                         self is PythonManagedObjectValue instance
-                            ? $"<{instance.Type.Name} object>"
+                            ? instance.DefaultRepresentation
                             : self.ToRepresentationString()
                     );
                 }

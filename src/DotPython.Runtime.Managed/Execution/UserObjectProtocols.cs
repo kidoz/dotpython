@@ -11,6 +11,21 @@ namespace DotPython.Runtime.Managed.Execution;
 internal interface IUserObjectDispatcher
 {
     PythonValue Invoke(PythonValue callable, PythonValue[] arguments, TextSpan span);
+
+    /// <summary>The executing VM's standard output (`sys.stdout`).</summary>
+    TextWriter StandardOutput { get; }
+
+    /// <summary>The executing VM's error stream (`sys.stderr`).</summary>
+    TextWriter StandardError { get; }
+
+    /// <summary>The executing VM's standard input (`sys.stdin`), null when absent.</summary>
+    TextReader? StandardInput { get; }
+
+    /// <summary>The program arguments (`sys.argv`).</summary>
+    IReadOnlyList<string> Arguments { get; }
+
+    /// <summary>The module search roots (`sys.path`).</summary>
+    IReadOnlyList<string> SearchRoots { get; }
 }
 
 /// <summary>

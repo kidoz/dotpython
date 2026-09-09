@@ -116,7 +116,9 @@ public sealed class ManagedPythonEngine
                 enableReturnLocalContinuation,
                 cancellationToken,
                 _searchRoots,
-                options.StandardInput
+                options.StandardInput,
+                options.StandardError,
+                options.Arguments
             );
             try
             {
@@ -156,7 +158,9 @@ public sealed class ManagedPythonEngine
                 enableReturnLocalContinuation: false,
                 cancellationToken,
                 _searchRoots,
-                options.StandardInput
+                options.StandardInput,
+                options.StandardError,
+                options.Arguments
             );
             try
             {
@@ -247,9 +251,18 @@ public sealed class ManagedPythonEngine
         CancellationToken cancellationToken
     )
     {
+        // The engine's globals are the `__main__` module namespace; scripts loaded
+        // from disk also see `__file__`, as under CPython.
+        _globals.SetValue("__name__", new PythonTextValue("__main__"));
+        if (source.FilePath is { } filePath && !filePath.StartsWith('<'))
+        {
+            _globals.SetValue("__file__", new PythonTextValue(filePath));
+        }
+
+        PythonVirtualMachine? virtualMachine = null;
         try
         {
-            var virtualMachine = new PythonVirtualMachine(
+            virtualMachine = new PythonVirtualMachine(
                 _globals,
                 _modules,
                 output,
@@ -257,7 +270,9 @@ public sealed class ManagedPythonEngine
                 enableReturnLocalContinuation: true,
                 cancellationToken,
                 _searchRoots,
-                options.StandardInput
+                options.StandardInput,
+                options.StandardError,
+                options.Arguments
             );
             virtualMachine.Execute(PrepareCode(code));
             return new ManagedExecutionResult(source, []);
@@ -268,6 +283,36 @@ public sealed class ManagedPythonEngine
                 source,
                 [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
             );
+        }
+        catch (PythonRaisedException raised)
+            when (virtualMachine?.IsExceptionSubclass(raised.Value.TypeName, "SystemExit") == true)
+        {
+            // sys.exit(): None/omitted → 0, an int → that code, anything else → the
+            // message on stderr and exit status 1.
+            var exitValue =
+                raised.Value.EffectiveArguments.Count == 0
+                    ? PythonNoneValue.Instance
+                    : raised.Value.EffectiveArguments[0];
+            return exitValue switch
+            {
+                PythonNoneValue => new ManagedExecutionResult(source, [], exitCode: 0),
+                PythonWholeNumberValue whole => new ManagedExecutionResult(
+                    source,
+                    [],
+                    exitCode: (int)(whole.Value & 0xFF)
+                ),
+                PythonTruthValue truth => new ManagedExecutionResult(
+                    source,
+                    [],
+                    exitCode: truth.Value ? 1 : 0
+                ),
+                _ => new ManagedExecutionResult(
+                    source,
+                    [],
+                    exitCode: 1,
+                    exitMessage: exitValue.ToDisplayString()
+                ),
+            };
         }
         catch (PythonRaisedException raised)
         {

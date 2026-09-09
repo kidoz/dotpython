@@ -1,4 +1,5 @@
 using System.Numerics;
+using DotPython.Language;
 using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
@@ -198,6 +199,185 @@ internal static class PythonStandardModules
             "<dotpython os.path>",
             isPackage: false,
             globals => InitializeOsPath(globals, searchRoots)
+        );
+        modules["sys"] = PythonModuleDefinition.Native(
+            "<dotpython sys>",
+            isPackage: false,
+            InitializeSys
+        );
+        modules["__future__"] = PythonModuleDefinition.Native(
+            "<dotpython __future__>",
+            isPackage: false,
+            InitializeFuture
+        );
+    }
+
+    /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
+    internal static PythonBuiltinFunctionValue CreateExitBuiltin(string name) =>
+        new(
+            name,
+            (arguments, span) =>
+            {
+                if (arguments.Count > 1)
+                {
+                    throw new PythonRuntimeException(
+                        "DPY4003",
+                        $"{name} expected at most 1 argument, got {arguments.Count}",
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                var code = arguments.Count == 0 ? PythonNoneValue.Instance : arguments[0];
+                throw new PythonRaisedException(
+                    new PythonExceptionValue(
+                        "SystemExit",
+                        code is PythonNoneValue ? string.Empty : code.ToDisplayString()
+                    )
+                    {
+                        Arguments = arguments.Count == 0 ? [] : [code],
+                    }
+                );
+            }
+        );
+
+    private static void InitializeSys(PythonGlobalNamespace globals)
+    {
+        var dispatcher = UserObjectProtocols.Dispatcher;
+        globals.SetValue(
+            "argv",
+            new PythonListValue([
+                .. (dispatcher?.Arguments ?? []).Select(argument =>
+                    (PythonValue)new PythonTextValue(argument)
+                ),
+            ])
+        );
+        globals.SetValue(
+            "path",
+            new PythonListValue([
+                .. (dispatcher?.SearchRoots ?? []).Select(root =>
+                    (PythonValue)new PythonTextValue(root)
+                ),
+            ])
+        );
+        globals.SetValue("stdout", new PythonStreamValue(PythonStreamKind.StandardOutput));
+        globals.SetValue("stderr", new PythonStreamValue(PythonStreamKind.StandardError));
+        globals.SetValue("stdin", new PythonStreamValue(PythonStreamKind.StandardInput));
+        globals.SetValue("exit", CreateExitBuiltin("exit"));
+        var version = PythonLanguageVersion.Current;
+        globals.SetValue(
+            "version",
+            new PythonTextValue($"{version.Major}.{version.Minor}.0 (DotPython managed runtime)")
+        );
+        globals.SetValue(
+            "version_info",
+            new PythonTupleValue([
+                PythonWholeNumberValue.Create(version.Major),
+                PythonWholeNumberValue.Create(version.Minor),
+                PythonWholeNumberValue.Create(0),
+                new PythonTextValue("final"),
+                PythonWholeNumberValue.Create(0),
+            ])
+        );
+        globals.SetValue(
+            "platform",
+            new PythonTextValue(
+                OperatingSystem.IsWindows() ? "win32"
+                : OperatingSystem.IsMacOS() ? "darwin"
+                : OperatingSystem.IsLinux() ? "linux"
+                : "unknown"
+            )
+        );
+        globals.SetValue("maxsize", PythonWholeNumberValue.Create(long.MaxValue));
+        globals.SetValue(
+            "byteorder",
+            new PythonTextValue(BitConverter.IsLittleEndian ? "little" : "big")
+        );
+        globals.SetValue("implementation", new PythonTextValue("dotpython"));
+        var recursionLimit = PythonWholeNumberValue.Create(1000);
+        globals.SetValue(
+            "getrecursionlimit",
+            new PythonBuiltinFunctionValue("getrecursionlimit", (_, _) => recursionLimit)
+        );
+        globals.SetValue(
+            "setrecursionlimit",
+            new PythonBuiltinFunctionValue(
+                "setrecursionlimit",
+                (arguments, span) =>
+                {
+                    // Recorded for introspection only; the managed VM bounds recursion
+                    // through its instruction budget and frame growth instead.
+                    if (arguments.Count != 1 || arguments[0] is not PythonWholeNumberValue limit)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4003",
+                            "setrecursionlimit() argument must be an integer",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    if (limit.Value.Sign <= 0)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4003",
+                            "recursion limit must be greater or equal than 1",
+                            span,
+                            "ValueError"
+                        );
+                    }
+
+                    recursionLimit = limit;
+                    return PythonNoneValue.Instance;
+                }
+            )
+        );
+        globals.SetValue(
+            "intern",
+            new PythonBuiltinFunctionValue(
+                "intern",
+                (arguments, span) =>
+                    arguments.Count == 1 && arguments[0] is PythonTextValue text
+                        ? text
+                        : throw new PythonRuntimeException(
+                            "DPY4003",
+                            "intern() argument must be str",
+                            span,
+                            "TypeError"
+                        )
+            )
+        );
+    }
+
+    private static readonly string[] FutureFeatures =
+    [
+        "nested_scopes",
+        "generators",
+        "division",
+        "absolute_import",
+        "with_statement",
+        "print_function",
+        "unicode_literals",
+        "barry_as_FLUFL",
+        "generator_stop",
+        "annotations",
+    ];
+
+    private static void InitializeFuture(PythonGlobalNamespace globals)
+    {
+        // Every feature is already the language default, so the names exist for
+        // `from __future__ import ...` and carry no behaviour.
+        var featureType = new PythonManagedTypeValue("_Feature") { Module = "__future__" };
+        foreach (var feature in FutureFeatures)
+        {
+            globals.SetValue(feature, new PythonManagedObjectValue(featureType));
+        }
+
+        globals.SetValue(
+            "all_feature_names",
+            new PythonListValue([
+                .. FutureFeatures.Select(name => (PythonValue)new PythonTextValue(name)),
+            ])
         );
     }
 

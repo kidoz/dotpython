@@ -470,11 +470,17 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal string Name { get; }
 
+    /// <summary>The `__name__` of the defining module (`__module__`); null for runtime-internal types.</summary>
+    internal string? Module { get; set; }
+
+    /// <summary>`__module__.__qualname__`, the form CPython prints in reprs.</summary>
+    internal string QualifiedDisplayName => Module is null ? Name : $"{Module}.{Name}";
+
     public bool Equals(PythonManagedTypeValue? other) => ReferenceEquals(this, other);
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
-    internal override string ToDisplayString() => $"<class '{Name}'>";
+    internal override string ToDisplayString() => $"<class '{QualifiedDisplayName}'>";
 }
 
 internal sealed record PythonManagedObjectValue : PythonValue
@@ -502,7 +508,34 @@ internal sealed record PythonManagedObjectValue : PythonValue
     internal override string ToRepresentationString() =>
         UserObjectProtocols.TryFormatRepresentation(this) ?? DefaultRepresentation;
 
-    private string DefaultRepresentation => $"<{Type.Name} object>";
+    /// <summary>
+    /// CPython's default repr; the address is a stable per-object token rather than a
+    /// heap address.
+    /// </summary>
+    internal string DefaultRepresentation =>
+        $"<{Type.QualifiedDisplayName} object at 0x{RuntimeHelpers.GetHashCode(this):x}>";
+}
+
+internal enum PythonStreamKind
+{
+    StandardOutput,
+    StandardError,
+    StandardInput,
+}
+
+/// <summary>`sys.stdout` / `sys.stderr` / `sys.stdin`, bound to the executing VM's streams.</summary>
+internal sealed record PythonStreamValue(PythonStreamKind Kind) : PythonValue
+{
+    internal string Name =>
+        Kind switch
+        {
+            PythonStreamKind.StandardOutput => "<stdout>",
+            PythonStreamKind.StandardError => "<stderr>",
+            _ => "<stdin>",
+        };
+
+    internal override string ToDisplayString() =>
+        $"<_io.TextIOWrapper name='{Name}' mode='{(Kind == PythonStreamKind.StandardInput ? "r" : "w")}' encoding='utf-8'>";
 }
 
 internal sealed record PythonExceptionTypeValue(string Name) : PythonValue

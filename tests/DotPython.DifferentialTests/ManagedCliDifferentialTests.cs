@@ -570,6 +570,19 @@ public sealed class ManagedCliDifferentialTests
     [InlineData(
         "import math\nclass Sink:\n    def __init__(self): self.parts = []\n    def write(self, text): self.parts.append(text)\n    def flush(self): self.parts.append('<flush>')\nsink = Sink()\nprint('a', 1, sep='-', end='!\\n', file=sink)\nprint('b', file=sink, flush=True)\nprint(sink.parts)\nprint('c', flush=True)\nprint('d', file=None)\nprint(math.isclose(1.0, 1.0000001, rel_tol=1e-3), math.isclose(1.0, 1.1, abs_tol=0.2), math.isclose(1.0, 1.0000001), math.isclose(0.0, 1e-12, abs_tol=1e-9))\nfor bad in (lambda: math.isclose(1, 2, rel_tol=-1), lambda: math.isclose(1, 2, nope=1), lambda: print('x', file=5)):\n    try:\n        bad()\n    except (ValueError, TypeError, AttributeError) as e:\n        print(type(e).__name__, e)\nclass C:\n    def _get(self): return 1\n    def _set(self, v): print('set', v)\n    x = property(fget=_get, fset=_set)\n    y = property(_get, doc='documented')\nc = C()\nc.x = 2\nprint(c.x, c.y)\ntry:\n    c.y = 1\nexcept AttributeError as e:\n    print(e)"
     )]
+    [InlineData(
+        "print(__name__)\nif __name__ == '__main__':\n    print('main')\nclass C: pass\ndef f(): pass\nprint(C, C.__module__, C.__qualname__, C.__name__, f.__module__, f.__qualname__, repr(C()).startswith('<__main__.C object at 0x'), str(C()).startswith('<__main__.C object at 0x'), type(C()) is C)\nimport math\nprint(math.__name__, type(math).__name__)\nclass MyError(Exception): pass\ntry:\n    raise MyError('m')\nexcept MyError as e:\n    print(type(e).__name__, e, MyError.__module__)"
+    )]
+    [InlineData(
+        "import sys\nprint(sys.argv, sys.version_info[:2], sys.version_info[0] == 3, sys.maxsize, sys.platform, sys.byteorder, type(sys.path).__name__, sys.getrecursionlimit())\nsys.setrecursionlimit(2000)\nprint(sys.getrecursionlimit(), sys.intern('x'), sys.stdout.name, sys.stdin.name)\nn = sys.stdout.write('via write\\n')\nprint(n)\nsys.stdout.flush()\nprint('end')"
+    )]
+    [InlineData(
+        "import sys\ntry:\n    sys.exit(3)\nexcept SystemExit as e:\n    print('caught', e.code, isinstance(e, BaseException), isinstance(e, Exception))\ntry:\n    exit()\nexcept SystemExit as e:\n    print('code', e.code)\ntry:\n    raise SystemExit('boom')\nexcept BaseException as e:\n    print(type(e).__name__, e.code, e)\ntry:\n    quit(2)\nfinally:\n    print('cleanup')\nprint('never')"
+    )]
+    [InlineData("import sys\nprint('x')\nsys.exit()")]
+    [InlineData(
+        "from __future__ import annotations, print_function\nimport __future__\ndef f(x: UndefinedName) -> 'also undefined': return x\nprint(f(1), type(annotations).__name__, 'annotations' in __future__.all_feature_names)"
+    )]
     public void CommandExecution_MatchesReferencePythonForSupportedSubset(string code)
     {
         var python = FindReferencePython();
@@ -595,6 +608,70 @@ public sealed class ManagedCliDifferentialTests
         Assert.Equal(reference.ExitCode, exitCode);
         Assert.Equal(reference.StandardOutput, output.ToString());
         Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
+    public void CommandExecution_ReportsSystemExitMessagesOnTheErrorStream()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = DotPythonCommand.Run(
+            ["-c", "import sys\nprint('before')\nsys.exit('fatal: message')"],
+            TextReader.Null,
+            output,
+            error,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal("before" + Environment.NewLine, output.ToString());
+        Assert.Equal("fatal: message" + Environment.NewLine, error.ToString());
+    }
+
+    [Theory]
+    [InlineData("--instruction-limit", "unlimited", 0, "1999999000000")]
+    [InlineData("--instruction-limit=50_000_000", null, 0, "1999999000000")]
+    [InlineData("--instruction-limit", "abc", 2, "")]
+    public void CommandExecution_HonorsTheInstructionLimitOption(
+        string option,
+        string? value,
+        int expectedExitCode,
+        string expectedOutput
+    )
+    {
+        ArgumentNullException.ThrowIfNull(expectedOutput);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var arguments = new List<string> { option };
+        if (value is not null)
+        {
+            arguments.Add(value);
+        }
+
+        arguments.AddRange(["-c", "n = 0\nfor i in range(2_000_000):\n    n += i\nprint(n)"]);
+
+        var exitCode = DotPythonCommand.Run(
+            arguments,
+            TextReader.Null,
+            output,
+            error,
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(expectedExitCode, exitCode);
+        Assert.Equal(
+            expectedOutput.Length == 0 ? string.Empty : expectedOutput + Environment.NewLine,
+            output.ToString()
+        );
+        if (expectedExitCode == 0)
+        {
+            Assert.Equal(string.Empty, error.ToString());
+        }
+        else
+        {
+            Assert.Contains("--instruction-limit", error.ToString(), StringComparison.Ordinal);
+        }
     }
 
     [Fact]

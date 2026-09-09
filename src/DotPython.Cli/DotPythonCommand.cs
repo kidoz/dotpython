@@ -49,6 +49,17 @@ internal static class DotPythonCommand
             return RunWheelCommand(arguments, standardOutput, standardError);
         }
 
+        if (!TryReadInstructionLimit(ref arguments, standardError, out var instructionLimit))
+        {
+            return 2;
+        }
+
+        if (arguments.Count == 0)
+        {
+            standardError.WriteLine("dotpython: expected -c, -, or a script path");
+            return 2;
+        }
+
         if (
             !TryReadSource(
                 arguments,
@@ -70,9 +81,26 @@ internal static class DotPythonCommand
             var result = engine.Execute(
                 source,
                 standardOutput,
-                new ManagedExecutionOptions { StandardInput = standardInput },
+                new ManagedExecutionOptions
+                {
+                    StandardInput = standardInput,
+                    StandardError = standardError,
+                    Arguments = BuildProgramArguments(arguments),
+                    InstructionLimit = instructionLimit,
+                },
                 cancellationToken
             );
+            if (result.ExitCode is { } exitCode)
+            {
+                // sys.exit(): the message (if any) goes to stderr without a traceback.
+                if (result.ExitMessage is { } exitMessage)
+                {
+                    standardError.WriteLine(exitMessage);
+                }
+
+                return exitCode;
+            }
+
             if (result.Success)
             {
                 return 0;
@@ -135,6 +163,87 @@ internal static class DotPythonCommand
             );
             return 1;
         }
+    }
+
+    /// <summary>
+    /// `sys.argv`: the program name (`-c`, `-`, or the script path as given) followed by
+    /// the remaining command-line arguments, as CPython reports them.
+    /// </summary>
+    private static string[] BuildProgramArguments(IReadOnlyList<string> arguments)
+    {
+        var programArguments = new List<string>();
+        var skip = arguments[0] == "-c" ? 2 : 1;
+        programArguments.Add(arguments[0]);
+        for (var index = skip; index < arguments.Count; index++)
+        {
+            programArguments.Add(arguments[index]);
+        }
+
+        return [.. programArguments];
+    }
+
+    /// <summary>
+    /// Consumes a leading `--instruction-limit N` (or `unlimited`) option; the managed
+    /// VM's cooperative budget defaults to one million instructions.
+    /// </summary>
+    private static bool TryReadInstructionLimit(
+        ref IReadOnlyList<string> arguments,
+        TextWriter standardError,
+        out long instructionLimit
+    )
+    {
+        instructionLimit = ManagedExecutionOptions.DefaultInstructionLimit;
+        if (arguments.Count == 0)
+        {
+            return true;
+        }
+
+        string? value = null;
+        var consumed = 0;
+        if (arguments[0] == "--instruction-limit")
+        {
+            if (arguments.Count < 2)
+            {
+                standardError.WriteLine("dotpython: argument expected for --instruction-limit");
+                return false;
+            }
+
+            value = arguments[1];
+            consumed = 2;
+        }
+        else if (arguments[0].StartsWith("--instruction-limit=", StringComparison.Ordinal))
+        {
+            value = arguments[0]["--instruction-limit=".Length..];
+            consumed = 1;
+        }
+
+        if (value is null)
+        {
+            return true;
+        }
+
+        if (string.Equals(value, "unlimited", StringComparison.OrdinalIgnoreCase))
+        {
+            instructionLimit = long.MaxValue;
+        }
+        else if (
+            !long.TryParse(
+                value.Replace("_", string.Empty, StringComparison.Ordinal),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out instructionLimit
+            )
+            || instructionLimit <= 0
+        )
+        {
+            standardError.WriteLine(
+                $"dotpython: --instruction-limit expects a positive integer or 'unlimited', not '{value}'"
+            );
+            return false;
+        }
+
+        arguments = [.. arguments.Skip(consumed)];
+        return true;
     }
 
     private static bool TryReadSource(
@@ -217,13 +326,28 @@ internal static class DotPythonCommand
 
     private static void WriteHelp(TextWriter output)
     {
-        output.WriteLine("Usage: dotpython -c command [args]");
-        output.WriteLine("       dotpython - [args]");
-        output.WriteLine("       dotpython script.py [args]");
+        output.WriteLine("Usage: dotpython [options] -c command [args]");
+        output.WriteLine("       dotpython [options] - [args]");
+        output.WriteLine("       dotpython [options] script.py [args]");
         output.WriteLine("       dotpython wheel inspect artifact.whl");
         output.WriteLine();
+        output.WriteLine("Options:");
         output.WriteLine(
-            "Current managed subset: literals, names, assignment, arithmetic, and calls."
+            "  --instruction-limit N   cooperative VM instruction budget (default "
+                + ManagedExecutionOptions.DefaultInstructionLimit.ToString(
+                    "N0",
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+                + "; 'unlimited' disables it)"
         );
+        output.WriteLine("  -h, --help              show this help");
+        output.WriteLine("  -V, --version           show the runtime and Python language version");
+        output.WriteLine();
+        output.WriteLine(
+            "DotPython runs a managed subset of Python "
+                + ManagedRuntimeDescriptor.Compatibility.LanguageVersion
+                + " with a cooperative instruction budget; see the compatibility matrix"
+        );
+        output.WriteLine("for the supported statements, builtins, and modules.");
     }
 }

@@ -199,8 +199,12 @@ internal static class ManagedObjectProtocols
                 );
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return PythonBuiltinFunctions.BindToType(value, name, type);
-            case PythonManagedTypeValue type when name == "__name__":
+            case PythonManagedTypeValue type when name == "__name__" || name == "__qualname__":
                 return new PythonTextValue(type.Name);
+            case PythonManagedTypeValue type when name == "__module__":
+                return type.Module is null
+                    ? new PythonTextValue("builtins")
+                    : new PythonTextValue(type.Module);
             case PythonManagedTypeValue type when name == "__mro__":
                 return new PythonTupleValue([.. type.Mro.Cast<PythonValue>()]);
             case PythonManagedTypeValue type when name == "__bases__":
@@ -218,8 +222,14 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue { Name: "object" }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectMember):
                 return objectMember;
-            case PythonFunctionValue function when name == "__name__":
+            case PythonFunctionValue function when name == "__name__" || name == "__qualname__":
                 return new PythonTextValue(function.Name);
+            case PythonFunctionValue function when name == "__module__":
+                return function.Globals.TryGetValue("__name__", out var functionModule)
+                    ? functionModule
+                    : PythonNoneValue.Instance;
+            case PythonStreamValue stream:
+                return GetStreamAttribute(stream, name, span);
             case PythonBoundUserMethodValue boundUserMethod when name == "__name__":
                 return new PythonTextValue(boundUserMethod.Function.Name);
             case PythonBoundMethodValue boundMethod when name == "__name__":
@@ -254,6 +264,10 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(exceptionTypeValue.Name);
             case PythonExceptionValue exceptionValue when name == "args":
                 return new PythonTupleValue([.. exceptionValue.EffectiveArguments]);
+            case PythonExceptionValue { TypeName: "SystemExit" } systemExit when name == "code":
+                return systemExit.EffectiveArguments.Count == 0
+                    ? PythonNoneValue.Instance
+                    : systemExit.EffectiveArguments[0];
             case PythonExceptionValue { TypeName: "StopIteration" } stopIteration
                 when name == "value":
                 return stopIteration.EffectiveArguments.Count == 0
@@ -568,6 +582,133 @@ internal static class ManagedObjectProtocols
                 );
         }
     }
+
+    /// <summary>`sys.stdout`/`sys.stderr`/`sys.stdin` methods bound to the executing VM's streams.</summary>
+    private static PythonValue GetStreamAttribute(
+        PythonStreamValue stream,
+        string name,
+        TextSpan span
+    )
+    {
+        PythonRuntimeException NoDispatcher() =>
+            Fault(
+                "DPY4016",
+                "The standard streams are only available while a program is running.",
+                span,
+                "RuntimeError"
+            );
+
+        switch (name)
+        {
+            case "name":
+                return new PythonTextValue(stream.Name);
+            case "encoding":
+                return new PythonTextValue("utf-8");
+            case "closed":
+                return PythonTruthValue.False;
+            case "write" when stream.Kind != PythonStreamKind.StandardInput:
+                return StreamMethod(
+                    stream,
+                    "write",
+                    arguments =>
+                    {
+                        if (arguments.Count != 1 || arguments[0] is not PythonTextValue text)
+                        {
+                            throw Fault(
+                                "DPY4003",
+                                $"write() argument must be str, not {(arguments.Count == 1 ? GetTypeName(arguments[0]) : "missing")}",
+                                span,
+                                "TypeError"
+                            );
+                        }
+
+                        var dispatcher = UserObjectProtocols.Dispatcher ?? throw NoDispatcher();
+                        (
+                            stream.Kind == PythonStreamKind.StandardError
+                                ? dispatcher.StandardError
+                                : dispatcher.StandardOutput
+                        ).Write(text.Value);
+                        return PythonWholeNumberValue.Create(text.Value.EnumerateRunes().Count());
+                    }
+                );
+            case "flush":
+                return StreamMethod(
+                    stream,
+                    "flush",
+                    _ =>
+                    {
+                        var dispatcher = UserObjectProtocols.Dispatcher ?? throw NoDispatcher();
+                        if (stream.Kind == PythonStreamKind.StandardOutput)
+                        {
+                            dispatcher.StandardOutput.Flush();
+                        }
+                        else if (stream.Kind == PythonStreamKind.StandardError)
+                        {
+                            dispatcher.StandardError.Flush();
+                        }
+
+                        return PythonNoneValue.Instance;
+                    }
+                );
+            case "readline" when stream.Kind == PythonStreamKind.StandardInput:
+                return StreamMethod(
+                    stream,
+                    "readline",
+                    _ =>
+                    {
+                        var dispatcher = UserObjectProtocols.Dispatcher ?? throw NoDispatcher();
+                        var line = dispatcher.StandardInput?.ReadLine();
+                        return new PythonTextValue(line is null ? string.Empty : line + "\n");
+                    }
+                );
+            case "read" when stream.Kind == PythonStreamKind.StandardInput:
+                return StreamMethod(
+                    stream,
+                    "read",
+                    _ =>
+                    {
+                        var dispatcher = UserObjectProtocols.Dispatcher ?? throw NoDispatcher();
+                        return new PythonTextValue(
+                            dispatcher.StandardInput?.ReadToEnd() ?? string.Empty
+                        );
+                    }
+                );
+            case "readlines" when stream.Kind == PythonStreamKind.StandardInput:
+                return StreamMethod(
+                    stream,
+                    "readlines",
+                    _ =>
+                    {
+                        var dispatcher = UserObjectProtocols.Dispatcher ?? throw NoDispatcher();
+                        var lines = new List<PythonValue>();
+                        while (dispatcher.StandardInput?.ReadLine() is { } line)
+                        {
+                            lines.Add(new PythonTextValue(line + "\n"));
+                        }
+
+                        return new PythonListValue(lines);
+                    }
+                );
+            default:
+                throw Fault(
+                    "DPY4023",
+                    $"'_io.TextIOWrapper' object has no attribute '{name}'",
+                    span,
+                    "AttributeError"
+                );
+        }
+    }
+
+    private static PythonBoundMethodValue StreamMethod(
+        PythonStreamValue stream,
+        string name,
+        Func<IReadOnlyList<PythonValue>, PythonValue> implementation
+    ) =>
+        new(
+            name,
+            stream,
+            new PythonProtocolFunctionValue(name, (_, arguments) => implementation(arguments))
+        );
 
     internal static void SetAttribute(
         PythonValue target,
@@ -2099,6 +2240,7 @@ internal static class ManagedObjectProtocols
             PythonFilterSourceValue => "filter",
             PythonGeneratorValue generatorValue => generatorValue.TypeName,
             PythonFileValue => "TextIOWrapper",
+            PythonStreamValue => "TextIOWrapper",
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",
