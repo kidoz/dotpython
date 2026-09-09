@@ -48,6 +48,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["IsADirectoryError"] = "OSError",
             ["PermissionError"] = "OSError",
             ["EOFError"] = "Exception",
+            ["UnicodeError"] = "ValueError",
+            ["UnicodeDecodeError"] = "UnicodeError",
+            ["UnicodeEncodeError"] = "UnicodeError",
         };
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly CancellationToken _cancellationToken;
@@ -99,15 +102,22 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["print"] = new PythonBuiltinFunctionValue("print", Print),
             ["repr"] = new PythonBuiltinFunctionValue("repr", Representation),
             ["range"] = new PythonBuiltinFunctionValue("range", Range),
-            ["enumerate"] = new PythonBuiltinFunctionValue("enumerate", Enumerate),
-            ["zip"] = new PythonBuiltinFunctionValue("zip", Zip),
+            ["enumerate"] = new PythonBuiltinFunctionValue("enumerate", Enumerate).WithSignature(
+                ["iterable", "start"],
+                [null, PythonWholeNumberValue.Create(BigInteger.Zero)],
+                typeStyleErrors: true
+            ),
             ["isinstance"] = new PythonBuiltinFunctionValue("isinstance", IsInstance),
             ["super"] = new PythonBuiltinFunctionValue("super", Super),
             ["next"] = new PythonBuiltinFunctionValue("next", Next),
             ["anext"] = new PythonBuiltinFunctionValue("anext", ANext),
             ["callable"] = new PythonBuiltinFunctionValue("callable", Callable),
             ["delattr"] = new PythonBuiltinFunctionValue("delattr", DeleteAttributeBuiltin),
-            ["sum"] = new PythonBuiltinFunctionValue("sum", Sum),
+            ["sum"] = new PythonBuiltinFunctionValue("sum", Sum).WithSignature(
+                ["iterable", "start"],
+                [null, PythonWholeNumberValue.Create(BigInteger.Zero)],
+                positionalOnly: 1
+            ),
             ["min"] = new PythonBuiltinFunctionValue("min", Minimum),
             ["max"] = new PythonBuiltinFunctionValue("max", Maximum),
             ["sorted"] = new PythonBuiltinFunctionValue("sorted", Sorted),
@@ -117,7 +127,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["chr"] = new PythonBuiltinFunctionValue("chr", CharacterFromOrdinal),
             ["ord"] = new PythonBuiltinFunctionValue("ord", OrdinalFromCharacter),
             ["divmod"] = new PythonBuiltinFunctionValue("divmod", DivideModulo),
-            ["round"] = new PythonBuiltinFunctionValue("round", Round),
+            ["round"] = new PythonBuiltinFunctionValue("round", Round).WithSignature(
+                ["number", "ndigits"],
+                [null, PythonNoneValue.Instance]
+            ),
             ["map"] = new PythonBuiltinFunctionValue("map", Map),
             ["filter"] = new PythonBuiltinFunctionValue("filter", Filter),
             ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
@@ -128,10 +141,40 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["vars"] = new PythonBuiltinFunctionValue("vars", Variables),
             ["id"] = new PythonBuiltinFunctionValue("id", Identity),
             ["open"] = PythonStandardModules.CreateOpenBuiltin(searchRoots ?? []),
+            ["zip"] = new PythonBuiltinFunctionValue(
+                "zip",
+                Zip,
+                (positional, keywordNames, keywordValues, span) =>
+                {
+                    var strict = false;
+                    for (var index = 0; index < keywordNames.Count; index++)
+                    {
+                        if (keywordNames[index] != "strict")
+                        {
+                            throw Fault(
+                                "DPY4009",
+                                $"zip() got an unexpected keyword argument '{keywordNames[index]}'",
+                                span,
+                                "TypeError"
+                            );
+                        }
+
+                        strict = IsTruthy(keywordValues[index]);
+                    }
+
+                    return Zip(positional, span, strict);
+                }
+            ),
             ["input"] = new PythonBuiltinFunctionValue("input", Input),
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
-        _builtins.Add("pow", new PythonBuiltinFunctionValue("pow", Power));
+        _builtins.Add(
+            "pow",
+            new PythonBuiltinFunctionValue("pow", Power).WithSignature(
+                ["base", "exp", "mod"],
+                [null, null, PythonNoneValue.Instance]
+            )
+        );
         _builtins.Add("issubclass", new PythonBuiltinFunctionValue("issubclass", IsSubclass));
         _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
         _builtins.Add("NotImplemented", PythonNotImplementedValue.Instance);
@@ -139,7 +182,20 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         _builtins.Add("complex", PythonBuiltinFunctions.Complex);
         foreach (var builtinFunction in PythonBuiltinFunctions.All)
         {
-            _builtins.Add(builtinFunction.Name, builtinFunction);
+            _builtins.Add(
+                builtinFunction.Name,
+                builtinFunction.Name == "property"
+                    ? builtinFunction.WithSignature(
+                        ["fget", "fset", "fdel", "doc"],
+                        [
+                            PythonNoneValue.Instance,
+                            PythonNoneValue.Instance,
+                            PythonNoneValue.Instance,
+                            PythonNoneValue.Instance,
+                        ]
+                    )
+                    : builtinFunction
+            );
         }
 
         foreach (var builtinType in PythonBuiltinTypes.All)
@@ -1952,6 +2008,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             {
                 var separator = " ";
                 var end = "\n";
+                PythonValue? file = null;
+                var flush = false;
                 for (var index = 0; index < keywordNames.Length; index++)
                 {
                     var value = keywordValues[index];
@@ -1963,23 +2021,81 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                         case "end":
                             end = RequirePrintText("end", value, "\n", span);
                             break;
+                        case "file":
+                            file = value is PythonNoneValue ? null : value;
+                            break;
+                        case "flush":
+                            flush = IsTruthy(value);
+                            break;
                         default:
                             throw UnexpectedBuiltinKeyword(builtin, keywordNames[index], span);
                     }
                 }
 
-                _output.Write(
-                    string.Join(separator, positional.Select(value => value.ToDisplayString()))
-                );
-                _output.Write(end);
+                if (file is null)
+                {
+                    _output.Write(
+                        string.Join(separator, positional.Select(value => value.ToDisplayString()))
+                    );
+                    _output.Write(end);
+                    if (flush)
+                    {
+                        _output.Flush();
+                    }
+
+                    return PythonNoneValue.Instance;
+                }
+
+                // Any object with a write method is a valid print target; like CPython,
+                // each object, separator, and the end string is a separate write call.
+                var write = ManagedObjectProtocols.GetAttribute(file, "write", span);
+                for (var index = 0; index < positional.Length; index++)
+                {
+                    if (index != 0)
+                    {
+                        InvokeCallableNested(write, [new PythonTextValue(separator)], span);
+                    }
+
+                    InvokeCallableNested(
+                        write,
+                        [new PythonTextValue(positional[index].ToDisplayString())],
+                        span
+                    );
+                }
+
+                InvokeCallableNested(write, [new PythonTextValue(end)], span);
+                if (flush && TryGetFlush(file, span, out var flushMethod))
+                {
+                    InvokeCallableNested(flushMethod, [], span);
+                }
+
                 return PythonNoneValue.Instance;
             }
             default:
+                if (builtin.InvokeWithKeywords is { } invokeWithKeywords)
+                {
+                    return invokeWithKeywords(positional, keywordNames, keywordValues, span);
+                }
+
                 throw Fault(
                     "DPY4009",
                     "Keyword arguments are not supported for this callable in this runtime slice.",
                     span
                 );
+        }
+    }
+
+    private static bool TryGetFlush(PythonValue file, TextSpan span, out PythonValue flush)
+    {
+        try
+        {
+            flush = ManagedObjectProtocols.GetAttribute(file, "flush", span);
+            return true;
+        }
+        catch (PythonRuntimeException exception) when (IsAttributeErrorFault(exception))
+        {
+            flush = null!;
+            return false;
         }
     }
 
@@ -2007,9 +2123,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         string keyword,
         TextSpan span
     ) =>
+        // sorted() delegates to list.sort in CPython, so its keyword errors say sort().
         Fault(
             "DPY4009",
-            $"'{keyword}' is an invalid keyword argument for {builtin.Name}().",
+            $"{(builtin.Name == "sorted" ? "sort" : builtin.Name)}() got an unexpected keyword argument '{keyword}'",
             span,
             "TypeError"
         );
@@ -3711,6 +3828,29 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                             span
                         )
                     )
+                );
+                return;
+            case PythonBuiltinTypeValue { ConstructWithKeywords: { } constructWithKeywords }:
+                _evaluationStack.Push(
+                    constructWithKeywords(
+                        PreResolveIterableArguments(target, positional, span),
+                        keywordNames,
+                        keywordValues,
+                        span
+                    )
+                );
+                return;
+            case PythonBoundMethodValue
+            {
+                Function.InvokeWithKeywords: { } methodWithKeywords
+            } method:
+                _evaluationStack.Push(
+                    methodWithKeywords(method.Target, positional, keywordNames, keywordValues)
+                );
+                return;
+            case PythonProtocolFunctionValue { InvokeWithKeywords: { } functionWithKeywords }:
+                _evaluationStack.Push(
+                    functionWithKeywords(null, positional, keywordNames, keywordValues)
                 );
                 return;
             default:
@@ -5683,7 +5823,14 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    private PythonIteratorValue Zip(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonIteratorValue Zip(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        Zip(arguments, span, strict: false);
+
+    private PythonIteratorValue Zip(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span,
+        bool strict
+    )
     {
         var inners = new PythonIteratorValue[arguments.Count];
         for (var index = 0; index < arguments.Count; index++)
@@ -5695,7 +5842,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
-        return new PythonIteratorValue(new PythonZipSourceValue(inners), -1);
+        return new PythonIteratorValue(new PythonZipSourceValue(inners) { Strict = strict }, -1);
     }
 
     private static BigInteger RequireBuiltinInteger(
@@ -5801,7 +5948,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         {
             throw Fault(
                 "DPY4003",
-                $"sum() expected 1 to 2 arguments ({arguments.Count} given).",
+                arguments.Count == 0
+                    ? "sum() takes at least 1 positional argument (0 given)"
+                    : $"sum() takes at most 2 arguments ({arguments.Count} given)",
                 span,
                 "TypeError"
             );
@@ -6083,9 +6232,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         {
             throw Fault(
                 "DPY4003",
-                "round() takes 1 or 2 arguments ("
-                    + arguments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    + " given).",
+                arguments.Count == 0
+                    ? "round() missing required argument 'number' (pos 1)"
+                    : $"round() takes at most 2 arguments ({arguments.Count} given)",
                 span,
                 "TypeError"
             );

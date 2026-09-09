@@ -228,6 +228,28 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(builtinFunction.Name);
             case PythonBuiltinTypeValue builtinTypeValue when name == "__name__":
                 return new PythonTextValue(builtinTypeValue.Name);
+            case PythonBuiltinTypeValue { Name: "dict" } when name == "fromkeys":
+                return new PythonBuiltinFunctionValue(
+                    "fromkeys",
+                    (arguments, callSpan) =>
+                    {
+                        PythonBuiltinFunctions.RequireArgumentCount(
+                            "fromkeys",
+                            arguments,
+                            1,
+                            2,
+                            callSpan
+                        );
+                        var fill = arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
+                        var dictionary = new PythonDictionaryValue([]);
+                        foreach (var key in MaterializeValues(arguments[0], callSpan))
+                        {
+                            SetDictionaryItem(dictionary, key, fill, callSpan);
+                        }
+
+                        return dictionary;
+                    }
+                );
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
             case PythonExceptionValue exceptionValue when name == "args":
@@ -540,7 +562,7 @@ internal static class ManagedObjectProtocols
             default:
                 throw Fault(
                     "DPY4023",
-                    "This value does not expose managed attributes.",
+                    $"'{GetTypeName(target)}' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -1197,20 +1219,46 @@ internal static class ManagedObjectProtocols
             case PythonZipSourceValue zipSource when zipSource.Inners.Length != 0:
             {
                 var row = new PythonValue[zipSource.Inners.Length];
-                var complete = true;
+                var exhaustedAt = -1;
                 for (var index = 0; index < zipSource.Inners.Length; index++)
                 {
                     if (!TryGetNext(zipSource.Inners[index], out row[index], span))
                     {
-                        complete = false;
+                        exhaustedAt = index;
                         break;
                     }
                 }
 
-                if (complete)
+                if (exhaustedAt < 0)
                 {
                     value = new PythonTupleValue(row);
                     return true;
+                }
+
+                if (zipSource.Strict)
+                {
+                    if (exhaustedAt > 0)
+                    {
+                        throw Fault(
+                            "DPY4003",
+                            $"zip() argument {exhaustedAt + 1} is shorter than argument{(exhaustedAt == 1 ? "" : "s")} 1{(exhaustedAt == 1 ? "" : $"-{exhaustedAt}")}",
+                            span,
+                            "ValueError"
+                        );
+                    }
+
+                    for (var index = 1; index < zipSource.Inners.Length; index++)
+                    {
+                        if (TryGetNext(zipSource.Inners[index], out _, span))
+                        {
+                            throw Fault(
+                                "DPY4003",
+                                $"zip() argument {index + 1} is longer than argument{(index == 1 ? "" : "s")} 1{(index == 1 ? "" : $"-{index}")}",
+                                span,
+                                "ValueError"
+                            );
+                        }
+                    }
                 }
 
                 break;

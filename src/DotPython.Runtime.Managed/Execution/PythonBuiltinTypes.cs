@@ -4,6 +4,7 @@
 
 using System.Globalization;
 using System.Numerics;
+using System.Text;
 using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
@@ -12,17 +13,49 @@ namespace DotPython.Runtime.Managed.Execution;
 internal static class PythonBuiltinTypes
 {
     internal static readonly PythonBuiltinTypeValue Bool = new("bool", ConstructBool);
-    internal static readonly PythonBuiltinTypeValue Bytes = new("bytes", ConstructBytes);
-    internal static readonly PythonBuiltinTypeValue Dict = new("dict", ConstructDictionary);
+    internal static readonly PythonBuiltinTypeValue Bytes = new(
+        "bytes",
+        ConstructBytes,
+        PythonKeywordArguments.Adapt(
+            "bytes",
+            ["source", "encoding", "errors"],
+            [null, null, null],
+            ConstructBytes
+        )
+    );
+    internal static readonly PythonBuiltinTypeValue Dict = new(
+        "dict",
+        ConstructDictionary,
+        ConstructDictionaryWithKeywords
+    );
     internal static readonly PythonBuiltinTypeValue Float = new("float", ConstructFloat);
-    internal static readonly PythonBuiltinTypeValue Int = new("int", ConstructInt);
+    internal static readonly PythonBuiltinTypeValue Int = new(
+        "int",
+        ConstructInt,
+        PythonKeywordArguments.Adapt(
+            "int",
+            ["x", "base"],
+            [null, null],
+            ConstructInt,
+            positionalOnly: 1
+        )
+    );
     internal static readonly PythonBuiltinTypeValue List = new("list", ConstructList);
     internal static readonly PythonBuiltinTypeValue Set = new("set", ConstructSet);
     internal static readonly PythonBuiltinTypeValue Frozenset = new(
         "frozenset",
         ConstructFrozenset
     );
-    internal static readonly PythonBuiltinTypeValue Str = new("str", ConstructStr);
+    internal static readonly PythonBuiltinTypeValue Str = new(
+        "str",
+        ConstructStr,
+        PythonKeywordArguments.Adapt(
+            "str",
+            ["object", "encoding", "errors"],
+            [new PythonTextValue(string.Empty), null, null],
+            ConstructStr
+        )
+    );
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
@@ -63,10 +96,41 @@ internal static class PythonBuiltinTypes
         TextSpan span
     )
     {
-        RequireArguments("bytes", arguments, 0, 1, span);
+        RequireArguments("bytes", arguments, 0, 3, span);
         if (arguments.Count == 0)
         {
             return new PythonByteSequenceValue([]);
+        }
+
+        if (arguments.Count >= 2)
+        {
+            if (arguments[0] is not PythonTextValue source)
+            {
+                throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    "encoding without a string argument",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            if (arguments[1] is not PythonTextValue encoding)
+            {
+                throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    $"bytes() argument 'encoding' must be str, not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            var errors =
+                arguments.Count == 3 && arguments[2] is PythonTextValue errorsText
+                    ? errorsText.Value
+                    : "strict";
+            return new PythonByteSequenceValue(
+                PythonTextCodecs.Encode(source.Value, encoding.Value, errors, span)
+            );
         }
 
         switch (arguments[0])
@@ -126,10 +190,15 @@ internal static class PythonBuiltinTypes
         TextSpan span
     )
     {
-        RequireArguments("int", arguments, 0, 1, span);
+        RequireArguments("int", arguments, 0, 2, span);
         if (arguments.Count == 0)
         {
             return PythonWholeNumberValue.Create(BigInteger.Zero);
+        }
+
+        if (arguments.Count == 2)
+        {
+            return ParseIntegerWithBase(arguments[0], arguments[1], span);
         }
 
         if (UserObjectProtocols.TryConvertToInt(arguments[0], span, out var userInteger))
@@ -160,35 +229,143 @@ internal static class PythonBuiltinTypes
                     new BigInteger(Math.Truncate(floatingPoint.Value))
                 );
             case PythonTextValue text:
-            {
-                var trimmed = text.Value.Trim();
-                if (
-                    trimmed.Length != 0
-                    && BigInteger.TryParse(
-                        trimmed,
-                        NumberStyles.AllowLeadingSign,
-                        CultureInfo.InvariantCulture,
-                        out var parsed
-                    )
-                )
-                {
-                    return PythonWholeNumberValue.Create(parsed);
-                }
-
-                throw Fault(
-                    $"Invalid literal for int(): {text.ToRepresentationString()}.",
-                    "ValueError",
+                return ParseInteger(text, 10, span);
+            case PythonByteSequenceValue bytes:
+                return ParseInteger(
+                    new PythonTextValue(Encoding.ASCII.GetString(bytes.Value)),
+                    10,
                     span
                 );
-            }
             default:
                 throw Fault(
-                    $"int() argument must be a string or a number, "
-                        + $"not '{ManagedObjectProtocols.GetTypeName(arguments[0])}'.",
+                    $"int() argument must be a string, a bytes-like object or a real number, "
+                        + $"not '{ManagedObjectProtocols.GetTypeName(arguments[0])}'",
                     "TypeError",
                     span
                 );
         }
+    }
+
+    private static PythonWholeNumberValue ParseIntegerWithBase(
+        PythonValue value,
+        PythonValue baseValue,
+        TextSpan span
+    )
+    {
+        var radix = (int)
+            BigInteger.Min(
+                BigInteger.Max(PythonBuiltinFunctions.RequireIndex(baseValue, span), -1),
+                37
+            );
+        if (radix != 0 && radix is < 2 or > 36)
+        {
+            throw Fault("int() base must be >= 2 and <= 36, or 0", "ValueError", span);
+        }
+
+        return value switch
+        {
+            PythonTextValue text => ParseInteger(text, radix, span),
+            PythonByteSequenceValue bytes => ParseInteger(
+                new PythonTextValue(Encoding.ASCII.GetString(bytes.Value)),
+                radix,
+                span
+            ),
+            _ => throw Fault(
+                "int() can't convert non-string with explicit base",
+                "TypeError",
+                span
+            ),
+        };
+    }
+
+    /// <summary>
+    /// CPython's integer literal grammar for `int(text, base)`: optional sign, an optional
+    /// prefix matching the base (or any prefix for base 0), digits with single underscores.
+    /// </summary>
+    private static PythonWholeNumberValue ParseInteger(
+        PythonTextValue text,
+        int radix,
+        TextSpan span
+    )
+    {
+        var invalid = Fault(
+            $"invalid literal for int() with base {radix}: {text.ToRepresentationString()}",
+            "ValueError",
+            span
+        );
+        var body = text.Value.Trim();
+        var negative = false;
+        if (body.Length != 0 && body[0] is '+' or '-')
+        {
+            negative = body[0] == '-';
+            body = body[1..];
+        }
+
+        var effectiveRadix = radix;
+        if (body.Length >= 2 && body[0] == '0')
+        {
+            var prefixRadix = char.ToLowerInvariant(body[1]) switch
+            {
+                'x' => 16,
+                'o' => 8,
+                'b' => 2,
+                _ => 0,
+            };
+            if (prefixRadix != 0 && (radix == 0 || radix == prefixRadix))
+            {
+                effectiveRadix = prefixRadix;
+                body = body[2..];
+                if (body.StartsWith('_'))
+                {
+                    body = body[1..];
+                }
+            }
+        }
+
+        if (effectiveRadix == 0)
+        {
+            // Base 0 without a prefix only accepts decimal literals without leading zeros.
+            effectiveRadix = 10;
+            if (body.Length > 1 && body[0] == '0' && body.TrimStart('0', '_').Length != 0)
+            {
+                throw invalid;
+            }
+        }
+
+        if (
+            body.Length == 0
+            || body.StartsWith('_')
+            || body.EndsWith('_')
+            || body.Contains("__", StringComparison.Ordinal)
+        )
+        {
+            throw invalid;
+        }
+
+        var result = BigInteger.Zero;
+        foreach (var character in body)
+        {
+            if (character == '_')
+            {
+                continue;
+            }
+
+            var digit = character switch
+            {
+                >= '0' and <= '9' => character - '0',
+                >= 'a' and <= 'z' => character - 'a' + 10,
+                >= 'A' and <= 'Z' => character - 'A' + 10,
+                _ => int.MaxValue,
+            };
+            if (digit >= effectiveRadix)
+            {
+                throw invalid;
+            }
+
+            result = result * effectiveRadix + digit;
+        }
+
+        return PythonWholeNumberValue.Create(negative ? -result : result);
     }
 
     private static PythonFloatingPointValue ConstructFloat(
@@ -289,11 +466,46 @@ internal static class PythonBuiltinTypes
 
     private static PythonTextValue ConstructStr(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        RequireArguments("str", arguments, 0, 1, span);
-        return arguments.Count == 0
-            ? new PythonTextValue(string.Empty)
-            : new PythonTextValue(arguments[0].ToDisplayString());
+        RequireArguments("str", arguments, 0, 3, span);
+        if (arguments.Count == 0)
+        {
+            return new PythonTextValue(string.Empty);
+        }
+
+        if (arguments.Count == 1)
+        {
+            return new PythonTextValue(arguments[0].ToDisplayString());
+        }
+
+        if (arguments[0] is not PythonByteSequenceValue bytes)
+        {
+            throw Fault(
+                $"decoding to str: need a bytes-like object, {ManagedObjectProtocols.GetTypeName(arguments[0])} found",
+                "TypeError",
+                span
+            );
+        }
+
+        var errors =
+            arguments.Count == 3 ? RequireCodecText("errors", arguments[2], span) : "strict";
+        return new PythonTextValue(
+            PythonTextCodecs.Decode(
+                bytes.Value,
+                RequireCodecText("encoding", arguments[1], span),
+                errors,
+                span
+            )
+        );
     }
+
+    private static string RequireCodecText(string name, PythonValue value, TextSpan span) =>
+        value is PythonTextValue text
+            ? text.Value
+            : throw Fault(
+                $"str() argument '{name}' must be str, not {ManagedObjectProtocols.GetTypeName(value)}",
+                "TypeError",
+                span
+            );
 
     private static PythonListValue ConstructList(
         IReadOnlyList<PythonValue> arguments,
@@ -355,6 +567,27 @@ internal static class PythonBuiltinTypes
             }
 
             ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], span);
+        }
+
+        return dictionary;
+    }
+
+    private static PythonDictionaryValue ConstructDictionaryWithKeywords(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var dictionary = ConstructDictionary(positional, span);
+        for (var index = 0; index < keywordNames.Count; index++)
+        {
+            ManagedObjectProtocols.SetDictionaryItem(
+                dictionary,
+                new PythonTextValue(keywordNames[index]),
+                keywordValues[index],
+                span
+            );
         }
 
         return dictionary;

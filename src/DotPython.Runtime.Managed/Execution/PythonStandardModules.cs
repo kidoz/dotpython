@@ -603,8 +603,21 @@ internal static class PythonStandardModules
             (arguments, span) =>
                 PythonTruthValue.FromBoolean(double.IsFinite(RequireReal(arguments[0], span)))
         );
-        MathFunction(globals, "isclose", 2, 2, IsClose);
+        MathFunction(globals, "isclose", 2, 4, IsClose);
+        globals.SetValue(
+            "isclose",
+            ((PythonBuiltinFunctionValue)GetGlobal(globals, "isclose")).WithSignature(
+                ["a", "b", "rel_tol", "abs_tol"],
+                [null, null, new PythonFloatingPointValue(1e-09), new PythonFloatingPointValue(0)],
+                positionalOnly: 2
+            )
+        );
     }
+
+    private static PythonValue GetGlobal(PythonGlobalNamespace globals, string name) =>
+        globals.TryGetValue(name, out var value)
+            ? value
+            : throw new InvalidOperationException($"Global '{name}' was not seeded.");
 
     private static void MathFunction(
         PythonGlobalNamespace globals,
@@ -846,10 +859,25 @@ internal static class PythonStandardModules
             return PythonTruthValue.False;
         }
 
-        const double relativeTolerance = 1e-09;
+        var relativeTolerance = arguments.Count > 2 ? RequireReal(arguments[2], span) : 1e-09;
+        var absoluteTolerance = arguments.Count > 3 ? RequireReal(arguments[3], span) : 0.0;
+        if (relativeTolerance < 0 || absoluteTolerance < 0)
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                "tolerances must be non-negative",
+                span,
+                "ValueError"
+            );
+        }
+
         var difference = Math.Abs(left - right);
         return PythonTruthValue.FromBoolean(
-            difference <= relativeTolerance * Math.Max(Math.Abs(left), Math.Abs(right))
+            difference
+                <= Math.Max(
+                    relativeTolerance * Math.Max(Math.Abs(left), Math.Abs(right)),
+                    absoluteTolerance
+                )
         );
     }
 

@@ -49,7 +49,23 @@ internal static class PythonBuiltinMethods
                         : text.TrimEnd(RequireText("rstrip", arguments[0]).ToCharArray())
                 )
         ),
-        ["split"] = Text("split", 0, 1, SplitText),
+        ["split"] = Text("split", 0, 2, SplitText)
+            .WithSignature(["sep", "maxsplit"], [PythonNoneValue.Instance, null]),
+        ["encode"] = Text(
+                "encode",
+                0,
+                2,
+                (text, arguments) =>
+                    new PythonByteSequenceValue(
+                        PythonTextCodecs.Encode(
+                            text,
+                            arguments.Count > 0 ? RequireText("encode", arguments[0]) : "utf-8",
+                            arguments.Count > 1 ? RequireText("encode", arguments[1]) : "strict",
+                            default
+                        )
+                    )
+            )
+            .WithSignature(["encoding", "errors"], [null, null]),
         ["join"] = Text("join", 1, 1, JoinText),
         ["format"] = Text(
             "format",
@@ -93,58 +109,48 @@ internal static class PythonBuiltinMethods
             }
         ),
         ["replace"] = Text(
-            "replace",
-            2,
-            2,
-            (text, arguments) =>
-                new PythonTextValue(
-                    ReplaceText(
-                        text,
-                        RequireText("replace", arguments[0]),
-                        RequireText("replace", arguments[1])
+                "replace",
+                2,
+                3,
+                (text, arguments) =>
+                    new PythonTextValue(
+                        ReplaceText(
+                            text,
+                            RequireText("replace", arguments[0]),
+                            RequireText("replace", arguments[1]),
+                            arguments.Count == 3 ? RequireCount("replace", arguments[2]) : -1
+                        )
                     )
-                )
-        ),
+            )
+            .WithSignature(["old", "new", "count"], [null, null, null], positionalOnly: 2),
         ["startswith"] = Text(
             "startswith",
             1,
-            1,
-            (text, arguments) =>
-                Truth(
-                    text.StartsWith(
-                        RequireText("startswith", arguments[0]),
-                        StringComparison.Ordinal
-                    )
-                )
+            3,
+            (text, arguments) => Truth(MatchesAffix("startswith", text, arguments, prefix: true))
         ),
         ["endswith"] = Text(
             "endswith",
             1,
-            1,
-            (text, arguments) =>
-                Truth(
-                    text.EndsWith(RequireText("endswith", arguments[0]), StringComparison.Ordinal)
-                )
+            3,
+            (text, arguments) => Truth(MatchesAffix("endswith", text, arguments, prefix: false))
         ),
         ["find"] = Text(
             "find",
             1,
-            1,
-            (text, arguments) =>
-                PythonWholeNumberValue.Create(
-                    FindRuneIndex(text, RequireText("find", arguments[0]))
-                )
+            3,
+            (text, arguments) => PythonWholeNumberValue.Create(FindInRange("find", text, arguments))
         ),
         ["index"] = Text(
             "index",
             1,
-            1,
+            3,
             (text, arguments) =>
             {
-                var position = FindRuneIndex(text, RequireText("index", arguments[0]));
+                var position = FindInRange("index", text, arguments);
                 if (position < 0)
                 {
-                    throw Fault("The substring was not found.", "ValueError");
+                    throw Fault("substring not found", "ValueError");
                 }
 
                 return PythonWholeNumberValue.Create(position);
@@ -153,9 +159,14 @@ internal static class PythonBuiltinMethods
         ["count"] = Text(
             "count",
             1,
-            1,
+            3,
             (text, arguments) =>
-                PythonWholeNumberValue.Create(CountText(text, RequireText("count", arguments[0])))
+                PythonWholeNumberValue.Create(
+                    CountText(
+                        SliceRunes(text, arguments, 1, out _),
+                        RequireText("count", arguments[0])
+                    )
+                )
         ),
         ["capitalize"] = Text(
             "capitalize",
@@ -293,37 +304,62 @@ internal static class PythonBuiltinMethods
             }
         ),
         ["sort"] = List(
-            "sort",
-            0,
-            0,
-            (list, _) =>
-            {
-                List<PythonValue> sorted;
-                try
+                "sort",
+                0,
+                2,
+                (list, arguments) =>
                 {
-                    sorted = list
-                        .Elements.OrderBy(element => element, PythonOrderingComparer.Instance)
-                        .ToList();
-                }
-                catch (InvalidOperationException exception)
-                    when (exception.InnerException
-                            is PythonRuntimeException
-                                or PythonRaisedException
-                    )
-                {
-                    System
-                        .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
-                            exception.InnerException
-                        )
-                        .Throw();
-                    throw;
-                }
+                    var key = arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance;
+                    var reverse =
+                        arguments.Count > 1 && ManagedObjectProtocols.IsTrue(arguments[1]);
+                    var keys = new PythonValue[list.Elements.Count];
+                    for (var index = 0; index < keys.Length; index++)
+                    {
+                        keys[index] =
+                            key is PythonNoneValue ? list.Elements[index]
+                            : UserObjectProtocols.Dispatcher is { } dispatcher
+                                ? dispatcher.Invoke(key, [list.Elements[index]], default)
+                            : ManagedObjectProtocols.Call(key, [list.Elements[index]]);
+                    }
 
-                list.Elements.Clear();
-                list.Elements.AddRange(sorted);
-                return PythonNoneValue.Instance;
-            }
-        ),
+                    List<PythonValue> sorted;
+                    try
+                    {
+                        var indexed = list.Elements.Select((element, index) => (element, index));
+                        sorted = (
+                            reverse
+                                ? indexed.OrderByDescending(
+                                    pair => keys[pair.index],
+                                    PythonOrderingComparer.Instance
+                                )
+                                : indexed.OrderBy(
+                                    pair => keys[pair.index],
+                                    PythonOrderingComparer.Instance
+                                )
+                        )
+                            .Select(pair => pair.element)
+                            .ToList();
+                    }
+                    catch (InvalidOperationException exception)
+                        when (exception.InnerException
+                                is PythonRuntimeException
+                                    or PythonRaisedException
+                        )
+                    {
+                        System
+                            .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                                exception.InnerException
+                            )
+                            .Throw();
+                        throw;
+                    }
+
+                    list.Elements.Clear();
+                    list.Elements.AddRange(sorted);
+                    return PythonNoneValue.Instance;
+                }
+            )
+            .WithSignature(["key", "reverse"], [PythonNoneValue.Instance, PythonTruthValue.False]),
         ["copy"] = List("copy", 0, 0, (list, _) => new PythonListValue([.. list.Elements])),
     };
 
@@ -412,31 +448,57 @@ internal static class PythonBuiltinMethods
                 return PythonNoneValue.Instance;
             }
         ),
-        ["update"] = Dictionary(
+        ["update"] = new PythonProtocolFunctionValue(
             "update",
-            1,
-            1,
-            (dictionary, arguments) =>
+            (target, arguments) =>
             {
-                if (arguments[0] is not PythonDictionaryValue other)
+                RequireArguments("update", arguments, 0, 1);
+                if (arguments.Count == 1)
                 {
-                    throw Fault(
-                        "Method 'update' requires a dictionary argument in this runtime slice.",
-                        "TypeError"
-                    );
+                    MergeInto((PythonDictionaryValue)target!, arguments[0]);
                 }
 
-                foreach (var item in other.Items.ToArray())
+                return PythonNoneValue.Instance;
+            },
+            (target, positional, keywordNames, keywordValues) =>
+            {
+                RequireArguments("update", positional, 0, 1);
+                var dictionary = (PythonDictionaryValue)target!;
+                if (positional.Count == 1)
+                {
+                    MergeInto(dictionary, positional[0]);
+                }
+
+                for (var index = 0; index < keywordNames.Count; index++)
                 {
                     ManagedObjectProtocols.SetDictionaryItem(
                         dictionary,
-                        item.Key,
-                        item.Value,
+                        new PythonTextValue(keywordNames[index]),
+                        keywordValues[index],
                         default
                     );
                 }
 
                 return PythonNoneValue.Instance;
+            }
+        ),
+        ["popitem"] = Dictionary(
+            "popitem",
+            0,
+            0,
+            (dictionary, _) =>
+            {
+                if (dictionary.Items.Count == 0)
+                {
+                    throw ManagedObjectProtocols.MissingKey(
+                        new PythonTextValue("popitem(): dictionary is empty")
+                    );
+                }
+
+                var last = dictionary.Items[^1];
+                dictionary.Items.RemoveAt(dictionary.Items.Count - 1);
+                dictionary.SizeVersion++;
+                return new PythonTupleValue([last.Key, last.Value]);
             }
         ),
         ["setdefault"] = Dictionary(
@@ -559,6 +621,40 @@ internal static class PythonBuiltinMethods
             }
         ),
         ["copy"] = Set("copy", 0, 0, (set, _) => new PythonSetValue([.. set.Elements])),
+        ["pop"] = Set(
+            "pop",
+            0,
+            0,
+            (set, _) =>
+            {
+                if (set.Elements.Count == 0)
+                {
+                    throw ManagedObjectProtocols.MissingKey(
+                        new PythonTextValue("pop from an empty set")
+                    );
+                }
+
+                var first = set.Elements[0];
+                set.Elements.RemoveAt(0);
+                return first;
+            }
+        ),
+        ["update"] = SetMutator(
+            "update",
+            (set, others) => Combine(set, others, SetOperation.Union)
+        ),
+        ["intersection_update"] = SetMutator(
+            "intersection_update",
+            (set, others) => Combine(set, others, SetOperation.Intersection)
+        ),
+        ["difference_update"] = SetMutator(
+            "difference_update",
+            (set, others) => Combine(set, others, SetOperation.Difference)
+        ),
+        ["symmetric_difference_update"] = SetMutator(
+            "symmetric_difference_update",
+            (set, others) => Combine(set, others, SetOperation.SymmetricDifference)
+        ),
     };
 
     private static readonly Dictionary<string, PythonProtocolFunctionValue> FrozenSetMethods = new(
@@ -595,8 +691,189 @@ internal static class PythonBuiltinMethods
             return true;
         }
 
+        if (target is PythonSetValue && SetAlgebraMethods.TryGetValue(name, out var algebra))
+        {
+            method = algebra;
+            return true;
+        }
+
         method = null!;
         return false;
+    }
+
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> SetAlgebraMethods = new(
+        StringComparer.Ordinal
+    )
+    {
+        ["union"] = SetQuery("union", (set, others) => Combine(set, others, SetOperation.Union)),
+        ["intersection"] = SetQuery(
+            "intersection",
+            (set, others) => Combine(set, others, SetOperation.Intersection)
+        ),
+        ["difference"] = SetQuery(
+            "difference",
+            (set, others) => Combine(set, others, SetOperation.Difference)
+        ),
+        ["symmetric_difference"] = SetQuery(
+            "symmetric_difference",
+            (set, others) => Combine(set, others, SetOperation.SymmetricDifference),
+            exactlyOne: true
+        ),
+        ["issubset"] = Set(
+            "issubset",
+            1,
+            1,
+            (set, arguments) =>
+                Truth(
+                    set.Elements.All(element =>
+                        ManagedObjectProtocols.Contains(AsSet(arguments[0]), element)
+                    )
+                )
+        ),
+        ["issuperset"] = Set(
+            "issuperset",
+            1,
+            1,
+            (set, arguments) =>
+                Truth(
+                    AsSet(arguments[0])
+                        .Elements.All(element => ManagedObjectProtocols.Contains(set, element))
+                )
+        ),
+        ["isdisjoint"] = Set(
+            "isdisjoint",
+            1,
+            1,
+            (set, arguments) =>
+                Truth(
+                    !AsSet(arguments[0])
+                        .Elements.Any(element => ManagedObjectProtocols.Contains(set, element))
+                )
+        ),
+    };
+
+    private enum SetOperation
+    {
+        Union,
+        Intersection,
+        Difference,
+        SymmetricDifference,
+    }
+
+    private static PythonSetValue AsSet(PythonValue value) =>
+        value as PythonSetValue
+        ?? ManagedObjectProtocols.CreateSet(
+            ManagedObjectProtocols.MaterializeValues(value, default),
+            default
+        );
+
+    /// <summary>Applies the operation with each operand in turn, returning a new set.</summary>
+    private static PythonSetValue Combine(
+        PythonSetValue set,
+        IReadOnlyList<PythonValue> others,
+        SetOperation operation
+    )
+    {
+        var result = new PythonSetValue([.. set.Elements]);
+        foreach (var operand in others)
+        {
+            var other = AsSet(operand);
+            result = operation switch
+            {
+                SetOperation.Union => ManagedObjectProtocols.CreateSet(
+                    [.. result.Elements, .. other.Elements],
+                    default
+                ),
+                SetOperation.Intersection => new PythonSetValue([
+                    .. result.Elements.Where(element =>
+                        ManagedObjectProtocols.Contains(other, element)
+                    ),
+                ]),
+                SetOperation.Difference => new PythonSetValue([
+                    .. result.Elements.Where(element =>
+                        !ManagedObjectProtocols.Contains(other, element)
+                    ),
+                ]),
+                _ => ManagedObjectProtocols.CreateSet(
+                    [
+                        .. result.Elements.Where(element =>
+                            !ManagedObjectProtocols.Contains(other, element)
+                        ),
+                        .. other.Elements.Where(element =>
+                            !ManagedObjectProtocols.Contains(result, element)
+                        ),
+                    ],
+                    default
+                ),
+            };
+        }
+
+        return result;
+    }
+
+    private static PythonProtocolFunctionValue SetQuery(
+        string name,
+        Func<PythonSetValue, IReadOnlyList<PythonValue>, PythonSetValue> combine,
+        bool exactlyOne = false
+    ) =>
+        new(
+            name,
+            (target, arguments) =>
+            {
+                if (exactlyOne)
+                {
+                    RequireArguments(name, arguments, 1, 1);
+                }
+
+                var set = (PythonSetValue)target!;
+                var combined = combine(set, arguments);
+                return set.IsFrozen
+                    ? new PythonSetValue(combined.Elements) { IsFrozen = true }
+                    : combined;
+            }
+        );
+
+    private static PythonProtocolFunctionValue SetMutator(
+        string name,
+        Func<PythonSetValue, IReadOnlyList<PythonValue>, PythonSetValue> combine
+    ) =>
+        new(
+            name,
+            (target, arguments) =>
+            {
+                var set = (PythonSetValue)target!;
+                var combined = combine(set, arguments);
+                set.Elements.Clear();
+                set.Elements.AddRange(combined.Elements);
+                return PythonNoneValue.Instance;
+            }
+        );
+
+    private static void MergeInto(PythonDictionaryValue dictionary, PythonValue source)
+    {
+        if (source is PythonDictionaryValue other)
+        {
+            foreach (var item in other.Items.ToArray())
+            {
+                ManagedObjectProtocols.SetDictionaryItem(dictionary, item.Key, item.Value, default);
+            }
+
+            return;
+        }
+
+        foreach (var pair in ManagedObjectProtocols.MaterializeValues(source, default))
+        {
+            var elements = ManagedObjectProtocols.MaterializeValues(pair, default);
+            if (elements.Count != 2)
+            {
+                throw Fault(
+                    $"dictionary update sequence element has length {elements.Count}; 2 is required",
+                    "ValueError"
+                );
+            }
+
+            ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], default);
+        }
     }
 
     internal static bool SupportsMethods(PythonValue target) =>
@@ -739,25 +1016,167 @@ internal static class PythonBuiltinMethods
 
     private static PythonValue SplitText(string text, IReadOnlyList<PythonValue> arguments)
     {
+        var maxSplit = arguments.Count > 1 ? RequireCount("split", arguments[1]) : -1;
+        var limit = maxSplit < 0 ? int.MaxValue : maxSplit + 1;
         string[] parts;
-        if (arguments.Count == 0)
+        if (arguments.Count == 0 || arguments[0] is PythonNoneValue)
         {
-            parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            parts = SplitOnWhitespace(text, limit);
         }
         else
         {
             var separator = RequireText("split", arguments[0]);
             if (separator.Length == 0)
             {
-                throw Fault("The separator cannot be empty.", "ValueError");
+                throw Fault("empty separator", "ValueError");
             }
 
-            parts = text.Split(separator, StringSplitOptions.None);
+            parts = text.Split(separator, limit, StringSplitOptions.None);
         }
 
         return new PythonListValue([
             .. parts.Select(part => (PythonValue)new PythonTextValue(part)),
         ]);
+    }
+
+    /// <summary>CPython's whitespace split: runs of whitespace separate, `maxsplit` keeps the tail intact.</summary>
+    private static string[] SplitOnWhitespace(string text, int limit)
+    {
+        var parts = new List<string>();
+        var position = 0;
+        while (position < text.Length)
+        {
+            while (position < text.Length && char.IsWhiteSpace(text[position]))
+            {
+                position++;
+            }
+
+            if (position >= text.Length)
+            {
+                break;
+            }
+
+            if (parts.Count == limit - 1)
+            {
+                // The remainder keeps its trailing whitespace, as CPython does.
+                parts.Add(text[position..]);
+                break;
+            }
+
+            var start = position;
+            while (position < text.Length && !char.IsWhiteSpace(text[position]))
+            {
+                position++;
+            }
+
+            parts.Add(text[start..position]);
+        }
+
+        return [.. parts];
+    }
+
+    private static int RequireCount(string name, PythonValue value) =>
+        value switch
+        {
+            PythonWholeNumberValue whole
+                when whole.Value >= int.MinValue && whole.Value <= int.MaxValue => (int)whole.Value,
+            PythonTruthValue truth => truth.Value ? 1 : 0,
+            _ => throw Fault(
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted as an integer",
+                "TypeError"
+            ),
+        };
+
+    /// <summary>Applies optional `start`/`end` slice bounds (as runes) to a text method's subject.</summary>
+    private static string SliceRunes(
+        string text,
+        IReadOnlyList<PythonValue> arguments,
+        int firstBoundIndex,
+        out int offset
+    )
+    {
+        var runes = text.EnumerateRunes().ToArray();
+        var start = 0;
+        var end = runes.Length;
+        if (arguments.Count > firstBoundIndex && arguments[firstBoundIndex] is not PythonNoneValue)
+        {
+            start = ClampBound(RequireCount("index", arguments[firstBoundIndex]), runes.Length);
+        }
+
+        if (
+            arguments.Count > firstBoundIndex + 1
+            && arguments[firstBoundIndex + 1] is not PythonNoneValue
+        )
+        {
+            end = ClampBound(RequireCount("index", arguments[firstBoundIndex + 1]), runes.Length);
+        }
+
+        offset = start;
+        if (start >= end)
+        {
+            return string.Empty;
+        }
+
+        return string.Concat(runes[start..end].Select(rune => rune.ToString()));
+    }
+
+    private static int ClampBound(int bound, int length)
+    {
+        if (bound < 0)
+        {
+            bound += length;
+        }
+
+        return Math.Clamp(bound, 0, length);
+    }
+
+    private static bool MatchesAffix(
+        string name,
+        string text,
+        IReadOnlyList<PythonValue> arguments,
+        bool prefix
+    )
+    {
+        var subject = SliceRunes(text, arguments, 1, out _);
+        IEnumerable<PythonValue> candidates = arguments[0] switch
+        {
+            PythonTextValue single => [single],
+            PythonTupleValue tuple => tuple.Elements,
+            var other => throw Fault(
+                $"{name} first arg must be str or a tuple of str, not {ManagedObjectProtocols.GetTypeName(other)}",
+                "TypeError"
+            ),
+        };
+        // Tuple elements are checked lazily: a match before a non-str element wins.
+        foreach (var candidate in candidates)
+        {
+            if (candidate is not PythonTextValue candidateText)
+            {
+                throw Fault(
+                    $"tuple for {name} must only contain str, not {ManagedObjectProtocols.GetTypeName(candidate)}",
+                    "TypeError"
+                );
+            }
+
+            if (
+                prefix
+                    ? subject.StartsWith(candidateText.Value, StringComparison.Ordinal)
+                    : subject.EndsWith(candidateText.Value, StringComparison.Ordinal)
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int FindInRange(string name, string text, IReadOnlyList<PythonValue> arguments)
+    {
+        var needle = RequireText(name, arguments[0]);
+        var subject = SliceRunes(text, arguments, 1, out var offset);
+        var position = FindRuneIndex(subject, needle);
+        return position < 0 ? -1 : position + offset;
     }
 
     private static PythonValue JoinText(string separator, IReadOnlyList<PythonValue> arguments)
@@ -779,6 +1198,57 @@ internal static class PythonBuiltinMethods
         }
 
         return new PythonTextValue(string.Join(separator, parts));
+    }
+
+    private static string ReplaceText(string text, string oldValue, string newValue, int count)
+    {
+        if (count < 0)
+        {
+            return ReplaceText(text, oldValue, newValue);
+        }
+
+        var builder = new StringBuilder();
+        var position = 0;
+        var replaced = 0;
+        while (replaced < count)
+        {
+            var next =
+                oldValue.Length == 0
+                    ? position
+                    : text.IndexOf(oldValue, position, StringComparison.Ordinal);
+            if (next < 0 || next > text.Length)
+            {
+                break;
+            }
+
+            builder.Append(text, position, next - position).Append(newValue);
+            if (oldValue.Length == 0)
+            {
+                if (next < text.Length)
+                {
+                    builder.Append(text[next]);
+                }
+
+                position = next + 1;
+            }
+            else
+            {
+                position = next + oldValue.Length;
+            }
+
+            replaced++;
+            if (position > text.Length)
+            {
+                return builder.ToString();
+            }
+        }
+
+        if (position <= text.Length)
+        {
+            builder.Append(text, position, text.Length - position);
+        }
+
+        return builder.ToString();
     }
 
     private static string ReplaceText(string text, string oldValue, string newValue)

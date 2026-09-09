@@ -254,17 +254,54 @@ internal sealed record PythonByteSequenceValue(byte[] Value) : PythonValue
     }
 }
 
+/// <summary>A builtin call with keyword arguments (positional, names, values, span).</summary>
+internal delegate PythonValue BuiltinKeywordInvoker(
+    IReadOnlyList<PythonValue> positional,
+    IReadOnlyList<string> keywordNames,
+    IReadOnlyList<PythonValue> keywordValues,
+    TextSpan span
+);
+
+/// <summary>A bound builtin method call with keyword arguments.</summary>
+internal delegate PythonValue ProtocolKeywordInvoker(
+    PythonValue? target,
+    IReadOnlyList<PythonValue> positional,
+    IReadOnlyList<string> keywordNames,
+    IReadOnlyList<PythonValue> keywordValues
+);
+
 internal sealed record PythonBuiltinFunctionValue(
     string Name,
-    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Invoke
+    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Invoke,
+    BuiltinKeywordInvoker? InvokeWithKeywords = null
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<built-in function {Name}>";
+
+    /// <summary>Declares the parameter names so keyword calls bind onto the positional form.</summary>
+    internal PythonBuiltinFunctionValue WithSignature(
+        string[] parameters,
+        PythonValue?[] defaults,
+        int positionalOnly = 0,
+        bool typeStyleErrors = false
+    ) =>
+        this with
+        {
+            InvokeWithKeywords = PythonKeywordArguments.Adapt(
+                Name,
+                parameters,
+                defaults,
+                Invoke,
+                positionalOnly,
+                typeStyleErrors
+            ),
+        };
 }
 
 internal sealed record PythonBuiltinTypeValue(
     string Name,
-    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Construct
+    Func<IReadOnlyList<PythonValue>, TextSpan, PythonValue> Construct,
+    BuiltinKeywordInvoker? ConstructWithKeywords = null
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<class '{Name}'>";
@@ -313,10 +350,28 @@ internal sealed record PythonExternalObjectValue(PythonExternalObjectProtocol Pr
 
 internal sealed record PythonProtocolFunctionValue(
     string Name,
-    Func<PythonValue?, IReadOnlyList<PythonValue>, PythonValue> Invoke
+    Func<PythonValue?, IReadOnlyList<PythonValue>, PythonValue> Invoke,
+    ProtocolKeywordInvoker? InvokeWithKeywords = null
 ) : PythonValue
 {
     internal override string ToDisplayString() => $"<built-in function {Name}>";
+
+    /// <summary>Declares the parameter names so keyword calls bind onto the positional form.</summary>
+    internal PythonProtocolFunctionValue WithSignature(
+        string[] parameters,
+        PythonValue?[] defaults,
+        int positionalOnly = 0
+    ) =>
+        this with
+        {
+            InvokeWithKeywords = PythonKeywordArguments.AdaptMethod(
+                Name,
+                parameters,
+                defaults,
+                Invoke,
+                positionalOnly
+            ),
+        };
 }
 
 internal sealed record PythonBoundMethodValue(
@@ -706,6 +761,9 @@ internal sealed record PythonEnumerateSourceValue(PythonIteratorValue Inner, Big
 
 internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : PythonValue
 {
+    /// <summary>`zip(strict=True)`: unequal lengths raise ValueError instead of truncating.</summary>
+    internal bool Strict { get; init; }
+
     internal override string ToDisplayString() => "<zip>";
 }
 
