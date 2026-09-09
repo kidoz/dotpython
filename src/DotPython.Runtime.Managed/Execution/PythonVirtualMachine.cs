@@ -141,7 +141,40 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 ["number", "ndigits"],
                 [null, PythonNoneValue.Instance]
             ),
-            ["map"] = new PythonBuiltinFunctionValue("map", Map),
+            ["map"] = new PythonBuiltinFunctionValue(
+                "map",
+                Map,
+                (positional, keywordNames, keywordValues, span) =>
+                {
+                    if (keywordNames.Count > 1)
+                    {
+                        throw Fault(
+                            "DPY4009",
+                            $"map() takes at most 1 keyword argument ({keywordNames.Count} given)",
+                            span,
+                            "TypeError"
+                        );
+                    }
+
+                    var strict = false;
+                    for (var index = 0; index < keywordNames.Count; index++)
+                    {
+                        if (keywordNames[index] != "strict")
+                        {
+                            throw Fault(
+                                "DPY4009",
+                                $"map() got an unexpected keyword argument '{keywordNames[index]}'",
+                                span,
+                                "TypeError"
+                            );
+                        }
+
+                        strict = IsTruthy(keywordValues[index]);
+                    }
+
+                    return Map(positional, span, strict);
+                }
+            ),
             ["filter"] = new PythonBuiltinFunctionValue("filter", Filter),
             ["abs"] = new PythonBuiltinFunctionValue("abs", Absolute),
             ["iter"] = new PythonBuiltinFunctionValue("iter", Iterate),
@@ -1165,7 +1198,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonExceptionValue exception => exception,
             PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
             PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                new PythonExceptionValue(exceptionClass.Name, string.Empty),
+                new PythonExceptionValue(exceptionClass.Name, string.Empty)
+                {
+                    ManagedType = exceptionClass,
+                },
             _ => throw CreateRaisedException(
                 new PythonExceptionValue("TypeError", "Exceptions must derive from BaseException.")
             ),
@@ -3083,7 +3119,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         }
         else
         {
-            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(
+                iterator.StopIteration is { EffectiveArguments.Count: > 0 } stop
+                    ? stop.EffectiveArguments[0]
+                    : PythonNoneValue.Instance
+            );
             _evaluationStack.Push(PythonTruthValue.False);
         }
     }
@@ -3546,12 +3586,41 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 }
             }
         }
-        catch
+        catch (Exception exception)
         {
             generator.State = PythonGeneratorState.Completed;
             while (_evaluationStack.Count > stackDepthBefore)
             {
                 _evaluationStack.Pop();
+            }
+
+            if (
+                exception is PythonRaisedException raised
+                && (
+                    IsExceptionSubclass(raised.Value.TypeName, "StopIteration")
+                    || (
+                        generator.IsAsyncGenerator
+                        && IsExceptionSubclass(raised.Value.TypeName, "StopAsyncIteration")
+                    )
+                )
+            )
+            {
+                var kind =
+                    generator.IsAsyncGenerator ? "async generator"
+                    : generator.IsCoroutine ? "coroutine"
+                    : "generator";
+                var termination = IsExceptionSubclass(raised.Value.TypeName, "StopIteration")
+                    ? "StopIteration"
+                    : "StopAsyncIteration";
+                var converted = CreateRaisedException(
+                    new PythonExceptionValue("RuntimeError", $"{kind} raised {termination}")
+                    {
+                        Cause = raised.Value,
+                        Context = raised.Value,
+                        SuppressContext = true,
+                    }
+                );
+                throw converted;
             }
 
             throw;
@@ -4711,7 +4780,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return arguments[1];
         }
 
-        throw CreateRaisedException(ManagedObjectProtocols.CreateStopIteration(advanced.Item2));
+        throw CreateRaisedException(
+            arguments[0] is PythonIteratorValue { StopIteration: { } stop }
+                ? stop
+                : ManagedObjectProtocols.CreateStopIteration(advanced.Item2)
+        );
     }
 
     private static (bool, PythonValue) NextFileLine(PythonFileValue file, TextSpan span)
@@ -4866,6 +4939,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         )
         {
             Arguments = [.. arguments],
+            ManagedType = type,
         };
         if (ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
@@ -6416,7 +6490,14 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         return quotient;
     }
 
-    private PythonIteratorValue Map(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonIteratorValue Map(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        Map(arguments, span, strict: false);
+
+    private PythonIteratorValue Map(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span,
+        bool strict
+    )
     {
         if (arguments.Count < 2)
         {
@@ -6435,7 +6516,24 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         return new PythonIteratorValue(
-            new PythonMapSourceValue(row => InvokeCallableNested(callable, row, span), inners),
+            new PythonMapSourceValue(
+                row =>
+                {
+                    try
+                    {
+                        return (InvokeCallableNested(callable, row, span), null);
+                    }
+                    catch (PythonRaisedException raised)
+                        when (IsExceptionSubclass(raised.Value.TypeName, "StopIteration"))
+                    {
+                        return (PythonNoneValue.Instance, raised.Value);
+                    }
+                },
+                inners
+            )
+            {
+                Strict = strict,
+            },
             -1
         );
     }

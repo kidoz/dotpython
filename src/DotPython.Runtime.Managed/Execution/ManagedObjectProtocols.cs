@@ -268,8 +268,17 @@ internal static class ManagedObjectProtocols
                 return systemExit.EffectiveArguments.Count == 0
                     ? PythonNoneValue.Instance
                     : systemExit.EffectiveArguments[0];
-            case PythonExceptionValue { TypeName: "StopIteration" } stopIteration
-                when name == "value":
+            case PythonExceptionValue stopIteration
+                when name == "value"
+                    && (
+                        (
+                            stopIteration.ManagedType is null
+                            && stopIteration.TypeName == "StopIteration"
+                        )
+                        || stopIteration.ManagedType?.Mro.Any(type =>
+                            type.Bases.Count == 0 && type.ExceptionBaseName == "StopIteration"
+                        ) == true
+                    ):
                 return stopIteration.EffectiveArguments.Count == 0
                     ? PythonNoneValue.Instance
                     : stopIteration.EffectiveArguments[0];
@@ -1048,7 +1057,10 @@ internal static class ManagedObjectProtocols
             PythonExceptionValue raised => raised,
             PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
             PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                new PythonExceptionValue(exceptionClass.Name, string.Empty),
+                new PythonExceptionValue(exceptionClass.Name, string.Empty)
+                {
+                    ManagedType = exceptionClass,
+                },
             _ => throw Fault(
                 "DPY4003",
                 "Exceptions must derive from BaseException.",
@@ -1139,7 +1151,7 @@ internal static class ManagedObjectProtocols
         throw new PythonRaisedException(CreateStopIteration(advanced.Value));
     }
 
-    private static PythonNoneValue CloseGenerator(PythonGeneratorValue generator, TextSpan span)
+    private static PythonValue CloseGenerator(PythonGeneratorValue generator, TextSpan span)
     {
         if (generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed)
         {
@@ -1165,7 +1177,7 @@ internal static class ManagedObjectProtocols
                 );
             }
 
-            return PythonNoneValue.Instance;
+            return generator.IsCoroutine ? PythonNoneValue.Instance : advanced.Value;
         }
         catch (PythonRaisedException raised)
             when (string.Equals(raised.Value.TypeName, "GeneratorExit", StringComparison.Ordinal))
@@ -1279,6 +1291,7 @@ internal static class ManagedObjectProtocols
     )
     {
         ArgumentNullException.ThrowIfNull(iterator);
+        iterator.StopIteration = null;
         switch (iterator.Iterable)
         {
             case PythonFileValue file:
@@ -1356,6 +1369,7 @@ internal static class ManagedObjectProtocols
                     return true;
                 }
 
+                iterator.StopIteration = enumerateSource.Inner.StopIteration;
                 break;
             case PythonZipSourceValue zipSource when zipSource.Inners.Length != 0:
             {
@@ -1376,7 +1390,11 @@ internal static class ManagedObjectProtocols
                     return true;
                 }
 
-                if (zipSource.Strict)
+                if (!zipSource.Strict)
+                {
+                    iterator.StopIteration = zipSource.Inners[exhaustedAt].StopIteration;
+                }
+                else
                 {
                     if (exhaustedAt > 0)
                     {
@@ -1407,20 +1425,42 @@ internal static class ManagedObjectProtocols
             case PythonMapSourceValue mapSource:
             {
                 var row = new PythonValue[mapSource.Inners.Length];
-                var complete = true;
+                var exhaustedAt = -1;
                 for (var index = 0; index < mapSource.Inners.Length; index++)
                 {
                     if (!TryGetNext(mapSource.Inners[index], out row[index], span))
                     {
-                        complete = false;
+                        exhaustedAt = index;
                         break;
                     }
                 }
 
-                if (complete)
+                if (exhaustedAt < 0)
                 {
-                    value = mapSource.Apply(row);
-                    return true;
+                    var applied = mapSource.Apply(row);
+                    value = applied.Value;
+                    iterator.StopIteration = applied.Stop;
+                    return applied.Stop is null;
+                }
+
+                if (!mapSource.Strict)
+                {
+                    iterator.StopIteration = mapSource.Inners[exhaustedAt].StopIteration;
+                }
+                else
+                {
+                    if (exhaustedAt > 0)
+                    {
+                        throw StrictMapLengthFault(exhaustedAt, "shorter", span);
+                    }
+
+                    for (var index = 1; index < mapSource.Inners.Length; index++)
+                    {
+                        if (TryGetNext(mapSource.Inners[index], out _, span))
+                        {
+                            throw StrictMapLengthFault(index, "longer", span);
+                        }
+                    }
                 }
 
                 break;
@@ -1446,6 +1486,7 @@ internal static class ManagedObjectProtocols
                     }
                 }
 
+                iterator.StopIteration = filterSource.Inner.StopIteration;
                 break;
             case PythonUserIteratorSourceValue userSource:
             {
@@ -2032,6 +2073,12 @@ internal static class ManagedObjectProtocols
     internal static bool IsTrue(PythonValue value) =>
         value switch
         {
+            PythonNotImplementedValue => throw Fault(
+                "DPY4003",
+                "NotImplemented should not be used in a boolean context",
+                default,
+                "TypeError"
+            ),
             PythonNoneValue => false,
             PythonTruthValue truth => truth.Value,
             PythonWholeNumberValue whole => !whole.Value.IsZero,
@@ -2052,6 +2099,18 @@ internal static class ManagedObjectProtocols
             ) || userTruth,
             _ => true,
         };
+
+    private static PythonRuntimeException StrictMapLengthFault(
+        int index,
+        string relation,
+        TextSpan span
+    ) =>
+        Fault(
+            "DPY4003",
+            $"map() argument {index + 1} is {relation} than argument{(index == 1 ? "" : "s")} 1{(index == 1 ? "" : $"-{index}")}",
+            span,
+            "ValueError"
+        );
 
     private static bool IsExternalTruthy(PythonExternalObjectValue external)
     {

@@ -545,6 +545,9 @@ internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
 
 internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
 {
+    /// <summary>The actual managed exception class, retaining inherited builtin protocols.</summary>
+    internal PythonManagedTypeValue? ManagedType { get; init; }
+
     /// <summary>Mutable so `BaseException.__init__` can rebind the message.</summary>
     public string Message { get; set; } = Message;
 
@@ -801,10 +804,12 @@ internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : Pyth
 }
 
 internal sealed record PythonMapSourceValue(
-    Func<PythonValue[], PythonValue> Apply,
+    Func<PythonValue[], (PythonValue Value, PythonExceptionValue? Stop)> Apply,
     PythonIteratorValue[] Inners
 ) : PythonValue
 {
+    internal bool Strict { get; init; }
+
     internal override string ToDisplayString() => "<map>";
 }
 
@@ -1015,6 +1020,8 @@ internal sealed record PythonDictionaryValue(List<PythonDictionaryItemValue> Ite
 internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDictionarySizeVersion)
     : PythonValue
 {
+    internal PythonExceptionValue? StopIteration { get; set; }
+
     internal int Index { get; set; }
 
     internal override string ToDisplayString() => "<collection_iterator>";
