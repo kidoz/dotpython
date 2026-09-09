@@ -264,7 +264,7 @@ internal static class DotPythonCommand
                 return false;
             }
 
-            source = new SourceText(arguments[1], "<string>");
+            source = new SourceText(DedentCommand(arguments[1]), "<string>");
             moduleSearchPath = Directory.GetCurrentDirectory();
             return true;
         }
@@ -309,6 +309,66 @@ internal static class DotPythonCommand
             moduleSearchPath = Directory.GetCurrentDirectory();
             return false;
         }
+    }
+
+    private static string DedentCommand(string command)
+    {
+        // Python 3.14+ dedents only -c input, before tokenization. Tabs and spaces
+        // are distinct characters; line endings are not normalized at this stage.
+        var lines = command.Split('\n');
+        string? margin = null;
+        foreach (var line in lines)
+        {
+            var indentation = 0;
+            while (indentation < line.Length && line[indentation] is ' ' or '\t')
+            {
+                indentation++;
+            }
+
+            if (indentation == line.Length)
+            {
+                continue;
+            }
+
+            if (margin is null)
+            {
+                margin = line[..indentation];
+            }
+            else
+            {
+                var commonLength = 0;
+                while (
+                    commonLength < indentation
+                    && commonLength < margin.Length
+                    && line[commonLength] == margin[commonLength]
+                )
+                {
+                    commonLength++;
+                }
+
+                margin = margin[..commonLength];
+            }
+
+            if (margin.Length == 0)
+            {
+                // CPython's CLI preserves blank-line whitespace when no common
+                // margin exists, including whitespace inside multiline literals.
+                return command;
+            }
+        }
+
+        if (margin is null)
+        {
+            return command;
+        }
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            lines[index] = line.AsSpan().Trim(" \t").IsEmpty ? string.Empty : line[margin.Length..];
+        }
+
+        return string.Join('\n', lines);
     }
 
     private static void WriteDiagnostic(
