@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "6e705484800ecbb44ce985b79ece04e890b94f8124250d6e0078fb26afbe0e92";
+    internal const string SourceSha256 = "05dac2b137ab85fcb7e4c04b34c6a1b6bcd458626b5ace3a0ea26b1708c0b133";
     internal const int RuleCount = 93;
 
     private const string GrammarSource = """
@@ -45,7 +45,7 @@ internal static class GeneratedPythonGrammar
         with_stmt: 'with' ','.with_item+ ':' block
         with_item: expression ['as' primary]
         try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
-        except_block: 'except' ['*'] [expression ['as' NAME]] ':' block
+        except_block: 'except' ['*'] [expression 'as' NAME | expression (',' expression)* [',']] ':' block
         function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
         async_function_def: 'async' function_def
         async_stmt: async_function_def | 'async' for_stmt | 'async' with_stmt

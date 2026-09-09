@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 36.
+# DotPython executable PEG subset, version 37.
 # Upstream tag: CPython v3.15.0rc2.
 # Upstream commit: 435c9e5a798c99653e3ab64ce29baed0e4f3dfee.
 # Provenance: https://github.com/python/cpython/blob/435c9e5a798c99653e3ab64ce29baed0e4f3dfee/Grammar/python.gram
@@ -44,7 +44,7 @@ for_target: '*' for_target | '(' for_targets ')' | NAME
 with_stmt: 'with' ','.with_item+ ':' block
 with_item: expression ['as' primary]
 try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
-except_block: 'except' ['*'] [expression ['as' NAME]] ':' block
+except_block: 'except' ['*'] [expression 'as' NAME | expression (',' expression)* [',']] ':' block
 function_def: 'def' NAME '(' [parameters] ')' ['->' expression] ':' block
 async_function_def: 'async' function_def
 async_stmt: async_function_def | 'async' for_stmt | 'async' with_stmt

@@ -916,8 +916,41 @@ public static class PythonParser
                 if (Current.Kind != SyntaxTokenKind.Colon)
                 {
                     type = ParseRequiredExpression("an exception type after 'except'");
+                    var isUnparenthesizedList = Current.Kind == SyntaxTokenKind.Comma;
+                    if (isUnparenthesizedList)
+                    {
+                        var types = new List<PythonExpression> { type };
+                        var typeEnd = type.Span.End;
+                        while (Match(SyntaxTokenKind.Comma, out var comma))
+                        {
+                            typeEnd = comma.Span.End;
+                            if (Current.Kind == SyntaxTokenKind.Colon || IsKeyword("as"))
+                            {
+                                break;
+                            }
+
+                            var nextType = ParseRequiredExpression("an exception type after ','");
+                            types.Add(nextType);
+                            typeEnd = nextType.Span.End;
+                        }
+
+                        type = new PythonTupleExpression(
+                            types.AsReadOnly(),
+                            TextSpan.FromBounds(type.Span.Start, typeEnd)
+                        );
+                    }
+
                     if (MatchKeyword("as", out _))
                     {
+                        if (isUnparenthesizedList)
+                        {
+                            Report(
+                                "DPY2028",
+                                "multiple exception types must be parenthesized when using 'as'",
+                                type.Span
+                            );
+                        }
+
                         var targetToken = Expect(SyntaxTokenKind.Identifier, "a target after 'as'");
                         if (IsReservedKeyword(targetToken.Text))
                         {
@@ -1393,13 +1426,7 @@ public static class PythonParser
                 return null;
             }
 
-            if (
-                Current.Kind == SyntaxTokenKind.Colon
-                && expression
-                    is PythonNameExpression
-                        or PythonAttributeExpression
-                        or PythonSubscriptionExpression
-            )
+            if (Current.Kind == SyntaxTokenKind.Colon && IsAnnotationTarget(expression))
             {
                 Advance();
                 var annotation = ParseRequiredExpression("an annotation after ':'");
@@ -1967,6 +1994,17 @@ public static class PythonParser
                 or SyntaxTokenKind.Plus
                 or SyntaxTokenKind.Minus
                 or SyntaxTokenKind.Tilde => true,
+                _ => false,
+            };
+
+        private static bool IsAnnotationTarget(PythonExpression expression) =>
+            expression switch
+            {
+                PythonNameExpression or PythonSubscriptionExpression or PythonAttributeExpression =>
+                    true,
+                PythonParenthesizedExpression parenthesized => IsAnnotationTarget(
+                    parenthesized.Expression
+                ),
                 _ => false,
             };
 

@@ -183,12 +183,16 @@ public static class PythonCompiler
                     CompileAugmentedAssignment(augmented);
                     break;
                 case PythonAnnotatedAssignmentStatement annotated:
-                    // PEP 649 default: the annotation is never evaluated. A bare
-                    // annotation binds nothing; one with a value assigns normally.
+                    // Annotation expressions are deferred; non-simple targets never
+                    // evaluate them. A bare target still evaluates its receiver/index.
                     if (annotated.Value is not null)
                     {
                         CompileExpression(annotated.Value);
                         CompileAssignmentTarget(annotated.Target);
+                    }
+                    else
+                    {
+                        CompileBareAnnotationTarget(annotated.Target);
                     }
 
                     break;
@@ -1746,6 +1750,26 @@ public static class PythonCompiler
                 AddConstant(new PythonConstant(PythonConstantType.TruthValue, false)),
                 span
             );
+
+        private void CompileBareAnnotationTarget(PythonExpression target)
+        {
+            switch (target)
+            {
+                case PythonParenthesizedExpression parenthesized:
+                    CompileBareAnnotationTarget(parenthesized.Expression);
+                    break;
+                case PythonAttributeExpression attribute:
+                    CompileExpression(attribute.Target);
+                    Emit(PythonOpCode.PopTop, 0, attribute.Target.Span);
+                    break;
+                case PythonSubscriptionExpression subscription:
+                    CompileExpression(subscription.Target);
+                    Emit(PythonOpCode.PopTop, 0, subscription.Target.Span);
+                    CompileExpression(subscription.Index);
+                    Emit(PythonOpCode.PopTop, 0, subscription.Index.Span);
+                    break;
+            }
+        }
 
         private void CompileIfStatement(PythonIfStatement statement)
         {
