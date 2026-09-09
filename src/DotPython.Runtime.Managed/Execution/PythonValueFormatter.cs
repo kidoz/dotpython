@@ -14,6 +14,11 @@ internal static class PythonValueFormatter
 {
     internal static string Format(PythonValue value, string specification, TextSpan span)
     {
+        if (UserObjectProtocols.TryFormat(value, specification, span, out var userText))
+        {
+            return userText;
+        }
+
         if (specification.Length == 0)
         {
             return value.ToDisplayString();

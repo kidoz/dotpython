@@ -130,6 +130,11 @@ internal static class PythonBuiltinTypes
             return PythonWholeNumberValue.Create(BigInteger.Zero);
         }
 
+        if (UserObjectProtocols.TryConvertToInt(arguments[0], span, out var userInteger))
+        {
+            return PythonWholeNumberValue.Create(userInteger);
+        }
+
         switch (arguments[0])
         {
             case PythonWholeNumberValue wholeNumber:
@@ -193,6 +198,11 @@ internal static class PythonBuiltinTypes
         if (arguments.Count == 0)
         {
             return new PythonFloatingPointValue(0);
+        }
+
+        if (UserObjectProtocols.TryConvertToFloat(arguments[0], span, out var userFloat))
+        {
+            return new PythonFloatingPointValue(userFloat);
         }
 
         switch (arguments[0])

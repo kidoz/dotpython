@@ -118,4 +118,5 @@ public enum PythonOpCode
     BinaryXor = 113,
     BinaryLeftShift = 114,
     BinaryRightShift = 115,
+    InPlaceOperator = 116,
 }

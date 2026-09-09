@@ -32,6 +32,15 @@ internal sealed record PythonEllipsisValue : PythonValue
     internal override string ToDisplayString() => "Ellipsis";
 }
 
+internal sealed record PythonNotImplementedValue : PythonValue
+{
+    internal static PythonNotImplementedValue Instance { get; } = new();
+
+    private PythonNotImplementedValue() { }
+
+    internal override string ToDisplayString() => "NotImplemented";
+}
+
 internal sealed record PythonTruthValue : PythonValue
 {
     internal static PythonTruthValue False { get; } = new(false);
@@ -404,7 +413,13 @@ internal sealed record PythonManagedObjectValue : PythonValue
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
-    internal override string ToDisplayString() => $"<{Type.Name} object>";
+    internal override string ToDisplayString() =>
+        UserObjectProtocols.TryFormatDisplay(this) ?? DefaultRepresentation;
+
+    internal override string ToRepresentationString() =>
+        UserObjectProtocols.TryFormatRepresentation(this) ?? DefaultRepresentation;
+
+    private string DefaultRepresentation => $"<{Type.Name} object>";
 }
 
 internal sealed record PythonExceptionTypeValue(string Name) : PythonValue

@@ -842,7 +842,7 @@ public sealed class PythonCompilerTests
                     PythonOpCode.CompareIsNot,
                     PythonOpCode.CompareNotIn,
                     PythonOpCode.BuildSlice,
-                    PythonOpCode.InPlaceAdd,
+                    PythonOpCode.InPlaceOperator,
                 ]
         )
         {
@@ -870,7 +870,7 @@ public sealed class PythonCompilerTests
                 PythonOpCode.CopyTopTwo,
                 PythonOpCode.LoadSubscript,
                 PythonOpCode.LoadConstant,
-                PythonOpCode.InPlaceAdd,
+                PythonOpCode.InPlaceOperator,
                 PythonOpCode.RotateThree,
                 PythonOpCode.StoreSubscript,
             ],

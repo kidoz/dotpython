@@ -6,7 +6,7 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
-internal sealed class PythonVirtualMachine
+internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 {
     private const int MaximumExceptionBlockDepth = 1024;
     private const int MaximumDeferredCleanupInstructions = 4096;
@@ -132,6 +132,7 @@ internal sealed class PythonVirtualMachine
         };
         _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
         _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
+        _builtins.Add("NotImplemented", PythonNotImplementedValue.Instance);
         foreach (var builtinType in PythonBuiltinTypes.All)
         {
             _builtins.Add(builtinType.Name, builtinType);
@@ -171,9 +172,17 @@ internal sealed class PythonVirtualMachine
 
     private PythonValue RunProfiled(PythonExecutionProfile profile) => RunCore(profile);
 
+    PythonValue IUserObjectDispatcher.Invoke(
+        PythonValue callable,
+        PythonValue[] arguments,
+        TextSpan span
+    ) => InvokeCallableNested(callable, arguments, span);
+
     private PythonValue RunCore(PythonExecutionProfile? profile)
     {
         _result = PythonNoneValue.Instance;
+        var previousDispatcher = UserObjectProtocols.Dispatcher;
+        UserObjectProtocols.Dispatcher = this;
         try
         {
             while (_frameCount != 0)
@@ -240,6 +249,7 @@ internal sealed class PythonVirtualMachine
         }
         finally
         {
+            UserObjectProtocols.Dispatcher = previousDispatcher;
             FailActiveModuleInitializations();
             Array.Clear(_frames, 0, _frameCount);
             _frameCount = 0;
@@ -408,10 +418,13 @@ internal sealed class PythonVirtualMachine
                 CopyTopTwo(instruction.Span);
                 break;
             case PythonOpCode.InPlaceAdd:
-                ApplyInPlaceAdd(instruction.Span);
+                ApplyInPlace(PythonOpCode.BinaryAdd, instruction.Span);
                 break;
             case PythonOpCode.InPlaceMultiply:
-                ApplyInPlaceMultiply(instruction.Span);
+                ApplyInPlace(PythonOpCode.BinaryMultiply, instruction.Span);
+                break;
+            case PythonOpCode.InPlaceOperator:
+                ApplyInPlace((PythonOpCode)instruction.Operand, instruction.Span);
                 break;
             case PythonOpCode.UnpackSequence:
                 UnpackSequence(instruction);
@@ -1766,6 +1779,22 @@ internal sealed class PythonVirtualMachine
         }
 
         if (
+            target is PythonManagedObjectValue callableInstance
+            && TryGetCallMethod(callableInstance, instruction.Span, out var callMethod)
+        )
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            PushFunctionFrame(
+                callMethod,
+                PrependArgument(callableInstance, arguments),
+                instruction.Span,
+                captureReturnLocalContinuation: true
+            );
+            return;
+        }
+
+        if (
             target
             is PythonProtocolFunctionValue
                 or PythonBoundMethodValue
@@ -1786,7 +1815,7 @@ internal sealed class PythonVirtualMachine
 
         if (target is not PythonFunctionValue function)
         {
-            throw Fault("DPY4003", "The selected value is not callable.", instruction.Span);
+            throw NotCallable(target, instruction.Span);
         }
 
         if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsSuspendable)
@@ -2017,9 +2046,12 @@ internal sealed class PythonVirtualMachine
             return new PythonListValue([.. ordered.Select(pair => pair.value)]);
         }
         catch (InvalidOperationException exception)
-            when (exception.InnerException is PythonRuntimeException fault)
+            when (exception.InnerException is PythonRuntimeException or PythonRaisedException)
         {
-            throw fault;
+            System
+                .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerException)
+                .Throw();
+            throw;
         }
     }
 
@@ -3400,7 +3432,23 @@ internal sealed class PythonVirtualMachine
             return InvokeCallableNested(
                 boundMethod.Function,
                 PrependArgument(boundMethod.Target, arguments),
-                span
+                span,
+                keywordNames,
+                keywordValues
+            );
+        }
+
+        if (
+            callable is PythonManagedObjectValue callableInstance
+            && TryGetCallMethod(callableInstance, span, out var callMethod)
+        )
+        {
+            return InvokeCallableNested(
+                callMethod,
+                PrependArgument(callableInstance, arguments),
+                span,
+                keywordNames,
+                keywordValues
             );
         }
 
@@ -3591,6 +3639,20 @@ internal sealed class PythonVirtualMachine
                     BindFunctionArguments(
                         boundMethod.Function,
                         PrependArgument(boundMethod.Target, positional),
+                        keywordNames,
+                        keywordValues,
+                        span
+                    ),
+                    span
+                );
+                return;
+            case PythonManagedObjectValue callableInstance
+                when TryGetCallMethod(callableInstance, span, out var callMethod):
+                PushBoundArgumentsFrame(
+                    callMethod,
+                    BindFunctionArguments(
+                        callMethod,
+                        PrependArgument(callableInstance, positional),
                         keywordNames,
                         keywordValues,
                         span
@@ -4726,6 +4788,38 @@ internal sealed class PythonVirtualMachine
             captureReturnLocalContinuation: true
         );
     }
+
+    /// <summary>Resolves a user `__call__` to its function so the call can push a frame.</summary>
+    private static bool TryGetCallMethod(
+        PythonManagedObjectValue instance,
+        TextSpan span,
+        out PythonFunctionValue method
+    )
+    {
+        method = null!;
+        if (!ManagedObjectProtocols.TryGetTypeAttribute(instance.Type, "__call__", out var call))
+        {
+            return false;
+        }
+
+        if (call is not PythonFunctionValue function)
+        {
+            throw Fault(
+                "DPY4003",
+                $"'{ManagedObjectProtocols.GetTypeName(call)}' object is not callable",
+                span,
+                "TypeError"
+            );
+        }
+
+        method = function;
+        return true;
+    }
+
+    private static PythonRuntimeException NotCallable(PythonValue target, TextSpan span) =>
+        target is PythonManagedObjectValue instance
+            ? Fault("DPY4003", $"'{instance.Type.Name}' object is not callable", span, "TypeError")
+            : Fault("DPY4003", "The selected value is not callable.", span);
 
     private static PythonValue[] PrependArgument(PythonValue first, PythonValue[] arguments)
     {
@@ -6066,15 +6160,23 @@ internal sealed class PythonVirtualMachine
             ]);
         }
         catch (InvalidOperationException exception)
-            when (exception.InnerException is PythonRuntimeException fault)
+            when (exception.InnerException is PythonRuntimeException or PythonRaisedException)
         {
-            throw fault;
+            System
+                .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerException)
+                .Throw();
+            throw;
         }
     }
 
     private static PythonValue Absolute(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("abs", arguments, span);
+        if (UserObjectProtocols.TryAbsolute(arguments[0], span, out var userAbsolute))
+        {
+            return userAbsolute;
+        }
+
         return arguments[0] switch
         {
             PythonWholeNumberValue wholeNumber => PythonWholeNumberValue.Create(
@@ -6219,32 +6321,65 @@ internal sealed class PythonVirtualMachine
         _evaluationStack.Push(top);
     }
 
-    private void ApplyInPlaceAdd(TextSpan span)
+    /// <summary>
+    /// `x op= y`: mutable builtins update in place (keeping aliases), user instances go
+    /// through `__iop__` then `__op__`, and everything else rebinds the binary result.
+    /// </summary>
+    private void ApplyInPlace(PythonOpCode binaryOpCode, TextSpan span)
     {
-        if (Peek(1, span) is PythonListValue list)
+        var right = Pop(span);
+        var left = Pop(span);
+        switch (left)
         {
-            var right = Pop(span);
-            Pop(span);
-            ManagedObjectProtocols.ExtendList(list, right, span, _userIterationDispatcher);
-            _evaluationStack.Push(list);
-            return;
+            case PythonListValue list when binaryOpCode == PythonOpCode.BinaryAdd:
+                ManagedObjectProtocols.ExtendList(list, right, span, _userIterationDispatcher);
+                _evaluationStack.Push(list);
+                return;
+            case PythonListValue list when binaryOpCode == PythonOpCode.BinaryMultiply:
+                ManagedObjectProtocols.RepeatListInPlace(list, right, span);
+                _evaluationStack.Push(list);
+                return;
+            case PythonSetValue { IsFrozen: false } set
+                when right is PythonSetValue
+                    && binaryOpCode
+                        is PythonOpCode.BinaryOr
+                            or PythonOpCode.BinaryAnd
+                            or PythonOpCode.BinarySubtract
+                            or PythonOpCode.BinaryXor:
+            {
+                var updated = (PythonSetValue)ApplyBinary(binaryOpCode, set, right, span);
+                set.Elements.Clear();
+                set.Elements.AddRange(updated.Elements);
+                _evaluationStack.Push(set);
+                return;
+            }
+            case PythonDictionaryValue dictionary
+                when right is PythonDictionaryValue other && binaryOpCode == PythonOpCode.BinaryOr:
+                foreach (var item in other.Items)
+                {
+                    ManagedObjectProtocols.SetDictionaryItem(
+                        dictionary,
+                        item.Key,
+                        item.Value,
+                        span
+                    );
+                }
+
+                _evaluationStack.Push(dictionary);
+                return;
+            case PythonManagedObjectValue
+                when UserObjectProtocols.TryApplyInPlace(
+                    binaryOpCode,
+                    left,
+                    right,
+                    span,
+                    out var userResult
+                ):
+                _evaluationStack.Push(userResult);
+                return;
         }
 
-        ApplyBinary(new PythonInstruction(PythonOpCode.BinaryAdd, 0, span));
-    }
-
-    private void ApplyInPlaceMultiply(TextSpan span)
-    {
-        if (Peek(1, span) is PythonListValue list)
-        {
-            var right = Pop(span);
-            Pop(span);
-            ManagedObjectProtocols.RepeatListInPlace(list, right, span);
-            _evaluationStack.Push(list);
-            return;
-        }
-
-        ApplyBinary(new PythonInstruction(PythonOpCode.BinaryMultiply, 0, span));
+        _evaluationStack.Push(ApplyBinary(binaryOpCode, left, right, span));
     }
 
     private void AppendToComprehensionList(PythonInstruction instruction)
@@ -6297,7 +6432,10 @@ internal sealed class PythonVirtualMachine
         {
             1 => value.ToDisplayString(),
             2 or 3 => value.ToRepresentationString(),
-            _ => specification is null ? value.ToDisplayString() : null,
+            // A bare `{x}` is format(x, '') so user `__format__` hooks still run.
+            _ => specification is null
+                ? PythonValueFormatter.Format(value, string.Empty, instruction.Span)
+                : null,
         };
         if (text is null)
         {
@@ -6372,6 +6510,11 @@ internal sealed class PythonVirtualMachine
             return PythonTruthValue.FromBoolean(!IsTruthy(operand));
         }
 
+        if (UserObjectProtocols.TryApplyUnary(opCode, operand, span, out var userResult))
+        {
+            return userResult;
+        }
+
         operand = PromoteTruthValue(operand);
         return (opCode, operand) switch
         {
@@ -6391,7 +6534,7 @@ internal sealed class PythonVirtualMachine
         };
     }
 
-    private static PythonTruthValue ApplyComparison(
+    private static PythonValue ApplyComparison(
         PythonOpCode opCode,
         PythonValue left,
         PythonValue right,
@@ -6408,6 +6551,20 @@ internal sealed class PythonVirtualMachine
             PythonOpCode.CompareGreaterThanOrEqual => PythonRichComparison.GreaterThanOrEqual,
             _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
         };
+        if (
+            UserObjectProtocols.TryRichCompare(
+                left,
+                right,
+                richComparison,
+                span,
+                out var userResult
+            )
+        )
+        {
+            // Rich comparisons return the dunder's result as-is (it need not be a bool).
+            return userResult;
+        }
+
         if (left is PythonExternalObjectValue leftExternal)
         {
             return leftExternal.Protocol.RichCompare(right, richComparison, span);
@@ -6487,6 +6644,8 @@ internal sealed class PythonVirtualMachine
             || right is PythonExternalObjectValue
             || left is PythonSetValue
             || right is PythonSetValue
+            || left is PythonManagedObjectValue
+            || right is PythonManagedObjectValue
         )
         {
             return ManagedObjectProtocols.AreEqual(left, right);
@@ -6635,6 +6794,11 @@ internal sealed class PythonVirtualMachine
         TextSpan span
     )
     {
+        if (UserObjectProtocols.TryApplyBinary(opCode, left, right, span, out var userResult))
+        {
+            return userResult;
+        }
+
         if (opCode == PythonOpCode.BinaryModulo && left is PythonTextValue formatTemplate)
         {
             return new PythonTextValue(

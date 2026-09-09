@@ -59,6 +59,19 @@ internal static class ManagedObjectProtocols
             PythonManagedTypeValue type when arguments.Count == 0 => new PythonManagedObjectValue(
                 type
             ),
+            PythonManagedObjectValue instance
+                when UserObjectProtocols.TryGetSpecialMethod(
+                    instance,
+                    "__call__",
+                    out var call,
+                    out _
+                ) => UserObjectProtocols.Dispatcher!.Invoke(call, [.. arguments], span),
+            PythonManagedObjectValue instance => throw Fault(
+                "DPY4003",
+                $"'{instance.Type.Name}' object is not callable",
+                span,
+                "TypeError"
+            ),
             _ => throw Fault("DPY4009", "This value is not callable.", span, "TypeError"),
         };
     }
@@ -101,6 +114,23 @@ internal static class ManagedObjectProtocols
                 if (typeValue is not null)
                 {
                     return BindDescriptor(typeValue, instance);
+                }
+
+                if (name == "__class__")
+                {
+                    return instance.Type;
+                }
+
+                if (
+                    UserObjectProtocols.TryGetAttributeFallback(
+                        instance,
+                        name,
+                        span,
+                        out var fallback
+                    )
+                )
+                {
+                    return fallback;
                 }
 
                 throw MissingAttribute(instance.Type.Name, name, span);
@@ -491,6 +521,11 @@ internal static class ManagedObjectProtocols
                 exceptionInstance.Attributes[name] = value;
                 return;
             case PythonManagedObjectValue instance:
+                if (UserObjectProtocols.TrySetAttribute(instance, name, value, span))
+                {
+                    return;
+                }
+
                 if (
                     TryGetTypeAttribute(instance.Type, name, out var typeValue)
                     && typeValue is PythonDescriptorValue { IsDataDescriptor: true } descriptor
@@ -542,6 +577,11 @@ internal static class ManagedObjectProtocols
                     "AttributeError"
                 );
             case PythonManagedObjectValue instance:
+                if (UserObjectProtocols.TryDeleteAttribute(instance, name, span))
+                {
+                    return;
+                }
+
                 if (
                     TryGetTypeAttribute(instance.Type, name, out var typeValue)
                     && typeValue is PythonDescriptorValue { IsDataDescriptor: true }
@@ -594,6 +634,18 @@ internal static class ManagedObjectProtocols
                     "OverflowError"
                 ),
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
+            PythonManagedObjectValue instance => UserObjectProtocols.TryGetLength(
+                instance,
+                span,
+                out var userLength
+            )
+                ? userLength
+                : throw Fault(
+                    "DPY4011",
+                    $"object of type '{instance.Type.Name}' has no len()",
+                    span,
+                    "TypeError"
+                ),
             _ => throw Fault("DPY4011", "This value has no managed length.", span, "TypeError"),
         };
 
@@ -1068,6 +1120,21 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(index);
 
+        if (target is PythonManagedObjectValue subscriptable)
+        {
+            if (UserObjectProtocols.TryGetItem(subscriptable, index, span, out var userItem))
+            {
+                return userItem;
+            }
+
+            throw Fault(
+                "DPY4011",
+                $"'{subscriptable.Type.Name}' object is not subscriptable",
+                span,
+                "TypeError"
+            );
+        }
+
         switch (target)
         {
             case PythonListValue list when index is PythonSliceValue slice:
@@ -1141,13 +1208,20 @@ internal static class ManagedObjectProtocols
             }
             case PythonRangeValue range:
             {
-                var promoted = PromoteTruthValue(index);
-                if (promoted is not PythonWholeNumberValue wholeNumber)
+                BigInteger position;
+                if (UserObjectProtocols.TryConvertToIndex(index, span, out var userIndex))
+                {
+                    position = userIndex;
+                }
+                else if (PromoteTruthValue(index) is PythonWholeNumberValue wholeNumber)
+                {
+                    position = wholeNumber.Value;
+                }
+                else
                 {
                     throw Fault("DPY4011", "Sequence indices must be integers.", span, "TypeError");
                 }
 
-                var position = wholeNumber.Value;
                 if (position < 0)
                 {
                     position += range.Count;
@@ -1182,6 +1256,21 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(value);
+
+        if (target is PythonManagedObjectValue assignable)
+        {
+            if (UserObjectProtocols.TrySetItem(assignable, index, value, span))
+            {
+                return;
+            }
+
+            throw Fault(
+                "DPY4011",
+                $"'{assignable.Type.Name}' object does not support item assignment",
+                span,
+                "TypeError"
+            );
+        }
 
         switch (target)
         {
@@ -1247,6 +1336,24 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(container);
         ArgumentNullException.ThrowIfNull(item);
+        if (UserObjectProtocols.TryContains(container, item, span, out var userContains))
+        {
+            return userContains;
+        }
+
+        if (
+            container is PythonManagedObjectValue instance
+            && !UserObjectProtocols.DefinesSpecialMethod(instance, "__iter__")
+        )
+        {
+            throw Fault(
+                "DPY4015",
+                $"argument of type '{instance.Type.Name}' is not a container or iterable",
+                span,
+                "TypeError"
+            );
+        }
+
         if (container is PythonTextValue text)
         {
             if (item is not PythonTextValue substring)
@@ -1411,6 +1518,21 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(index);
 
+        if (target is PythonManagedObjectValue deletable)
+        {
+            if (UserObjectProtocols.TryDeleteItem(deletable, index, span))
+            {
+                return;
+            }
+
+            throw Fault(
+                "DPY4011",
+                $"'{deletable.Type.Name}' object doesn't support item deletion",
+                span,
+                "TypeError"
+            );
+        }
+
         switch (target)
         {
             case PythonListValue list when index is PythonSliceValue slice:
@@ -1548,6 +1670,10 @@ internal static class ManagedObjectProtocols
             PythonDictionaryViewValue view => view.Snapshot.Elements.Count != 0,
             PythonSetValue set => set.Elements.Count != 0,
             PythonExternalObjectValue external => IsExternalTruthy(external),
+            PythonManagedObjectValue instance => !UserObjectProtocols.TryIsTrue(
+                instance,
+                out var userTruth
+            ) || userTruth,
             _ => true,
         };
 
@@ -1574,6 +1700,11 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
+        if (UserObjectProtocols.TryRichCompare(left, right, comparison, span, out var userResult))
+        {
+            return PythonTruthValue.FromBoolean(IsTrue(userResult));
+        }
+
         if (left is PythonExternalObjectValue leftExternal)
         {
             return leftExternal.Protocol.RichCompare(right, comparison, span);
@@ -1637,6 +1768,8 @@ internal static class ManagedObjectProtocols
             PythonWholeNumberValue whole when whole.Value >= 0 => whole.Value % modulus,
             PythonWholeNumberValue whole => -((-whole.Value) % modulus),
             PythonExternalObjectValue external => external.Protocol.GetHash(span),
+            PythonManagedObjectValue instance
+                when UserObjectProtocols.TryGetHash(instance, span, out var userHash) => userHash,
             _ => GetPythonHash(value, span),
         };
         return hash == -1 ? -2 : hash;
@@ -1655,7 +1788,13 @@ internal static class ManagedObjectProtocols
             PythonTextValue text => StringComparer.Ordinal.GetHashCode(text.Value),
             PythonByteSequenceValue bytes => GetByteHash(bytes.Value),
             PythonTupleValue tuple => GetTupleHash(tuple, span),
-            PythonManagedObjectValue instance => RuntimeHelpers.GetHashCode(instance),
+            PythonManagedObjectValue instance => UserObjectProtocols.TryGetHash(
+                instance,
+                span,
+                out var userHash
+            )
+                ? userHash.GetHashCode()
+                : RuntimeHelpers.GetHashCode(instance),
             PythonExternalObjectValue external => external.Protocol.GetHash(span).GetHashCode(),
             PythonManagedTypeValue type => RuntimeHelpers.GetHashCode(type),
             PythonBuiltinFunctionValue function => RuntimeHelpers.GetHashCode(function),
@@ -1705,6 +1844,7 @@ internal static class ManagedObjectProtocols
         {
             PythonNoneValue => "NoneType",
             PythonEllipsisValue => "ellipsis",
+            PythonNotImplementedValue => "NotImplementedType",
             PythonTruthValue => "bool",
             PythonWholeNumberValue => "int",
             PythonFloatingPointValue => "float",
@@ -1862,13 +2002,20 @@ internal static class ManagedObjectProtocols
 
     internal static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
     {
-        var promoted = PromoteTruthValue(index);
-        if (promoted is not PythonWholeNumberValue wholeNumber)
+        BigInteger value;
+        if (UserObjectProtocols.TryConvertToIndex(index, span, out var userIndex))
+        {
+            value = userIndex;
+        }
+        else if (PromoteTruthValue(index) is PythonWholeNumberValue wholeNumber)
+        {
+            value = wholeNumber.Value;
+        }
+        else
         {
             throw Fault("DPY4011", "Sequence indices must be integers.", span, "TypeError");
         }
 
-        var value = wholeNumber.Value;
         if (value < 0)
         {
             value += count;
@@ -1934,11 +2081,17 @@ internal static class ManagedObjectProtocols
             PythonSetValue set => set.IsFrozen,
             PythonListValue or PythonDictionaryValue => false,
             PythonTupleValue tuple => tuple.Elements.All(IsHashable),
+            PythonManagedObjectValue instance => UserObjectProtocols.IsHashable(instance),
             _ => true,
         };
 
     internal static bool AreEqual(PythonValue left, PythonValue right)
     {
+        if (UserObjectProtocols.TryAreEqual(left, right, out var userEqual))
+        {
+            return userEqual;
+        }
+
         if (left is PythonExternalObjectValue leftExternal)
         {
             return leftExternal
@@ -2053,6 +2206,11 @@ internal static class ManagedObjectProtocols
 
     internal static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
     {
+        if (UserObjectProtocols.TryCompareOrdered(left, right, span, out var userOrdering))
+        {
+            return userOrdering;
+        }
+
         left = PromoteTruthValue(left);
         right = PromoteTruthValue(right);
 

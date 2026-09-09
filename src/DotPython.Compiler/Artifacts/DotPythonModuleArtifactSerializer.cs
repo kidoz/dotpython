@@ -530,6 +530,24 @@ public static class DotPythonModuleArtifactSerializer
                 }
 
                 break;
+            case PythonOpCode.InPlaceOperator:
+                if (
+                    (PythonOpCode)instruction.Operand
+                    is not (
+                        (>= PythonOpCode.BinaryAdd and <= PythonOpCode.BinaryPower)
+                        or (
+                            >= PythonOpCode.BinaryMatrixMultiply
+                            and <= PythonOpCode.BinaryRightShift
+                        )
+                    )
+                )
+                {
+                    throw new InvalidDataException(
+                        $"Instruction {instructionIndex} has an invalid in-place operator."
+                    );
+                }
+
+                break;
             default:
                 if (instruction.Operand != 0)
                 {

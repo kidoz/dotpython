@@ -1294,16 +1294,10 @@ public static class PythonCompiler
             }
         }
 
-        private void EmitAugmentedOperator(PythonBinaryOperator @operator, TextSpan span)
-        {
-            var opCode = @operator switch
-            {
-                PythonBinaryOperator.Add => PythonOpCode.InPlaceAdd,
-                PythonBinaryOperator.Multiply => PythonOpCode.InPlaceMultiply,
-                _ => GetBinaryOpCode(@operator),
-            };
-            Emit(opCode, 0, span);
-        }
+        private void EmitAugmentedOperator(PythonBinaryOperator @operator, TextSpan span) =>
+            // The operand names the binary opcode; the VM tries `__iop__` and the
+            // mutable-collection fast paths before falling back to that operator.
+            Emit(PythonOpCode.InPlaceOperator, (int)GetBinaryOpCode(@operator), span);
 
         private void CompileAssignmentTarget(PythonExpression target)
         {

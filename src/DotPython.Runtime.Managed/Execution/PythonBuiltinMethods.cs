@@ -306,9 +306,17 @@ internal static class PythonBuiltinMethods
                         .ToList();
                 }
                 catch (InvalidOperationException exception)
-                    when (exception.InnerException is PythonRuntimeException fault)
+                    when (exception.InnerException
+                            is PythonRuntimeException
+                                or PythonRaisedException
+                    )
                 {
-                    throw fault;
+                    System
+                        .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
+                            exception.InnerException
+                        )
+                        .Throw();
+                    throw;
                 }
 
                 list.Elements.Clear();
