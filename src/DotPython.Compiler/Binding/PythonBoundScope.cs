@@ -12,6 +12,7 @@ public sealed class PythonBoundScope
     private readonly IList<string> _freeVariableNames;
     private readonly Dictionary<string, int> _freeVariableIndexes;
     private readonly HashSet<string> _freeVariableNameSet;
+    private readonly IList<string> _localNames;
     private readonly HashSet<string> _localNameSet;
     private readonly Dictionary<string, int> _localNameIndexes;
 
@@ -26,15 +27,49 @@ public sealed class PythonBoundScope
         IList<string> freeVariableNames,
         IList<PythonBoundScope> children,
         IReadOnlyDictionary<string, TextSpan> declaredGlobalNames,
-        IReadOnlyDictionary<string, TextSpan> declaredNonlocalNames
+        IReadOnlyDictionary<string, TextSpan> declaredNonlocalNames,
+        string? privateClassName
     )
     {
+        PrivateClassName = privateClassName;
+        declaredGlobalNames = declaredGlobalNames
+            .GroupBy(item => MangleName(item.Key), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.Ordinal);
+        declaredNonlocalNames = declaredNonlocalNames
+            .GroupBy(item => MangleName(item.Key), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.Ordinal);
+        parameters = parameters.Select(MangleName).ToList();
+        localNames = localNames
+            .Select(MangleName)
+            .Where(local =>
+                parameters.Contains(local)
+                || (
+                    !declaredGlobalNames.ContainsKey(local)
+                    && !declaredNonlocalNames.ContainsKey(local)
+                )
+            )
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        referencedNames = referencedNames
+            .Select(MangleName)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (
+            kind == PythonScopeKind.Function
+            && referencedNames.Contains("super")
+            && !referencedNames.Contains("__class__")
+        )
+        {
+            referencedNames.Add("__class__");
+        }
         Kind = kind;
         Name = name;
         Definition = definition;
         DeclaredGlobalNames = declaredGlobalNames;
         DeclaredNonlocalNames = declaredNonlocalNames;
         Parameters = new ReadOnlyCollection<string>(parameters);
+        HasExplicitClassNameBinding = localNames.Contains("__class__");
+        _localNames = localNames;
         LocalNames = new ReadOnlyCollection<string>(localNames);
         ReferencedNames = new ReadOnlyCollection<string>(referencedNames);
         CellVariableNames = new ReadOnlyCollection<string>(cellVariableNames);
@@ -74,23 +109,57 @@ public sealed class PythonBoundScope
 
     internal PythonNode? Definition { get; }
 
+    internal string? PrivateClassName { get; }
+
+    internal bool HasExplicitClassNameBinding { get; }
+
+    internal string MangleName(string name) => MangleName(name, PrivateClassName);
+
+    internal static string MangleName(string name, string? className)
+    {
+        if (
+            className is null
+            || !name.StartsWith("__", StringComparison.Ordinal)
+            || name.EndsWith("__", StringComparison.Ordinal)
+            || name.Contains('.', StringComparison.Ordinal)
+        )
+        {
+            return name;
+        }
+
+        var prefix = className.TrimStart('_');
+        return prefix.Length == 0 ? name : "_" + prefix + name;
+    }
+
     internal IReadOnlyDictionary<string, TextSpan> DeclaredGlobalNames { get; }
 
     internal IReadOnlyDictionary<string, TextSpan> DeclaredNonlocalNames { get; }
 
-    internal bool IsDeclaredGlobal(string name) => DeclaredGlobalNames.ContainsKey(name);
+    internal bool IsDeclaredGlobal(string name) =>
+        DeclaredGlobalNames.ContainsKey(MangleName(name));
 
-    internal bool IsLocal(string name) => _localNameSet.Contains(name);
+    internal bool IsLocal(string name) => _localNameSet.Contains(MangleName(name));
 
-    internal int GetLocalIndex(string name) => _localNameIndexes[name];
+    internal int GetLocalIndex(string name) => _localNameIndexes[MangleName(name)];
 
-    internal bool IsCellVariable(string name) => _cellVariableNameSet.Contains(name);
+    internal bool IsCellVariable(string name) => _cellVariableNameSet.Contains(MangleName(name));
 
-    internal bool IsFreeVariable(string name) => _freeVariableNameSet.Contains(name);
+    internal bool IsFreeVariable(string name) => _freeVariableNameSet.Contains(MangleName(name));
 
-    internal int GetCellVariableIndex(string name) => _cellVariableIndexes[name];
+    internal int GetCellVariableIndex(string name) => _cellVariableIndexes[MangleName(name)];
 
-    internal int GetFreeVariableIndex(string name) => _freeVariableIndexes[name];
+    internal int GetFreeVariableIndex(string name) => _freeVariableIndexes[MangleName(name)];
+
+    internal void AddImplicitClassCell()
+    {
+        if (_localNameSet.Add("__class__"))
+        {
+            _localNameIndexes.Add("__class__", _localNames.Count);
+            _localNames.Add("__class__");
+        }
+
+        AddCellVariable("__class__");
+    }
 
     internal void AddCellVariable(string name)
     {

@@ -5721,6 +5721,19 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
+        if (CurrentFrame.ReturnOverride is PythonManagedTypeValue completedClass)
+        {
+            var cells = CurrentFrame.Code.Definition.CellVariableNames;
+            for (var index = 0; index < cells.Count; index++)
+            {
+                if (cells[index] == "__class__")
+                {
+                    CurrentFrame.Cells[index].Value = completedClass;
+                    break;
+                }
+            }
+        }
+
         value = CurrentFrame.ReturnOverride ?? value;
         while (_evaluationStack.Count > evaluationStackBase)
         {

@@ -63,7 +63,6 @@ public static class PythonCompiler
         private readonly PythonBoundScope _scope;
         private readonly bool _enableCallLocal;
         private readonly bool _enableReturnLocal;
-        private readonly string? _enclosingClassName;
         private bool _isCoroutine;
         private bool _isAsyncGenerator;
         private int _exceptStarBodyDepth;
@@ -73,8 +72,7 @@ public static class PythonCompiler
             PythonBoundScope scope,
             List<Diagnostic> diagnostics,
             bool enableReturnLocal,
-            bool enableCallLocal,
-            string? enclosingClassName = null
+            bool enableCallLocal
         )
         {
             _codeName = codeName;
@@ -82,7 +80,6 @@ public static class PythonCompiler
             _diagnostics = diagnostics;
             _enableReturnLocal = enableReturnLocal;
             _enableCallLocal = enableCallLocal;
-            _enclosingClassName = enclosingClassName;
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
@@ -294,12 +291,12 @@ public static class PythonCompiler
                         call.Target is PythonNameExpression { Name: "super" }
                         && call.Arguments.Count == 0
                         && call.KeywordArguments.Count == 0
-                        && _enclosingClassName is not null
+                        && _scope.IsFreeVariable("__class__")
                         && _scope.Parameters.Count > 0
                     )
                     {
                         CompileExpression(call.Target);
-                        CompileExpression(new PythonNameExpression(_enclosingClassName, call.Span));
+                        CompileExpression(new PythonNameExpression("__class__", call.Span));
                         CompileExpression(
                             new PythonNameExpression(_scope.Parameters[0], call.Span)
                         );
@@ -808,7 +805,12 @@ public static class PythonCompiler
 
                 Emit(
                     PythonOpCode.LoadConstant,
-                    AddConstant(new PythonConstant(PythonConstantType.TextValue, parameter.Name)),
+                    AddConstant(
+                        new PythonConstant(
+                            PythonConstantType.TextValue,
+                            _scope.MangleName(parameter.Name)
+                        )
+                    ),
                     parameter.Span
                 );
                 CompileExpression(parameter.Default);
@@ -1805,8 +1807,7 @@ public static class PythonCompiler
                 childScope,
                 _diagnostics,
                 _enableReturnLocal,
-                _enableCallLocal,
-                _scope.Kind == PythonScopeKind.Class ? _codeName : null
+                _enableCallLocal
             );
             var childCode = childCompiler.CompileCode(
                 function.Body,
@@ -2271,7 +2272,11 @@ public static class PythonCompiler
                 if (!string.Equals(topLevelName, import.Name, StringComparison.Ordinal))
                 {
                     Emit(PythonOpCode.PopTop, 0, import.Span);
-                    Emit(PythonOpCode.ImportName, GetNameIndex(topLevelName), import.Span);
+                    Emit(
+                        PythonOpCode.ImportName,
+                        GetNameIndex(topLevelName, mangle: false),
+                        import.Span
+                    );
                 }
 
                 EmitStoreName(new PythonNameExpression(topLevelName, import.Span));
@@ -2301,7 +2306,11 @@ public static class PythonCompiler
             var parts = suffix.Length == 0 ? [] : suffix.Split('.');
             if (leadingDots != 0)
             {
-                Emit(PythonOpCode.ImportName, GetNameIndex(prefix), span);
+                Emit(
+                    PythonOpCode.ImportName,
+                    GetNameIndex(prefix, mangle: !name.Contains('.', StringComparison.Ordinal)),
+                    span
+                );
                 if (parts.Length != 0)
                 {
                     Emit(PythonOpCode.PopTop, 0, span);
@@ -2314,7 +2323,11 @@ public static class PythonCompiler
                     prefix.Length == leadingDots
                         ? prefix + parts[index]
                         : prefix + "." + parts[index];
-                Emit(PythonOpCode.ImportName, GetNameIndex(prefix), span);
+                Emit(
+                    PythonOpCode.ImportName,
+                    GetNameIndex(prefix, mangle: !name.Contains('.', StringComparison.Ordinal)),
+                    span
+                );
                 if (index != parts.Length - 1)
                 {
                     Emit(PythonOpCode.PopTop, 0, span);
@@ -2643,8 +2656,9 @@ public static class PythonCompiler
             return _constants.Count - 1;
         }
 
-        private int GetNameIndex(string name)
+        private int GetNameIndex(string name, bool mangle = true)
         {
+            name = mangle ? _scope.MangleName(name) : name;
             var index = _names.IndexOf(name);
             if (index >= 0)
             {
@@ -2705,10 +2719,17 @@ public static class PythonCompiler
             if (
                 _scope.Kind == PythonScopeKind.Class
                 && _scope.IsFreeVariable(name.Name)
-                && !_scope.IsLocal(name.Name)
+                && (
+                    !_scope.IsLocal(name.Name)
+                    || (name.Name == "__class__" && !_scope.HasExplicitClassNameBinding)
+                )
             )
             {
-                Emit(PythonOpCode.LoadCell, GetCellIndex(name.Name), name.Span);
+                Emit(
+                    PythonOpCode.LoadCell,
+                    _scope.CellVariableNames.Count + _scope.GetFreeVariableIndex(name.Name),
+                    name.Span
+                );
                 return;
             }
 

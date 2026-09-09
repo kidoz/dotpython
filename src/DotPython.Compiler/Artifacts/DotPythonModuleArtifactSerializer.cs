@@ -398,9 +398,12 @@ public static class DotPythonModuleArtifactSerializer
             }
         }
 
+        var freeNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in code.FreeVariableNames)
         {
-            if (!closureNames.Add(name))
+            // A class can capture an outer __class__ for its body while owning
+            // a separate implicit __class__ cell for methods defined in that body.
+            if (!freeNames.Add(name) || (!closureNames.Add(name) && name != "__class__"))
             {
                 throw new InvalidDataException("A code object contains duplicate closure names.");
             }

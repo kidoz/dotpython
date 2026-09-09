@@ -30,7 +30,7 @@ public static class PythonSymbolBinder
         PythonNode? definition,
         IReadOnlyList<PythonParameter> parameters,
         IReadOnlyList<PythonStatement> statements,
-        IReadOnlyList<PythonBoundScope> ancestors,
+        PythonBoundScope[] ancestors,
         List<Diagnostic> diagnostics
     )
     {
@@ -44,12 +44,46 @@ public static class PythonSymbolBinder
             diagnostics
         );
 
+        var privateClassName =
+            kind == PythonScopeKind.Class
+                ? name
+                : (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName);
+        declaredGlobalNames = declaredGlobalNames
+            .GroupBy(
+                item => PythonBoundScope.MangleName(item.Key, privateClassName),
+                StringComparer.Ordinal
+            )
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.Ordinal);
+        declaredNonlocalNames = declaredNonlocalNames
+            .GroupBy(
+                item => PythonBoundScope.MangleName(item.Key, privateClassName),
+                StringComparer.Ordinal
+            )
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.Ordinal);
+        foreach (var (declaredName, span) in declaredNonlocalNames)
+        {
+            if (declaredGlobalNames.ContainsKey(declaredName))
+            {
+                Report(
+                    diagnostics,
+                    "DPY3109",
+                    $"The name '{declaredName}' is declared nonlocal and global.",
+                    span
+                );
+            }
+        }
+
         var parameterNames = new List<string>();
         var localNames = new List<string>();
         var localNameSet = new HashSet<string>(StringComparer.Ordinal);
         foreach (var parameter in parameters)
         {
-            if (declaredGlobalNames.TryGetValue(parameter.Name, out var globalSpan))
+            if (
+                declaredGlobalNames.TryGetValue(
+                    PythonBoundScope.MangleName(parameter.Name, privateClassName),
+                    out var globalSpan
+                )
+            )
             {
                 Report(
                     diagnostics,
@@ -59,7 +93,12 @@ public static class PythonSymbolBinder
                 );
             }
 
-            if (declaredNonlocalNames.TryGetValue(parameter.Name, out var nonlocalSpan))
+            if (
+                declaredNonlocalNames.TryGetValue(
+                    PythonBoundScope.MangleName(parameter.Name, privateClassName),
+                    out var nonlocalSpan
+                )
+            )
             {
                 Report(
                     diagnostics,
@@ -69,7 +108,7 @@ public static class PythonSymbolBinder
                 );
             }
 
-            if (!localNameSet.Add(parameter.Name))
+            if (!localNameSet.Add(PythonBoundScope.MangleName(parameter.Name, privateClassName)))
             {
                 Report(
                     diagnostics,
@@ -117,7 +156,10 @@ public static class PythonSymbolBinder
             freeVariableNames,
             children,
             declaredGlobalNames,
-            declaredNonlocalNames
+            declaredNonlocalNames,
+            kind == PythonScopeKind.Class
+                ? name
+                : (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName)
         );
         var childAncestors = ancestors.Append(scope).ToArray();
         foreach (var definitionNode in EnumerateScopeDefinitions(statements))
@@ -168,7 +210,7 @@ public static class PythonSymbolBinder
 
     private static PythonBoundScope BindComprehensionScope(
         PythonExpression comprehension,
-        IReadOnlyList<PythonBoundScope> ancestors,
+        PythonBoundScope[] ancestors,
         List<Diagnostic> diagnostics
     )
     {
@@ -265,7 +307,8 @@ public static class PythonSymbolBinder
             [],
             children,
             new Dictionary<string, TextSpan>(StringComparer.Ordinal),
-            new Dictionary<string, TextSpan>(StringComparer.Ordinal)
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName)
         );
         var childAncestors = ancestors.Append(scope).ToArray();
         foreach (var expression in innerExpressions)
@@ -281,7 +324,7 @@ public static class PythonSymbolBinder
 
     private static PythonBoundScope BindExpressionScope(
         PythonExpression definition,
-        IReadOnlyList<PythonBoundScope> ancestors,
+        PythonBoundScope[] ancestors,
         List<Diagnostic> diagnostics
     ) =>
         definition switch
@@ -296,16 +339,17 @@ public static class PythonSymbolBinder
 
     private static PythonBoundScope BindLambdaScope(
         PythonLambdaExpression lambdaExpression,
-        IReadOnlyList<PythonBoundScope> ancestors,
+        PythonBoundScope[] ancestors,
         List<Diagnostic> diagnostics
     )
     {
+        var privateClassName = (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName);
         var parameterNames = new List<string>();
         var localNames = new List<string>();
         var localNameSet = new HashSet<string>(StringComparer.Ordinal);
         foreach (var parameter in lambdaExpression.Parameters)
         {
-            if (!localNameSet.Add(parameter.Name))
+            if (!localNameSet.Add(PythonBoundScope.MangleName(parameter.Name, privateClassName)))
             {
                 Report(
                     diagnostics,
@@ -348,7 +392,8 @@ public static class PythonSymbolBinder
             [],
             children,
             new Dictionary<string, TextSpan>(StringComparer.Ordinal),
-            new Dictionary<string, TextSpan>(StringComparer.Ordinal)
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName)
         );
         var childAncestors = ancestors.Append(scope).ToArray();
         foreach (var nested in EnumerateComprehensions(lambdaExpression.Body))
@@ -557,10 +602,11 @@ public static class PythonSymbolBinder
             }
         }
 
-        var childEnclosingFunctions =
-            scope.Kind == PythonScopeKind.Function
-                ? enclosingFunctions.Append(scope).ToArray()
-                : enclosingFunctions;
+        var childEnclosingFunctions = scope.Kind
+            is PythonScopeKind.Function
+                or PythonScopeKind.Class
+            ? enclosingFunctions.Append(scope).ToArray()
+            : enclosingFunctions;
         foreach (var child in scope.Children)
         {
             ResolveClosureVariables(child, childEnclosingFunctions, diagnostics);
@@ -575,7 +621,11 @@ public static class PythonSymbolBinder
         {
             foreach (var name in child.FreeVariableNames)
             {
-                if (scope.Kind == PythonScopeKind.Function && scope.IsLocal(name))
+                if (scope.Kind == PythonScopeKind.Class && name == "__class__")
+                {
+                    scope.AddImplicitClassCell();
+                }
+                else if (scope.Kind == PythonScopeKind.Function && scope.IsLocal(name))
                 {
                     scope.AddCellVariable(name);
                 }
@@ -596,7 +646,11 @@ public static class PythonSymbolBinder
     {
         for (var index = enclosingFunctions.Count - 1; index >= 0; index--)
         {
-            if (enclosingFunctions[index].IsLocal(name))
+            if (
+                enclosingFunctions[index].Kind == PythonScopeKind.Class
+                    ? name == "__class__"
+                    : enclosingFunctions[index].IsLocal(name)
+            )
             {
                 return enclosingFunctions[index];
             }
@@ -624,7 +678,16 @@ public static class PythonSymbolBinder
 
                     break;
                 case PythonAnnotatedAssignmentStatement annotated:
-                    if (annotated.Target is PythonNameExpression annotatedName)
+                    if (annotated.Value is not null)
+                    {
+                        CollectTargetNames(
+                            annotated.Target,
+                            localNames,
+                            localNameSet,
+                            excludedNames
+                        );
+                    }
+                    else if (annotated.Target is PythonNameExpression annotatedName)
                     {
                         AddLocal(annotatedName.Name, localNames, localNameSet, excludedNames);
                     }

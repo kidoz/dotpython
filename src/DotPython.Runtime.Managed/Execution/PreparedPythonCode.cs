@@ -42,6 +42,16 @@ internal sealed class PreparedPythonCode
 
         for (var index = 0; index < definition.FreeVariableNames.Count; index++)
         {
+            // A class body can read an enclosing __class__ while owning the
+            // distinct implicit cell captured by its methods.
+            if (
+                definition.FreeVariableNames[index] == "__class__"
+                && _closureCellIndexes.ContainsKey("__class__")
+            )
+            {
+                continue;
+            }
+
             _closureCellIndexes.Add(
                 definition.FreeVariableNames[index],
                 definition.CellVariableNames.Count + index

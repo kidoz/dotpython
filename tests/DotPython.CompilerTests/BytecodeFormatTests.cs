@@ -6,8 +6,8 @@ namespace DotPython.CompilerTests;
 public sealed class BytecodeFormatTests
 {
     [Fact]
-    public void CurrentVersion_TracksPositionalOnlySignatures()
+    public void CurrentVersion_TracksImplicitClassCellProtocol()
     {
-        Assert.Equal(30, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(31, DotPythonBytecodeFormat.CurrentVersion);
     }
 }
