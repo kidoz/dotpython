@@ -6,7 +6,7 @@
         <DotPythonModuleStatePolicy Condition="'$(DotPythonModuleStatePolicy)' == ''"
             >PerRuntime</DotPythonModuleStatePolicy>
         <DotPythonLanguageVersion Condition="'$(DotPythonLanguageVersion)' == ''"
-            >3.14</DotPythonLanguageVersion>
+            >3.15</DotPythonLanguageVersion>
         <LangVersion Condition="'$(LangVersion)' == ''">14.0</LangVersion>
         <Nullable Condition="'$(Nullable)' == ''">enable</Nullable>
         <ImplicitUsings Condition="'$(ImplicitUsings)' == ''">enable</ImplicitUsings>

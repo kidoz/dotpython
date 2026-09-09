@@ -17,7 +17,7 @@ public sealed record WorkerProcessOptions
 
     public string RuntimeId { get; init; } = "dotpython-managed";
 
-    public string RuntimeVersion { get; init; } = "3.14";
+    public string RuntimeVersion { get; init; } = "3.15";
 
     public string Architecture { get; init; } = RuntimeInformation.ProcessArchitecture.ToString();
 

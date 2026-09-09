@@ -59,7 +59,7 @@ public sealed class DotPythonModuleArtifactTests
         var restored = DotPythonModuleManifestJson.Deserialize(json);
 
         Assert.Equal(
-            "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
+            "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.15\","
                 + "\"bytecodeFormatVersion\":30,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
@@ -512,7 +512,7 @@ public sealed class DotPythonModuleArtifactTests
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
         );
         Assert.Contains(
-            "Supported artifact versions: 3.14",
+            "Supported artifact versions: 3.14, 3.15",
             unsupportedFailure.Message,
             StringComparison.Ordinal
         );
@@ -524,7 +524,7 @@ public sealed class DotPythonModuleArtifactTests
                 "sample",
                 Compile("print(42)"),
                 exports: null,
-                languageVersion: new Version(3, 15)
+                languageVersion: new Version(3, 16)
             )
         );
     }

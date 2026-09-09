@@ -2532,7 +2532,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
                 throw Fault(
                     "DPY4003",
-                    $"__await__() returned non-iterator of type '{ManagedObjectProtocols.GetTypeName(awaitIterator)}'",
+                    $"{instance.Type.Name}.__await__() must return an iterator, not "
+                        + ManagedObjectProtocols.GetTypeName(awaitIterator),
                     span,
                     "TypeError"
                 );
@@ -2602,10 +2603,14 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
-        return WrapUserIterator(InvokeCallableNested(iterMethod, [], span), span);
+        return WrapUserIterator(InvokeCallableNested(iterMethod, [], span), instance, span);
     }
 
-    private PythonIteratorValue WrapUserIterator(PythonValue result, TextSpan span)
+    private PythonIteratorValue WrapUserIterator(
+        PythonValue result,
+        PythonManagedObjectValue iterable,
+        TextSpan span
+    )
     {
         switch (result)
         {
@@ -2626,7 +2631,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             default:
                 throw Fault(
                     "DPY4003",
-                    $"iter() returned non-iterator of type '{ManagedObjectProtocols.GetTypeName(result)}'",
+                    $"{iterable.Type.Name}.__iter__() must return an iterator, not "
+                        + ManagedObjectProtocols.GetTypeName(result),
                     span,
                     "TypeError"
                 );
@@ -2710,7 +2716,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return iteratorInstance;
         }
 
-        return WrapUserIterator(result, span);
+        return WrapUserIterator(result, instance, span);
     }
 
     private PythonValue GetAttributeBuiltin(IReadOnlyList<PythonValue> arguments, TextSpan span)

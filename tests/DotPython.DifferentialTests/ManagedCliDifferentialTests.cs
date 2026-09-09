@@ -1086,7 +1086,16 @@ public sealed class ManagedCliDifferentialTests
         return new ReferenceResult(process.ExitCode, standardOutput);
     }
 
-    private static string ReferenceVersion => PythonLanguageVersion.Current.ToString(2);
+    /// <summary>
+    /// The oracle's major.minor version: the targeted language version, or the
+    /// `DOTPYTHON_REFERENCE_PYTHON_VERSION` override used to detect semantic drift against
+    /// a newer release candidate ahead of an ADR-015 re-pin.
+    /// </summary>
+    private static string ReferenceVersion =>
+        Environment.GetEnvironmentVariable("DOTPYTHON_REFERENCE_PYTHON_VERSION")
+            is { Length: > 0 } configured
+            ? configured
+            : PythonLanguageVersion.Current.ToString(2);
 
     private static string? FindReferencePython()
     {

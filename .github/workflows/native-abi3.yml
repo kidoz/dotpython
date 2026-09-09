@@ -57,7 +57,10 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/setup-python@v6
         with:
-          python-version: '3.14.7'
+          # ADR-015 re-pin: the 3.15 release candidate collects the upstream suite
+          # until 3.15.0 ships on 2026-10-01; the checked-in evidence records it.
+          python-version: '3.15'
+          allow-prereleases: true
           architecture: arm64
 
       - name: Install Rust toolchain

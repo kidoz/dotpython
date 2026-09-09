@@ -15,7 +15,7 @@ public sealed class ParserGenerationTests
             "src",
             "DotPython.ParserGenerator",
             "Grammar",
-            "python314-subset.gram"
+            "python315-subset.gram"
         );
         var generatedPath = Path.Combine(
             repositoryRoot,

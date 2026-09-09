@@ -9,14 +9,14 @@
   "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
   "platform": "macos-arm64",
   "collector": {
-    "pythonVersion": "Python 3.14.7",
+    "pythonVersion": "Python 3.15.0rc2",
     "pytestVersion": "pytest 9.1.1",
     "command": "python -B -m pytest -p no:cacheprovider --color=no --collect-only -q tests/test_anyver.py"
   },
   "execution": {
     "provider": "dotpython-managed-abi3",
     "providerVersion": "0.1.0",
-    "languageProfile": "3.14",
+    "languageProfile": "3.15",
     "isolation": "worker-process",
     "sourceModified": false,
     "suiteAdmissionAttempts": 1,

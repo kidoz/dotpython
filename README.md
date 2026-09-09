@@ -23,7 +23,7 @@ libraries can be referenced from C# and other managed languages.
 
 ## Compatibility contract
 
-- Targets the **Python 3.14** language surface through an explicit compatibility profile.
+- Targets the **Python 3.15** language surface through an explicit compatibility profile.
 - CPython is a **differential reference** for managed execution and is never an implicit fallback.
 - CPython bytecode and arbitrary C-extension binaries are **unsupported by the managed runtime
   today**. One internal Stable-ABI fixture is executable only through its explicit worker option.

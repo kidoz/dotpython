@@ -363,7 +363,7 @@ public sealed class WorkerProcessPoolTests
             {
                 Provider = "dotpython-managed-abi3",
                 ProviderVersion = "0.1.0",
-                LanguageProfile = "3.14",
+                LanguageProfile = "3.15",
                 Isolation = "worker-process",
                 SourceModified = false,
                 SuiteAdmissionAttempts = 1,

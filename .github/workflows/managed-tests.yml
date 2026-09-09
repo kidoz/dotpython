@@ -22,7 +22,9 @@ jobs:
       - name: Install the reference CPython
         uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
+          # The 3.15 release candidate is the ADR-015 oracle until 3.15.0 ships on 2026-10-01.
+          python-version: '3.15'
+          allow-prereleases: true
 
       - name: Install the .NET SDK
         uses: actions/setup-dotnet@v5
@@ -33,7 +35,7 @@ jobs:
         run: >
           dotnet run --project src/DotPython.ParserGenerator.Tool --
           check
-          src/DotPython.ParserGenerator/Grammar/python314-subset.gram
+          src/DotPython.ParserGenerator/Grammar/python315-subset.gram
           src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs
 
       - name: Build the solution
@@ -49,7 +51,7 @@ jobs:
 
       - name: Run the CPython differential suite without skips
         env:
-          DOTPYTHON_REFERENCE_PYTHON: python3.14
+          DOTPYTHON_REFERENCE_PYTHON: python3.15
         run: >
           dotnet run --project tests/DotPython.DifferentialTests
           --configuration Release --no-build -- -failSkips
