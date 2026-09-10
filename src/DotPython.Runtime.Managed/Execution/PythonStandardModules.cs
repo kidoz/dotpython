@@ -12,6 +12,13 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </summary>
 internal static class PythonStandardModules
 {
+    private enum DeepCopyMode
+    {
+        Copy,
+        PickleSnapshot,
+        PickleRestore,
+    }
+
     private const int MaximumFactorialInput = 100_000;
     private const int MaximumOpenFileLength = 8 * 1024 * 1024;
 
@@ -752,7 +759,7 @@ internal static class PythonStandardModules
                             ReferenceEqualityComparer.Instance
                         ),
                         span,
-                        pickleSnapshot: true
+                        mode: DeepCopyMode.PickleSnapshot
                     );
                     var token = nextToken++;
                     stash[token] = snapshot;
@@ -804,7 +811,8 @@ internal static class PythonStandardModules
                         new Dictionary<PythonValue, PythonValue>(
                             ReferenceEqualityComparer.Instance
                         ),
-                        span
+                        span,
+                        mode: DeepCopyMode.PickleRestore
                     );
                 }
             )
@@ -1385,6 +1393,7 @@ internal static class PythonStandardModules
             ),
             PythonInterpolationValue interpolation => interpolation with { },
             PythonManagedObjectValue instance => CopyInstance(instance, deep: false, null, span),
+            PythonExceptionValue exception => CopyException(exception, deep: false, null, span),
             PythonExternalObjectValue external => ReconstructExternal(external, null, span),
             _ => value,
         };
@@ -1393,12 +1402,12 @@ internal static class PythonStandardModules
         PythonValue value,
         Dictionary<PythonValue, PythonValue> memo,
         TextSpan span,
-        bool pickleSnapshot = false
+        DeepCopyMode mode = DeepCopyMode.Copy
     )
     {
         if (memo.TryGetValue(value, out var existing))
         {
-            if (!pickleSnapshot && existing is PythonPickleReductionValue)
+            if (mode != DeepCopyMode.PickleSnapshot && existing is PythonPickleReductionValue)
             {
                 throw new PythonRuntimeException(
                     "DPY4028",
@@ -1419,7 +1428,7 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var element in list.Elements)
                 {
-                    copy.Elements.Add(DeepCopy(element, memo, span, pickleSnapshot));
+                    copy.Elements.Add(DeepCopy(element, memo, span, mode));
                 }
 
                 return copy;
@@ -1432,8 +1441,8 @@ internal static class PythonStandardModules
                 {
                     copy.Items.Add(
                         new PythonDictionaryItemValue(
-                            DeepCopy(item.Key, memo, span, pickleSnapshot),
-                            DeepCopy(item.Value, memo, span, pickleSnapshot)
+                            DeepCopy(item.Key, memo, span, mode),
+                            DeepCopy(item.Value, memo, span, mode)
                         )
                     );
                 }
@@ -1446,7 +1455,7 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var element in set.Elements)
                 {
-                    copy.Elements.Add(DeepCopy(element, memo, span, pickleSnapshot));
+                    copy.Elements.Add(DeepCopy(element, memo, span, mode));
                 }
 
                 return copy;
@@ -1457,7 +1466,7 @@ internal static class PythonStandardModules
                 var unchanged = true;
                 for (var index = 0; index < tuple.Elements.Length; index++)
                 {
-                    elements[index] = DeepCopy(tuple.Elements[index], memo, span, pickleSnapshot);
+                    elements[index] = DeepCopy(tuple.Elements[index], memo, span, mode);
                     unchanged &= ReferenceEquals(elements[index], tuple.Elements[index]);
                 }
 
@@ -1478,10 +1487,12 @@ internal static class PythonStandardModules
                 return copy;
             }
             case PythonManagedObjectValue instance:
-                return CopyInstance(instance, deep: true, memo, span, pickleSnapshot);
+                return CopyInstance(instance, deep: true, memo, span, mode);
+            case PythonExceptionValue exception:
+                return CopyException(exception, deep: true, memo, span, mode);
             case PythonInterpolationValue interpolation:
             {
-                var copiedValue = DeepCopy(interpolation.Value, memo, span, pickleSnapshot);
+                var copiedValue = DeepCopy(interpolation.Value, memo, span, mode);
                 if (memo.TryGetValue(value, out var recursiveCopy))
                 {
                     return recursiveCopy;
@@ -1495,7 +1506,7 @@ internal static class PythonStandardModules
             {
                 var interpolations = template
                     .Interpolations.Select(item =>
-                        (PythonInterpolationValue)DeepCopy(item, memo, span, pickleSnapshot)
+                        (PythonInterpolationValue)DeepCopy(item, memo, span, mode)
                     )
                     .ToArray();
                 if (memo.TryGetValue(value, out var recursiveCopy))
@@ -1507,14 +1518,14 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 return copy;
             }
-            case PythonExternalObjectValue external when pickleSnapshot:
+            case PythonExternalObjectValue external when mode == DeepCopyMode.PickleSnapshot:
             {
                 var (factory, arguments) = GetExternalReduction(external, span);
                 var snapshot = new PythonPickleReductionValue(factory);
                 memo[value] = snapshot;
                 snapshot.Arguments = arguments
                     .Elements.Select(argument =>
-                        DeepCopy(argument, memo, span, pickleSnapshot: true)
+                        DeepCopy(argument, memo, span, mode: DeepCopyMode.PickleSnapshot)
                     )
                     .ToArray();
                 return snapshot;
@@ -1525,7 +1536,7 @@ internal static class PythonStandardModules
                 // fail explicitly: there is no instance to memoize before the call.
                 memo[value] = reduction;
                 var arguments = reduction
-                    .Arguments.Select(argument => DeepCopy(argument, memo, span))
+                    .Arguments.Select(argument => DeepCopy(argument, memo, span, mode))
                     .ToArray();
                 var restored = ManagedObjectProtocols.Call(reduction.Factory, arguments, span);
                 memo[value] = restored;
@@ -1547,7 +1558,7 @@ internal static class PythonStandardModules
         bool deep,
         Dictionary<PythonValue, PythonValue>? memo,
         TextSpan span,
-        bool pickleSnapshot = false
+        DeepCopyMode mode = DeepCopyMode.Copy
     )
     {
         var copy = new PythonManagedObjectValue(instance.Type);
@@ -1556,14 +1567,228 @@ internal static class PythonStandardModules
             memo![instance] = copy;
         }
 
-        foreach (var (name, attribute) in instance.Attributes)
-        {
-            copy.Attributes[name] = deep
-                ? DeepCopy(attribute, memo!, span, pickleSnapshot)
-                : attribute;
-        }
+        CopyAttributes(
+            instance.Attributes.Dictionary,
+            copy.Attributes.Dictionary,
+            deep,
+            memo,
+            span,
+            mode
+        );
 
         return copy;
+    }
+
+    private static PythonExceptionValue CopyException(
+        PythonExceptionValue exception,
+        bool deep,
+        Dictionary<PythonValue, PythonValue>? memo,
+        TextSpan span,
+        DeepCopyMode mode = DeepCopyMode.Copy
+    )
+    {
+        if (deep)
+        {
+            ValidateExceptionConstructorGraph(exception, span);
+        }
+        PythonExceptionValue copy;
+        if (mode == DeepCopyMode.PickleSnapshot)
+        {
+            // Capturing the graph must not execute the exception constructor.
+            // Register the shell before args/state to freeze recursive graphs.
+            var nested = exception.GroupExceptions is null
+                ? null
+                : new List<PythonExceptionValue>();
+            copy = new PythonExceptionValue(exception.TypeName, exception.Message)
+            {
+                ManagedType = exception.ManagedType,
+                GroupExceptions = nested,
+            };
+            memo![exception] = copy;
+            copy.Arguments = GetExceptionArguments(exception)
+                .Select(argument => DeepCopy(argument, memo, span, mode))
+                .ToArray();
+            if (nested is not null)
+            {
+                foreach (var child in exception.GroupExceptions!)
+                {
+                    nested.Add((PythonExceptionValue)DeepCopy(child, memo, span, mode));
+                }
+            }
+        }
+        else
+        {
+            var arguments = GetExceptionArguments(exception)
+                .Select(argument => deep ? DeepCopy(argument, memo!, span, mode) : argument)
+                .ToArray();
+            // A mutable argument can recursively reconstruct this exception.
+            // Pickle reuses that instance once its constructor graph is complete.
+            if (
+                mode == DeepCopyMode.PickleRestore
+                && memo!.TryGetValue(exception, out var recursiveCopy)
+            )
+            {
+                return (PythonExceptionValue)recursiveCopy;
+            }
+
+            copy = ReconstructException(exception, arguments, span);
+            if (deep)
+            {
+                memo![exception] = copy;
+            }
+        }
+
+        // BaseException's default reduction contains args and custom state, not
+        // the active traceback, cause/context, or suppression flag.
+        CopyAttributes(
+            exception.Attributes.Dictionary,
+            copy.Attributes.Dictionary,
+            deep,
+            memo,
+            span,
+            mode,
+            exceptionState: true
+        );
+        return copy;
+    }
+
+    private static IReadOnlyList<PythonValue> GetExceptionArguments(
+        PythonExceptionValue exception
+    ) =>
+        exception.GroupExceptions is { } nested && exception.EffectiveArguments.Count != 2
+            ?
+            [
+                new PythonTextValue(exception.Message),
+                new PythonListValue([.. nested.Cast<PythonValue>()]),
+            ]
+            : exception.EffectiveArguments;
+
+    private static void ValidateExceptionConstructorGraph(
+        PythonExceptionValue exception,
+        TextSpan span
+    )
+    {
+        var active = new HashSet<PythonValue>(ReferenceEqualityComparer.Instance);
+        var complete = new HashSet<PythonValue>(ReferenceEqualityComparer.Instance);
+        if (HasCycle(exception))
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                "maximum recursion depth exceeded while reconstructing an exception",
+                span,
+                "RecursionError"
+            );
+        }
+
+        bool HasCycle(PythonValue value)
+        {
+            if (complete.Contains(value))
+            {
+                return false;
+            }
+
+            IReadOnlyList<PythonValue> arguments;
+            switch (value)
+            {
+                case PythonExceptionValue nestedException:
+                    arguments = GetExceptionArguments(nestedException);
+                    break;
+                case PythonTupleValue tuple:
+                    arguments = tuple.Elements;
+                    break;
+                default:
+                    // Mutable containers are memoized before their children and
+                    // allow a recursive constructor graph to make progress.
+                    return false;
+            }
+
+            if (!active.Add(value))
+            {
+                return true;
+            }
+
+            foreach (var argument in arguments)
+            {
+                if (HasCycle(argument))
+                {
+                    return true;
+                }
+            }
+
+            active.Remove(value);
+            complete.Add(value);
+            return false;
+        }
+    }
+
+    private static PythonExceptionValue ReconstructException(
+        PythonExceptionValue exception,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        if (UserObjectProtocols.Dispatcher is { } dispatcher)
+        {
+            var type =
+                (PythonValue?)exception.ManagedType
+                ?? new PythonExceptionTypeValue(exception.TypeName);
+            return dispatcher.Invoke(type, arguments, span) is PythonExceptionValue restored
+                ? restored
+                : throw new PythonRuntimeException(
+                    "DPY4028",
+                    "Exception reconstruction did not return an exception.",
+                    span,
+                    "TypeError"
+                );
+        }
+
+        // Static protocol callers have no interpreter frames. Builtin exception
+        // data can still be reconstructed without executing Python callbacks.
+        var nested = exception.GroupExceptions is null
+            ? null
+            : ManagedObjectProtocols
+                .MaterializeValues(arguments[1], span)
+                .Cast<PythonExceptionValue>()
+                .ToArray();
+        return new PythonExceptionValue(exception.TypeName, exception.Message)
+        {
+            ManagedType = exception.ManagedType,
+            Arguments = arguments,
+            GroupExceptions = nested,
+        };
+    }
+
+    private static void CopyAttributes(
+        PythonDictionaryValue source,
+        PythonDictionaryValue target,
+        bool deep,
+        Dictionary<PythonValue, PythonValue>? memo,
+        TextSpan span,
+        DeepCopyMode mode,
+        bool exceptionState = false
+    )
+    {
+        // Reconstruct the reduction state and then update the fresh namespace,
+        // matching Python's handling of __dict__ (including non-string keys).
+        var state = deep ? (PythonDictionaryValue)DeepCopy(source, memo!, span, mode) : source;
+        foreach (var item in state.Items)
+        {
+            if (
+                exceptionState
+                && mode != DeepCopyMode.PickleSnapshot
+                && item.Key is not PythonTextValue
+            )
+            {
+                throw new PythonRuntimeException(
+                    "DPY4028",
+                    $"attribute name must be string, not '{ManagedObjectProtocols.GetTypeName(item.Key)}'",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            ManagedObjectProtocols.SetDictionaryItem(target, item.Key, item.Value, span);
+        }
     }
 
     private static PythonValue ReconstructExternal(

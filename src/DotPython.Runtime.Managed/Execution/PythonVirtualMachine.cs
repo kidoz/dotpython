@@ -3693,6 +3693,32 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
+        if (callable is PythonExceptionTypeValue exceptionType)
+        {
+            if (keywordNames is { Length: > 0 })
+            {
+                throw Fault(
+                    "DPY4009",
+                    $"{exceptionType.Name}() takes no keyword arguments.",
+                    span,
+                    "TypeError"
+                );
+            }
+
+            return CreateExceptionValue(exceptionType, arguments);
+        }
+
+        if (callable is PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass)
+        {
+            return ConstructExceptionInstance(
+                exceptionClass,
+                arguments,
+                keywordNames ?? [],
+                keywordValues ?? [],
+                span
+            );
+        }
+
         if (callable is not PythonFunctionValue function)
         {
             return ManagedObjectProtocols.Call(
@@ -6076,6 +6102,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonSetValue { IsFrozen: true } => PythonBuiltinTypes.Frozenset,
             PythonSetValue => PythonBuiltinTypes.Set,
             PythonManagedObjectValue instance => instance.Type,
+            PythonExceptionValue { ManagedType: { } managedType } => managedType,
             PythonExceptionValue exception => _builtins.TryGetValue(
                 exception.TypeName,
                 out var exceptionType
