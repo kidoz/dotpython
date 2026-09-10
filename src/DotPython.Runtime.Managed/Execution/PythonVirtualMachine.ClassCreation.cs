@@ -340,8 +340,10 @@ internal sealed partial class PythonVirtualMachine
         InvokeCallableNested(method, [], span, keywordNames, keywordValues);
     }
 
-    private void InitializeMethodResolutionOrder(PythonManagedTypeValue type, TextSpan span)
+    private bool InitializeMethodResolutionOrder(PythonManagedTypeValue type, TextSpan span)
     {
+        var previous = type.MroTuple;
+        PythonTupleValue? returnedTuple = null;
         List<PythonValue> resolution;
         if (ReferenceEquals(type.Metaclass, PythonBuiltinTypes.Type))
             resolution = PythonTypeMro.Compute(type, span).Elements;
@@ -352,6 +354,7 @@ internal sealed partial class PythonVirtualMachine
             if (!ManagedObjectProtocols.TryGetSpecialMethod(type, "mro", out var method))
                 throw Fault("DPY4022", "mro", span, "AttributeError");
             var result = InvokeCallableNested(method, [], span);
+            returnedTuple = result as PythonTupleValue;
             resolution = ManagedObjectProtocols.MaterializeValues(
                 result,
                 span,
@@ -359,7 +362,7 @@ internal sealed partial class PythonVirtualMachine
             );
             if (resolution.Count == 0)
                 throw Fault("DPY4034", "type MRO must not be empty", span, "TypeError");
-            var solid = GetSolidLayoutBase(type);
+            var solid = PythonTypeLayout.GetSolidBase(type);
             foreach (var entry in resolution)
             {
                 if (!PythonTypeProtocols.IsType(entry))
@@ -369,7 +372,7 @@ internal sealed partial class PythonVirtualMachine
                         span,
                         "TypeError"
                     );
-                var entrySolid = GetSolidLayoutBase(entry);
+                var entrySolid = PythonTypeLayout.GetSolidBase(entry);
                 if (
                     !PythonBuiltinTypes
                         .GetMro(solid)
@@ -385,41 +388,12 @@ internal sealed partial class PythonVirtualMachine
         }
         // Install both the full order and its managed projection before any
         // __set_name__ or __init_subclass__ callback can observe the class.
-        type.ResolutionOrder = resolution;
+        // A nested base assignment may already have installed a newer order.
+        if (!ReferenceEquals(type.MroTuple, previous))
+            return false;
+        type.SetResolutionOrder(returnedTuple ?? new PythonTupleValue([.. resolution]));
         type.IsMroPending = false;
-    }
-
-    private static PythonValue GetSolidLayoutBase(PythonValue type)
-    {
-        if (type is PythonManagedTypeValue managed)
-            return managed.LayoutBase is { } layoutBase
-                ? GetSolidLayoutBase(layoutBase)
-                : PythonBuiltinFunctions.Object;
-        if (type is PythonExceptionTypeValue exception)
-        {
-            // These builtin exceptions add storage beyond their immediate base.
-            // Ordinary managed subclasses add no native storage of their own.
-            if (
-                exception.Name
-                is "BaseException"
-                    or "BaseExceptionGroup"
-                    or "AttributeError"
-                    or "ImportError"
-                    or "NameError"
-                    or "OSError"
-                    or "StopIteration"
-                    or "SyntaxError"
-                    or "SystemExit"
-                    or "UnicodeDecodeError"
-                    or "UnicodeEncodeError"
-                    or "UnicodeTranslateError"
-            )
-                return exception;
-            return GetBuiltinExceptionBase(exception.Name) is { } baseName
-                ? GetSolidLayoutBase(PythonBuiltinTypes.GetExceptionType(baseName))
-                : PythonBuiltinFunctions.Object;
-        }
-        return type;
+        return true;
     }
 
     private static string TypeDisplayName(PythonValue type) =>

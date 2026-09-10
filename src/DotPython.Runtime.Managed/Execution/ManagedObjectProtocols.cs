@@ -353,9 +353,12 @@ internal static class ManagedObjectProtocols
                             stopIteration.ManagedType is null
                             && stopIteration.TypeName == "StopIteration"
                         )
-                        || stopIteration.ManagedType?.Mro.Any(type =>
-                            type.Bases.Count == 0 && type.ExceptionBaseName == "StopIteration"
-                        ) == true
+                        || stopIteration.ManagedType is { } iterationType
+                            && PythonBuiltinTypes
+                                .GetMro(iterationType)
+                                .Elements.Any(entry =>
+                                    entry is PythonExceptionTypeValue { Name: "StopIteration" }
+                                )
                     ):
                 return stopIteration.EffectiveArguments.Count == 0
                     ? PythonNoneValue.Instance

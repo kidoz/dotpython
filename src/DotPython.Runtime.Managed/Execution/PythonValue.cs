@@ -491,23 +491,48 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal bool IsMetaclass { get; set; }
 
+    internal bool HasDeclaredSlots { get; set; }
+
     /// <summary>The declared base classes, in source order.</summary>
-    internal IReadOnlyList<PythonManagedTypeValue> Bases { get; }
+    internal IReadOnlyList<PythonManagedTypeValue> Bases { get; private set; }
 
-    internal IReadOnlyList<PythonValue>? DeclaredBases { get; set; }
+    internal PythonTupleValue? BasesTuple { get; private set; }
 
-    private IReadOnlyList<PythonValue>? _resolutionOrder;
+    internal IReadOnlyList<PythonValue>? DeclaredBases
+    {
+        get => BasesTuple?.Elements;
+        set
+        {
+            if (value is null)
+            {
+                BasesTuple = null;
+                Bases = [];
+            }
+            else
+                SetDeclaredBases(new PythonTupleValue([.. value]));
+        }
+    }
+
+    internal void SetDeclaredBases(PythonTupleValue tuple)
+    {
+        ArgumentNullException.ThrowIfNull(tuple);
+        BasesTuple = tuple;
+        Bases = tuple.Elements.OfType<PythonManagedTypeValue>().ToArray();
+    }
+
+    internal PythonTupleValue? MroTuple { get; private set; }
 
     /// <summary>The installed order, including builtin entries and custom metaclass results.</summary>
     internal IReadOnlyList<PythonValue>? ResolutionOrder
     {
-        get => _resolutionOrder;
-        set
-        {
-            _resolutionOrder = value;
-            if (value is not null)
-                Mro = value.OfType<PythonManagedTypeValue>().ToArray();
-        }
+        get => MroTuple?.Elements;
+        set => SetResolutionOrder(value is null ? null : new PythonTupleValue([.. value]));
+    }
+
+    internal void SetResolutionOrder(PythonTupleValue? tuple)
+    {
+        MroTuple = tuple;
+        Mro = tuple?.Elements.OfType<PythonManagedTypeValue>().ToArray() ?? [];
     }
 
     internal bool IsMroPending { get; set; }

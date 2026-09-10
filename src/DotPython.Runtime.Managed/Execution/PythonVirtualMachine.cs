@@ -5097,7 +5097,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         // super().__init__(...) call may rebind them afterwards.
         var exception = new PythonExceptionValue(
             type.Name,
-            ComposeExceptionMessage(type.Name, arguments)
+            arguments.Length == 1
+            && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
+                ? arguments[0].ToRepresentationString()
+                : ComposeExceptionMessage(arguments)
         )
         {
             Arguments = [.. arguments],
@@ -5858,7 +5861,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             };
         }
         type.IsMroPending = true;
-        type.DeclaredBases = [.. declaredBases];
+        type.SetDeclaredBases(
+            bases.Elements.Length == 0 ? new PythonTupleValue(declaredBases) : bases
+        );
         // All admitted ordinary mixins have object storage. A type-derived direct base
         // supplies the class-object layout even when a mixin precedes it in the MRO.
         type.LayoutBase =
@@ -6416,6 +6421,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
         type.Attributes.Dictionary.SizeVersion++;
+        type.HasDeclaredSlots = type.Attributes.TryGetValue("__slots__", out _);
         if (!type.Attributes.TryGetValue("__module__", out _))
         {
             type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");
@@ -6434,6 +6440,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             type.Attributes.Remove("__classcell__");
         }
         InitializeMethodResolutionOrder(type, span);
+        PythonTypeHierarchy.Register(type, PythonBuiltinTypes.GetBases(type));
         InitializeClassAttributeNames(type, span);
         InitializeSubclass(type, [.. keywordNames], [.. keywordValues], span);
         return type;

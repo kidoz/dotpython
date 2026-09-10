@@ -123,10 +123,8 @@ internal static class PythonTypeMetadata
                 return;
             case "__bases__":
                 ValidateBases(type, value, span);
-                throw Error(
-                    "dynamic __bases__ assignment is not supported in this runtime slice",
-                    span
-                );
+                UserObjectProtocols.Dispatcher!.SetTypeBases(type, (PythonTupleValue)value, span);
+                return;
             default:
                 throw new ArgumentException(
                     "Unknown writable type metadata descriptor.",
@@ -264,13 +262,15 @@ internal static class PythonTypeMetadata
                 );
             if (PythonBuiltinTypes.GetMro(item).Elements.Any(entry => ReferenceEquals(entry, type)))
                 throw Error("a __bases__ item causes an inheritance cycle", span);
-        }
-        for (var index = 0; index < tuple.Elements.Length; index++)
-        {
-            if (
-                tuple.Elements.Take(index).Any(item => ReferenceEquals(item, tuple.Elements[index]))
+            // An in-progress update has new structural bases but its old MRO.
+            // Check the physical base chain as well before allowing reentrance.
+            for (
+                var current = item as PythonManagedTypeValue;
+                current is not null;
+                current = current.LayoutBase as PythonManagedTypeValue
             )
-                throw Error($"duplicate base class {ClassName(tuple.Elements[index])}", span);
+                if (ReferenceEquals(current, type))
+                    throw Error("a __bases__ item causes an inheritance cycle", span);
         }
     }
 

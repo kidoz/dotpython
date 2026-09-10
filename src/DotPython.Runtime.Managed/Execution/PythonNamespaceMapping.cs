@@ -80,9 +80,11 @@ internal static class PythonNamespaceMapping
                 fault.PythonExceptionTypeName
                 ?? PythonErrorIndicator.GetPythonExceptionTypeName(fault.Code)
             ) == typeName,
-            PythonRaisedException { Value.ManagedType: { } type } => type.Mro.Any(entry =>
-                entry.Bases.Count == 0 && entry.ExceptionBaseName == typeName
-            ),
+            PythonRaisedException { Value.ManagedType: { } type } => PythonBuiltinTypes
+                .GetMro(type)
+                .Elements.Any(entry =>
+                    entry is PythonExceptionTypeValue exception && exception.Name == typeName
+                ),
             PythonRaisedException raised => raised.Value.TypeName == typeName,
             _ => false,
         };

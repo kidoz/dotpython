@@ -62,7 +62,7 @@ internal static class PythonBuiltinTypes
             PythonBuiltinTypeValue => new([PythonBuiltinFunctions.Object]),
             PythonManagedTypeValue managed
                 when ReferenceEquals(managed, PythonBuiltinFunctions.ObjectType) => new([]),
-            PythonManagedTypeValue { DeclaredBases: { Count: > 0 } declared } => new([.. declared]),
+            PythonManagedTypeValue { BasesTuple: { } bases } => bases,
             PythonManagedTypeValue { Bases.Count: > 0 } managed => new([.. managed.Bases]),
             PythonManagedTypeValue { IsMetaclass: true } => new([Type]),
             PythonManagedTypeValue { ExceptionBaseName: { } baseName } => new([
@@ -86,9 +86,9 @@ internal static class PythonBuiltinTypes
             return pending.LayoutBase is { } layoutBase
                 ? new([type, .. GetMro(layoutBase).Elements])
                 : new([type]);
-        if (type is PythonManagedTypeValue { ResolutionOrder: { } resolutionOrder })
+        if (type is PythonManagedTypeValue { MroTuple: { } mro })
         {
-            return new([.. resolutionOrder]);
+            return mro;
         }
         if (
             type is PythonManagedTypeValue managed
