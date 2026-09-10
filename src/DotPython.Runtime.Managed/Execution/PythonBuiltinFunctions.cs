@@ -357,21 +357,6 @@ internal static class PythonBuiltinFunctions
             }
         );
 
-    /// <summary>Resolves a class-level attribute through the descriptor wrappers.</summary>
-    internal static PythonValue BindToType(
-        PythonValue attribute,
-        string name,
-        PythonManagedTypeValue type
-    ) =>
-        attribute switch
-        {
-            PythonStaticMethodValue staticMethod => staticMethod.Function,
-            PythonClassMethodValue { Function: PythonFunctionValue function } =>
-                new PythonBoundUserMethodValue(name, type, function),
-            PythonClassMethodValue classMethod => classMethod.Function,
-            _ => attribute,
-        };
-
     // ----------------------------------------------------------------------------
     // reversed
     // ----------------------------------------------------------------------------

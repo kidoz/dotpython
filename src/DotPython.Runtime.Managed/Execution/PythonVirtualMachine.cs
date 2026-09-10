@@ -1884,12 +1884,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         {
             var arguments = PopArguments(instruction.Operand, instruction.Span);
             Pop(instruction.Span);
-            PushFunctionFrame(
-                callMethod,
-                PrependArgument(callableInstance, arguments),
-                instruction.Span,
-                captureReturnLocalContinuation: true
-            );
+            DispatchDescriptorCall(callMethod, arguments, [], [], instruction.Span);
             return;
         }
 
@@ -3660,6 +3655,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         return (false, generator.ReturnValue);
     }
 
+    private const int MaximumNestedCallDepth = 64;
+    private int _nestedCallDepth;
+
     private PythonValue InvokeCallableNested(
         PythonValue callable,
         PythonValue[] arguments,
@@ -3668,6 +3666,38 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         PythonValue[]? keywordValues = null
     )
     {
+        // Nested protocol dispatch uses CLR frames even though ordinary Python
+        // calls use the VM's explicit frame array. Bound this separate stack.
+        if (_nestedCallDepth >= MaximumNestedCallDepth)
+        {
+            throw Fault("DPY4009", "maximum recursion depth exceeded", span, "RecursionError");
+        }
+        _nestedCallDepth++;
+        try
+        {
+            return InvokeCallableNestedCore(callable, arguments, span, keywordNames, keywordValues);
+        }
+        finally
+        {
+            _nestedCallDepth--;
+        }
+    }
+
+    private PythonValue InvokeCallableNestedCore(
+        PythonValue callable,
+        PythonValue[] arguments,
+        TextSpan span,
+        string[]? keywordNames = null,
+        PythonValue[]? keywordValues = null
+    )
+    {
+        // Protocol callbacks can recursively re-enter dispatch on the CLR stack.
+        // Surface Python recursion failure before exhausting the process stack.
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            throw Fault("DPY4009", "maximum recursion depth exceeded", span, "RecursionError");
+        }
+
         if (callable is PythonBoundUserMethodValue boundMethod)
         {
             return InvokeCallableNested(
@@ -3684,13 +3714,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             && TryGetCallMethod(callableInstance, span, out var callMethod)
         )
         {
-            return InvokeCallableNested(
-                callMethod,
-                PrependArgument(callableInstance, arguments),
-                span,
-                keywordNames,
-                keywordValues
-            );
+            return InvokeCallableNested(callMethod, arguments, span, keywordNames, keywordValues);
         }
 
         if (callable is PythonExceptionTypeValue exceptionType)
@@ -3916,17 +3940,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 return;
             case PythonManagedObjectValue callableInstance
                 when TryGetCallMethod(callableInstance, span, out var callMethod):
-                PushBoundArgumentsFrame(
-                    callMethod,
-                    BindFunctionArguments(
-                        callMethod,
-                        PrependArgument(callableInstance, positional),
-                        keywordNames,
-                        keywordValues,
-                        span
-                    ),
-                    span
-                );
+                DispatchDescriptorCall(callMethod, positional, keywordNames, keywordValues, span);
                 return;
             case PythonFunctionValue function:
                 PushBoundArgumentsFrame(
@@ -4676,8 +4690,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 or PythonBoundUserMethodValue
                 or PythonStaticMethodValue
                 or PythonClassMethodValue => true,
-                PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetInstanceMethod(
-                    instance,
+                PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetTypeAttribute(
+                    instance.Type,
                     "__call__",
                     out _
                 ),
@@ -5120,30 +5134,52 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    /// <summary>Resolves a user `__call__` to its function so the call can push a frame.</summary>
+    private void DispatchDescriptorCall(
+        PythonValue callable,
+        PythonValue[] positional,
+        string[] keywordNames,
+        PythonValue[] keywordValues,
+        TextSpan span
+    )
+    {
+        if (callable is PythonManagedObjectValue)
+        {
+            _evaluationStack.Push(
+                InvokeCallableNested(callable, positional, span, keywordNames, keywordValues)
+            );
+            return;
+        }
+        DispatchCallWithKeywords(callable, positional, keywordNames, keywordValues, span);
+    }
+
+    /// <summary>Implicit calls bind __call__ through the type's descriptor protocol.</summary>
     private static bool TryGetCallMethod(
         PythonManagedObjectValue instance,
         TextSpan span,
-        out PythonFunctionValue method
+        out PythonValue method
     )
     {
-        method = null!;
         if (!ManagedObjectProtocols.TryGetTypeAttribute(instance.Type, "__call__", out var call))
         {
+            method = null!;
             return false;
         }
-
-        if (call is not PythonFunctionValue function)
+        method = ManagedObjectProtocols.BindDescriptor(
+            call,
+            instance,
+            instance.Type,
+            span,
+            "__call__"
+        );
+        if (!Callable([method], span).Value)
         {
             throw Fault(
                 "DPY4003",
-                $"'{ManagedObjectProtocols.GetTypeName(call)}' object is not callable",
+                $"'{ManagedObjectProtocols.GetTypeName(method)}' object is not callable",
                 span,
                 "TypeError"
             );
         }
-
-        method = function;
         return true;
     }
 

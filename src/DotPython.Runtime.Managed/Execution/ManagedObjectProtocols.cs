@@ -74,11 +74,50 @@ internal static class ManagedObjectProtocols
                 span,
                 "TypeError"
             ),
-            _ => throw Fault("DPY4009", "This value is not callable.", span, "TypeError"),
+            _ => throw Fault(
+                "DPY4009",
+                $"'{GetTypeName(callable)}' object is not callable",
+                span,
+                "TypeError"
+            ),
         };
     }
 
     internal static PythonValue GetAttribute(
+        PythonValue target,
+        string name,
+        TextSpan span = default
+    )
+    {
+        if (GetManagedType(target) is null)
+        {
+            return GetAttributeCore(target, name, span);
+        }
+        try
+        {
+            return TryGetSpecialMethod(target, "__getattribute__", out var getAttribute)
+                ? UserObjectProtocols.Dispatcher!.Invoke(
+                    getAttribute,
+                    [new PythonTextValue(name)],
+                    span
+                )
+                : GetAttributeCore(target, name, span);
+        }
+        catch (Exception error) when (IsAttributeError(error))
+        {
+            if (TryGetSpecialMethod(target, "__getattr__", out var fallback))
+            {
+                return UserObjectProtocols.Dispatcher!.Invoke(
+                    fallback,
+                    [new PythonTextValue(name)],
+                    span
+                );
+            }
+            throw;
+        }
+    }
+
+    private static PythonValue GetAttributeCore(
         PythonValue target,
         string name,
         TextSpan span = default
@@ -102,28 +141,11 @@ internal static class ManagedObjectProtocols
                     "AttributeError"
                 );
             case PythonManagedObjectValue instance:
-                if (TryGetInstanceAttribute(instance, name, span, out var instanceAttribute))
-                {
-                    return instanceAttribute;
-                }
-
-                if (
-                    UserObjectProtocols.TryGetAttributeFallback(
-                        instance,
-                        name,
-                        span,
-                        out var fallback
-                    )
-                )
-                {
-                    return fallback;
-                }
-
-                throw MissingAttribute(instance.Type.Name, name, span);
+                return GetInstanceAttribute(instance, name, span);
             case PythonSuperProxyValue { Instance: PythonManagedTypeValue subtype } classProxy:
                 if (TryResolveSuperAttribute(classProxy, name, out var classInherited))
                 {
-                    return PythonBuiltinFunctions.BindToType(classInherited, name, subtype);
+                    return BindDescriptor(classInherited, null, subtype, span, name);
                 }
 
                 if (PythonBuiltinFunctions.TryGetObjectProtocol(name, out var classObjectMember))
@@ -140,26 +162,8 @@ internal static class ManagedObjectProtocols
             case PythonSuperProxyValue proxy:
                 if (TryResolveSuperAttribute(proxy, name, out var inherited))
                 {
-                    return inherited switch
-                    {
-                        PythonFunctionValue inheritedMethod => new PythonBoundUserMethodValue(
-                            name,
-                            proxy.Instance,
-                            inheritedMethod
-                        ),
-                        PythonPropertyValue property
-                            when proxy.Instance is PythonManagedObjectValue propertyInstance =>
-                            GetPropertyValue(property, propertyInstance, name, span),
-                        PythonStaticMethodValue or PythonClassMethodValue => proxy.Instance
-                            is PythonManagedObjectValue wrapperInstance
-                            ? BindDescriptor(inherited, wrapperInstance)
-                            : PythonBuiltinFunctions.BindToType(
-                                inherited,
-                                name,
-                                proxy.DefiningType
-                            ),
-                        _ => inherited,
-                    };
+                    var owner = GetManagedType(proxy.Instance) ?? proxy.DefiningType;
+                    return BindDescriptor(inherited, proxy.Instance, owner, span, name);
                 }
 
                 if (
@@ -200,7 +204,7 @@ internal static class ManagedObjectProtocols
                     "AttributeError"
                 );
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
-                return PythonBuiltinFunctions.BindToType(value, name, type);
+                return BindDescriptor(value, null, type, span, name);
             case PythonManagedTypeValue type when name == "__name__" || name == "__qualname__":
                 return new PythonTextValue(type.Name);
             case PythonManagedTypeValue type when name == "__module__":
@@ -271,6 +275,16 @@ internal static class ManagedObjectProtocols
                 );
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
+            case PythonExceptionValue { ManagedType: { } exceptionClass } exception
+                when TryGetTypeAttribute(exceptionClass, name, out var classAttribute):
+                if (
+                    !(IsDataDescriptor(classAttribute) && HasDescriptorGetter(classAttribute))
+                    && exception.Attributes.TryGetValue(name, out var storedAttribute)
+                )
+                {
+                    return storedAttribute;
+                }
+                return BindDescriptor(classAttribute, exception, exceptionClass, span, name);
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
                 return exceptionDictionary.Attributes.Dictionary;
             case PythonExceptionValue exceptionValue when name == "args":
@@ -748,6 +762,10 @@ internal static class ManagedObjectProtocols
             case PythonModuleValue module:
                 module.Globals.SetValue(name, value);
                 return;
+            case PythonExceptionValue { ManagedType: { } exceptionClass } exception
+                when TryGetTypeAttribute(exceptionClass, name, out var descriptor)
+                    && TrySetDescriptor(descriptor, exception, name, value, span):
+                return;
             case PythonExceptionValue exceptionInstance when name == "__dict__":
                 exceptionInstance.Attributes = new PythonAttributeDictionary(
                     RequireNamespaceDictionary(value, span)
@@ -801,17 +819,9 @@ internal static class ManagedObjectProtocols
     )
     {
         var hasTypeValue = TryGetTypeAttribute(instance.Type, name, out var typeValue);
-        if (
-            hasTypeValue && typeValue is PythonDescriptorValue { IsDataDescriptor: true } descriptor
-        )
+        if (hasTypeValue && IsDataDescriptor(typeValue) && HasDescriptorGetter(typeValue))
         {
-            value = descriptor.Get(instance);
-            return true;
-        }
-
-        if (hasTypeValue && typeValue is PythonPropertyValue property)
-        {
-            value = GetPropertyValue(property, instance, name, span);
+            value = BindDescriptor(typeValue, instance, instance.Type, span, name);
             return true;
         }
 
@@ -828,7 +838,7 @@ internal static class ManagedObjectProtocols
 
         if (hasTypeValue)
         {
-            value = BindDescriptor(typeValue, instance);
+            value = BindDescriptor(typeValue, instance, instance.Type, span, name);
             return true;
         }
 
@@ -858,35 +868,12 @@ internal static class ManagedObjectProtocols
         TextSpan span
     )
     {
-        if (TryGetTypeAttribute(instance.Type, name, out var typeValue))
+        if (
+            TryGetTypeAttribute(instance.Type, name, out var typeValue)
+            && TrySetDescriptor(typeValue, instance, name, value, span)
+        )
         {
-            switch (typeValue)
-            {
-                case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
-                    throw Fault(
-                        "DPY4023",
-                        $"Attribute '{name}' is read-only.",
-                        span,
-                        "AttributeError"
-                    );
-                case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
-                    descriptor.Set!(instance, value);
-                    return;
-                case PythonPropertyValue { Setter: null }:
-                    throw Fault(
-                        "DPY4023",
-                        $"property '{name}' of '{instance.Type.Name}' object has no setter",
-                        span,
-                        "AttributeError"
-                    );
-                case PythonPropertyValue property:
-                    UserObjectProtocols.Dispatcher!.Invoke(
-                        property.Setter,
-                        [instance, value],
-                        span
-                    );
-                    return;
-            }
+            return;
         }
 
         if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
@@ -907,28 +894,12 @@ internal static class ManagedObjectProtocols
         TextSpan span
     )
     {
-        if (TryGetTypeAttribute(instance.Type, name, out var typeValue))
+        if (
+            TryGetTypeAttribute(instance.Type, name, out var typeValue)
+            && TryDeleteDescriptor(typeValue, instance, name, span)
+        )
         {
-            switch (typeValue)
-            {
-                case PythonDescriptorValue { IsDataDescriptor: true }:
-                    throw Fault(
-                        "DPY4023",
-                        $"Attribute '{name}' cannot be deleted.",
-                        span,
-                        "AttributeError"
-                    );
-                case PythonPropertyValue { Deleter: null }:
-                    throw Fault(
-                        "DPY4023",
-                        $"property '{name}' of '{instance.Type.Name}' object has no deleter",
-                        span,
-                        "AttributeError"
-                    );
-                case PythonPropertyValue property:
-                    UserObjectProtocols.Dispatcher!.Invoke(property.Deleter, [instance], span);
-                    return;
-            }
+            return;
         }
 
         if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
@@ -943,9 +914,80 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    private static bool TrySetDescriptor(
+        PythonValue descriptorValue,
+        PythonValue instance,
+        string name,
+        PythonValue value,
+        TextSpan span
+    )
+    {
+        if (TryInvokeUserDescriptorMutation(descriptorValue, "__set__", [instance, value], span))
+        {
+            return true;
+        }
+
+        switch (descriptorValue)
+        {
+            case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
+                throw Fault("DPY4023", $"Attribute '{name}' is read-only.", span, "AttributeError");
+            case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
+                descriptor.Set!(instance, value);
+                return true;
+            case PythonPropertyValue { Setter: null }:
+                throw Fault(
+                    "DPY4023",
+                    $"property '{name}' of '{GetTypeName(instance)}' object has no setter",
+                    span,
+                    "AttributeError"
+                );
+            case PythonPropertyValue property:
+                UserObjectProtocols.Dispatcher!.Invoke(property.Setter, [instance, value], span);
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryDeleteDescriptor(
+        PythonValue descriptorValue,
+        PythonValue instance,
+        string name,
+        TextSpan span
+    )
+    {
+        if (TryInvokeUserDescriptorMutation(descriptorValue, "__delete__", [instance], span))
+        {
+            return true;
+        }
+
+        switch (descriptorValue)
+        {
+            case PythonDescriptorValue { IsDataDescriptor: true }:
+                throw Fault(
+                    "DPY4023",
+                    $"Attribute '{name}' cannot be deleted.",
+                    span,
+                    "AttributeError"
+                );
+            case PythonPropertyValue { Deleter: null }:
+                throw Fault(
+                    "DPY4023",
+                    $"property '{name}' of '{GetTypeName(instance)}' object has no deleter",
+                    span,
+                    "AttributeError"
+                );
+            case PythonPropertyValue property:
+                UserObjectProtocols.Dispatcher!.Invoke(property.Deleter, [instance], span);
+                return true;
+        }
+
+        return false;
+    }
+
     private static PythonValue GetPropertyValue(
         PythonPropertyValue property,
-        PythonManagedObjectValue instance,
+        PythonValue instance,
         string name,
         TextSpan span
     )
@@ -954,7 +996,7 @@ internal static class ManagedObjectProtocols
         {
             throw Fault(
                 "DPY4023",
-                $"property '{name}' of '{instance.Type.Name}' object has no getter",
+                $"property '{name}' of '{GetTypeName(instance)}' object has no getter",
                 span,
                 "AttributeError"
             );
@@ -972,6 +1014,10 @@ internal static class ManagedObjectProtocols
         {
             case PythonModuleValue when name == "__dict__":
                 throw Fault("DPY4022", "readonly attribute", span, "AttributeError");
+            case PythonExceptionValue { ManagedType: { } exceptionClass } exception
+                when TryGetTypeAttribute(exceptionClass, name, out var descriptor)
+                    && TryDeleteDescriptor(descriptor, exception, name, span):
+                return;
             case PythonExceptionValue when name == "__dict__":
                 throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
             case PythonModuleValue module when module.Globals.Remove(name):
@@ -983,6 +1029,10 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
+            case PythonExceptionValue exception when exception.Attributes.Remove(name):
+                return;
+            case PythonExceptionValue exception:
+                throw MissingAttribute(exception.TypeName, name, span);
             case PythonManagedObjectValue instance:
                 if (UserObjectProtocols.TryDeleteAttribute(instance, name, span))
                 {
@@ -2404,45 +2454,129 @@ internal static class ManagedObjectProtocols
     )
     {
         ArgumentNullException.ThrowIfNull(instance);
-        if (instance.Attributes.TryGetValue(name, out var direct))
+        return TryGetInstanceAttribute(instance, name, default, out method);
+    }
+
+    internal static PythonManagedTypeValue? GetManagedType(PythonValue value) =>
+        value switch
         {
-            method = direct;
+            PythonManagedObjectValue instance => instance.Type,
+            PythonExceptionValue exception => exception.ManagedType,
+            _ => null,
+        };
+
+    internal static bool TryGetSpecialMethod(PythonValue value, string name, out PythonValue method)
+    {
+        if (GetManagedType(value) is { } type && TryGetTypeAttribute(type, name, out var attribute))
+        {
+            method = BindDescriptor(attribute, value, type, attributeName: name);
             return true;
         }
-
-        if (TryGetTypeAttribute(instance.Type, name, out var typeValue))
-        {
-            method = BindDescriptor(typeValue, instance);
-            return true;
-        }
-
-        method = PythonNoneValue.Instance;
+        method = null!;
         return false;
     }
 
-    private static PythonValue BindDescriptor(
-        PythonValue value,
-        PythonManagedObjectValue instance
-    ) =>
+    private static bool IsAttributeError(Exception error) =>
+        error switch
+        {
+            PythonRuntimeException fault => fault.PythonExceptionTypeName == "AttributeError",
+            PythonRaisedException raised => raised.Value.TypeName == "AttributeError"
+                || raised.Value.ManagedType?.Mro.Any(type =>
+                    type.ExceptionBaseName == "AttributeError"
+                ) == true,
+            _ => false,
+        };
+
+    private static bool IsDataDescriptor(PythonValue value) =>
         value switch
         {
-            PythonDescriptorValue descriptor => descriptor.Get(instance),
-            PythonProtocolFunctionValue function => new PythonBoundMethodValue(
-                function.Name,
+            PythonDescriptorValue descriptor => descriptor.IsDataDescriptor,
+            PythonPropertyValue => true,
+            _ => GetManagedType(value) is { } type
+                && (
+                    TryGetTypeAttribute(type, "__set__", out _)
+                    || TryGetTypeAttribute(type, "__delete__", out _)
+                ),
+        };
+
+    private static bool HasDescriptorGetter(PythonValue value) =>
+        value is PythonDescriptorValue or PythonPropertyValue
+        || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
+
+    private static bool TryInvokeUserDescriptorMutation(
+        PythonValue descriptor,
+        string operation,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        if (GetManagedType(descriptor) is not { } type || !IsDataDescriptor(descriptor))
+        {
+            return false;
+        }
+        if (!TryGetTypeAttribute(type, operation, out var method))
+        {
+            throw Fault("DPY4023", operation, span, "AttributeError");
+        }
+        UserObjectProtocols.Dispatcher!.Invoke(
+            BindDescriptor(method, descriptor, type, span, operation),
+            arguments,
+            span
+        );
+        return true;
+    }
+
+    /// <summary>Bind one class attribute using the instance and its dynamic owner.</summary>
+    internal static PythonValue BindDescriptor(
+        PythonValue value,
+        PythonValue? instance,
+        PythonManagedTypeValue owner,
+        TextSpan span = default,
+        string? attributeName = null
+    )
+    {
+        if (
+            GetManagedType(value) is { } descriptorType
+            && TryGetTypeAttribute(descriptorType, "__get__", out var getter)
+        )
+        {
+            // CPython's descriptor-get slot calls the raw class entry with self,
+            // instance and owner. Setter/deleter slots instead bind their methods.
+            if (getter is PythonStaticMethodValue staticGetter)
+            {
+                getter = staticGetter.Function;
+            }
+            if (getter is PythonClassMethodValue)
+            {
+                throw Fault("DPY4009", "'classmethod' object is not callable", span, "TypeError");
+            }
+            return UserObjectProtocols.Dispatcher!.Invoke(
+                getter,
+                [value, instance ?? PythonNoneValue.Instance, owner],
+                span
+            );
+        }
+
+        return value switch
+        {
+            PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),
+            PythonPropertyValue property when instance is not null => GetPropertyValue(
+                property,
                 instance,
-                function
+                attributeName ?? owner.Name,
+                span
             ),
-            PythonFunctionValue function => new PythonBoundUserMethodValue(
-                function.Name,
-                instance,
-                function
-            ),
+            PythonProtocolFunctionValue function when instance is not null =>
+                new PythonBoundMethodValue(function.Name, instance, function),
+            PythonFunctionValue function when instance is not null =>
+                new PythonBoundUserMethodValue(function.Name, instance, function),
             PythonStaticMethodValue staticMethod => staticMethod.Function,
-            PythonClassMethodValue { Function: PythonFunctionValue classFunction } =>
-                new PythonBoundUserMethodValue(classFunction.Name, instance.Type, classFunction),
+            PythonClassMethodValue { Function: PythonFunctionValue function } =>
+                new PythonBoundUserMethodValue(function.Name, owner, function),
             PythonClassMethodValue classMethod => classMethod.Function,
             _ => value,
         };
+    }
 
     /// <summary>
     /// `super()` resolution: search the attribute in the classes after the defining
@@ -2459,6 +2593,8 @@ internal static class ManagedObjectProtocols
         {
             PythonManagedObjectValue managed when managed.Type.Mro.Contains(proxy.DefiningType) =>
                 managed.Type.Mro,
+            PythonExceptionValue { ManagedType: { } exceptionType }
+                when exceptionType.Mro.Contains(proxy.DefiningType) => exceptionType.Mro,
             PythonManagedTypeValue subtype when subtype.Mro.Contains(proxy.DefiningType) =>
                 subtype.Mro,
             _ => proxy.DefiningType.Mro,

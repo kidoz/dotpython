@@ -109,20 +109,12 @@ internal static class UserObjectProtocols
             && ManagedObjectProtocols.TryGetTypeAttribute(managed.Type, name, out var attribute)
         )
         {
-            method = attribute switch
-            {
-                PythonFunctionValue function => new PythonBoundUserMethodValue(
-                    name,
-                    managed,
-                    function
-                ),
-                PythonProtocolFunctionValue protocolFunction => new PythonBoundMethodValue(
-                    name,
-                    managed,
-                    protocolFunction
-                ),
-                _ => attribute,
-            };
+            method = ManagedObjectProtocols.BindDescriptor(
+                attribute,
+                managed,
+                managed.Type,
+                attributeName: name
+            );
             instance = managed;
             return true;
         }
