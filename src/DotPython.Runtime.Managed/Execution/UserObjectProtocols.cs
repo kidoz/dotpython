@@ -10,6 +10,8 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </summary>
 internal interface IUserObjectDispatcher
 {
+    PythonManagedTypeValue ExceptionGroupType { get; }
+
     PythonValue Invoke(PythonValue callable, PythonValue[] arguments, TextSpan span);
 
     PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);

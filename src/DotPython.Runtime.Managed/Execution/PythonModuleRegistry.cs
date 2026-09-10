@@ -20,6 +20,8 @@ internal sealed class PythonModuleRegistry
 
     internal PythonTypeHierarchy TypeHierarchy { get; } = new();
 
+    internal PythonManagedTypeValue ExceptionGroupType { get; }
+
     internal PythonModuleRegistry(
         IReadOnlyDictionary<string, PythonModuleDefinition> definitions,
         Func<string, PythonModuleDefinition, TextSpan, PreparedPythonCode> compile
@@ -27,6 +29,7 @@ internal sealed class PythonModuleRegistry
     {
         ArgumentNullException.ThrowIfNull(definitions);
         ArgumentNullException.ThrowIfNull(compile);
+        ExceptionGroupType = CreateExceptionGroupType(TypeHierarchy);
         _compile = compile;
         _definitions = new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal);
 
@@ -113,6 +116,35 @@ internal sealed class PythonModuleRegistry
 
             _packages.Add(parentName);
         }
+    }
+
+    private static PythonManagedTypeValue CreateExceptionGroupType(PythonTypeHierarchy hierarchy)
+    {
+        var groupBase = PythonBuiltinTypes.GetExceptionType("BaseExceptionGroup");
+        var exceptionBase = PythonBuiltinTypes.GetExceptionType("Exception");
+        var type = new PythonManagedTypeValue(
+            "ExceptionGroup",
+            exceptionBaseName: "BaseExceptionGroup"
+        )
+        {
+            Module = "builtins",
+            IsBuiltinExceptionGroup = true,
+            OwnerHierarchy = hierarchy,
+            LayoutBase = groupBase,
+        };
+        type.Attributes["__module__"] = new PythonTextValue("builtins");
+        type.Attributes["__doc__"] = PythonNoneValue.Instance;
+        type.SetDeclaredBases(new PythonTupleValue([groupBase, exceptionBase]));
+        type.SetResolutionOrder(
+            new PythonTupleValue([
+                type,
+                groupBase,
+                exceptionBase,
+                PythonBuiltinTypes.GetExceptionType("BaseException"),
+                PythonBuiltinFunctions.Object,
+            ])
+        );
+        return type;
     }
 
     internal bool ContainsAbsolute(string name) => _definitions.ContainsKey(name);

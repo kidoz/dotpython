@@ -283,10 +283,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         foreach (var name in ExceptionBaseNames.Keys)
         {
-            _builtins.Add(name, PythonBuiltinTypes.GetExceptionType(name));
+            _builtins.Add(
+                name,
+                name == "ExceptionGroup"
+                    ? _modules.ExceptionGroupType
+                    : PythonBuiltinTypes.GetExceptionType(name)
+            );
         }
         _modules.TypeHierarchy.Initialize(_builtins);
     }
+
+    PythonManagedTypeValue IUserObjectDispatcher.ExceptionGroupType => _modules.ExceptionGroupType;
 
     PythonValue IUserObjectDispatcher.GetSubclasses(PythonValue type, TextSpan span) =>
         _modules.TypeHierarchy.GetSubclasses(type);
@@ -1049,7 +1056,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (frame.PendingFinalies.Peek().Exception is PythonRaisedException raised)
         {
-            _evaluationStack.Push(new PythonExceptionTypeValue(raised.Value.TypeName));
+            _evaluationStack.Push(PythonBuiltinTypes.GetRuntimeType(raised.Value));
             _evaluationStack.Push(raised.Value);
             _evaluationStack.Push(PythonNoneValue.Instance);
             return;
@@ -1280,16 +1287,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         throw CreateRaisedException(exception);
     }
 
-    private static PythonExceptionValue CreateExceptionValue(PythonValue value, TextSpan span) =>
+    private PythonExceptionValue CreateExceptionValue(PythonValue value, TextSpan span) =>
         value switch
         {
             PythonExceptionValue exception => exception,
-            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
+            PythonExceptionTypeValue type => CreateExceptionValue(type, []),
             PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                new PythonExceptionValue(exceptionClass.Name, string.Empty)
-                {
-                    ManagedType = exceptionClass,
-                },
+                ConstructExceptionInstance(exceptionClass, [], [], [], span),
             _ => throw CreateRaisedException(
                 new PythonExceptionValue("TypeError", "Exceptions must derive from BaseException.")
             ),
@@ -2354,6 +2358,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 string.Empty
             )
             {
+                ManagedType = IsExceptionSubclass(matched, "Exception")
+                    ? _modules.ExceptionGroupType
+                    : null,
                 GroupExceptions = [matched],
             }
             : matched;
@@ -2396,19 +2403,24 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         return (
-            matchedChildren.Count == 0
-                ? null
-                : new PythonExceptionValue(exception.TypeName, exception.Message)
-                {
-                    GroupExceptions = matchedChildren,
-                },
-            restChildren.Count == 0
-                ? null
-                : new PythonExceptionValue(exception.TypeName, exception.Message)
-                {
-                    GroupExceptions = restChildren,
-                }
+            matchedChildren.Count == 0 ? null : DeriveExceptionGroup(exception, matchedChildren),
+            restChildren.Count == 0 ? null : DeriveExceptionGroup(exception, restChildren)
         );
+    }
+
+    private PythonExceptionValue DeriveExceptionGroup(
+        PythonExceptionValue source,
+        List<PythonExceptionValue> children
+    )
+    {
+        var result = CreateExceptionGroupValue([
+            new PythonTextValue(source.Message),
+            new PythonListValue([.. children.Cast<PythonValue>()]),
+        ]);
+        result.Cause = source.Cause;
+        result.Context = source.Context;
+        result.SuppressContext = source.SuppressContext;
+        return result;
     }
 
     private void ApplyExceptStarCollect(ref PythonFrame frame, PythonInstruction instruction)
@@ -2472,6 +2484,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 string.Empty
             )
             {
+                ManagedType = allExceptions ? _modules.ExceptionGroupType : null,
                 GroupExceptions = items,
             }
         );
@@ -4692,7 +4705,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         PythonValue[] arguments
     ) =>
         type.Name is "ExceptionGroup" or "BaseExceptionGroup"
-            ? CreateExceptionGroupValue(type.Name, arguments)
+            ? CreateExceptionGroupValue(arguments)
             : new(type.Name, ComposeExceptionMessage(type.Name, arguments))
             {
                 Arguments = [.. arguments],
@@ -4705,14 +4718,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ? arguments[0].ToRepresentationString()
             : ComposeExceptionMessage(arguments);
 
-    private PythonExceptionValue CreateExceptionGroupValue(string name, PythonValue[] arguments)
+    private PythonExceptionValue CreateExceptionGroupValue(
+        PythonValue[] arguments,
+        PythonManagedTypeValue? requestedType = null
+    )
     {
         if (arguments.Length != 2)
         {
             throw CreateRaisedException(
                 new PythonExceptionValue(
                     "TypeError",
-                    $"{name}.__new__() takes exactly 2 arguments ({arguments.Length} given)"
+                    $"BaseExceptionGroup.__new__() takes exactly 2 arguments ({arguments.Length} given)"
                 )
             );
         }
@@ -4759,12 +4775,24 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         var allExceptions = nested.All(exception => IsExceptionSubclass(exception, "Exception"));
-        if (name == "ExceptionGroup" && !allExceptions)
+        if (
+            (
+                requestedType is { IsBuiltinExceptionGroup: true }
+                || requestedType is not null
+                    && IsSubclassOf(
+                        requestedType,
+                        PythonBuiltinTypes.GetExceptionType("Exception"),
+                        default
+                    )
+            ) && !allExceptions
+        )
         {
             throw CreateRaisedException(
                 new PythonExceptionValue(
                     "TypeError",
-                    "Cannot nest BaseExceptions in an ExceptionGroup"
+                    requestedType is { IsBuiltinExceptionGroup: true }
+                        ? "Cannot nest BaseExceptions in an ExceptionGroup"
+                        : $"Cannot nest BaseExceptions in '{requestedType!.Name}'"
                 )
             );
         }
@@ -4774,8 +4802,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             message.Value
         )
         {
+            ManagedType = requestedType ?? (allExceptions ? _modules.ExceptionGroupType : null),
             GroupExceptions = nested,
-            Arguments = [message, new PythonListValue([.. nested.Cast<PythonValue>()])],
+            Arguments = [.. arguments],
         };
     }
 
@@ -5099,17 +5128,22 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         // CPython sets `args` from the constructor call before __init__ runs; a
         // super().__init__(...) call may rebind them afterwards.
-        var exception = new PythonExceptionValue(
-            type.Name,
-            arguments.Length == 1
-            && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
-                ? arguments[0].ToRepresentationString()
-                : ComposeExceptionMessage(arguments)
+        var exception = ReferenceEquals(
+            PythonTypeLayout.GetSolidBase(type),
+            PythonBuiltinTypes.GetExceptionType("BaseExceptionGroup")
         )
-        {
-            Arguments = [.. arguments],
-            ManagedType = type,
-        };
+            ? CreateExceptionGroupValue(arguments, type)
+            : new PythonExceptionValue(
+                type.Name,
+                arguments.Length == 1
+                && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
+                    ? arguments[0].ToRepresentationString()
+                    : ComposeExceptionMessage(arguments)
+            )
+            {
+                Arguments = [.. arguments],
+                ManagedType = type,
+            };
         if (ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
             if (initializer is not PythonFunctionValue initializerFunction)

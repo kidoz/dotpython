@@ -26,7 +26,11 @@ internal sealed class PythonTypeHierarchy
         if (_initialized)
             return;
         foreach (var type in PythonBuiltinSubclassInventory.GetStartupTypes(builtins))
+        {
+            if (type is PythonManagedTypeValue managed)
+                managed.OwnerHierarchy ??= this;
             RegisterValue(type, PythonBuiltinTypes.GetBases(type));
+        }
         // Template literal types are initialized by CPython before any module import.
         RegisterValue(
             PythonStandardModules.InterpolationType,

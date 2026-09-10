@@ -498,6 +498,8 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal bool IsMetaclass { get; set; }
 
+    internal bool IsBuiltinExceptionGroup { get; init; }
+
     internal bool HasDeclaredSlots { get; set; }
 
     /// <summary>The declared base classes, in source order.</summary>
@@ -565,7 +567,7 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     /// <summary>`__module__.__qualname__`, the form CPython prints in reprs.</summary>
     internal string QualifiedDisplayName =>
-        Module is null ? QualName ?? Name : $"{Module}.{QualName ?? Name}";
+        Module is null or "builtins" ? Name : $"{Module}.{QualName ?? Name}";
 
     public bool Equals(PythonManagedTypeValue? other) => ReferenceEquals(this, other);
 
@@ -636,6 +638,10 @@ internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
 
 internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
 {
+    private readonly string _originalTypeName = TypeName;
+
+    public string TypeName => ManagedType?.Name ?? _originalTypeName;
+
     /// <summary>The actual managed exception class, retaining inherited builtin protocols.</summary>
     internal PythonManagedTypeValue? ManagedType { get; init; }
 

@@ -77,7 +77,10 @@ internal static class PythonBuiltinSubclassInventory
         foreach (var name in StartupNames)
             if (
                 builtins.TryGetValue(name, out var value)
-                && value is PythonBuiltinTypeValue or PythonExceptionTypeValue
+                && value
+                    is PythonBuiltinTypeValue
+                        or PythonExceptionTypeValue
+                        or PythonManagedTypeValue
             )
                 yield return value;
     }
