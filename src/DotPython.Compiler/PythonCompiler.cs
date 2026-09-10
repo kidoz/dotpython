@@ -1850,19 +1850,71 @@ public static class PythonCompiler
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );
-            if (@class.Bases.Count == 0)
+            var keywords = @class.KeywordArguments ?? [];
+            if (@class.Bases.Count == 0 && keywords.Count == 0)
             {
                 Emit(PythonOpCode.MakeClass, constantIndex, @class.Span);
             }
             else
             {
-                foreach (var baseExpression in @class.Bases)
+                if (@class.Bases.Any(expression => expression is PythonStarredExpression))
                 {
-                    CompileExpression(baseExpression);
+                    Emit(PythonOpCode.BuildList, 0, @class.Span);
+                    foreach (var baseExpression in @class.Bases)
+                    {
+                        if (baseExpression is PythonStarredExpression starred)
+                        {
+                            CompileExpression(starred.Operand);
+                            Emit(PythonOpCode.ListExtend, 0, starred.Span);
+                        }
+                        else
+                        {
+                            CompileExpression(baseExpression);
+                            Emit(PythonOpCode.ListAppend, 0, baseExpression.Span);
+                        }
+                    }
+                    Emit(PythonOpCode.ListToTuple, 0, @class.Span);
+                }
+                else
+                {
+                    foreach (var baseExpression in @class.Bases)
+                    {
+                        CompileExpression(baseExpression);
+                    }
+                    Emit(PythonOpCode.BuildTuple, @class.Bases.Count, @class.Span);
                 }
 
-                Emit(PythonOpCode.BuildTuple, @class.Bases.Count, @class.Span);
-                Emit(PythonOpCode.MakeClassWithBases, constantIndex, @class.Span);
+                if (keywords.Count != 0)
+                {
+                    Emit(PythonOpCode.BuildDictionary, 0, @class.Span);
+                    foreach (var keyword in keywords)
+                    {
+                        if (keyword.Name is not null)
+                        {
+                            Emit(
+                                PythonOpCode.LoadConstant,
+                                AddConstant(
+                                    new PythonConstant(PythonConstantType.TextValue, keyword.Name)
+                                ),
+                                keyword.Span
+                            );
+                            CompileExpression(keyword.Value);
+                            Emit(PythonOpCode.BuildDictionary, 1, keyword.Span);
+                        }
+                        else
+                        {
+                            CompileExpression(keyword.Value);
+                        }
+                        // Merge even named entries: a preceding **mapping may already
+                        // contain this name, which must fail instead of overwriting it.
+                        Emit(PythonOpCode.DictionaryMerge, 0, keyword.Span);
+                    }
+                    Emit(PythonOpCode.MakeClassWithKeywords, constantIndex, @class.Span);
+                }
+                else
+                {
+                    Emit(PythonOpCode.MakeClassWithBases, constantIndex, @class.Span);
+                }
             }
 
             for (var index = 0; index < @class.Decorators.Count; index++)

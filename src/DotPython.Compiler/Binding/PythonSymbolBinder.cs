@@ -994,6 +994,11 @@ public static class PythonSymbolBinder
                         CollectReferences(baseExpression, references);
                     }
 
+                    foreach (var keyword in @class.KeywordArguments ?? [])
+                    {
+                        CollectReferences(keyword.Value, references);
+                    }
+
                     break;
             }
         }
@@ -1290,6 +1295,14 @@ public static class PythonSymbolBinder
                     foreach (var baseExpression in @class.Bases)
                     {
                         foreach (var nested in EnumerateComprehensions(baseExpression))
+                        {
+                            yield return nested;
+                        }
+                    }
+
+                    foreach (var keyword in @class.KeywordArguments ?? [])
+                    {
+                        foreach (var nested in EnumerateComprehensions(keyword.Value))
                         {
                             yield return nested;
                         }

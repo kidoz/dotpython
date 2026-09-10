@@ -431,6 +431,8 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.MakeFunction:
             case PythonOpCode.MakeFunctionWithDefaults:
             case PythonOpCode.MakeClass:
+            case PythonOpCode.MakeClassWithBases:
+            case PythonOpCode.MakeClassWithKeywords:
                 ValidateIndex(instruction.Operand, code.Constants.Count, instructionIndex);
                 if (code.Constants[instruction.Operand].Type != PythonConstantType.CodeObject)
                 {

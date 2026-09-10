@@ -1209,25 +1209,11 @@ public static class PythonParser
 
             var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
             var bases = new List<PythonExpression>();
+            var keywords = new List<PythonKeywordArgument>();
             if (Match(SyntaxTokenKind.LeftParenthesis))
             {
-                while (Current.Kind != SyntaxTokenKind.RightParenthesis)
-                {
-                    var baseExpression = ParseExpression();
-                    if (baseExpression is null)
-                    {
-                        ReportExpected("a base class expression", Current.Span);
-                        break;
-                    }
-
-                    bases.Add(baseExpression);
-                    if (!Match(SyntaxTokenKind.Comma))
-                    {
-                        break;
-                    }
-                }
-
-                Expect(SyntaxTokenKind.RightParenthesis, "')' after the base classes");
+                (bases, keywords) = ParseArguments(allowBareGeneratorExpression: false);
+                Expect(SyntaxTokenKind.RightParenthesis, "')' after the class arguments");
             }
 
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the class name");
@@ -1256,7 +1242,8 @@ public static class PythonParser
                 name,
                 bases.AsReadOnly(),
                 body,
-                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End))
+                TextSpan.FromBounds(start, GetBodyEnd(body, colon.Span.End)),
+                keywords.AsReadOnly()
             );
         }
 
@@ -2762,6 +2749,171 @@ public static class PythonParser
             );
         }
 
+        private (
+            List<PythonExpression> Arguments,
+            List<PythonKeywordArgument> Keywords
+        ) ParseArguments(bool allowBareGeneratorExpression = true)
+        {
+            var arguments = new List<PythonExpression>();
+            var keywordArguments = new List<PythonKeywordArgument>();
+            var keywordNames = new HashSet<string>(StringComparer.Ordinal);
+            var hasKeywordUnpacking = false;
+            if (Current.Kind != SyntaxTokenKind.RightParenthesis)
+            {
+                while (true)
+                {
+                    if (Current.Kind == SyntaxTokenKind.Star)
+                    {
+                        var starToken = Advance();
+                        if (hasKeywordUnpacking)
+                        {
+                            Report(
+                                "DPY2017",
+                                "Iterable argument unpacking follows keyword argument unpacking.",
+                                starToken.Span
+                            );
+                        }
+                        var unpacked = ParseExpression();
+                        if (unpacked is null)
+                        {
+                            ReportExpected("an iterable after '*'", Current.Span);
+                            break;
+                        }
+
+                        RequireParenthesizedAssignmentArgument(unpacked);
+                        arguments.Add(
+                            new PythonStarredExpression(
+                                unpacked,
+                                TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
+                            )
+                        );
+                    }
+                    else if (Current.Kind == SyntaxTokenKind.DoubleStar)
+                    {
+                        hasKeywordUnpacking = true;
+                        var starToken = Advance();
+                        var unpacked = ParseExpression();
+                        if (unpacked is null)
+                        {
+                            ReportExpected("a mapping after '**'", Current.Span);
+                            break;
+                        }
+
+                        RequireParenthesizedAssignmentArgument(unpacked);
+                        keywordArguments.Add(
+                            new PythonKeywordArgument(
+                                null,
+                                unpacked,
+                                TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
+                            )
+                        );
+                    }
+                    else if (
+                        Current.Kind == SyntaxTokenKind.Identifier
+                        && Peek(1).Kind == SyntaxTokenKind.Equal
+                        && !IsReservedKeyword(Current.Text)
+                    )
+                    {
+                        var name = Advance();
+                        Advance();
+                        var value = ParseExpression();
+                        if (value is null)
+                        {
+                            ReportExpected("a keyword argument value", Current.Span);
+                            break;
+                        }
+
+                        RequireParenthesizedAssignmentArgument(value);
+                        if (!keywordNames.Add(name.Text))
+                        {
+                            Report(
+                                "DPY2018",
+                                $"Keyword argument repeated: '{name.Text}'.",
+                                name.Span
+                            );
+                        }
+
+                        keywordArguments.Add(
+                            new PythonKeywordArgument(
+                                name.Text,
+                                value,
+                                TextSpan.FromBounds(name.Span.Start, value.Span.End)
+                            )
+                        );
+                    }
+                    else
+                    {
+                        var argument = ParseExpression();
+                        if (argument is null)
+                        {
+                            ReportExpected("a call argument", Current.Span);
+                            break;
+                        }
+
+                        if (keywordArguments.Count != 0)
+                        {
+                            Report(
+                                "DPY2017",
+                                "A positional argument follows a keyword argument.",
+                                argument.Span
+                            );
+                        }
+
+                        if (StartsComprehensionClause())
+                        {
+                            if (!allowBareGeneratorExpression)
+                            {
+                                ReportExpected(
+                                    "a parenthesized generator expression in a class header",
+                                    Current.Span
+                                );
+                            }
+                            var clauses = ParseComprehensionClauses(isGeneratorExpression: true);
+                            argument = new PythonGeneratorExpression(
+                                argument,
+                                clauses,
+                                TextSpan.FromBounds(argument.Span.Start, clauses[^1].Span.End)
+                            );
+                            if (arguments.Count != 0 || Current.Kind == SyntaxTokenKind.Comma)
+                            {
+                                Report(
+                                    "DPY2023",
+                                    "A generator expression must be parenthesized "
+                                        + "when it is not the sole argument.",
+                                    argument.Span
+                                );
+                            }
+                        }
+
+                        arguments.Add(argument);
+                    }
+
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
+
+                    if (Current.Kind == SyntaxTokenKind.RightParenthesis)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return (arguments, keywordArguments);
+        }
+
+        private void RequireParenthesizedAssignmentArgument(PythonExpression expression)
+        {
+            if (expression is PythonAssignmentExpression)
+            {
+                ReportExpected(
+                    "a parenthesized assignment expression in this argument",
+                    expression.Span
+                );
+            }
+        }
+
         private PythonExpression? ParsePrimary()
         {
             var expression = ParseAtom();
@@ -2774,139 +2926,7 @@ public static class PythonParser
             {
                 if (Match(SyntaxTokenKind.LeftParenthesis, out _))
                 {
-                    var arguments = new List<PythonExpression>();
-                    var keywordArguments = new List<PythonKeywordArgument>();
-                    var keywordNames = new HashSet<string>(StringComparer.Ordinal);
-                    if (Current.Kind != SyntaxTokenKind.RightParenthesis)
-                    {
-                        while (true)
-                        {
-                            if (Current.Kind == SyntaxTokenKind.Star)
-                            {
-                                var starToken = Advance();
-                                var unpacked = ParseExpression();
-                                if (unpacked is null)
-                                {
-                                    ReportExpected("an iterable after '*'", Current.Span);
-                                    break;
-                                }
-
-                                arguments.Add(
-                                    new PythonStarredExpression(
-                                        unpacked,
-                                        TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
-                                    )
-                                );
-                            }
-                            else if (Current.Kind == SyntaxTokenKind.DoubleStar)
-                            {
-                                var starToken = Advance();
-                                var unpacked = ParseExpression();
-                                if (unpacked is null)
-                                {
-                                    ReportExpected("a mapping after '**'", Current.Span);
-                                    break;
-                                }
-
-                                keywordArguments.Add(
-                                    new PythonKeywordArgument(
-                                        null,
-                                        unpacked,
-                                        TextSpan.FromBounds(starToken.Span.Start, unpacked.Span.End)
-                                    )
-                                );
-                            }
-                            else if (
-                                Current.Kind == SyntaxTokenKind.Identifier
-                                && Peek(1).Kind == SyntaxTokenKind.Equal
-                                && !IsReservedKeyword(Current.Text)
-                            )
-                            {
-                                var name = Advance();
-                                Advance();
-                                var value = ParseExpression();
-                                if (value is null)
-                                {
-                                    ReportExpected("a keyword argument value", Current.Span);
-                                    break;
-                                }
-
-                                if (!keywordNames.Add(name.Text))
-                                {
-                                    Report(
-                                        "DPY2018",
-                                        $"Keyword argument repeated: '{name.Text}'.",
-                                        name.Span
-                                    );
-                                }
-
-                                keywordArguments.Add(
-                                    new PythonKeywordArgument(
-                                        name.Text,
-                                        value,
-                                        TextSpan.FromBounds(name.Span.Start, value.Span.End)
-                                    )
-                                );
-                            }
-                            else
-                            {
-                                var argument = ParseExpression();
-                                if (argument is null)
-                                {
-                                    ReportExpected("a call argument", Current.Span);
-                                    break;
-                                }
-
-                                if (keywordArguments.Count != 0)
-                                {
-                                    Report(
-                                        "DPY2017",
-                                        "A positional argument follows a keyword argument.",
-                                        argument.Span
-                                    );
-                                }
-
-                                if (StartsComprehensionClause())
-                                {
-                                    var clauses = ParseComprehensionClauses(
-                                        isGeneratorExpression: true
-                                    );
-                                    argument = new PythonGeneratorExpression(
-                                        argument,
-                                        clauses,
-                                        TextSpan.FromBounds(
-                                            argument.Span.Start,
-                                            clauses[^1].Span.End
-                                        )
-                                    );
-                                    if (
-                                        arguments.Count != 0
-                                        || Current.Kind == SyntaxTokenKind.Comma
-                                    )
-                                    {
-                                        Report(
-                                            "DPY2023",
-                                            "A generator expression must be parenthesized "
-                                                + "when it is not the sole argument.",
-                                            argument.Span
-                                        );
-                                    }
-                                }
-
-                                arguments.Add(argument);
-                            }
-
-                            if (!Match(SyntaxTokenKind.Comma))
-                            {
-                                break;
-                            }
-
-                            if (Current.Kind == SyntaxTokenKind.RightParenthesis)
-                            {
-                                break;
-                            }
-                        }
-                    }
+                    var (arguments, keywordArguments) = ParseArguments();
 
                     var end = ExpectClosingDelimiter(
                         SyntaxTokenKind.RightParenthesis,

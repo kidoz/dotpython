@@ -55,8 +55,34 @@ public sealed record PythonClassDefinitionStatement(
     PythonNameExpression Name,
     IReadOnlyList<PythonExpression> Bases,
     IReadOnlyList<PythonStatement> Body,
-    TextSpan Span
-) : PythonStatement(Span);
+    TextSpan Span,
+    IReadOnlyList<PythonKeywordArgument>? KeywordArguments = null
+) : PythonStatement(Span)
+{
+    public PythonClassDefinitionStatement(
+        IReadOnlyList<PythonExpression> decorators,
+        PythonNameExpression name,
+        IReadOnlyList<PythonExpression> bases,
+        IReadOnlyList<PythonStatement> body,
+        TextSpan span
+    )
+        : this(decorators, name, bases, body, span, null) { }
+
+    public void Deconstruct(
+        out IReadOnlyList<PythonExpression> decorators,
+        out PythonNameExpression name,
+        out IReadOnlyList<PythonExpression> bases,
+        out IReadOnlyList<PythonStatement> body,
+        out TextSpan span
+    )
+    {
+        decorators = Decorators;
+        name = Name;
+        bases = Bases;
+        body = Body;
+        span = Span;
+    }
+}
 
 public enum PythonParameterKind
 {

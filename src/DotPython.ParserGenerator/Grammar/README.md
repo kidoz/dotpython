@@ -18,5 +18,5 @@ just parser-check
 ```
 
 Generation is offline and deterministic. Changing the grammar or its provenance comments changes
-the embedded SHA-256 fingerprint and must produce a reviewed generated-file diff. Subset version 38
-re-pins to Python 3.14 while retaining the syntax fixes made since the earlier 3.15 reference pin.
+the embedded SHA-256 fingerprint and must produce a reviewed generated-file diff. Subset version 39
+adds class-header keyword arguments and positional/mapping unpacking using the call argument grammar.

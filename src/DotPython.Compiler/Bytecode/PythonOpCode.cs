@@ -119,4 +119,5 @@ public enum PythonOpCode
     BinaryLeftShift = 114,
     BinaryRightShift = 115,
     InPlaceOperator = 116,
+    MakeClassWithKeywords = 117,
 }
