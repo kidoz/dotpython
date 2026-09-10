@@ -367,7 +367,12 @@ internal sealed record PythonProtocolFunctionValue(
     ProtocolKeywordInvoker? InvokeWithKeywords = null
 ) : PythonValue
 {
-    internal override string ToDisplayString() => $"<built-in function {Name}>";
+    internal bool IsTypeMethodDescriptor { get; init; }
+
+    internal override string ToDisplayString() =>
+        IsTypeMethodDescriptor
+            ? $"<method '{Name}' of 'type' objects>"
+            : $"<built-in function {Name}>";
 
     /// <summary>Declares the parameter names so keyword calls bind onto the positional form.</summary>
     internal PythonProtocolFunctionValue WithSignature(
@@ -486,6 +491,8 @@ internal sealed record PythonManagedTypeValue : PythonValue
     }
 
     internal PythonAttributeDictionary Attributes { get; set; } = new();
+
+    internal PythonTypeHierarchy? OwnerHierarchy { get; set; }
 
     internal PythonValue Metaclass { get; set; } = PythonBuiltinTypes.Type;
 

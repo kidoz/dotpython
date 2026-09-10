@@ -18,6 +18,8 @@ internal sealed class PythonModuleRegistry
     private readonly Dictionary<string, PythonModuleDefinition> _definitions;
     private int _initializingCount;
 
+    internal PythonTypeHierarchy TypeHierarchy { get; } = new();
+
     internal PythonModuleRegistry(
         IReadOnlyDictionary<string, PythonModuleDefinition> definitions,
         Func<string, PythonModuleDefinition, TextSpan, PreparedPythonCode> compile
@@ -167,6 +169,7 @@ internal sealed class PythonModuleRegistry
         if (definition.Initialize is not null)
         {
             definition.Initialize(globals);
+            TypeHierarchy.RegisterModuleTypes(globals);
             var initialized = new LoadedPythonModule(module, parent) { IsInitialized = true };
             _loaded.Add(name, initialized);
             parent?.Globals.SetValue(GetLeafName(name), module);

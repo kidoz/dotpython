@@ -45,6 +45,7 @@ internal static class PythonTypeProtocols
                 "__setattr__",
                 "__delattr__",
                 "mro",
+                "__subclasses__",
             }
         )
         {
@@ -83,6 +84,7 @@ internal static class PythonTypeProtocols
             "__prepare__" => new PythonClassMethodValue(Prepare),
             "__init_subclass__" => InitSubclass,
             "mro" => Mro,
+            "__subclasses__" => Subclasses,
             "__getattribute__" => Slot(
                 name,
                 (self, args, names, _, span) =>
@@ -199,6 +201,54 @@ internal static class PythonTypeProtocols
 
     private static PythonProtocolFunctionValue Mro { get; } = CreateMro();
 
+    private static PythonProtocolFunctionValue Subclasses { get; } = CreateSubclasses();
+
+    private static PythonProtocolFunctionValue CreateSubclasses()
+    {
+        static PythonValue Invoke(
+            PythonValue? receiver,
+            IReadOnlyList<PythonValue> arguments,
+            IReadOnlyList<string> names,
+            IReadOnlyList<PythonValue> values
+        )
+        {
+            var bound = receiver is not null;
+            if (receiver is null)
+            {
+                if (arguments.Count == 0)
+                    throw Error("unbound method type.__subclasses__() needs an argument", default);
+                receiver = arguments[0];
+                arguments = arguments.Skip(1).ToArray();
+            }
+            if (!IsType(receiver))
+                throw Error(
+                    $"descriptor '__subclasses__' for 'type' objects doesn't apply to a '{ManagedObjectProtocols.GetTypeName(receiver)}' object",
+                    default
+                );
+            var ownerName = bound
+                ? receiver switch
+                {
+                    PythonManagedTypeValue type => type.QualName ?? type.Name,
+                    PythonBuiltinTypeValue type => type.Name,
+                    PythonExceptionTypeValue type => type.Name,
+                    _ => "type",
+                }
+                : "type";
+            if (names.Count != 0)
+                throw Error($"{ownerName}.__subclasses__() takes no keyword arguments", default);
+            if (arguments.Count != 0)
+                throw Error(
+                    $"{ownerName}.__subclasses__() takes no arguments ({arguments.Count} given)",
+                    default
+                );
+            return UserObjectProtocols.Dispatcher!.GetSubclasses(receiver, default);
+        }
+        return new("__subclasses__", (self, arguments) => Invoke(self, arguments, [], []), Invoke)
+        {
+            IsTypeMethodDescriptor = true,
+        };
+    }
+
     private static PythonProtocolFunctionValue CreateMro()
     {
         static PythonValue Invoke(
@@ -239,7 +289,10 @@ internal static class PythonTypeProtocols
                 );
             return PythonTypeMro.Compute(receiver, default);
         }
-        return new("mro", (self, arguments) => Invoke(self, arguments, [], []), Invoke);
+        return new("mro", (self, arguments) => Invoke(self, arguments, [], []), Invoke)
+        {
+            IsTypeMethodDescriptor = true,
+        };
     }
 
     private static PythonValue Initialize(

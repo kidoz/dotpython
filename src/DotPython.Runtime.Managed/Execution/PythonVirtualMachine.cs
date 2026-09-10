@@ -285,7 +285,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             _builtins.Add(name, PythonBuiltinTypes.GetExceptionType(name));
         }
+        _modules.TypeHierarchy.Initialize(_builtins);
     }
+
+    PythonValue IUserObjectDispatcher.GetSubclasses(PythonValue type, TextSpan span) =>
+        _modules.TypeHierarchy.GetSubclasses(type);
 
     internal static string? GetBuiltinExceptionBase(string name) =>
         ExceptionBaseNames.GetValueOrDefault(name);
@@ -5860,6 +5864,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 IsMetaclass = declaredBases.Any(PythonTypeProtocols.IsMetaclass),
             };
         }
+        type.OwnerHierarchy = _modules.TypeHierarchy;
         type.IsMroPending = true;
         type.SetDeclaredBases(
             bases.Elements.Length == 0 ? new PythonTupleValue(declaredBases) : bases

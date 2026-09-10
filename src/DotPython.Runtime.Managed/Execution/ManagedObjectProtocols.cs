@@ -255,6 +255,8 @@ internal static class ManagedObjectProtocols
                 return external.Protocol.GetAttribute(name, span);
             case PythonTypeMetadataDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
+            case PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor:
+                return PythonTypeMethodDescriptors.GetAttribute(descriptor, name, span);
             case PythonPropertyValue property:
                 return PythonBuiltinFunctions.GetPropertyAttribute(property, name, span);
             case PythonStaticMethodValue staticMethod when name == "__func__":
@@ -265,7 +267,8 @@ internal static class ManagedObjectProtocols
                 when ReferenceEquals(builtin, PythonBuiltinTypes.Type)
                     && PythonTypeProtocols.TryGetAttribute(name, out var typeAttribute):
                 return BindDescriptor(typeAttribute, null, builtin, span, name);
-            case PythonBuiltinTypeValue or PythonExceptionTypeValue when name == "mro":
+            case PythonBuiltinTypeValue
+            or PythonExceptionTypeValue when name is "mro" or "__subclasses__":
                 PythonTypeProtocols.TryGetAttribute(name, out var mroMethod);
                 return BindDescriptor(mroMethod, target, PythonBuiltinTypes.Type, span, name);
             case PythonBuiltinTypeValue builtin when name == "__init_subclass__":
@@ -293,6 +296,12 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(boundUserMethod.Function.Name);
             case PythonBoundMethodValue boundMethod when name == "__name__":
                 return new PythonTextValue(boundMethod.Name);
+            case PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } boundMethod
+                when name == "__qualname__":
+                return PythonTypeMethodDescriptors.GetBoundQualName(boundMethod);
+            case PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } boundMethod
+                when name == "__self__":
+                return boundMethod.Target;
             case PythonBuiltinFunctionValue builtinFunction when name == "__name__":
                 return new PythonTextValue(builtinFunction.Name);
             case PythonBuiltinTypeValue builtinTypeValue when name == "__name__":
@@ -2644,6 +2653,9 @@ internal static class ManagedObjectProtocols
             PythonClassMethodValue => "classmethod",
             PythonManagedObjectValue instance => instance.Type.Name,
             PythonExternalObjectValue => "object",
+            PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } => "method_descriptor",
+            PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } =>
+                "builtin_function_or_method",
             PythonBuiltinFunctionValue or PythonProtocolFunctionValue =>
                 "builtin_function_or_method",
             PythonBoundMethodValue or PythonBoundUserMethodValue => "method",
@@ -2723,7 +2735,11 @@ internal static class ManagedObjectProtocols
         };
 
     private static bool HasDescriptorGetter(PythonValue value) =>
-        value is PythonDescriptorValue or PythonPropertyValue or PythonTypeMetadataDescriptorValue
+        value
+            is PythonDescriptorValue
+                or PythonPropertyValue
+                or PythonTypeMetadataDescriptorValue
+                or PythonProtocolFunctionValue { IsTypeMethodDescriptor: true }
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
 
     private static bool TryInvokeUserDescriptorMutation(
@@ -2783,6 +2799,8 @@ internal static class ManagedObjectProtocols
         return value switch
         {
             PythonTypeMetadataDescriptorValue descriptor => descriptor.Get(instance, owner, span),
+            PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor =>
+                PythonTypeMethodDescriptors.Bind(descriptor, instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),
             PythonPropertyValue property when instance is not null => GetPropertyValue(
                 property,

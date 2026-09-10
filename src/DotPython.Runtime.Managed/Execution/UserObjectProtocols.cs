@@ -14,6 +14,8 @@ internal interface IUserObjectDispatcher
 
     PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);
 
+    PythonValue GetSubclasses(PythonValue type, TextSpan span);
+
     void SetTypeBases(PythonManagedTypeValue type, PythonTupleValue bases, TextSpan span);
 
     PythonValue CreateType(
