@@ -5825,6 +5825,73 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         return cells;
     }
 
+    private void InitializeClassAttributeNames(PythonManagedTypeValue type, TextSpan span)
+    {
+        // Hooks may add, replace, or delete class attributes. Each original binding
+        // is initialized exactly once in definition order, including repeated values.
+        var attributes = type
+            .Attributes.Dictionary.Items.Select(item => (item.Key, item.Value))
+            .ToArray();
+        foreach (var (name, attribute) in attributes)
+        {
+            if (
+                !ManagedObjectProtocols.TryGetSpecialMethod(
+                    attribute,
+                    "__set_name__",
+                    out var method
+                )
+            )
+            {
+                continue;
+            }
+
+            try
+            {
+                InvokeCallableNested(method, [type, name], span);
+            }
+            catch (Exception exception)
+                when (exception is PythonRaisedException or PythonRuntimeException)
+            {
+                var dispatchException = PrepareExceptionalControlFlow(exception);
+                if (dispatchException is PythonRaisedException raised)
+                {
+                    var exceptionValue = raised.Value;
+                    if (!exceptionValue.Attributes.TryGetValue("__notes__", out var notes))
+                    {
+                        notes = new PythonListValue([]);
+                        exceptionValue.Attributes["__notes__"] = notes;
+                    }
+
+                    if (notes is not PythonListValue noteList)
+                    {
+                        throw CreateRaisedException(
+                            new PythonExceptionValue(
+                                "TypeError",
+                                "Cannot add note: __notes__ is not a list"
+                            )
+                            {
+                                Context = exceptionValue,
+                            }
+                        );
+                    }
+
+                    var attributeType = ManagedObjectProtocols.GetTypeName(attribute);
+                    var className = type.Name;
+                    noteList.Elements.Add(
+                        new PythonTextValue(
+                            $"Error calling __set_name__ on '{attributeType[..Math.Min(attributeType.Length, 100)]}' instance "
+                                + $"{name.ToRepresentationString()} in '{className[..Math.Min(className.Length, 100)]}'"
+                        )
+                    );
+                }
+
+                System
+                    .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(dispatchException)
+                    .Throw();
+            }
+        }
+    }
+
     private void ReturnFromFrame(PythonValue value)
     {
         ref var frame = ref CurrentFrame;
@@ -5886,6 +5953,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                     break;
                 }
             }
+
+            InitializeClassAttributeNames(completedClass, GetCurrentSpan(CurrentFrame));
         }
 
         value = CurrentFrame.ReturnOverride ?? value;
