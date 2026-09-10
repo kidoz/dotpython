@@ -696,6 +696,19 @@ internal static class PythonBuiltinTypes
         TextSpan span
     )
     {
+        List<PythonValue> Materialize(PythonValue iterable)
+        {
+            // Preserve mapping-vs-pairs selection before invoking any user iterator.
+            if (
+                iterable is PythonManagedObjectValue
+                && UserObjectProtocols.Dispatcher is { } dispatcher
+            )
+            {
+                return ((PythonListValue)dispatcher.Invoke(List, [iterable], span)).Elements;
+            }
+            return ManagedObjectProtocols.MaterializeValues(iterable, span);
+        }
+
         RequireArguments("dict", arguments, 0, 1, span);
         var dictionary = new PythonDictionaryValue([]);
         if (arguments.Count == 0)
@@ -714,27 +727,36 @@ internal static class PythonBuiltinTypes
             }
             return dictionary;
         }
-        if (arguments[0] is PythonMappingProxyValue)
+        PythonValue? keysMethod;
+        try
         {
-            var keysMethod = ManagedObjectProtocols.GetAttribute(sourceValue, "keys", span);
+            keysMethod = ManagedObjectProtocols.GetAttribute(arguments[0], "keys", span);
+        }
+        catch (Exception error)
+            when (PythonNamespaceMapping.IsPythonException(error, "AttributeError"))
+        {
+            keysMethod = null;
+        }
+        if (keysMethod is not null)
+        {
             var keys = UserObjectProtocols.Dispatcher is { } dispatcher
                 ? dispatcher.Invoke(keysMethod, [], span)
                 : ManagedObjectProtocols.Call(keysMethod, [], span);
-            foreach (var key in ManagedObjectProtocols.MaterializeValues(keys, span))
+            foreach (var key in Materialize(keys))
             {
                 ManagedObjectProtocols.SetDictionaryItem(
                     dictionary,
                     key,
-                    ManagedObjectProtocols.GetItem(sourceValue, key, span),
+                    PythonNamespaceMapping.GetItem(arguments[0], key, span),
                     span
                 );
             }
             return dictionary;
         }
 
-        foreach (var pair in ManagedObjectProtocols.MaterializeValues(arguments[0], span))
+        foreach (var pair in Materialize(arguments[0]))
         {
-            var elements = ManagedObjectProtocols.MaterializeValues(pair, span);
+            var elements = Materialize(pair);
             if (elements.Count != 2)
             {
                 throw Fault(

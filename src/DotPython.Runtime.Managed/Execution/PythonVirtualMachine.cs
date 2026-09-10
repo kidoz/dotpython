@@ -2668,12 +2668,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         var consumesIterable = callable switch
         {
-            PythonBuiltinTypeValue type => type.Name
-                is "list"
-                    or "tuple"
-                    or "set"
-                    or "dict"
-                    or "frozenset",
+            PythonBuiltinTypeValue type => type.Name is "list" or "tuple" or "set" or "frozenset",
             PythonBoundMethodValue method => method.Function.Name is "join" or "extend",
             _ => false,
         };
