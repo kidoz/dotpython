@@ -4959,39 +4959,32 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private PythonSuperProxyValue Super(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        if (
-            arguments.Count == 2
-            && arguments[0] is PythonManagedTypeValue definingType
-            && arguments[1] is PythonManagedObjectValue or PythonExceptionValue
-        )
+        if (arguments.Count == 2 && PythonTypeProtocols.IsType(arguments[0]))
         {
-            return new PythonSuperProxyValue(definingType, arguments[1]);
-        }
-
-        if (
-            arguments.Count == 2
-            && arguments[0] is PythonManagedTypeValue definingClass
-            && arguments[1] is PythonManagedTypeValue subtype
-            && (
-                subtype.Mro.Any(candidate => ReferenceEquals(candidate, definingClass))
-                || subtype.Metaclass is PythonManagedTypeValue meta
-                    && meta.Mro.Contains(definingClass)
+            var definingType = arguments[0];
+            var receiver = arguments[1];
+            if (
+                PythonTypeProtocols.IsType(receiver)
+                && PythonBuiltinTypes
+                    .GetMro(receiver)
+                    .Elements.Any(entry => ReferenceEquals(entry, definingType))
             )
-        )
-        {
-            // super(C, cls) inside classmethods and __new__: attributes resolve
-            // through the subclass's MRO and bind to the class, not an instance.
-            return new PythonSuperProxyValue(definingClass, subtype);
+                return new PythonSuperProxyValue(definingType, receiver);
+            var runtimeType = PythonBuiltinTypes.GetRuntimeType(receiver);
+            if (
+                PythonBuiltinTypes
+                    .GetMro(runtimeType)
+                    .Elements.Any(entry => ReferenceEquals(entry, definingType))
+            )
+                return new PythonSuperProxyValue(definingType, receiver);
         }
-
         throw Fault(
             "DPY4034",
             arguments.Count == 0
-                ? "super(): no arguments (zero-argument super() is only supported inside "
-                    + "class methods in this runtime slice)."
-                : "super() requires a class and an instance of it.",
+                ? "super(): no arguments (zero-argument super() is only supported inside class methods in this runtime slice)."
+                : "super(type, obj): obj must be an instance or subtype of type",
             span,
-            "RuntimeError"
+            arguments.Count == 0 ? "RuntimeError" : "TypeError"
         );
     }
 
@@ -5786,66 +5779,108 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 throw Fault("DPY4034", $"duplicate base class {duplicateName}", span, "TypeError");
             }
         }
-        for (var index = 0; index < bases.Elements.Length - 1; index++)
+        var declaredBases =
+            bases.Elements.Length == 0
+                ? new PythonValue[] { PythonBuiltinFunctions.Object }
+                : bases.Elements;
+        var effectiveBases = declaredBases.Where(element => !IsObjectBase(element)).ToArray();
+        if (
+            effectiveBases.Any(PythonTypeProtocols.IsMetaclass)
+            && effectiveBases.Any(value =>
+                value
+                    is PythonExceptionTypeValue
+                        or PythonManagedTypeValue { ExceptionBaseName: not null }
+                        or PythonBuiltinTypeValue
+                        {
+                            Name: "int"
+                                or "float"
+                                or "complex"
+                                or "str"
+                                or "bytes"
+                                or "bytearray"
+                                or "tuple"
+                                or "list"
+                                or "dict"
+                                or "set"
+                                or "frozenset"
+                        }
+            )
+        )
+            throw Fault(
+                "DPY4034",
+                "multiple bases have instance lay-out conflict",
+                span,
+                "TypeError"
+            );
+        PythonManagedTypeValue type;
+        if (
+            effectiveBases.Any(element =>
+                element
+                    is PythonExceptionTypeValue
+                        or PythonManagedTypeValue { ExceptionBaseName: not null }
+            )
+        )
         {
-            if (IsObjectBase(bases.Elements[index]))
-            {
+            // Exception storage still follows the qualified single-parent representation.
+            if (effectiveBases.Length != 1)
                 throw Fault(
-                    "DPY4034",
-                    "Cannot create a consistent method resolution order (MRO) for bases object",
+                    "DPY3114",
+                    "Multiple inheritance with exception bases is not supported in this runtime slice.",
                     span,
                     "TypeError"
                 );
-            }
-        }
-        var effectiveBases = bases.Elements.Where(element => !IsObjectBase(element)).ToArray();
-        PythonManagedTypeValue type;
-        if (effectiveBases.Length > 1)
-        {
-            type = CreateMultiBaseClass(name, new PythonTupleValue(effectiveBases), span);
-        }
-        else
-        {
-            type = (effectiveBases.Length == 0 ? null : effectiveBases[0]) switch
+            type = effectiveBases[0] switch
             {
-                null => new PythonManagedTypeValue(name),
                 PythonManagedTypeValue managedBase => new PythonManagedTypeValue(
                     name,
                     managedBase,
-                    exceptionBaseName: managedBase.ExceptionBaseName is null
-                        ? null
-                        : managedBase.Name
+                    exceptionBaseName: managedBase.Name
                 ),
                 PythonExceptionTypeValue exceptionBase => new PythonManagedTypeValue(
                     name,
                     exceptionBaseName: exceptionBase.Name
                 ),
-                PythonBuiltinTypeValue builtinBase
-                    when ReferenceEquals(builtinBase, PythonBuiltinTypes.Type) =>
-                    new PythonManagedTypeValue(name) { IsMetaclass = true },
-                PythonBuiltinTypeValue builtinBase => throw Fault(
+                _ => throw Fault("DPY4007", "The exception base is invalid.", span),
+            };
+            type.ResolutionOrder = [type, .. LinearizeBases(declaredBases, span)];
+            _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName!;
+        }
+        else
+        {
+            foreach (var baseValue in effectiveBases)
+            {
+                if (
+                    baseValue is PythonManagedTypeValue
+                    || ReferenceEquals(baseValue, PythonBuiltinTypes.Type)
+                )
+                    continue;
+                throw Fault(
                     "DPY4034",
-                    $"Subclassing the builtin type '{builtinBase.Name}' is not supported in this runtime slice.",
+                    baseValue is PythonBuiltinTypeValue builtin
+                        ? $"Subclassing the builtin type '{builtin.Name}' is not supported in this runtime slice."
+                        : $"'{ManagedObjectProtocols.GetTypeName(baseValue)}' is not an acceptable base type.",
                     span,
                     "TypeError"
-                ),
-                var other => throw Fault(
-                    "DPY4034",
-                    $"'{ManagedObjectProtocols.GetTypeName(other)}' is not an acceptable base type.",
-                    span,
-                    "TypeError"
+                );
+            }
+            var resolution = LinearizeBases(declaredBases, span);
+            type = new PythonManagedTypeValue(
+                name,
+                declaredBases.OfType<PythonManagedTypeValue>().ToArray(),
+                resolution.OfType<PythonManagedTypeValue>().ToArray()
+            )
+            {
+                IsMetaclass = resolution.Any(value =>
+                    ReferenceEquals(value, PythonBuiltinTypes.Type)
                 ),
             };
+            type.ResolutionOrder = [type, .. resolution];
         }
-        type.IsMetaclass |= effectiveBases.Any(value =>
-            value is PythonManagedTypeValue { IsMetaclass: true }
-        );
-        type.DeclaredBases =
-            bases.Elements.Length == 0 ? [PythonBuiltinFunctions.Object] : [.. bases.Elements];
-        if (type.ExceptionBaseName is not null)
-        {
-            _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName;
-        }
+        type.DeclaredBases = [.. declaredBases];
+        // All admitted ordinary mixins have object storage. A type-derived direct base
+        // supplies the class-object layout even when a mixin precedes it in the MRO.
+        type.LayoutBase =
+            declaredBases.FirstOrDefault(PythonTypeProtocols.IsMetaclass) ?? declaredBases[0];
         return type;
     }
 
@@ -5878,107 +5913,45 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    private static PythonManagedTypeValue CreateMultiBaseClass(
-        string name,
-        PythonTupleValue baseTuple,
-        TextSpan span
-    )
-    {
-        var bases = new List<PythonManagedTypeValue>(baseTuple.Elements.Length);
-        foreach (var element in baseTuple.Elements)
-        {
-            switch (element)
-            {
-                case PythonManagedTypeValue { ExceptionBaseName: null } managedBase:
-                    if (bases.Contains(managedBase))
-                    {
-                        throw Fault(
-                            "DPY4034",
-                            $"duplicate base class {managedBase.Name}",
-                            span,
-                            "TypeError"
-                        );
-                    }
-
-                    bases.Add(managedBase);
-                    break;
-                case PythonManagedTypeValue or PythonExceptionTypeValue:
-                    throw Fault(
-                        "DPY3114",
-                        "Multiple inheritance with exception bases is not supported in this runtime slice.",
-                        span,
-                        "TypeError"
-                    );
-                default:
-                    throw Fault(
-                        "DPY4034",
-                        $"'{ManagedObjectProtocols.GetTypeName(element)}' is not an "
-                            + "acceptable base type.",
-                        span,
-                        "TypeError"
-                    );
-            }
-        }
-
-        return new PythonManagedTypeValue(name, bases, LinearizeBases(bases, span));
-    }
-
-    /// <summary>
-    /// C3 merge over the bases' linearizations plus the base list itself: repeatedly
-    /// take the first head that appears in no other sequence's tail.
-    /// </summary>
-    private static List<PythonManagedTypeValue> LinearizeBases(
-        List<PythonManagedTypeValue> bases,
-        TextSpan span
-    )
+    /// <summary>C3 merge includes builtin type/object entries in their actual positions.</summary>
+    private static List<PythonValue> LinearizeBases(IReadOnlyList<PythonValue> bases, TextSpan span)
     {
         var sequences = bases
-            .Select(baseType => new List<PythonManagedTypeValue>(baseType.Mro))
+            .Select(baseType => new List<PythonValue>(PythonBuiltinTypes.GetMro(baseType).Elements))
             .ToList();
         sequences.Add([.. bases]);
-        var result = new List<PythonManagedTypeValue>();
+        var result = new List<PythonValue>();
         while (sequences.Any(sequence => sequence.Count != 0))
         {
-            PythonManagedTypeValue? selected = null;
+            PythonValue? selected = null;
             foreach (var sequence in sequences)
             {
                 if (sequence.Count == 0)
-                {
                     continue;
-                }
-
                 var head = sequence[0];
-                var appearsInTail = sequences.Any(other =>
-                    other.Count != 0 && other.IndexOf(head) > 0
-                );
-                if (!appearsInTail)
+                if (
+                    !sequences.Any(other =>
+                        other.Skip(1).Any(entry => ReferenceEquals(entry, head))
+                    )
+                )
                 {
                     selected = head;
                     break;
                 }
             }
-
             if (selected is null)
-            {
                 throw Fault(
                     "DPY4034",
                     "Cannot create a consistent method resolution order (MRO) for bases "
-                        + string.Join(", ", bases.Select(baseType => baseType.Name)),
+                        + string.Join(", ", bases.Select(TypeDisplayName)),
                     span,
                     "TypeError"
                 );
-            }
-
             result.Add(selected);
             foreach (var sequence in sequences)
-            {
                 if (sequence.Count != 0 && ReferenceEquals(sequence[0], selected))
-                {
                     sequence.RemoveAt(0);
-                }
-            }
         }
-
         return result;
     }
 
@@ -6380,12 +6353,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 return IsExceptionSubclass(raisedValue.TypeName, exceptionClass.Name);
             case PythonManagedTypeValue managedType:
             {
-                if (value is not PythonManagedObjectValue instance)
-                {
-                    return false;
-                }
-
-                return instance.Type.Mro.Any(current => ReferenceEquals(current, managedType));
+                var runtimeType = PythonBuiltinTypes.GetRuntimeType(value);
+                return runtimeType is PythonManagedTypeValue instanceType
+                    && instanceType.Mro.Any(current => ReferenceEquals(current, managedType));
             }
             case PythonExternalObjectValue externalType:
                 return externalType.Protocol.IsInstanceOf(value, span);

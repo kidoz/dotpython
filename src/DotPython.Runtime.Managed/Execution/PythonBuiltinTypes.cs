@@ -78,6 +78,10 @@ internal static class PythonBuiltinTypes
 
     internal static PythonTupleValue GetMro(PythonValue type)
     {
+        if (type is PythonManagedTypeValue { ResolutionOrder: { } resolutionOrder })
+        {
+            return new([.. resolutionOrder]);
+        }
         if (
             type is PythonManagedTypeValue managed
             && !ReferenceEquals(managed, PythonBuiltinFunctions.ObjectType)

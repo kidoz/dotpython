@@ -332,9 +332,22 @@ internal sealed partial class PythonVirtualMachine
             _ => ManagedObjectProtocols.GetTypeName(type),
         };
 
-    private static bool HasCustomMetaclassCall(PythonManagedTypeValue type) =>
-        type.Metaclass is PythonManagedTypeValue meta
-        && meta.Mro.Any(entry => entry.Attributes.TryGetValue("__call__", out _));
+    private static bool HasCustomMetaclassCall(PythonManagedTypeValue type)
+    {
+        if (type.Metaclass is not PythonManagedTypeValue meta)
+            return false;
+        foreach (var entry in PythonBuiltinTypes.GetMro(meta).Elements)
+        {
+            if (ReferenceEquals(entry, PythonBuiltinTypes.Type))
+                return false;
+            if (
+                entry is PythonManagedTypeValue managed
+                && managed.Attributes.TryGetValue("__call__", out _)
+            )
+                return true;
+        }
+        return false;
+    }
 
     private PythonValue InvokeClassCall(
         PythonManagedTypeValue type,

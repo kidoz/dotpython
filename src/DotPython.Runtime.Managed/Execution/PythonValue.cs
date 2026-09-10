@@ -478,6 +478,11 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal IReadOnlyList<PythonValue>? DeclaredBases { get; set; }
 
+    /// <summary>The full C3 order, including this class and builtin roots.</summary>
+    internal IReadOnlyList<PythonValue>? ResolutionOrder { get; set; }
+
+    internal PythonValue? LayoutBase { get; set; }
+
     /// <summary>The C3 method resolution order, starting with this type (no `object` terminus).</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Mro { get; }
 
@@ -783,13 +788,20 @@ internal sealed record PythonGeneratorValue : PythonValue
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 }
 
-internal sealed record PythonSuperProxyValue(
-    PythonManagedTypeValue DefiningType,
-    PythonValue Instance
-) : PythonValue
+internal sealed record PythonSuperProxyValue(PythonValue DefiningType, PythonValue Instance)
+    : PythonValue
 {
     internal override string ToDisplayString() =>
-        $"<super: {DefiningType.Name}, {Instance switch { PythonManagedObjectValue managed => managed.Type.Name, PythonExceptionValue exception => exception.TypeName, _ => "object" }}>";
+        $"<super: {GetClassName(DefiningType)}, {Instance switch { PythonManagedObjectValue managed => managed.Type.Name, PythonExceptionValue exception => exception.TypeName, _ => "object" }}>";
+
+    private static string GetClassName(PythonValue value) =>
+        value switch
+        {
+            PythonManagedTypeValue type => type.Name,
+            PythonBuiltinTypeValue type => type.Name,
+            PythonExceptionTypeValue type => type.Name,
+            _ => ManagedObjectProtocols.GetTypeName(value),
+        };
 }
 
 internal sealed record PythonBoundUserMethodValue(

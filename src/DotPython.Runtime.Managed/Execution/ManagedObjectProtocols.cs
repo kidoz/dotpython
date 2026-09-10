@@ -154,6 +154,8 @@ internal static class ManagedObjectProtocols
                 return PythonBuiltinTypes.GetBases(target);
             if (name == "__base__")
             {
+                if (target is PythonManagedTypeValue { LayoutBase: { } layoutBase })
+                    return layoutBase;
                 var bases = PythonBuiltinTypes.GetBases(target).Elements;
                 return bases.Length == 0 ? PythonNoneValue.Instance : bases[0];
             }
@@ -175,95 +177,21 @@ internal static class ManagedObjectProtocols
                 );
             case PythonManagedObjectValue instance:
                 return GetInstanceAttribute(instance, name, span);
-            case PythonSuperProxyValue { Instance: PythonManagedTypeValue subtype } classProxy:
-                if (TryResolveSuperAttribute(classProxy, name, out var classInherited))
-                {
-                    var instanceAccess =
-                        !subtype.Mro.Contains(classProxy.DefiningType)
-                        && subtype.Metaclass is PythonManagedTypeValue;
-                    return BindDescriptor(
-                        classInherited,
-                        instanceAccess ? subtype : null,
-                        instanceAccess ? subtype.Metaclass : subtype,
-                        span,
-                        name
-                    );
-                }
-
-                if (
-                    classProxy.DefiningType.IsMetaclass
-                    && PythonTypeProtocols.TryGetAttribute(name, out var typeMember)
-                )
-                {
-                    var instanceAccess = !subtype.Mro.Contains(classProxy.DefiningType);
-                    return BindDescriptor(
-                        typeMember,
-                        instanceAccess ? subtype : null,
-                        instanceAccess ? subtype.Metaclass : subtype,
-                        span,
-                        name
-                    );
-                }
-                if (name == "__init_subclass__")
-                {
-                    return BindDescriptor(
-                        PythonTypeProtocols.InitSubclass,
-                        null,
-                        subtype,
-                        span,
-                        name
-                    );
-                }
-
-                if (PythonBuiltinFunctions.TryGetObjectProtocol(name, out var classObjectMember))
-                {
-                    return classObjectMember;
-                }
-
-                throw Fault(
-                    "DPY4022",
-                    $"'super' object has no attribute '{name}'.",
-                    span,
-                    "AttributeError"
-                );
             case PythonSuperProxyValue proxy:
                 if (TryResolveSuperAttribute(proxy, name, out var inherited))
                 {
-                    var owner = GetManagedType(proxy.Instance) ?? proxy.DefiningType;
-                    return BindDescriptor(inherited, proxy.Instance, owner, span, name);
-                }
-
-                if (
-                    proxy.Instance is PythonManagedObjectValue objectInstance
-                    && PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectProtocol)
-                )
-                {
-                    // The chain bottomed out at `object`: bind its default protocol.
-                    return new PythonBoundMethodValue(
-                        name,
-                        objectInstance,
-                        (PythonProtocolFunctionValue)objectProtocol
+                    var owner = GetSuperResolutionType(proxy);
+                    var classAccess =
+                        PythonTypeProtocols.IsType(proxy.Instance)
+                        && ReferenceEquals(owner, proxy.Instance);
+                    return BindDescriptor(
+                        inherited,
+                        classAccess ? null : proxy.Instance,
+                        owner,
+                        span,
+                        name
                     );
                 }
-
-                if (name == "__init__" && proxy.Instance is PythonExceptionValue exceptionSelf)
-                {
-                    // The chain bottomed out at a builtin exception base:
-                    // BaseException.__init__ rebinds args and the derived message.
-                    return new PythonBoundMethodValue(
-                        "__init__",
-                        exceptionSelf,
-                        new PythonProtocolFunctionValue(
-                            "__init__",
-                            (_, initArguments) =>
-                            {
-                                ApplyBaseExceptionInit(exceptionSelf, initArguments);
-                                return PythonNoneValue.Instance;
-                            }
-                        )
-                    );
-                }
-
                 throw Fault(
                     "DPY4022",
                     $"'super' object has no attribute '{name}'.",
@@ -2885,24 +2813,33 @@ internal static class ManagedObjectProtocols
     /// class in the instance's dynamic-type MRO (falling back to the defining class's
     /// own MRO when the instance is not a managed object of a related type).
     /// </summary>
+    private static PythonValue GetSuperResolutionType(PythonSuperProxyValue proxy)
+    {
+        if (
+            PythonTypeProtocols.IsType(proxy.Instance)
+            && PythonBuiltinTypes
+                .GetMro(proxy.Instance)
+                .Elements.Any(value => ReferenceEquals(value, proxy.DefiningType))
+        )
+            return proxy.Instance;
+        var instanceType = PythonBuiltinTypes.GetRuntimeType(proxy.Instance);
+        if (
+            PythonBuiltinTypes
+                .GetMro(instanceType)
+                .Elements.Any(value => ReferenceEquals(value, proxy.DefiningType))
+        )
+            return instanceType;
+        return proxy.DefiningType;
+    }
+
     private static bool TryResolveSuperAttribute(
         PythonSuperProxyValue proxy,
         string name,
         out PythonValue value
     )
     {
-        var mro = proxy.Instance switch
-        {
-            PythonManagedObjectValue managed when managed.Type.Mro.Contains(proxy.DefiningType) =>
-                managed.Type.Mro,
-            PythonExceptionValue { ManagedType: { } exceptionType }
-                when exceptionType.Mro.Contains(proxy.DefiningType) => exceptionType.Mro,
-            PythonManagedTypeValue subtype when subtype.Mro.Contains(proxy.DefiningType) =>
-                subtype.Mro,
-            PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass }
-                when metaclass.Mro.Contains(proxy.DefiningType) => metaclass.Mro,
-            _ => proxy.DefiningType.Mro,
-        };
+        var type = GetSuperResolutionType(proxy);
+        var mro = PythonBuiltinTypes.GetMro(type).Elements;
         var searching = false;
         foreach (var current in mro)
         {
@@ -2911,13 +2848,52 @@ internal static class ManagedObjectProtocols
                 searching = ReferenceEquals(current, proxy.DefiningType);
                 continue;
             }
-
-            if (current.Attributes.TryGetValue(name, out value!))
+            if (TryGetOwnTypeAttribute(current, name, out value!))
+                return true;
+            if (
+                current is PythonExceptionTypeValue
+                && name == "__init__"
+                && proxy.Instance is PythonExceptionValue exception
+            )
             {
+                value = new PythonProtocolFunctionValue(
+                    "__init__",
+                    (_, arguments) =>
+                    {
+                        ApplyBaseExceptionInit(exception, arguments);
+                        return PythonNoneValue.Instance;
+                    }
+                );
                 return true;
             }
+            if (
+                ReferenceEquals(current, PythonBuiltinFunctions.Object)
+                && PythonBuiltinFunctions.TryGetObjectProtocol(name, out value!)
+            )
+                return true;
         }
+        value = null!;
+        return false;
+    }
 
+    /// <summary>Reads one MRO entry without searching its bases.</summary>
+    internal static bool TryGetOwnTypeAttribute(
+        PythonValue type,
+        string name,
+        out PythonValue value
+    )
+    {
+        if (type is PythonManagedTypeValue managed)
+            return managed.Attributes.TryGetValue(name, out value!);
+        if (ReferenceEquals(type, PythonBuiltinTypes.Type) && name != "__init_subclass__")
+            return PythonTypeProtocols.TryGetAttribute(name, out value!);
+        // Keep other object defaults in their existing explicit fallback paths: exposing
+        // object.__new__/__init__ here would change ordinary constructor dispatch.
+        if (ReferenceEquals(type, PythonBuiltinFunctions.Object) && name == "__init_subclass__")
+        {
+            value = PythonTypeProtocols.InitSubclass;
+            return true;
+        }
         value = null!;
         return false;
     }
@@ -2928,18 +2904,23 @@ internal static class ManagedObjectProtocols
         out PythonValue value
     )
     {
+        if (type.ResolutionOrder is { } resolutionOrder)
+        {
+            foreach (var current in resolutionOrder)
+            {
+                if (TryGetOwnTypeAttribute(current, name, out value!))
+                    return true;
+            }
+            value = null!;
+            return false;
+        }
         foreach (var current in type.Mro)
         {
             if (current.Attributes.TryGetValue(name, out value!))
-            {
                 return true;
-            }
         }
-
         if (type.IsMetaclass && PythonTypeProtocols.TryGetAttribute(name, out value!))
-        {
             return true;
-        }
         if (name == "__init_subclass__")
         {
             value = PythonTypeProtocols.InitSubclass;
