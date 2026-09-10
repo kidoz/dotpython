@@ -120,4 +120,8 @@ public enum PythonOpCode
     BinaryRightShift = 115,
     InPlaceOperator = 116,
     MakeClassWithKeywords = 117,
+    LoadClassCell = 118,
+    LoadGlobal = 119,
+    StoreGlobal = 120,
+    DeleteGlobal = 121,
 }

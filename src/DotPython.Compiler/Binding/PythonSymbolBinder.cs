@@ -435,7 +435,7 @@ public static class PythonSymbolBinder
 
                     break;
                 case PythonNonlocalStatement nonlocalStatement:
-                    if (kind != PythonScopeKind.Function)
+                    if (kind == PythonScopeKind.Module)
                     {
                         Report(
                             diagnostics,
@@ -570,23 +570,20 @@ public static class PythonSymbolBinder
     {
         if (scope.Kind is PythonScopeKind.Function or PythonScopeKind.Class)
         {
-            if (scope.Kind == PythonScopeKind.Function)
+            foreach (var (name, span) in scope.DeclaredNonlocalNames)
             {
-                foreach (var (name, span) in scope.DeclaredNonlocalNames)
+                if (FindClosureOwner(enclosingFunctions, name) is null)
                 {
-                    if (FindClosureOwner(enclosingFunctions, name) is null)
-                    {
-                        Report(
-                            diagnostics,
-                            "DPY3110",
-                            $"No binding for nonlocal '{name}' was found.",
-                            span
-                        );
-                        continue;
-                    }
-
-                    scope.AddFreeVariable(name);
+                    Report(
+                        diagnostics,
+                        "DPY3110",
+                        $"No binding for nonlocal '{name}' was found.",
+                        span
+                    );
+                    continue;
                 }
+
+                scope.AddFreeVariable(name);
             }
 
             foreach (var name in scope.ReferencedNames)

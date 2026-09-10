@@ -2018,6 +2018,12 @@ public static class PythonCompiler
 
         private void EmitDeleteName(PythonNameExpression name)
         {
+            if (_scope.Kind == PythonScopeKind.Class && _scope.IsDeclaredGlobal(name.Name))
+            {
+                Emit(PythonOpCode.DeleteGlobal, GetNameIndex(name.Name), name.Span);
+                return;
+            }
+
             if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
             {
                 Emit(
@@ -2032,9 +2038,16 @@ public static class PythonCompiler
                 return;
             }
 
-            if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            if (
+                (_scope.Kind == PythonScopeKind.Function || _scope.IsDeclaredNonlocal(name.Name))
+                && _scope.IsFreeVariable(name.Name)
+            )
             {
-                Emit(PythonOpCode.DeleteCell, GetCellIndex(name.Name), name.Span);
+                Emit(
+                    PythonOpCode.DeleteCell,
+                    _scope.CellVariableNames.Count + _scope.GetFreeVariableIndex(name.Name),
+                    name.Span
+                );
                 return;
             }
 
@@ -2748,6 +2761,12 @@ public static class PythonCompiler
 
         private void EmitLoadName(PythonNameExpression name)
         {
+            if (_scope.Kind == PythonScopeKind.Class && _scope.IsDeclaredGlobal(name.Name))
+            {
+                Emit(PythonOpCode.LoadGlobal, GetNameIndex(name.Name), name.Span);
+                return;
+            }
+
             if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
             {
                 Emit(
@@ -2778,7 +2797,7 @@ public static class PythonCompiler
             )
             {
                 Emit(
-                    PythonOpCode.LoadCell,
+                    PythonOpCode.LoadClassCell,
                     _scope.CellVariableNames.Count + _scope.GetFreeVariableIndex(name.Name),
                     name.Span
                 );
@@ -2790,6 +2809,12 @@ public static class PythonCompiler
 
         private void EmitStoreName(PythonNameExpression name)
         {
+            if (_scope.Kind == PythonScopeKind.Class && _scope.IsDeclaredGlobal(name.Name))
+            {
+                Emit(PythonOpCode.StoreGlobal, GetNameIndex(name.Name), name.Span);
+                return;
+            }
+
             if (_scope.Kind == PythonScopeKind.Function && _scope.IsLocal(name.Name))
             {
                 Emit(
@@ -2804,9 +2829,16 @@ public static class PythonCompiler
                 return;
             }
 
-            if (_scope.Kind == PythonScopeKind.Function && _scope.IsFreeVariable(name.Name))
+            if (
+                (_scope.Kind == PythonScopeKind.Function || _scope.IsDeclaredNonlocal(name.Name))
+                && _scope.IsFreeVariable(name.Name)
+            )
             {
-                Emit(PythonOpCode.StoreCell, GetCellIndex(name.Name), name.Span);
+                Emit(
+                    PythonOpCode.StoreCell,
+                    _scope.CellVariableNames.Count + _scope.GetFreeVariableIndex(name.Name),
+                    name.Span
+                );
                 return;
             }
 

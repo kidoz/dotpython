@@ -138,6 +138,9 @@ public sealed class PythonBoundScope
     internal bool IsDeclaredGlobal(string name) =>
         DeclaredGlobalNames.ContainsKey(MangleName(name));
 
+    internal bool IsDeclaredNonlocal(string name) =>
+        DeclaredNonlocalNames.ContainsKey(MangleName(name));
+
     internal bool IsLocal(string name) => _localNameSet.Contains(MangleName(name));
 
     internal int GetLocalIndex(string name) => _localNameIndexes[MangleName(name)];

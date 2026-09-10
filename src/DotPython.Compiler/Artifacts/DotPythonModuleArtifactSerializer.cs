@@ -445,6 +445,9 @@ public static class DotPythonModuleArtifactSerializer
             case PythonOpCode.LoadName:
             case PythonOpCode.StoreName:
             case PythonOpCode.DeleteName:
+            case PythonOpCode.LoadGlobal:
+            case PythonOpCode.StoreGlobal:
+            case PythonOpCode.DeleteGlobal:
             case PythonOpCode.ImportName:
             case PythonOpCode.LoadAttribute:
             case PythonOpCode.StoreAttribute:
@@ -460,6 +463,7 @@ public static class DotPythonModuleArtifactSerializer
                 ValidateIndex(instruction.Operand, code.VariableNames.Count, instructionIndex);
                 break;
             case PythonOpCode.LoadCell:
+            case PythonOpCode.LoadClassCell:
             case PythonOpCode.StoreCell:
             case PythonOpCode.DeleteCell:
                 ValidateIndex(
