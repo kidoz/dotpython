@@ -1374,7 +1374,8 @@ internal static class PythonStandardModules
             PythonDictionaryValue dictionary => new PythonDictionaryValue([
                 .. dictionary.Items.Select(item => new PythonDictionaryItemValue(
                     item.Key,
-                    item.Value
+                    item.Value,
+                    item.KeyHash
                 )),
             ]),
             PythonSetValue { IsFrozen: false } set => new PythonSetValue([.. set.Elements]),

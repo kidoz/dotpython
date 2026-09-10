@@ -182,6 +182,14 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["setattr"] = new PythonBuiltinFunctionValue("setattr", SetAttributeBuiltin),
             ["hasattr"] = new PythonBuiltinFunctionValue("hasattr", HasAttributeBuiltin),
             ["vars"] = new PythonBuiltinFunctionValue("vars", Variables),
+            ["globals"] = new PythonBuiltinFunctionValue(
+                "globals",
+                (arguments, span) => NamespaceBuiltin("globals", arguments, span)
+            ),
+            ["locals"] = new PythonBuiltinFunctionValue(
+                "locals",
+                (arguments, span) => NamespaceBuiltin("locals", arguments, span)
+            ),
             ["id"] = new PythonBuiltinFunctionValue("id", Identity),
             ["open"] = PythonStandardModules.CreateOpenBuiltin(searchRoots ?? []),
             ["zip"] = new PythonBuiltinFunctionValue(
@@ -257,7 +265,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     {
         ArgumentNullException.ThrowIfNull(code);
 
-        PushFrame(code, _globals, 0, 0, CreateCells(code, [], new TextSpan(0, 0)));
+        PushFrame(code, _globals, 0, 0, CreateCells(code, [], new TextSpan(0, 0)), isModule: true);
         return Run();
     }
 
@@ -1335,7 +1343,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             _localsCount,
             0,
             cells,
-            initializingModule: import.Module
+            initializingModule: import.Module,
+            isModule: true
         );
     }
 
@@ -1434,46 +1443,13 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         PythonValue key,
         PythonValue value,
         TextSpan span
-    )
-    {
-        if (!IsHashable(key))
-        {
-            throw Fault(
-                "DPY4014",
-                $"cannot use '{ManagedObjectProtocols.GetTypeName(key)}' as a dict key (unhashable type: '{ManagedObjectProtocols.GetTypeName(key)}')",
-                span,
-                "TypeError"
-            );
-        }
-
-        if (TryFindDictionaryItem(dictionary, key, out var item))
-        {
-            item.Value = value;
-            return;
-        }
-
-        dictionary.Items.Add(new PythonDictionaryItemValue(key, value));
-        dictionary.SizeVersion++;
-    }
+    ) => ManagedObjectProtocols.SetDictionaryItem(dictionary, key, value, span);
 
     private static bool TryFindDictionaryItem(
         PythonDictionaryValue dictionary,
         PythonValue key,
         out PythonDictionaryItemValue item
-    )
-    {
-        foreach (var candidate in dictionary.Items)
-        {
-            if (ManagedObjectProtocols.KeysMatch(candidate.Key, key))
-            {
-                item = candidate;
-                return true;
-            }
-        }
-
-        item = null!;
-        return false;
-    }
+    ) => ManagedObjectProtocols.TryFindDictionaryItem(dictionary, key, out item);
 
     private static bool IsHashable(PythonValue value) => ManagedObjectProtocols.IsHashable(value);
 
@@ -2834,7 +2810,26 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         name = text.Value;
     }
 
-    private PythonDictionaryValue Variables(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private PythonDictionaryValue NamespaceBuiltin(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 0)
+        {
+            throw Fault(
+                "DPY4003",
+                $"{name}() takes no arguments ({arguments.Count} given)",
+                span,
+                "TypeError"
+            );
+        }
+
+        return name == "globals" ? CurrentFrame.Globals.Dictionary : CurrentFrameLocals(span);
+    }
+
+    private PythonValue Variables(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         if (arguments.Count > 1)
         {
@@ -2851,7 +2846,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return CurrentFrameLocals(span);
         }
 
-        if (arguments[0] is not PythonManagedObjectValue instance)
+        try
+        {
+            return ManagedObjectProtocols.GetAttribute(arguments[0], "__dict__", span);
+        }
+        catch (Exception exception) when (IsAttributeErrorFault(exception))
         {
             throw Fault(
                 "DPY4003",
@@ -2860,43 +2859,25 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 "TypeError"
             );
         }
-
-        var dictionary = ManagedObjectProtocols.CreateDictionary();
-        foreach (var (attributeName, attributeValue) in instance.Attributes)
-        {
-            ManagedObjectProtocols.SetDictionaryItem(
-                dictionary,
-                new PythonTextValue(attributeName),
-                attributeValue,
-                span
-            );
-        }
-
-        return dictionary;
     }
 
     private PythonDictionaryValue CurrentFrameLocals(TextSpan span)
     {
         ref var frame = ref CurrentFrame;
-        var dictionary = ManagedObjectProtocols.CreateDictionary();
-        var definition = frame.Code.Definition;
-        if (definition.VariableNames.Count == 0)
+        if (frame.ClassNamespace is { } classNamespace)
         {
-            // Module level: locals are the globals, per CPython.
-            foreach (var (name, value) in frame.Globals.Entries)
-            {
-                ManagedObjectProtocols.SetDictionaryItem(
-                    dictionary,
-                    new PythonTextValue(name),
-                    value,
-                    span
-                );
-            }
-
-            return dictionary;
+            return classNamespace.Attributes.Dictionary;
         }
 
-        for (var index = 0; index < definition.VariableNames.Count; index++)
+        if (frame.IsModule)
+        {
+            return frame.Globals.Dictionary;
+        }
+
+        // Optimized function scopes return independent snapshots, including referenced free cells.
+        var dictionary = ManagedObjectProtocols.CreateDictionary();
+        var definition = frame.Code.Definition;
+        for (var index = 0; index < frame.LocalsCount; index++)
         {
             var cellIndex = frame.Code.GetLocalCellIndex(index);
             var value =
@@ -2908,6 +2889,20 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 ManagedObjectProtocols.SetDictionaryItem(
                     dictionary,
                     new PythonTextValue(definition.VariableNames[index]),
+                    value,
+                    span
+                );
+            }
+        }
+
+        for (var index = 0; index < definition.FreeVariableNames.Count; index++)
+        {
+            var value = frame.Cells[definition.CellVariableNames.Count + index].Value;
+            if (value is not null)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    new PythonTextValue(definition.FreeVariableNames[index]),
                     value,
                     span
                 );
@@ -5289,7 +5284,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         bool requireNoneReturn = false,
         PythonGeneratorValue? generator = null,
         GeneratorFrameState? restoredState = null,
-        int instructionPointer = 0
+        int instructionPointer = 0,
+        bool isModule = false
     )
     {
         if (_frameCount == _frames.Length)
@@ -5310,7 +5306,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             returnOverride,
             requireNoneReturn,
             generator,
-            restoredState
+            restoredState,
+            isModule
         );
         _frames[_frameCount - 1].InstructionPointer = instructionPointer;
     }
@@ -7916,9 +7913,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonValue? returnOverride,
             bool requireNoneReturn,
             PythonGeneratorValue? generator = null,
-            GeneratorFrameState? restoredState = null
+            GeneratorFrameState? restoredState = null,
+            bool isModule = false
         )
         {
+            IsModule = isModule;
             Generator = generator;
             Code = code;
             Cells = cells;
@@ -7937,6 +7936,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ExceptionBlocks = restoredState?.ExceptionBlocks ?? [];
             PendingFinalies = restoredState?.PendingFinalies ?? new Stack<PythonPendingFinally>();
         }
+
+        internal bool IsModule { get; }
 
         internal PythonGeneratorValue? Generator { get; }
 

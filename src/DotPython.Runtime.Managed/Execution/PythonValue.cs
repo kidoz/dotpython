@@ -466,7 +466,7 @@ internal sealed record PythonManagedTypeValue : PythonValue
         ExceptionBaseName = exceptionBaseName;
     }
 
-    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+    internal PythonAttributeDictionary Attributes { get; } = new();
 
     /// <summary>The declared base classes, in source order.</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Bases { get; }
@@ -505,7 +505,7 @@ internal sealed record PythonManagedObjectValue : PythonValue
         Payload = payload;
     }
 
-    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+    internal PythonAttributeDictionary Attributes { get; set; } = new();
 
     internal object? Payload { get; }
 
@@ -565,7 +565,7 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
     public string Message { get; set; } = Message;
 
     /// <summary>Instance attributes assigned by user exception-class `__init__` bodies.</summary>
-    internal Dictionary<string, PythonValue> Attributes { get; } = new(StringComparer.Ordinal);
+    internal PythonAttributeDictionary Attributes { get; set; } = new();
 
     internal PythonExceptionValue? Cause { get; set; }
 
@@ -1001,13 +1001,20 @@ internal sealed record PythonTupleValue(PythonValue[] Elements) : PythonValue
 
 internal sealed class PythonDictionaryItemValue
 {
-    internal PythonDictionaryItemValue(PythonValue key, PythonValue value)
+    internal PythonDictionaryItemValue(
+        PythonValue key,
+        PythonValue value,
+        BigInteger? keyHash = null
+    )
     {
         Key = key;
         Value = value;
+        KeyHash = keyHash ?? ManagedObjectProtocols.ComputePythonHash(key);
     }
 
     internal PythonValue Key { get; }
+
+    internal BigInteger KeyHash { get; }
 
     internal PythonValue Value { get; set; }
 }

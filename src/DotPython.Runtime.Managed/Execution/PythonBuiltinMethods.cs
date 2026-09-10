@@ -531,7 +531,8 @@ internal static class PythonBuiltinMethods
                 new PythonDictionaryValue([
                     .. dictionary.Items.Select(item => new PythonDictionaryItemValue(
                         item.Key,
-                        item.Value
+                        item.Value,
+                        item.KeyHash
                     )),
                 ])
         ),

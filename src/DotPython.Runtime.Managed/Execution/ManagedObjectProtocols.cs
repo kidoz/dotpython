@@ -89,6 +89,8 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonModuleValue module when name == "__dict__":
+                return module.Globals.Dictionary;
             case PythonModuleValue module
                 when module.Globals.TryGetValue(name, out var moduleValue):
                 return moduleValue;
@@ -269,6 +271,8 @@ internal static class ManagedObjectProtocols
                 );
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
+            case PythonExceptionValue exceptionDictionary when name == "__dict__":
+                return exceptionDictionary.Attributes.Dictionary;
             case PythonExceptionValue exceptionValue when name == "args":
                 return new PythonTupleValue([.. exceptionValue.EffectiveArguments]);
             case PythonExceptionValue { TypeName: "SystemExit" } systemExit when name == "code":
@@ -739,8 +743,15 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonModuleValue when name == "__dict__":
+                throw Fault("DPY4022", "readonly attribute", span, "AttributeError");
             case PythonModuleValue module:
                 module.Globals.SetValue(name, value);
+                return;
+            case PythonExceptionValue exceptionInstance when name == "__dict__":
+                exceptionInstance.Attributes = new PythonAttributeDictionary(
+                    RequireNamespaceDictionary(value, span)
+                );
                 return;
             case PythonExceptionValue exceptionInstance:
                 exceptionInstance.Attributes[name] = value;
@@ -766,6 +777,18 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    private static PythonDictionaryValue RequireNamespaceDictionary(
+        PythonValue value,
+        TextSpan span
+    ) =>
+        value as PythonDictionaryValue
+        ?? throw Fault(
+            "DPY4003",
+            $"__dict__ must be set to a dictionary, not a '{GetTypeName(value)}'",
+            span,
+            "TypeError"
+        );
+
     /// <summary>
     /// The default attribute lookup for a managed instance (data descriptors, the
     /// instance dictionary, then bound type attributes) without `__getattr__` hooks.
@@ -789,6 +812,12 @@ internal static class ManagedObjectProtocols
         if (hasTypeValue && typeValue is PythonPropertyValue property)
         {
             value = GetPropertyValue(property, instance, name, span);
+            return true;
+        }
+
+        if (name == "__dict__" && !hasTypeValue)
+        {
+            value = instance.Attributes.Dictionary;
             return true;
         }
 
@@ -860,6 +889,14 @@ internal static class ManagedObjectProtocols
             }
         }
 
+        if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
+        {
+            instance.Attributes = new PythonAttributeDictionary(
+                RequireNamespaceDictionary(value, span)
+            );
+            return;
+        }
+
         instance.Attributes[name] = value;
     }
 
@@ -892,6 +929,12 @@ internal static class ManagedObjectProtocols
                     UserObjectProtocols.Dispatcher!.Invoke(property.Deleter, [instance], span);
                     return;
             }
+        }
+
+        if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
+        {
+            instance.Attributes = new PythonAttributeDictionary();
+            return;
         }
 
         if (!instance.Attributes.Remove(name))
@@ -927,6 +970,10 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonModuleValue when name == "__dict__":
+                throw Fault("DPY4022", "readonly attribute", span, "AttributeError");
+            case PythonExceptionValue when name == "__dict__":
+                throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
             case PythonModuleValue module when module.Globals.Remove(name):
                 return;
             case PythonModuleValue module:
@@ -2499,13 +2546,14 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        if (TryFindDictionaryItem(dictionary, key, out var item))
+        var keyHash = ComputePythonHash(key, span);
+        if (TryFindDictionaryItem(dictionary, key, keyHash, out var item))
         {
             item.Value = value;
             return;
         }
 
-        dictionary.Items.Add(new PythonDictionaryItemValue(key, value));
+        dictionary.Items.Add(new PythonDictionaryItemValue(key, value, keyHash));
         dictionary.SizeVersion++;
     }
 
@@ -2513,11 +2561,38 @@ internal static class ManagedObjectProtocols
         PythonDictionaryValue dictionary,
         PythonValue key,
         out PythonDictionaryItemValue item
+    ) => TryFindDictionaryItem(dictionary, key, ComputePythonHash(key), out item);
+
+    private static bool TryFindDictionaryItem(
+        PythonDictionaryValue dictionary,
+        PythonValue key,
+        BigInteger keyHash,
+        out PythonDictionaryItemValue item
     )
     {
-        foreach (var candidate in dictionary.Items)
+        for (var index = 0; index < dictionary.Items.Count; index++)
         {
-            if (KeysMatch(candidate.Key, key))
+            var candidate = dictionary.Items[index];
+            var version = dictionary.SizeVersion;
+            // Retain existing builtin numeric equality semantics; user keys use
+            // the insertion hash, never a callback re-entering namespace lookup.
+            var matches =
+                ReferenceEquals(candidate.Key, key)
+                || (
+                    (
+                        candidate.Key is not PythonManagedObjectValue
+                            && key is not PythonManagedObjectValue
+                        || candidate.KeyHash == keyHash
+                    ) && AreEqual(candidate.Key, key)
+                );
+            if (dictionary.SizeVersion != version)
+            {
+                // Equality may execute Python and structurally mutate this dictionary.
+                index = -1;
+                continue;
+            }
+
+            if (matches)
             {
                 item = candidate;
                 return true;
