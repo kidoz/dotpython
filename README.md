@@ -68,6 +68,7 @@ dotpython -c command      # execute a Python snippet
 dotpython -                # read and execute a program from stdin
 dotpython script.py        # execute a Python source file
 dotpython wheel inspect x.whl # classify a wheel without loading native code
+dotpython lint src/        # statically lint Python sources without executing them
 dotpython -V | --version   # print implementation and target language version
 dotpython -h | --help      # print usage
 ```
@@ -79,6 +80,94 @@ Exit codes follow familiar conventions: `0` success, `1` execution/diagnostic er
 free-threaded ABI selection, SHA-256, native archive entries, imported symbols when their ELF,
 Mach-O, or PE tables are readable, and actionable incompatibility diagnostics. Classification
 never loads or executes a library and does not change the managed runtime's CPython ABI support.
+
+### Python linting
+
+`DotPython.Lint` is an embeddable, managed linter for DotPython's current Python 3.14
+parser profile. It shares the tokenizer and AST with the compiler and has no runtime
+or external-tool dependency. It checks source without executing it. It does not yet
+claim full Python syntax coverage, type checking, or automatic fixes.
+
+```sh
+dotnet run --project src/DotPython.Cli -- lint scripts/
+dotnet run --project src/DotPython.Cli -- lint --select DPYL001,DPYL002 script.py
+dotnet run --project src/DotPython.Cli -- lint --output-format json --stdin-filename buffer.py -
+```
+
+| Rule | Warning |
+|---|---|
+| `DPYL001` | Bare `except:` catches every exception, including interruption and exit signals. |
+| `DPYL002` | A list, dictionary, or set literal used as a function/lambda default is shared between calls. |
+| `DPYL003` | An asserted tuple containing a non-starred element is always truthy. |
+
+Rules also visit nested definitions and expressions. Mutable-default checks cover
+literal displays; constructor calls, comprehensions, and nested mutable objects
+inside immutable defaults are outside this initial rule. Tuple assertions consisting
+only of starred elements are not reported, since the resulting tuple may be empty.
+
+All three rules are enabled by default. `--select` replaces that set; `--ignore`
+removes rules from it. Both accept comma-separated exact identifiers and reject
+unknown identifiers. Repeated options use the last value. An empty CLI `--select ""`
+disables lint rules. Parser diagnostics remain enabled, and a file with parser errors
+does not receive lint warnings from its partial syntax tree.
+
+Suppress individual warnings using a comment on the diagnostic's starting line:
+
+```python
+def collect(items=[]):  # dotpython: ignore[DPYL002] shared state is intentional
+    return items
+```
+
+Multiple IDs can appear inside the brackets, separated by commas. A trailing
+explanation is allowed. Directives inside string contents have no effect; malformed
+directives and unknown suppression IDs are ignored. Suppressions never hide parser
+errors. Multiline defaults and assertions use the line where the reported expression
+starts. Configuration files, file-wide suppressions, and Ruff `noqa` directives are
+not supported by this initial native linter.
+
+Supply explicit files or directories; directory discovery includes `.py` and `.pyi`
+files recursively, skipping `.git`, `.venv`, `venv`, `__pycache__`, `bin`, `obj`, and
+symbolic-link entries. Explicit file paths bypass discovery filters. Use `--` before
+paths starting with `-`. Stdin (`-`) must be the only input. Inputs are deduplicated
+by full path and ordered ordinally; diagnostics are ordered by source offset and code.
+
+Findings go to stdout; usage, I/O, and cancellation messages go to stderr. Lint exit
+codes are `0` clean, `1` findings (including parser errors), `2` usage or input failure,
+and `130` cancellation. JSON output is an array with `file`, `code`, `severity`,
+`message`, `line`, `column`, `endLine`, and `endColumn`; positions are one-based,
+columns count UTF-16 code units, and the end position is exclusive. A clean JSON run
+returns `[]`. File decoding uses the CLI's supported Python source encodings.
+
+Embedded callers can reference `DotPython.Lint` directly:
+
+```csharp
+var result = PythonLinter.Analyze(
+    new SourceText("def collect(items=[]): pass", "example.py"),
+    new PythonLintOptions { Select = ["DPYL002"] },
+    cancellationToken);
+```
+
+The API uses the `DotPython.Lint` and `DotPython.Language.Text` namespaces. Results
+contain the original source and ordered diagnostics. Cancellation is cooperative
+before/after parsing and during AST traversal; parsing and synchronous input reads
+are not preemptible.
+
+SDK projects can opt into the same rules:
+
+```xml
+<PropertyGroup>
+  <DotPythonLintEnabled>true</DotPythonLintEnabled>
+  <DotPythonLintWarningsAsErrors>true</DotPythonLintWarningsAsErrors>
+  <DotPythonLintSelect>DPYL001,DPYL002,DPYL003</DotPythonLintSelect>
+  <DotPythonLintIgnore>DPYL001</DotPythonLintIgnore>
+</PropertyGroup>
+```
+
+Linting is disabled by default in the SDK; when enabled, findings are warnings unless
+`DotPythonLintWarningsAsErrors` is true. An absent or empty SDK selection enables all
+rules. Checks run on every enabled build, including when module generation is up to
+date, so configuration changes take effect immediately. Required compiler and export
+contract diagnostics retain their existing behavior.
 
 ## Managed modules and packages
 
@@ -379,6 +468,7 @@ dotnet run --project samples/DotPython.PerSession/Consumer/Consumer.csproj
 |---|---|
 | `src/DotPython.Language` | Tokenizer, AST, syntax, source text, and diagnostics. |
 | `src/DotPython.ParserGenerator` | PEG grammar and generated parser. |
+| `src/DotPython.Lint` | Static Python lint rules, selection, suppressions, and embeddable analysis. |
 | `src/DotPython.Compiler` | Symbol/scope binding and DotPython bytecode compilation. |
 | `src/DotPython.Runtime.Managed` | Managed stack VM, object model, and execution engine. |
 | `src/DotPython.Abstractions` | Backend-independent public API surface. |
@@ -437,6 +527,7 @@ dotnet test DotPython.sln
 | Test project | Focus |
 |---|---|
 | `tests/DotPython.ParserTests` | Tokenizer and parser behavior. |
+| `tests/DotPython.LintTests` | Lint rules, source spans, suppressions, selection, and cancellation. |
 | `tests/DotPython.CompilerTests` | Binding and bytecode compilation. |
 | `tests/DotPython.RuntimeTests` | Managed VM execution. |
 | `tests/DotPython.InteropTests` | Static export contracts and Python-to-CLR type mapping. |

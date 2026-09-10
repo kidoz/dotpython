@@ -49,6 +49,17 @@ internal static class DotPythonCommand
             return RunWheelCommand(arguments, standardOutput, standardError);
         }
 
+        if (arguments[0] == "lint")
+        {
+            return PythonLintCommand.Run(
+                [.. arguments.Skip(1)],
+                standardInput,
+                standardOutput,
+                standardError,
+                cancellationToken
+            );
+        }
+
         if (!TryReadInstructionLimit(ref arguments, standardError, out var instructionLimit))
         {
             return 2;
@@ -395,6 +406,7 @@ internal static class DotPythonCommand
         output.WriteLine("       dotpython [options] - [args]");
         output.WriteLine("       dotpython [options] script.py [args]");
         output.WriteLine("       dotpython wheel inspect artifact.whl");
+        output.WriteLine("       dotpython lint [options] <files/directories... | ->");
         output.WriteLine();
         output.WriteLine("Options:");
         output.WriteLine(

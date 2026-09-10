@@ -62,6 +62,16 @@
         <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --source &quot;@(PythonCompile->'%(FullPath)')&quot; --contract &quot;@(PythonContract->'%(FullPath)')&quot; --module-name &quot;$(DotPythonModuleName)&quot; --clr-namespace &quot;$(DotPythonClrNamespace)&quot; --clr-type-name &quot;$(DotPythonClrTypeName)&quot; --state-policy &quot;$(DotPythonModuleStatePolicy)&quot; --language-version &quot;$(DotPythonLanguageVersion)&quot; --artifact-output &quot;$(DotPythonArtifactOutputPath)&quot; --contract-output &quot;$(DotPythonContractOutputPath)&quot; --facade-output &quot;$(DotPythonFacadeOutputPath)&quot; --artifact-resource-name &quot;$(DotPythonArtifactResourceName)&quot;" />
     </Target>
 
+    <!-- Always check when enabled, including builds where artifact generation is up to date. -->
+    <Target
+        Name="DotPythonLint"
+        BeforeTargets="DotPythonGenerateModule"
+        DependsOnTargets="DotPythonValidateProject"
+        Condition="'$(DotPythonLintEnabled)' == 'true'"
+    >
+        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --lint-source &quot;@(PythonCompile->'%(FullPath)')&quot; --lint-select &quot;$(DotPythonLintSelect)&quot; --lint-ignore &quot;$(DotPythonLintIgnore)&quot; --lint-warnings-as-errors &quot;$(DotPythonLintWarningsAsErrors)&quot;" />
+    </Target>
+
     <Target Name="DotPythonCollectGeneratedOutputs" DependsOnTargets="DotPythonGenerateModule">
         <ItemGroup>
             <Compile Include="$(DotPythonFacadeOutputPath)" />

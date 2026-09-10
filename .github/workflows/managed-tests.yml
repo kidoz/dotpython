@@ -42,7 +42,7 @@ jobs:
       - name: Run the language and runtime test suites
         run: |
           set -eu
-          for project in ParserTests CompilerTests RuntimeTests HostingTests InteropTests \
+          for project in ParserTests LintTests CompilerTests RuntimeTests HostingTests InteropTests \
               PackageCompatibilityTests BuildIntegrationTests; do
             dotnet run --project "tests/DotPython.$project" --configuration Release --no-build
           done

@@ -18,6 +18,7 @@ public static class PythonTokenizer
         private const int TabWidth = 8;
 
         private readonly List<Diagnostic> _diagnostics = [];
+        private readonly List<TextSpan> _comments = [];
         private readonly Stack<Delimiter> _delimiters = [];
         private readonly List<IndentationLevel> _indentation = [new(0, 0)];
         private readonly SourceText _source;
@@ -107,7 +108,7 @@ public static class PythonTokenizer
             }
 
             FinishTokenization();
-            return new TokenizationResult(_source, _tokens, _diagnostics);
+            return new TokenizationResult(_source, _tokens, _diagnostics, _comments);
         }
 
         private char Current => Peek(0);
@@ -206,10 +207,12 @@ public static class PythonTokenizer
 
         private void ReadComment()
         {
+            var start = _position;
             while (_position < _text.Length && !IsNewLine(Current))
             {
                 _position++;
             }
+            _comments.Add(TextSpan.FromBounds(start, _position));
         }
 
         private void ReadNewLine(bool significant)

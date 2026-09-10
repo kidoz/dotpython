@@ -34,12 +34,13 @@ public static class PythonParser
                 executableTokens[tokenIndex].Span
             ),
         };
-        return new PythonParseResult(source, result.Module, diagnostics);
+        return new PythonParseResult(source, result.Module, diagnostics, result.Comments);
     }
 
     private sealed class Parser
     {
         private readonly List<Diagnostic> _diagnostics;
+        private readonly IReadOnlyList<TextSpan> _comments;
         private readonly SourceText _source;
         private readonly SyntaxToken[] _tokens;
         private int _functionDepth;
@@ -51,6 +52,7 @@ public static class PythonParser
         internal Parser(TokenizationResult tokenization)
         {
             _source = tokenization.Source;
+            _comments = tokenization.Comments;
             _diagnostics = [.. tokenization.Diagnostics];
             _tokens =
             [
@@ -68,7 +70,7 @@ public static class PythonParser
                     ? new TextSpan(0, 0)
                     : TextSpan.FromBounds(statements[0].Span.Start, statements[^1].Span.End);
             var module = new PythonModule(statements, moduleSpan);
-            return new PythonParseResult(_source, module, _diagnostics);
+            return new PythonParseResult(_source, module, _diagnostics, _comments);
         }
 
         private ReadOnlyCollection<PythonStatement> ParseStatements(bool stopAtDedent)

@@ -147,6 +147,50 @@ public sealed class DotPythonProjectReferenceTests
             );
             Assert.Equal("42", run.StandardOutput.Trim());
 
+            // Exercise linting from the packed SDK, including configuration-only changes
+            // on an otherwise up-to-date project. The assertion is inside an uncalled helper.
+            var sourcePath = Path.Combine(fixtureRoot, "PricingRules", "pricing.py");
+            await File.AppendAllTextAsync(
+                sourcePath,
+                "\ndef lint_example():\n    assert (False,)\n",
+                TestContext.Current.CancellationToken
+            );
+            await RunDotNetAsync(fixtureRoot, temporaryRoot, buildArguments);
+            var lintArguments = buildArguments.Concat(["-p:DotPythonLintEnabled=true"]).ToArray();
+            var warning = await RunDotNetAsync(fixtureRoot, temporaryRoot, lintArguments);
+            Assert.Contains(
+                "warning DPYL003",
+                warning.StandardOutput + warning.StandardError,
+                StringComparison.Ordinal
+            );
+            var lintWrite = File.GetLastWriteTimeUtc(facadePath);
+            var lintFailure = await RunDotNetExpectFailureAsync(
+                fixtureRoot,
+                temporaryRoot,
+                [.. lintArguments, "-p:DotPythonLintWarningsAsErrors=true"]
+            );
+            Assert.Contains(
+                "error DPYL003",
+                lintFailure.StandardOutput + lintFailure.StandardError,
+                StringComparison.Ordinal
+            );
+            Assert.Equal(lintWrite, File.GetLastWriteTimeUtc(facadePath));
+            var ignored = await RunDotNetAsync(
+                fixtureRoot,
+                temporaryRoot,
+                [
+                    .. lintArguments,
+                    "-p:DotPythonLintWarningsAsErrors=true",
+                    "-p:DotPythonLintIgnore=DPYL003",
+                ]
+            );
+            Assert.DoesNotContain(
+                "error DPYL003",
+                ignored.StandardOutput + ignored.StandardError,
+                StringComparison.Ordinal
+            );
+            Assert.Equal(lintWrite, File.GetLastWriteTimeUtc(facadePath));
+
             await File.WriteAllTextAsync(
                 Path.Combine(fixtureRoot, "PricingRules", "pricing.pyi"),
                 "def missing(value: int) -> int: ...\n",

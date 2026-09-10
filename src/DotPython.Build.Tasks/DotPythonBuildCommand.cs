@@ -9,6 +9,10 @@ internal static class DotPythonBuildCommand
     {
         try
         {
+            if (arguments.Count > 0 && arguments[0] == "--lint-source")
+            {
+                return PythonLintBuildCommand.Run(arguments);
+            }
             var options = Parse(arguments);
             return DotPythonModuleBuilder.Build(options) ? 0 : 1;
         }

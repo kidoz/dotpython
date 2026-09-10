@@ -1,5 +1,9 @@
 <Project>
     <PropertyGroup>
+        <DotPythonLintEnabled Condition="'$(DotPythonLintEnabled)' == ''"
+            >false</DotPythonLintEnabled>
+        <DotPythonLintWarningsAsErrors Condition="'$(DotPythonLintWarningsAsErrors)' == ''"
+            >false</DotPythonLintWarningsAsErrors>
         <DotPythonSdkVersion>0.1.0</DotPythonSdkVersion>
         <LanguageTargets Condition="'$(LanguageTargets)' == ''"
             >$(MSBuildToolsPath)\Microsoft.CSharp.targets</LanguageTargets>

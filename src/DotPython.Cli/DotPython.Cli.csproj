@@ -5,6 +5,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <ProjectReference Include="../DotPython.Lint/DotPython.Lint.csproj" />
         <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
         <ProjectReference Include="../DotPython.Hosting/DotPython.Hosting.csproj" />
         <ProjectReference Include="../DotPython.Runtime.Managed/DotPython.Runtime.Managed.csproj" />
