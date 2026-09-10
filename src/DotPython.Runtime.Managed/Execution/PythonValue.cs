@@ -467,7 +467,11 @@ internal sealed record PythonManagedTypeValue : PythonValue
         ExceptionBaseName = exceptionBaseName;
     }
 
-    internal PythonAttributeDictionary Attributes { get; } = new();
+    internal PythonAttributeDictionary Attributes { get; set; } = new();
+
+    internal PythonValue Metaclass { get; set; } = PythonBuiltinTypes.Type;
+
+    internal bool IsMetaclass { get; set; }
 
     /// <summary>The declared base classes, in source order.</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Bases { get; }

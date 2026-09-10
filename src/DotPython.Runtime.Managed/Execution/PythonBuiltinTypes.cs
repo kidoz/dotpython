@@ -23,7 +23,9 @@ internal static class PythonBuiltinTypes
 
     internal static readonly PythonBuiltinTypeValue Type = new(
         "type",
-        (arguments, span) => UserObjectProtocols.Dispatcher!.ConstructType(arguments, span)
+        (arguments, span) => UserObjectProtocols.Dispatcher!.ConstructType(arguments, span),
+        (arguments, names, values, span) =>
+            UserObjectProtocols.Dispatcher!.CallType(Type!, arguments, names, values, span)
     );
 
     internal static PythonBuiltinTypeValue GetConstructorType(
@@ -62,6 +64,7 @@ internal static class PythonBuiltinTypes
                 when ReferenceEquals(managed, PythonBuiltinFunctions.ObjectType) => new([]),
             PythonManagedTypeValue { DeclaredBases: { Count: > 0 } declared } => new([.. declared]),
             PythonManagedTypeValue { Bases.Count: > 0 } managed => new([.. managed.Bases]),
+            PythonManagedTypeValue { IsMetaclass: true } => new([Type]),
             PythonManagedTypeValue { ExceptionBaseName: { } baseName } => new([
                 GetExceptionType(baseName),
             ]),
@@ -88,6 +91,10 @@ internal static class PythonBuiltinTypes
             }
             else
             {
+                if (managed.IsMetaclass)
+                {
+                    entries.Add(Type);
+                }
                 entries.Add(PythonBuiltinFunctions.Object);
             }
             return new([.. entries]);
@@ -103,7 +110,8 @@ internal static class PythonBuiltinTypes
     internal static PythonValue GetRuntimeType(PythonValue value) =>
         value switch
         {
-            PythonBuiltinTypeValue or PythonManagedTypeValue or PythonExceptionTypeValue => Type,
+            PythonManagedTypeValue managed => managed.Metaclass,
+            PythonBuiltinTypeValue or PythonExceptionTypeValue => Type,
             PythonTruthValue => Bool,
             PythonWholeNumberValue => Int,
             PythonFloatingPointValue => Float,

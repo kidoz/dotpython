@@ -117,7 +117,7 @@ internal static class ManagedObjectProtocols
         }
     }
 
-    private static PythonValue GetAttributeCore(
+    internal static PythonValue GetAttributeCore(
         PythonValue target,
         string name,
         TextSpan span = default
@@ -125,6 +125,20 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (
+            target
+                is PythonManagedTypeValue
+                {
+                    Metaclass: PythonManagedTypeValue descriptorMetaclass
+                } classObject
+            && TryGetTypeAttribute(descriptorMetaclass, name, out var metaDescriptor)
+            && IsDataDescriptor(metaDescriptor)
+            && HasDescriptorGetter(metaDescriptor)
+        )
+        {
+            return BindDescriptor(metaDescriptor, classObject, descriptorMetaclass, span, name);
+        }
 
         if (name == "__class__" && target is not PythonManagedObjectValue)
         {
@@ -164,7 +178,41 @@ internal static class ManagedObjectProtocols
             case PythonSuperProxyValue { Instance: PythonManagedTypeValue subtype } classProxy:
                 if (TryResolveSuperAttribute(classProxy, name, out var classInherited))
                 {
-                    return BindDescriptor(classInherited, null, subtype, span, name);
+                    var instanceAccess =
+                        !subtype.Mro.Contains(classProxy.DefiningType)
+                        && subtype.Metaclass is PythonManagedTypeValue;
+                    return BindDescriptor(
+                        classInherited,
+                        instanceAccess ? subtype : null,
+                        instanceAccess ? subtype.Metaclass : subtype,
+                        span,
+                        name
+                    );
+                }
+
+                if (
+                    classProxy.DefiningType.IsMetaclass
+                    && PythonTypeProtocols.TryGetAttribute(name, out var typeMember)
+                )
+                {
+                    var instanceAccess = !subtype.Mro.Contains(classProxy.DefiningType);
+                    return BindDescriptor(
+                        typeMember,
+                        instanceAccess ? subtype : null,
+                        instanceAccess ? subtype.Metaclass : subtype,
+                        span,
+                        name
+                    );
+                }
+                if (name == "__init_subclass__")
+                {
+                    return BindDescriptor(
+                        PythonTypeProtocols.InitSubclass,
+                        null,
+                        subtype,
+                        span,
+                        name
+                    );
                 }
 
                 if (PythonBuiltinFunctions.TryGetObjectProtocol(name, out var classObjectMember))
@@ -236,6 +284,18 @@ internal static class ManagedObjectProtocols
                 return type.Module is null
                     ? new PythonTextValue("builtins")
                     : new PythonTextValue(type.Module);
+            case PythonManagedTypeValue { IsMetaclass: false }
+                when PythonBuiltinFunctions.TryGetObjectProtocol(
+                    name,
+                    out var inheritedObjectMember
+                ):
+                return inheritedObjectMember;
+            case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass } type
+                when TryGetTypeAttribute(metaclass, name, out var metaclassAttribute):
+                return BindDescriptor(metaclassAttribute, type, metaclass, span, name);
+            case PythonManagedTypeValue type
+                when PythonTypeProtocols.TryGetAttribute(name, out var defaultTypeAttribute):
+                return BindDescriptor(defaultTypeAttribute, type, type.Metaclass, span, name);
             case PythonManagedTypeValue type:
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
@@ -246,6 +306,12 @@ internal static class ManagedObjectProtocols
                 return staticMethod.Function;
             case PythonClassMethodValue classMethod when name == "__func__":
                 return classMethod.Function;
+            case PythonBuiltinTypeValue builtin
+                when ReferenceEquals(builtin, PythonBuiltinTypes.Type)
+                    && PythonTypeProtocols.TryGetAttribute(name, out var typeAttribute):
+                return BindDescriptor(typeAttribute, null, builtin, span, name);
+            case PythonBuiltinTypeValue builtin when name == "__init_subclass__":
+                return BindDescriptor(PythonTypeProtocols.InitSubclass, null, builtin, span, name);
             case PythonBuiltinTypeValue { Name: "object" }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectMember):
                 return objectMember;
@@ -772,12 +838,38 @@ internal static class ManagedObjectProtocols
         TextSpan span = default
     )
     {
+        if (
+            target is PythonManagedTypeValue
+            && TryGetSpecialMethod(target, "__setattr__", out var setter)
+        )
+        {
+            UserObjectProtocols.Dispatcher!.Invoke(
+                setter,
+                [new PythonTextValue(name), value],
+                span
+            );
+            return;
+        }
+        SetAttributeCore(target, name, value, span);
+    }
+
+    internal static void SetAttributeCore(
+        PythonValue target,
+        string name,
+        PythonValue value,
+        TextSpan span = default
+    )
+    {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
 
         switch (target)
         {
+            case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
+                when TryGetTypeAttribute(meta, name, out var metaDescriptor)
+                    && TrySetDescriptor(metaDescriptor, type, name, value, span):
+                return;
             case PythonManagedTypeValue when name == "__dict__":
                 throw Fault(
                     "DPY4023",
@@ -1070,11 +1162,32 @@ internal static class ManagedObjectProtocols
 
     internal static void DeleteAttribute(PythonValue target, string name, TextSpan span = default)
     {
+        if (
+            target is PythonManagedTypeValue
+            && TryGetSpecialMethod(target, "__delattr__", out var deleter)
+        )
+        {
+            UserObjectProtocols.Dispatcher!.Invoke(deleter, [new PythonTextValue(name)], span);
+            return;
+        }
+        DeleteAttributeCore(target, name, span);
+    }
+
+    internal static void DeleteAttributeCore(
+        PythonValue target,
+        string name,
+        TextSpan span = default
+    )
+    {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         switch (target)
         {
+            case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
+                when TryGetTypeAttribute(meta, name, out var metaDescriptor)
+                    && TryDeleteDescriptor(metaDescriptor, type, name, span):
+                return;
             case PythonManagedTypeValue when name == "__dict__":
                 throw Fault(
                     "DPY4023",
@@ -2555,6 +2668,8 @@ internal static class ManagedObjectProtocols
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
+            PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass } =>
+                metaclass.Name,
             PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
             PythonPropertyValue => "property",
@@ -2609,6 +2724,7 @@ internal static class ManagedObjectProtocols
         value switch
         {
             PythonManagedObjectValue instance => instance.Type,
+            PythonManagedTypeValue type => type.Metaclass as PythonManagedTypeValue,
             PythonExceptionValue exception => exception.ManagedType,
             _ => null,
         };
@@ -2678,7 +2794,7 @@ internal static class ManagedObjectProtocols
     internal static PythonValue BindDescriptor(
         PythonValue value,
         PythonValue? instance,
-        PythonManagedTypeValue owner,
+        PythonValue owner,
         TextSpan span = default,
         string? attributeName = null
     )
@@ -2711,7 +2827,7 @@ internal static class ManagedObjectProtocols
             PythonPropertyValue property when instance is not null => GetPropertyValue(
                 property,
                 instance,
-                attributeName ?? owner.Name,
+                attributeName ?? GetTypeName(owner),
                 span
             ),
             PythonProtocolFunctionValue function when instance is not null =>
@@ -2721,6 +2837,10 @@ internal static class ManagedObjectProtocols
             PythonStaticMethodValue staticMethod => staticMethod.Function,
             PythonClassMethodValue { Function: PythonFunctionValue function } =>
                 new PythonBoundUserMethodValue(function.Name, owner, function),
+            PythonClassMethodValue { Function: PythonBuiltinFunctionValue builtin } =>
+                PythonTypeProtocols.BindBuiltin(builtin, owner),
+            PythonClassMethodValue { Function: PythonProtocolFunctionValue protocol } =>
+                new PythonBoundMethodValue(protocol.Name, owner, protocol),
             PythonClassMethodValue classMethod => classMethod.Function,
             _ => value,
         };
@@ -2745,6 +2865,8 @@ internal static class ManagedObjectProtocols
                 when exceptionType.Mro.Contains(proxy.DefiningType) => exceptionType.Mro,
             PythonManagedTypeValue subtype when subtype.Mro.Contains(proxy.DefiningType) =>
                 subtype.Mro,
+            PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass }
+                when metaclass.Mro.Contains(proxy.DefiningType) => metaclass.Mro,
             _ => proxy.DefiningType.Mro,
         };
         var searching = false;
@@ -2780,6 +2902,15 @@ internal static class ManagedObjectProtocols
             }
         }
 
+        if (type.IsMetaclass && PythonTypeProtocols.TryGetAttribute(name, out value!))
+        {
+            return true;
+        }
+        if (name == "__init_subclass__")
+        {
+            value = PythonTypeProtocols.InitSubclass;
+            return true;
+        }
         value = null!;
         return false;
     }

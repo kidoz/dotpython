@@ -14,6 +14,22 @@ internal interface IUserObjectDispatcher
 
     PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);
 
+    PythonValue CreateType(
+        PythonValue metaclass,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    );
+
+    PythonValue CallType(
+        PythonValue type,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    );
+
     PythonBuiltinFunctionValue GetBuiltinConstructor(string name);
 
     /// <summary>The executing VM's standard output (`sys.stdout`).</summary>

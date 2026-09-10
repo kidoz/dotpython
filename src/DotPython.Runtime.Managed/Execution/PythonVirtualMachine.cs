@@ -6,7 +6,7 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
-internal sealed class PythonVirtualMachine : IUserObjectDispatcher
+internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 {
     private const int MaximumExceptionBlockDepth = 1024;
     private const int MaximumDeferredCleanupInstructions = 4096;
@@ -746,6 +746,12 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
+            case PythonOpCode.MakeClassWithKeywords:
+            {
+                var keywords = Pop(instruction.Span);
+                MakeClass(instruction, Pop(instruction.Span), keywords);
+                break;
+            }
             case PythonOpCode.MakeClassWithBases:
                 MakeClass(instruction, Pop(instruction.Span));
                 break;
@@ -3754,6 +3760,20 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             return InvokeCallableNested(callMethod, arguments, span, keywordNames, keywordValues);
         }
 
+        if (callable is PythonManagedTypeValue managedClass)
+            return InvokeClassCall(
+                managedClass,
+                arguments,
+                keywordNames ?? [],
+                keywordValues ?? [],
+                span
+            );
+        if (keywordNames is { Length: > 0 } && callable is not PythonFunctionValue)
+        {
+            DispatchCallWithKeywords(callable, arguments, keywordNames, keywordValues ?? [], span);
+            return Pop(span);
+        }
+
         if (callable is PythonExceptionTypeValue exceptionType)
         {
             if (keywordNames is { Length: > 0 })
@@ -4305,44 +4325,54 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
     private void MergeDictionaryOnStack(PythonInstruction instruction)
     {
-        if (Pop(instruction.Span) is not PythonDictionaryValue source)
-        {
-            throw Fault(
-                "DPY4009",
-                "Argument after ** must be a mapping.",
-                instruction.Span,
-                "TypeError"
-            );
-        }
-
+        var source = PythonMappingProxies.Unwrap(Pop(instruction.Span));
         if (Peek(instruction.Operand, instruction.Span) is not PythonDictionaryValue accumulator)
         {
             throw Fault("DPY4007", "The keyword-mapping accumulator is invalid.", instruction.Span);
         }
 
-        foreach (var item in source.Items)
+        IReadOnlyList<PythonValue> keys;
+        if (source is PythonDictionaryValue dictionary)
         {
-            if (
-                accumulator.Items.Any(existing =>
-                    ManagedObjectProtocols.AreEqual(existing.Key, item.Key)
-                )
-            )
+            keys = dictionary.Items.Select(item => item.Key).ToArray();
+        }
+        else
+        {
+            PythonValue keysMethod;
+            try
+            {
+                keysMethod = ManagedObjectProtocols.GetAttribute(source, "keys", instruction.Span);
+            }
+            catch (Exception exception) when (IsAttributeErrorFault(exception))
             {
                 throw Fault(
                     "DPY4009",
-                    $"Got multiple values for keyword argument "
-                        + $"{item.Key.ToRepresentationString()}.",
+                    "Argument after ** must be a mapping.",
                     instruction.Span,
                     "TypeError"
                 );
             }
-
-            ManagedObjectProtocols.SetDictionaryItem(
-                accumulator,
-                item.Key,
-                item.Value,
-                instruction.Span
+            keys = ManagedObjectProtocols.MaterializeValues(
+                InvokeCallableNested(keysMethod, [], instruction.Span),
+                instruction.Span,
+                _userIterationDispatcher
             );
+        }
+        foreach (var key in keys)
+        {
+            if (
+                accumulator.Items.Any(existing =>
+                    ManagedObjectProtocols.AreEqual(existing.Key, key)
+                )
+            )
+                throw Fault(
+                    "DPY4009",
+                    $"Got multiple values for keyword argument {key.ToRepresentationString()}.",
+                    instruction.Span,
+                    "TypeError"
+                );
+            var value = ManagedObjectProtocols.GetItem(source, key, instruction.Span);
+            ManagedObjectProtocols.SetDictionaryItem(accumulator, key, value, instruction.Span);
         }
     }
 
@@ -4903,7 +4933,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             arguments.Count == 2
             && arguments[0] is PythonManagedTypeValue definingClass
             && arguments[1] is PythonManagedTypeValue subtype
-            && subtype.Mro.Any(candidate => ReferenceEquals(candidate, definingClass))
+            && (
+                subtype.Mro.Any(candidate => ReferenceEquals(candidate, definingClass))
+                || subtype.Metaclass is PythonManagedTypeValue meta
+                    && meta.Mro.Contains(definingClass)
+            )
         )
         {
             // super(C, cls) inside classmethods and __new__: attributes resolve
@@ -5063,6 +5097,12 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
+        if (type.IsMetaclass || HasCustomMetaclassCall(type))
+        {
+            _evaluationStack.Push(InvokeClassCall(type, arguments, [], [], span));
+            return;
+        }
+
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(ConstructExceptionInstance(type, arguments, [], [], span));
@@ -5115,6 +5155,14 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
+        if (type.IsMetaclass || HasCustomMetaclassCall(type))
+        {
+            _evaluationStack.Push(
+                InvokeClassCall(type, positional, keywordNames, keywordValues, span)
+            );
+            return;
+        }
+
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(
@@ -5594,7 +5642,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         _evaluationStack.Push(new PythonTemplateValue(strings, interpolations));
     }
 
-    private void MakeClass(PythonInstruction instruction, PythonValue? baseValue = null)
+    private void MakeClass(
+        PythonInstruction instruction,
+        PythonValue? baseValue = null,
+        PythonValue? keywordValue = null
+    )
     {
         PreparedPythonCode code;
         try
@@ -5629,10 +5681,23 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonTupleValue tuple => tuple,
             _ => new PythonTupleValue([baseValue]),
         };
-        var type = CreateClassValue(code.Definition.Name, bases, instruction.Span);
-        type.Module = CurrentModuleName();
-        type.Attributes["__module__"] = new PythonTextValue(type.Module ?? "__main__");
+        var keywords = keywordValue as PythonDictionaryValue ?? new PythonDictionaryValue([]);
+        if (keywordValue is not null && keywordValue is not PythonDictionaryValue)
+            throw Fault("DPY4007", "The class keyword mapping is invalid.", instruction.Span);
+        var construction = PrepareClassConstruction(
+            code.Definition.Name,
+            bases,
+            keywords,
+            instruction.Span
+        );
+        var type = new PythonManagedTypeValue(code.Definition.Name)
+        {
+            Attributes = new PythonAttributeDictionary(construction.Namespace),
+        };
+        type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");
+        type.Attributes["__qualname__"] = new PythonTextValue(code.Definition.Name);
         PushClassBodyFrame(type, code, closure);
+        CurrentFrame.ClassConstruction = construction;
     }
 
     private PythonManagedTypeValue CreateClassValue(
@@ -5694,6 +5759,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                     name,
                     exceptionBaseName: exceptionBase.Name
                 ),
+                PythonBuiltinTypeValue builtinBase
+                    when ReferenceEquals(builtinBase, PythonBuiltinTypes.Type) =>
+                    new PythonManagedTypeValue(name) { IsMetaclass = true },
                 PythonBuiltinTypeValue builtinBase => throw Fault(
                     "DPY4034",
                     $"Subclassing the builtin type '{builtinBase.Name}' is not supported in this runtime slice.",
@@ -5708,6 +5776,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 ),
             };
         }
+        type.IsMetaclass |= effectiveBases.Any(value =>
+            value is PythonManagedTypeValue { IsMetaclass: true }
+        );
         type.DeclaredBases =
             bases.Elements.Length == 0 ? [PythonBuiltinFunctions.Object] : [.. bases.Elements];
         if (type.ExceptionBaseName is not null)
@@ -6001,23 +6072,27 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
-        if (CurrentFrame.ReturnOverride is PythonManagedTypeValue completedClass)
+        if (CurrentFrame.ClassConstruction is { } construction)
         {
-            var cells = CurrentFrame.Code.Definition.CellVariableNames;
-            for (var index = 0; index < cells.Count; index++)
+            PythonCell? classCell = null;
+            var cellNames = CurrentFrame.Code.Definition.CellVariableNames;
+            for (var index = 0; index < cellNames.Count; index++)
             {
-                if (cells[index] == "__class__")
-                {
-                    CurrentFrame.Cells[index].Value = completedClass;
-                    break;
-                }
+                if (cellNames[index] != "__class__")
+                    continue;
+                classCell = CurrentFrame.Cells[index];
+                ManagedObjectProtocols.SetDictionaryItem(
+                    construction.Namespace,
+                    new PythonTextValue("__classcell__"),
+                    new PythonClassCellValue(classCell),
+                    construction.Span
+                );
+                break;
             }
-
-            FinalizeClassMetadata(completedClass, GetCurrentSpan(CurrentFrame));
-            InitializeClassAttributeNames(completedClass, GetCurrentSpan(CurrentFrame));
+            value = CompleteClassConstruction(construction, classCell);
         }
-
-        value = CurrentFrame.ReturnOverride ?? value;
+        else
+            value = CurrentFrame.ReturnOverride ?? value;
         while (_evaluationStack.Count > evaluationStackBase)
         {
             _evaluationStack.Pop();
@@ -6213,6 +6288,21 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
     private bool MatchesClassInfo(PythonValue value, PythonValue classInfo, TextSpan span)
     {
+        if (classInfo is PythonManagedTypeValue)
+        {
+            if (ReferenceEquals(TypeOf([value], span), classInfo))
+                return true;
+            if (
+                ManagedObjectProtocols.TryGetSpecialMethod(
+                    classInfo,
+                    "__instancecheck__",
+                    out var check
+                )
+            )
+                return ManagedObjectProtocols.IsTrue(InvokeCallableNested(check, [value], span));
+        }
+        if (value is PythonManagedTypeValue cls && classInfo is PythonManagedTypeValue meta)
+            return IsSubclassOf(cls.Metaclass, meta, span);
         switch (classInfo)
         {
             case PythonTupleValue tuple:
@@ -6253,13 +6343,21 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (arguments.Count == 3)
         {
-            return ConstructDynamicType(arguments, span);
+            return InvokeMetaclassConstructor(
+                PythonBuiltinTypes.Type,
+                [.. arguments],
+                [],
+                [],
+                span
+            );
         }
         if (arguments.Count != 1)
         {
             throw Fault("DPY4003", "type() takes 1 or 3 arguments", span, "TypeError");
         }
         var value = arguments[0];
+        if (value is PythonManagedTypeValue managedClass)
+            return managedClass.Metaclass;
         var typeName = PythonBuiltinTypes.GetRuntimeTypeName(value);
         if (
             value is not (PythonManagedObjectValue or PythonExceptionValue)
@@ -6272,11 +6370,16 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         return PythonBuiltinTypes.GetRuntimeType(value);
     }
 
-    private PythonManagedTypeValue ConstructDynamicType(
+    private PythonValue CreateTypeCore(
+        PythonValue metaclass,
         IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
         TextSpan span
     )
     {
+        if (arguments.Count != 3)
+            throw Fault("DPY4003", "type.__new__() takes exactly 3 arguments", span, "TypeError");
         if (arguments[0] is not PythonTextValue name)
         {
             throw Fault(
@@ -6313,7 +6416,17 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 "TypeError"
             );
         }
+        var winner = SelectMetaclass(metaclass, bases, span);
+        if (!ReferenceEquals(winner, metaclass))
+            return InvokeMetaclassNew(
+                winner,
+                [.. arguments],
+                [.. keywordNames],
+                [.. keywordValues],
+                span
+            );
         var type = CreateClassValue(name.Value, bases, span);
+        type.Metaclass = metaclass;
         // type.__new__ copies the namespace; subsequent writes through the source
         // dictionary must not mutate the completed class.
         foreach (var item in dictionary.Items)
@@ -6328,12 +6441,33 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");
         }
         FinalizeClassMetadata(type, span);
+        if (type.Attributes.TryGetValue("__classcell__", out var cellValue))
+        {
+            if (cellValue is not PythonClassCellValue cell)
+                throw Fault(
+                    "DPY4003",
+                    $"__classcell__ must be a nonlocal cell, not {ManagedObjectProtocols.GetTypeName(cellValue)}",
+                    span,
+                    "TypeError"
+                );
+            cell.Cell.Value = type;
+            type.Attributes.Remove("__classcell__");
+        }
         InitializeClassAttributeNames(type, span);
+        InitializeSubclass(type, [.. keywordNames], [.. keywordValues], span);
         return type;
     }
 
     private static void FinalizeClassMetadata(PythonManagedTypeValue type, TextSpan span)
     {
+        if (
+            type.Attributes.TryGetValue("__new__", out var newMethod)
+            && newMethod is PythonFunctionValue
+        )
+            type.Attributes["__new__"] = new PythonStaticMethodValue(newMethod);
+        foreach (var name in new[] { "__init_subclass__", "__class_getitem__" })
+            if (type.Attributes.TryGetValue(name, out var method) && method is PythonFunctionValue)
+                type.Attributes[name] = new PythonClassMethodValue(method);
         if (type.Attributes.TryGetValue("__qualname__", out var qualifiedName))
         {
             if (qualifiedName is not PythonTextValue qualifiedText)
@@ -6980,7 +7114,23 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             throw Fault("DPY4003", "issubclass() arg 1 must be a class", span, "TypeError");
         }
 
-        return PythonTruthValue.FromBoolean(IsSubclassOf(arguments[0], arguments[1], span));
+        return PythonTruthValue.FromBoolean(MatchesSubclassInfo(arguments[0], arguments[1], span));
+    }
+
+    private bool MatchesSubclassInfo(PythonValue cls, PythonValue classInfo, TextSpan span)
+    {
+        if (classInfo is PythonTupleValue tuple)
+            return tuple.Elements.Any(element => MatchesSubclassInfo(cls, element, span));
+        if (
+            classInfo is PythonManagedTypeValue
+            && ManagedObjectProtocols.TryGetSpecialMethod(
+                classInfo,
+                "__subclasscheck__",
+                out var check
+            )
+        )
+            return ManagedObjectProtocols.IsTrue(InvokeCallableNested(check, [cls], span));
+        return IsSubclassOf(cls, classInfo, span);
     }
 
     private bool IsSubclassOf(PythonValue cls, PythonValue classInfo, TextSpan span) =>
@@ -6990,6 +7140,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 IsSubclassOf(cls, element, span)
             ),
             PythonBuiltinTypeValue { Name: "object" } => true,
+            PythonBuiltinTypeValue { Name: "type" }
+                when cls is PythonManagedTypeValue { IsMetaclass: true } => true,
             PythonBuiltinTypeValue builtinType => cls is PythonBuiltinTypeValue candidate
                 && (
                     ReferenceEquals(candidate, builtinType)
@@ -8268,6 +8420,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         internal PythonCell[] Cells { get; }
 
         internal PythonManagedTypeValue? ClassNamespace { get; }
+
+        internal PendingClassConstruction? ClassConstruction { get; set; }
 
         internal int EvaluationStackBase =>
             HasReturnLocalContinuation ? ~_encodedEvaluationStackBase : _encodedEvaluationStackBase;
