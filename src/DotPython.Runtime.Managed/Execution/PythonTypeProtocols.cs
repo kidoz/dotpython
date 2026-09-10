@@ -44,6 +44,7 @@ internal static class PythonTypeProtocols
                 "__getattribute__",
                 "__setattr__",
                 "__delattr__",
+                "mro",
             }
         )
         {
@@ -81,6 +82,7 @@ internal static class PythonTypeProtocols
             ),
             "__prepare__" => new PythonClassMethodValue(Prepare),
             "__init_subclass__" => InitSubclass,
+            "mro" => Mro,
             "__getattribute__" => Slot(
                 name,
                 (self, args, names, _, span) =>
@@ -134,8 +136,13 @@ internal static class PythonTypeProtocols
                     if (arguments.Count != 1 || names.Count != 0)
                     {
                         var owner =
-                            arguments.Count > 0 && arguments[0] is PythonManagedTypeValue type
-                                ? type.Name
+                            arguments.Count > 0
+                                ? arguments[0] switch
+                                {
+                                    PythonManagedTypeValue type => type.Name,
+                                    PythonBuiltinTypeValue builtin => builtin.Name,
+                                    _ => "object",
+                                }
                                 : "object";
                         throw Error(
                             $"{owner}.__init_subclass__() takes no keyword arguments",
@@ -154,8 +161,29 @@ internal static class PythonTypeProtocols
             {
                 if (arguments.Count == 0)
                     throw Error("type.__new__(): not enough arguments", span);
-                if (!IsMetaclass(arguments[0]))
-                    throw Error("type.__new__(X): X is not a subtype of type", span);
+                if (!IsType(arguments[0]))
+                    throw Error(
+                        $"type.__new__(X): X is not a type object ({ManagedObjectProtocols.GetTypeName(arguments[0])})",
+                        span
+                    );
+                if (
+                    !PythonBuiltinTypes
+                        .GetMro(arguments[0])
+                        .Elements.Any(value => ReferenceEquals(value, PythonBuiltinTypes.Type))
+                )
+                {
+                    var typeName = arguments[0] switch
+                    {
+                        PythonManagedTypeValue managed => managed.Name,
+                        PythonBuiltinTypeValue builtin => builtin.Name,
+                        PythonExceptionTypeValue exception => exception.Name,
+                        _ => "X",
+                    };
+                    throw Error(
+                        $"type.__new__({typeName}): {typeName} is not a subtype of type",
+                        span
+                    );
+                }
                 return UserObjectProtocols.Dispatcher!.CreateType(
                     arguments[0],
                     arguments.Skip(1).ToArray(),
@@ -168,6 +196,51 @@ internal static class PythonTypeProtocols
 
     private static PythonBuiltinFunctionValue Prepare { get; } =
         Function("__prepare__", (_, _, _, _) => new PythonDictionaryValue([]));
+
+    private static PythonProtocolFunctionValue Mro { get; } = CreateMro();
+
+    private static PythonProtocolFunctionValue CreateMro()
+    {
+        static PythonValue Invoke(
+            PythonValue? receiver,
+            IReadOnlyList<PythonValue> arguments,
+            IReadOnlyList<string> names,
+            IReadOnlyList<PythonValue> values
+        )
+        {
+            var bound = receiver is not null;
+            if (receiver is null)
+            {
+                if (arguments.Count == 0)
+                    throw Error("unbound method type.mro() needs an argument", default);
+                receiver = arguments[0];
+                arguments = arguments.Skip(1).ToArray();
+            }
+            if (!IsType(receiver))
+                throw Error(
+                    $"descriptor 'mro' for 'type' objects doesn't apply to a '{ManagedObjectProtocols.GetTypeName(receiver)}' object",
+                    default
+                );
+            var ownerName = bound
+                ? receiver switch
+                {
+                    PythonManagedTypeValue type => type.QualName ?? type.Name,
+                    PythonBuiltinTypeValue type => type.Name,
+                    PythonExceptionTypeValue type => type.Name,
+                    _ => "type",
+                }
+                : "type";
+            if (names.Count != 0)
+                throw Error($"{ownerName}.mro() takes no keyword arguments", default);
+            if (arguments.Count != 0)
+                throw Error(
+                    $"{ownerName}.mro() takes no arguments ({arguments.Count} given)",
+                    default
+                );
+            return PythonTypeMro.Compute(receiver, default);
+        }
+        return new("mro", (self, arguments) => Invoke(self, arguments, [], []), Invoke);
+    }
 
     private static PythonValue Initialize(
         PythonValue self,

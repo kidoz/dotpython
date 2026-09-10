@@ -63,7 +63,7 @@ internal sealed partial class PythonVirtualMachine
         );
     }
 
-    private PythonValue SelectMetaclass(
+    private static PythonValue SelectMetaclass(
         PythonValue candidate,
         PythonTupleValue bases,
         TextSpan span
@@ -260,6 +260,14 @@ internal sealed partial class PythonVirtualMachine
     {
         if (ReferenceEquals(metaclass, PythonBuiltinTypes.Type))
             return CreateTypeCore(metaclass, arguments, keywordNames, keywordValues, span);
+        // A custom order may omit type while retaining object. The inherited
+        // allocation slot still creates a class, independently of the public
+        // type.__new__ descriptor's stricter subtype check.
+        if (
+            metaclass is PythonManagedTypeValue managed
+            && !ManagedObjectProtocols.TryGetTypeAttribute(managed, "__new__", out _)
+        )
+            return CreateTypeCore(metaclass, arguments, keywordNames, keywordValues, span);
         var newMethod = ManagedObjectProtocols.GetAttribute(metaclass, "__new__", span);
         return InvokeCallableNested(
             newMethod,
@@ -315,7 +323,15 @@ internal sealed partial class PythonVirtualMachine
         TextSpan span
     )
     {
-        // Lookup begins after the new class, then follows its C3 MRO.
+        // Custom MROs need not include the new class. Validate super's receiver
+        // after __set_name__, just as type.__new__ does.
+        if (!PythonBuiltinTypes.GetMro(type).Elements.Any(entry => ReferenceEquals(entry, type)))
+            throw Fault(
+                "DPY4003",
+                $"super(type, obj): obj (type {type.Name}) is not an instance or subtype of type ({type.Name}).",
+                span,
+                "TypeError"
+            );
         var method = ManagedObjectProtocols.GetAttribute(
             new PythonSuperProxyValue(type, type),
             "__init_subclass__",
@@ -324,11 +340,94 @@ internal sealed partial class PythonVirtualMachine
         InvokeCallableNested(method, [], span, keywordNames, keywordValues);
     }
 
+    private void InitializeMethodResolutionOrder(PythonManagedTypeValue type, TextSpan span)
+    {
+        List<PythonValue> resolution;
+        if (ReferenceEquals(type.Metaclass, PythonBuiltinTypes.Type))
+            resolution = PythonTypeMro.Compute(type, span).Elements;
+        else
+        {
+            // Implicit mro() lookup bypasses class attributes and metaclass
+            // __getattribute__/__getattr__, but binds user descriptors normally.
+            if (!ManagedObjectProtocols.TryGetSpecialMethod(type, "mro", out var method))
+                throw Fault("DPY4022", "mro", span, "AttributeError");
+            var result = InvokeCallableNested(method, [], span);
+            resolution = ManagedObjectProtocols.MaterializeValues(
+                result,
+                span,
+                _userIterationDispatcher
+            );
+            if (resolution.Count == 0)
+                throw Fault("DPY4034", "type MRO must not be empty", span, "TypeError");
+            var solid = GetSolidLayoutBase(type);
+            foreach (var entry in resolution)
+            {
+                if (!PythonTypeProtocols.IsType(entry))
+                    throw Fault(
+                        "DPY4034",
+                        $"mro() returned a non-class ('{ManagedObjectProtocols.GetTypeName(entry)}')",
+                        span,
+                        "TypeError"
+                    );
+                var entrySolid = GetSolidLayoutBase(entry);
+                if (
+                    !PythonBuiltinTypes
+                        .GetMro(solid)
+                        .Elements.Any(value => ReferenceEquals(value, entrySolid))
+                )
+                    throw Fault(
+                        "DPY4034",
+                        $"mro() returned base with unsuitable layout ('{TypeDisplayName(entry)}')",
+                        span,
+                        "TypeError"
+                    );
+            }
+        }
+        // Install both the full order and its managed projection before any
+        // __set_name__ or __init_subclass__ callback can observe the class.
+        type.ResolutionOrder = resolution;
+        type.IsMroPending = false;
+    }
+
+    private static PythonValue GetSolidLayoutBase(PythonValue type)
+    {
+        if (type is PythonManagedTypeValue managed)
+            return managed.LayoutBase is { } layoutBase
+                ? GetSolidLayoutBase(layoutBase)
+                : PythonBuiltinFunctions.Object;
+        if (type is PythonExceptionTypeValue exception)
+        {
+            // These builtin exceptions add storage beyond their immediate base.
+            // Ordinary managed subclasses add no native storage of their own.
+            if (
+                exception.Name
+                is "BaseException"
+                    or "BaseExceptionGroup"
+                    or "AttributeError"
+                    or "ImportError"
+                    or "NameError"
+                    or "OSError"
+                    or "StopIteration"
+                    or "SyntaxError"
+                    or "SystemExit"
+                    or "UnicodeDecodeError"
+                    or "UnicodeEncodeError"
+                    or "UnicodeTranslateError"
+            )
+                return exception;
+            return GetBuiltinExceptionBase(exception.Name) is { } baseName
+                ? GetSolidLayoutBase(PythonBuiltinTypes.GetExceptionType(baseName))
+                : PythonBuiltinFunctions.Object;
+        }
+        return type;
+    }
+
     private static string TypeDisplayName(PythonValue type) =>
         type switch
         {
             PythonManagedTypeValue managed => managed.Name,
             PythonBuiltinTypeValue builtin => builtin.Name,
+            PythonExceptionTypeValue exception => exception.Name,
             _ => ManagedObjectProtocols.GetTypeName(type),
         };
 
@@ -375,6 +474,7 @@ internal sealed partial class PythonVirtualMachine
         TextSpan span
     )
     {
+        EnsureClassAllocationSupported(type, span);
         if (type.IsMetaclass)
             return InvokeMetaclassConstructor(type, arguments, keywordNames, keywordValues, span);
         if (type.ExceptionBaseName is not null)
@@ -415,5 +515,23 @@ internal sealed partial class PythonVirtualMachine
                 "TypeError"
             );
         return instance;
+    }
+
+    private static void EnsureClassAllocationSupported(PythonManagedTypeValue type, TextSpan span)
+    {
+        // A custom MRO can remove every default allocation slot while leaving
+        // the class's physical layout base intact. Layout alone must not make
+        // such a class constructible; an explicit __new__ still takes priority.
+        if (ManagedObjectProtocols.TryGetTypeAttribute(type, "__new__", out _))
+            return;
+        foreach (var entry in PythonBuiltinTypes.GetMro(type).Elements)
+        {
+            if (
+                ReferenceEquals(entry, PythonBuiltinFunctions.Object)
+                || entry is PythonExceptionTypeValue
+            )
+                return;
+        }
+        throw Fault("DPY4003", $"cannot create '{type.Name}' instances", span, "TypeError");
     }
 }

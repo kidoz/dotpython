@@ -285,7 +285,7 @@ public sealed class ManagedPythonEngine
             );
         }
         catch (PythonRaisedException raised)
-            when (virtualMachine?.IsExceptionSubclass(raised.Value.TypeName, "SystemExit") == true)
+            when (virtualMachine?.IsExceptionSubclass(raised.Value, "SystemExit") == true)
         {
             // sys.exit(): None/omitted → 0, an int → that code, anything else → the
             // message on stderr and exit status 1.

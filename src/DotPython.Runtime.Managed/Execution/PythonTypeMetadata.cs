@@ -69,7 +69,9 @@ internal static class PythonTypeMetadata
             "__dict__" => new PythonMappingProxyValue(GetDictionary(instance)),
             "__bases__" => PythonBuiltinTypes.GetBases(instance),
             "__base__" => managed?.LayoutBase ?? GetBase(instance),
-            "__mro__" => PythonBuiltinTypes.GetMro(instance),
+            "__mro__" => managed is { IsMroPending: true }
+                ? PythonNoneValue.Instance
+                : PythonBuiltinTypes.GetMro(instance),
             _ => throw new ArgumentException(
                 "Unknown type metadata descriptor.",
                 nameof(descriptor)

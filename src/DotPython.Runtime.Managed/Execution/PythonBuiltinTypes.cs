@@ -69,6 +69,10 @@ internal static class PythonBuiltinTypes
                 GetExceptionType(baseName),
             ]),
             PythonManagedTypeValue => new([PythonBuiltinFunctions.Object]),
+            PythonExceptionTypeValue { Name: "ExceptionGroup" } => new([
+                GetExceptionType("BaseExceptionGroup"),
+                GetExceptionType("Exception"),
+            ]),
             PythonExceptionTypeValue exception
                 when PythonVirtualMachine.GetBuiltinExceptionBase(exception.Name) is { } baseName =>
                 new([GetExceptionType(baseName)]),
@@ -78,6 +82,10 @@ internal static class PythonBuiltinTypes
 
     internal static PythonTupleValue GetMro(PythonValue type)
     {
+        if (type is PythonManagedTypeValue { IsMroPending: true } pending)
+            return pending.LayoutBase is { } layoutBase
+                ? new([type, .. GetMro(layoutBase).Elements])
+                : new([type]);
         if (type is PythonManagedTypeValue { ResolutionOrder: { } resolutionOrder })
         {
             return new([.. resolutionOrder]);
@@ -107,6 +115,12 @@ internal static class PythonBuiltinTypes
         {
             type = PythonBuiltinFunctions.Object;
         }
+        if (type is PythonExceptionTypeValue { Name: "ExceptionGroup" })
+            return new([
+                type,
+                GetExceptionType("BaseExceptionGroup"),
+                .. GetMro(GetExceptionType("Exception")).Elements,
+            ]);
         var bases = GetBases(type).Elements;
         return bases.Length == 0 ? new([type]) : new([type, .. GetMro(bases[0]).Elements]);
     }

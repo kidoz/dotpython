@@ -496,13 +496,26 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal IReadOnlyList<PythonValue>? DeclaredBases { get; set; }
 
-    /// <summary>The full C3 order, including this class and builtin roots.</summary>
-    internal IReadOnlyList<PythonValue>? ResolutionOrder { get; set; }
+    private IReadOnlyList<PythonValue>? _resolutionOrder;
+
+    /// <summary>The installed order, including builtin entries and custom metaclass results.</summary>
+    internal IReadOnlyList<PythonValue>? ResolutionOrder
+    {
+        get => _resolutionOrder;
+        set
+        {
+            _resolutionOrder = value;
+            if (value is not null)
+                Mro = value.OfType<PythonManagedTypeValue>().ToArray();
+        }
+    }
+
+    internal bool IsMroPending { get; set; }
 
     internal PythonValue? LayoutBase { get; set; }
 
-    /// <summary>The C3 method resolution order, starting with this type (no `object` terminus).</summary>
-    internal IReadOnlyList<PythonManagedTypeValue> Mro { get; }
+    /// <summary>The managed entries of the installed method resolution order.</summary>
+    internal IReadOnlyList<PythonManagedTypeValue> Mro { get; private set; }
 
     internal PythonManagedTypeValue? BaseType => Bases.Count == 0 ? null : Bases[0];
 

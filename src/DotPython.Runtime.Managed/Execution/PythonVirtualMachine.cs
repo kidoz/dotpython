@@ -1176,12 +1176,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (handlerType is PythonExceptionTypeValue type)
         {
-            return IsExceptionSubclass(exception.TypeName, type.Name);
+            return IsExceptionSubclass(exception, type.Name);
         }
 
         if (handlerType is PythonManagedTypeValue { ExceptionBaseName: not null } managedType)
         {
-            return IsExceptionSubclass(exception.TypeName, managedType.Name);
+            return exception.ManagedType is { } runtimeType
+                ? IsSubclassOf(runtimeType, managedType, span)
+                : false;
         }
 
         if (handlerType is PythonTupleValue tuple)
@@ -1204,6 +1206,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             )
         );
     }
+
+    internal bool IsExceptionSubclass(PythonExceptionValue exception, string expected) =>
+        exception.ManagedType is { } type
+            ? IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType(expected), default)
+            : IsExceptionSubclass(exception.TypeName, expected);
 
     internal bool IsExceptionSubclass(string candidate, string expected)
     {
@@ -2339,9 +2346,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         // A matched naked exception binds wrapped in a single-element group.
         var bound = matched.GroupExceptions is null
             ? new PythonExceptionValue(
-                IsExceptionSubclass(matched.TypeName, "Exception")
-                    ? "ExceptionGroup"
-                    : "BaseExceptionGroup",
+                IsExceptionSubclass(matched, "Exception") ? "ExceptionGroup" : "BaseExceptionGroup",
                 string.Empty
             )
             {
@@ -2456,7 +2461,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             items.Add(state.Rest);
         }
 
-        var allExceptions = items.All(item => IsExceptionSubclass(item.TypeName, "Exception"));
+        var allExceptions = items.All(item => IsExceptionSubclass(item, "Exception"));
         throw CreateRaisedException(
             new PythonExceptionValue(
                 allExceptions ? "ExceptionGroup" : "BaseExceptionGroup",
@@ -2745,7 +2750,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return (true, InvokeCallableNested(nextMethod, [], span));
         }
         catch (PythonRaisedException raised)
-            when (IsExceptionSubclass(raised.Value.TypeName, "StopIteration"))
+            when (IsExceptionSubclass(raised.Value, "StopIteration"))
         {
             return (false, PythonNoneValue.Instance);
         }
@@ -3131,7 +3136,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private void EndAsyncFor(ref PythonFrame frame, PythonInstruction instruction)
     {
         var active = GetActiveException(instruction.Span);
-        if (IsExceptionSubclass(active.Value.TypeName, "StopAsyncIteration"))
+        if (IsExceptionSubclass(active.Value, "StopAsyncIteration"))
         {
             frame.ActiveExceptions.Pop();
             Pop(instruction.Span);
@@ -3690,10 +3695,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             if (
                 exception is PythonRaisedException raised
                 && (
-                    IsExceptionSubclass(raised.Value.TypeName, "StopIteration")
+                    IsExceptionSubclass(raised.Value, "StopIteration")
                     || (
                         generator.IsAsyncGenerator
-                        && IsExceptionSubclass(raised.Value.TypeName, "StopAsyncIteration")
+                        && IsExceptionSubclass(raised.Value, "StopAsyncIteration")
                     )
                 )
             )
@@ -3702,7 +3707,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     generator.IsAsyncGenerator ? "async generator"
                     : generator.IsCoroutine ? "coroutine"
                     : "generator";
-                var termination = IsExceptionSubclass(raised.Value.TypeName, "StopIteration")
+                var termination = IsExceptionSubclass(raised.Value, "StopIteration")
                     ? "StopIteration"
                     : "StopAsyncIteration";
                 var converted = CreateRaisedException(
@@ -4749,9 +4754,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             nested.Add(exception);
         }
 
-        var allExceptions = nested.All(exception =>
-            IsExceptionSubclass(exception.TypeName, "Exception")
-        );
+        var allExceptions = nested.All(exception => IsExceptionSubclass(exception, "Exception"));
         if (name == "ExceptionGroup" && !allExceptions)
         {
             throw CreateRaisedException(
@@ -5135,6 +5138,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
+        EnsureClassAllocationSupported(type, span);
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(ConstructExceptionInstance(type, arguments, [], [], span));
@@ -5195,6 +5199,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
+        EnsureClassAllocationSupported(type, span);
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(
@@ -5760,25 +5765,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
-        for (var index = 0; index < bases.Elements.Length; index++)
-        {
-            if (
-                bases
-                    .Elements.Take(index)
-                    .Any(candidate => ReferenceEquals(candidate, bases.Elements[index]))
-            )
-            {
-                var duplicate = bases.Elements[index];
-                var duplicateName = duplicate switch
-                {
-                    PythonManagedTypeValue managed => managed.Name,
-                    PythonBuiltinTypeValue builtin => builtin.Name,
-                    PythonExceptionTypeValue exception => exception.Name,
-                    _ => ManagedObjectProtocols.GetTypeName(duplicate),
-                };
-                throw Fault("DPY4034", $"duplicate base class {duplicateName}", span, "TypeError");
-            }
-        }
         var declaredBases =
             bases.Elements.Length == 0
                 ? new PythonValue[] { PythonBuiltinFunctions.Object }
@@ -5842,7 +5828,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 ),
                 _ => throw Fault("DPY4007", "The exception base is invalid.", span),
             };
-            type.ResolutionOrder = [type, .. LinearizeBases(declaredBases, span)];
             _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName!;
         }
         else
@@ -5863,19 +5848,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     "TypeError"
                 );
             }
-            var resolution = LinearizeBases(declaredBases, span);
             type = new PythonManagedTypeValue(
                 name,
                 declaredBases.OfType<PythonManagedTypeValue>().ToArray(),
-                resolution.OfType<PythonManagedTypeValue>().ToArray()
+                []
             )
             {
-                IsMetaclass = resolution.Any(value =>
-                    ReferenceEquals(value, PythonBuiltinTypes.Type)
-                ),
+                IsMetaclass = declaredBases.Any(PythonTypeProtocols.IsMetaclass),
             };
-            type.ResolutionOrder = [type, .. resolution];
         }
+        type.IsMroPending = true;
         type.DeclaredBases = [.. declaredBases];
         // All admitted ordinary mixins have object storage. A type-derived direct base
         // supplies the class-object layout even when a mixin precedes it in the MRO.
@@ -5911,48 +5893,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             hasReturnLocalContinuation,
             classNamespace: classNamespace
         );
-    }
-
-    /// <summary>C3 merge includes builtin type/object entries in their actual positions.</summary>
-    private static List<PythonValue> LinearizeBases(IReadOnlyList<PythonValue> bases, TextSpan span)
-    {
-        var sequences = bases
-            .Select(baseType => new List<PythonValue>(PythonBuiltinTypes.GetMro(baseType).Elements))
-            .ToList();
-        sequences.Add([.. bases]);
-        var result = new List<PythonValue>();
-        while (sequences.Any(sequence => sequence.Count != 0))
-        {
-            PythonValue? selected = null;
-            foreach (var sequence in sequences)
-            {
-                if (sequence.Count == 0)
-                    continue;
-                var head = sequence[0];
-                if (
-                    !sequences.Any(other =>
-                        other.Skip(1).Any(entry => ReferenceEquals(entry, head))
-                    )
-                )
-                {
-                    selected = head;
-                    break;
-                }
-            }
-            if (selected is null)
-                throw Fault(
-                    "DPY4034",
-                    "Cannot create a consistent method resolution order (MRO) for bases "
-                        + string.Join(", ", bases.Select(TypeDisplayName)),
-                    span,
-                    "TypeError"
-                );
-            result.Add(selected);
-            foreach (var sequence in sequences)
-                if (sequence.Count != 0 && ReferenceEquals(sequence[0], selected))
-                    sequence.RemoveAt(0);
-        }
-        return result;
     }
 
     private static PythonCell[] CreateCells(
@@ -6341,16 +6281,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             case PythonTupleValue tuple:
                 return tuple.Elements.Any(element => MatchesClassInfo(value, element, span));
             case PythonBuiltinTypeValue { Name: "object" }:
-                return true;
+                return PythonBuiltinTypes
+                    .GetMro(PythonBuiltinTypes.GetRuntimeType(value))
+                    .Elements.Any(entry => ReferenceEquals(entry, PythonBuiltinFunctions.Object));
             case PythonBuiltinTypeValue builtinType:
                 return ReferenceEquals(TypeOf([value], span), builtinType)
                     || PythonBuiltinTypes.IsInstance(value, builtinType);
             case PythonExceptionTypeValue exceptionType:
                 return value is PythonExceptionValue exception
-                    && IsExceptionSubclass(exception.TypeName, exceptionType.Name);
+                    && IsExceptionSubclass(exception, exceptionType.Name);
             case PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass
                 when value is PythonExceptionValue raisedValue:
-                return IsExceptionSubclass(raisedValue.TypeName, exceptionClass.Name);
+                return raisedValue.ManagedType is { } exceptionRuntimeType
+                    && IsSubclassOf(exceptionRuntimeType, exceptionClass, span);
             case PythonManagedTypeValue managedType:
             {
                 var runtimeType = PythonBuiltinTypes.GetRuntimeType(value);
@@ -6490,6 +6433,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             cell.Cell.Value = type;
             type.Attributes.Remove("__classcell__");
         }
+        InitializeMethodResolutionOrder(type, span);
         InitializeClassAttributeNames(type, span);
         InitializeSubclass(type, [.. keywordNames], [.. keywordValues], span);
         return type;
@@ -6990,7 +6934,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         return (InvokeCallableNested(callable, row, span), null);
                     }
                     catch (PythonRaisedException raised)
-                        when (IsExceptionSubclass(raised.Value.TypeName, "StopIteration"))
+                        when (IsExceptionSubclass(raised.Value, "StopIteration"))
                     {
                         return (PythonNoneValue.Instance, raised.Value);
                     }
@@ -7170,33 +7114,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         return IsSubclassOf(cls, classInfo, span);
     }
 
-    private bool IsSubclassOf(PythonValue cls, PythonValue classInfo, TextSpan span) =>
+    private static bool IsSubclassOf(PythonValue cls, PythonValue classInfo, TextSpan span) =>
         classInfo switch
         {
             PythonTupleValue tuple => tuple.Elements.Any(element =>
                 IsSubclassOf(cls, element, span)
             ),
-            PythonBuiltinTypeValue { Name: "object" } => true,
-            PythonBuiltinTypeValue { Name: "type" }
-                when cls is PythonManagedTypeValue { IsMetaclass: true } => true,
-            PythonBuiltinTypeValue builtinType => cls is PythonBuiltinTypeValue candidate
-                && (
-                    ReferenceEquals(candidate, builtinType)
-                    || ReferenceEquals(candidate, PythonBuiltinTypes.Bool)
-                        && ReferenceEquals(builtinType, PythonBuiltinTypes.Int)
-                ),
-            PythonExceptionTypeValue exceptionType => cls switch
-            {
-                PythonExceptionTypeValue candidate => IsExceptionSubclass(
-                    candidate.Name,
-                    exceptionType.Name
-                ),
-                PythonManagedTypeValue { ExceptionBaseName: not null } managed =>
-                    IsExceptionSubclass(managed.Name, exceptionType.Name),
-                _ => false,
-            },
-            PythonManagedTypeValue managedType => cls is PythonManagedTypeValue candidateType
-                && candidateType.Mro.Any(current => ReferenceEquals(current, managedType)),
+            _ when PythonTypeProtocols.IsType(classInfo) => ReferenceEquals(cls, classInfo)
+                || PythonBuiltinTypes
+                    .GetMro(cls)
+                    .Elements.Any(entry => ReferenceEquals(entry, classInfo)),
             _ => throw Fault(
                 "DPY4003",
                 "issubclass() arg 2 must be a class, a tuple of classes, or a union",

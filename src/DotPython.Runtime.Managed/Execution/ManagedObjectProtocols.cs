@@ -216,6 +216,14 @@ internal static class ManagedObjectProtocols
                         name
                     );
                 }
+                if (name == "__init_subclass__")
+                    return BindDescriptor(
+                        PythonTypeProtocols.InitSubclass,
+                        null,
+                        PythonBuiltinTypes.CreateOpaque("super"),
+                        span,
+                        name
+                    );
                 throw Fault(
                     "DPY4022",
                     $"'super' object has no attribute '{name}'.",
@@ -226,11 +234,14 @@ internal static class ManagedObjectProtocols
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return BindDescriptor(value, null, type, span, name);
-            case PythonManagedTypeValue { IsMetaclass: false }
-                when PythonBuiltinFunctions.TryGetObjectProtocol(
-                    name,
-                    out var inheritedObjectMember
-                ):
+            case PythonManagedTypeValue { IsMetaclass: false } objectClass
+                when PythonBuiltinTypes
+                    .GetMro(objectClass)
+                    .Elements.Any(entry => ReferenceEquals(entry, PythonBuiltinFunctions.Object))
+                    && PythonBuiltinFunctions.TryGetObjectProtocol(
+                        name,
+                        out var inheritedObjectMember
+                    ):
                 return inheritedObjectMember;
             case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass } type
                 when TryGetTypeAttribute(metaclass, name, out var metaclassAttribute):
@@ -254,6 +265,9 @@ internal static class ManagedObjectProtocols
                 when ReferenceEquals(builtin, PythonBuiltinTypes.Type)
                     && PythonTypeProtocols.TryGetAttribute(name, out var typeAttribute):
                 return BindDescriptor(typeAttribute, null, builtin, span, name);
+            case PythonBuiltinTypeValue or PythonExceptionTypeValue when name == "mro":
+                PythonTypeProtocols.TryGetAttribute(name, out var mroMethod);
+                return BindDescriptor(mroMethod, target, PythonBuiltinTypes.Type, span, name);
             case PythonBuiltinTypeValue builtin when name == "__init_subclass__":
                 return BindDescriptor(PythonTypeProtocols.InitSubclass, null, builtin, span, name);
             case PythonBuiltinTypeValue { Name: "object" }
@@ -2885,6 +2899,11 @@ internal static class ManagedObjectProtocols
         out PythonValue value
     )
     {
+        if (type.IsMroPending)
+        {
+            value = null!;
+            return false;
+        }
         if (type.ResolutionOrder is { } resolutionOrder)
         {
             foreach (var current in resolutionOrder)
