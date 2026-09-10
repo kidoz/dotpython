@@ -12,6 +12,10 @@ internal interface IUserObjectDispatcher
 {
     PythonValue Invoke(PythonValue callable, PythonValue[] arguments, TextSpan span);
 
+    PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);
+
+    PythonBuiltinFunctionValue GetBuiltinConstructor(string name);
+
     /// <summary>The executing VM's standard output (`sys.stdout`).</summary>
     TextWriter StandardOutput { get; }
 

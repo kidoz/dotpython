@@ -8,6 +8,7 @@ public sealed class DescriptorExecutionTests
     [Theory]
     [InlineData("__get__", "class C: value = D()\nC().value")]
     [InlineData("__set_name__", "class C: value = D()")]
+    [InlineData("__set_name__", "C = type('C', (), {'value': D()})")]
     public void DescriptorCallbacksShareInstructionBudgetAndUnwind(string hook, string operation)
     {
         ArgumentNullException.ThrowIfNull(operation);

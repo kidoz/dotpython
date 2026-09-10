@@ -458,8 +458,9 @@ internal sealed record PythonManagedTypeValue : PythonValue
         string? exceptionBaseName = null
     )
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(name);
         Name = name;
+        QualName = name;
         Bases = bases;
         Mro = [this, .. linearizedBases ?? []];
         Construct = construct;
@@ -471,6 +472,8 @@ internal sealed record PythonManagedTypeValue : PythonValue
     /// <summary>The declared base classes, in source order.</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Bases { get; }
 
+    internal IReadOnlyList<PythonValue>? DeclaredBases { get; set; }
+
     /// <summary>The C3 method resolution order, starting with this type (no `object` terminus).</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Mro { get; }
 
@@ -481,13 +484,16 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal Func<IReadOnlyList<PythonValue>, PythonValue>? Construct { get; }
 
-    internal string Name { get; }
+    internal string Name { get; set; }
+
+    internal string? QualName { get; set; }
 
     /// <summary>The `__name__` of the defining module (`__module__`); null for runtime-internal types.</summary>
     internal string? Module { get; set; }
 
     /// <summary>`__module__.__qualname__`, the form CPython prints in reprs.</summary>
-    internal string QualifiedDisplayName => Module is null ? Name : $"{Module}.{Name}";
+    internal string QualifiedDisplayName =>
+        Module is null ? QualName ?? Name : $"{Module}.{QualName ?? Name}";
 
     public bool Equals(PythonManagedTypeValue? other) => ReferenceEquals(this, other);
 

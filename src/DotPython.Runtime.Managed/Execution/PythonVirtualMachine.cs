@@ -55,6 +55,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ["KeyboardInterrupt"] = "BaseException",
         };
     private readonly Dictionary<string, PythonValue> _builtins;
+    private readonly Dictionary<string, PythonBuiltinFunctionValue> _builtinConstructors = new(
+        StringComparer.Ordinal
+    );
     private readonly CancellationToken _cancellationToken;
     private readonly bool _enableReturnLocalContinuation;
     private readonly PythonErrorIndicator _errorIndicator = new();
@@ -218,7 +221,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ),
             ["input"] = new PythonBuiltinFunctionValue("input", Input),
         };
-        _builtins.Add("type", new PythonBuiltinFunctionValue("type", TypeOf));
+        _builtins.Add("type", PythonBuiltinTypes.Type);
         _builtins.Add(
             "pow",
             new PythonBuiltinFunctionValue("pow", Power).WithSignature(
@@ -255,11 +258,45 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         {
             _builtins.Add(builtinType.Name, builtinType);
         }
+        // These public constructors are classes, retaining their existing call and
+        // keyword implementations while exposing the same object through type().
+        foreach (
+            var name in new[]
+            {
+                "range",
+                "enumerate",
+                "super",
+                "map",
+                "filter",
+                "zip",
+                "slice",
+                "property",
+                "staticmethod",
+                "classmethod",
+                "reversed",
+            }
+        )
+        {
+            var function = (PythonBuiltinFunctionValue)_builtins[name];
+            _builtinConstructors[name] = function;
+            _builtins[name] = PythonBuiltinTypes.GetConstructorType(function);
+        }
         foreach (var name in ExceptionBaseNames.Keys)
         {
-            _builtins.Add(name, new PythonExceptionTypeValue(name));
+            _builtins.Add(name, PythonBuiltinTypes.GetExceptionType(name));
         }
     }
+
+    internal static string? GetBuiltinExceptionBase(string name) =>
+        ExceptionBaseNames.GetValueOrDefault(name);
+
+    PythonBuiltinFunctionValue IUserObjectDispatcher.GetBuiltinConstructor(string name) =>
+        _builtinConstructors[name];
+
+    PythonValue IUserObjectDispatcher.ConstructType(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    ) => TypeOf(arguments, span);
 
     internal PythonValue Execute(PreparedPythonCode code)
     {
@@ -5586,76 +5623,98 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             closure[index] = CurrentFrame.Cells[cellIndex];
         }
 
-        if (baseValue is PythonTupleValue explicitBases)
+        var bases = baseValue switch
         {
-            baseValue = new PythonTupleValue([
-                .. explicitBases.Elements.Where(element => !IsObjectBase(element)),
-            ]);
-        }
-        else if (baseValue is not null && IsObjectBase(baseValue))
-        {
-            baseValue = null;
-        }
+            null => new PythonTupleValue([]),
+            PythonTupleValue tuple => tuple,
+            _ => new PythonTupleValue([baseValue]),
+        };
+        var type = CreateClassValue(code.Definition.Name, bases, instruction.Span);
+        type.Module = CurrentModuleName();
+        type.Attributes["__module__"] = new PythonTextValue(type.Module ?? "__main__");
+        PushClassBodyFrame(type, code, closure);
+    }
 
-        if (baseValue is PythonTupleValue { Elements.Length: > 1 } baseTuple)
+    private PythonManagedTypeValue CreateClassValue(
+        string name,
+        PythonTupleValue bases,
+        TextSpan span
+    )
+    {
+        for (var index = 0; index < bases.Elements.Length; index++)
         {
-            var multiType = CreateMultiBaseClass(code.Definition.Name, baseTuple, instruction.Span);
-            multiType.Module = CurrentModuleName();
-            PushClassBodyFrame(multiType, code, closure);
-            return;
+            if (
+                bases
+                    .Elements.Take(index)
+                    .Any(candidate => ReferenceEquals(candidate, bases.Elements[index]))
+            )
+            {
+                var duplicate = bases.Elements[index];
+                var duplicateName = duplicate switch
+                {
+                    PythonManagedTypeValue managed => managed.Name,
+                    PythonBuiltinTypeValue builtin => builtin.Name,
+                    PythonExceptionTypeValue exception => exception.Name,
+                    _ => ManagedObjectProtocols.GetTypeName(duplicate),
+                };
+                throw Fault("DPY4034", $"duplicate base class {duplicateName}", span, "TypeError");
+            }
         }
-
-        if (baseValue is PythonTupleValue singleTuple)
+        for (var index = 0; index < bases.Elements.Length - 1; index++)
         {
-            baseValue = singleTuple.Elements.Length == 1 ? singleTuple.Elements[0] : null;
+            if (IsObjectBase(bases.Elements[index]))
+            {
+                throw Fault(
+                    "DPY4034",
+                    "Cannot create a consistent method resolution order (MRO) for bases object",
+                    span,
+                    "TypeError"
+                );
+            }
         }
-
+        var effectiveBases = bases.Elements.Where(element => !IsObjectBase(element)).ToArray();
         PythonManagedTypeValue type;
-        switch (baseValue)
+        if (effectiveBases.Length > 1)
         {
-            case null:
-                type = new PythonManagedTypeValue(code.Definition.Name);
-                break;
-            case PythonManagedTypeValue managedBase:
-                type = new PythonManagedTypeValue(
-                    code.Definition.Name,
+            type = CreateMultiBaseClass(name, new PythonTupleValue(effectiveBases), span);
+        }
+        else
+        {
+            type = (effectiveBases.Length == 0 ? null : effectiveBases[0]) switch
+            {
+                null => new PythonManagedTypeValue(name),
+                PythonManagedTypeValue managedBase => new PythonManagedTypeValue(
+                    name,
                     managedBase,
                     exceptionBaseName: managedBase.ExceptionBaseName is null
                         ? null
                         : managedBase.Name
-                );
-                break;
-            case PythonExceptionTypeValue exceptionBase:
-                type = new PythonManagedTypeValue(
-                    code.Definition.Name,
+                ),
+                PythonExceptionTypeValue exceptionBase => new PythonManagedTypeValue(
+                    name,
                     exceptionBaseName: exceptionBase.Name
-                );
-                break;
-            case PythonBuiltinTypeValue builtinBase:
-                throw Fault(
+                ),
+                PythonBuiltinTypeValue builtinBase => throw Fault(
                     "DPY4034",
-                    $"Subclassing the builtin type '{builtinBase.Name}' is not supported "
-                        + "in this runtime slice.",
-                    instruction.Span,
+                    $"Subclassing the builtin type '{builtinBase.Name}' is not supported in this runtime slice.",
+                    span,
                     "TypeError"
-                );
-            default:
-                throw Fault(
+                ),
+                var other => throw Fault(
                     "DPY4034",
-                    $"'{ManagedObjectProtocols.GetTypeName(baseValue)}' is not an "
-                        + "acceptable base type.",
-                    instruction.Span,
+                    $"'{ManagedObjectProtocols.GetTypeName(other)}' is not an acceptable base type.",
+                    span,
                     "TypeError"
-                );
+                ),
+            };
         }
-
+        type.DeclaredBases =
+            bases.Elements.Length == 0 ? [PythonBuiltinFunctions.Object] : [.. bases.Elements];
         if (type.ExceptionBaseName is not null)
         {
             _exceptionBaseOverlay[type.Name] = type.ExceptionBaseName;
         }
-
-        type.Module = CurrentModuleName();
-        PushClassBodyFrame(type, code, closure);
+        return type;
     }
 
     /// <summary>The `__name__` of the executing module, for `__module__` and class reprs.</summary>
@@ -5954,6 +6013,7 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 }
             }
 
+            FinalizeClassMetadata(completedClass, GetCurrentSpan(CurrentFrame));
             InitializeClassAttributeNames(completedClass, GetCurrentSpan(CurrentFrame));
         }
 
@@ -6160,7 +6220,8 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             case PythonBuiltinTypeValue { Name: "object" }:
                 return true;
             case PythonBuiltinTypeValue builtinType:
-                return PythonBuiltinTypes.IsInstance(value, builtinType);
+                return ReferenceEquals(TypeOf([value], span), builtinType)
+                    || PythonBuiltinTypes.IsInstance(value, builtinType);
             case PythonExceptionTypeValue exceptionType:
                 return value is PythonExceptionValue exception
                     && IsExceptionSubclass(exception.TypeName, exceptionType.Name);
@@ -6190,32 +6251,114 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
 
     private PythonValue TypeOf(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        ValidateBuiltinArgumentCount("type", arguments, span);
-        return arguments[0] switch
+        if (arguments.Count == 3)
         {
-            PythonTruthValue => PythonBuiltinTypes.Bool,
-            PythonWholeNumberValue => PythonBuiltinTypes.Int,
-            PythonFloatingPointValue => PythonBuiltinTypes.Float,
-            PythonComplexValue => PythonBuiltinFunctions.Complex,
-            PythonTextValue => PythonBuiltinTypes.Str,
-            PythonByteSequenceValue => PythonBuiltinTypes.Bytes,
-            PythonTemplateValue => PythonStandardModules.TemplateType,
-            PythonInterpolationValue => PythonStandardModules.InterpolationType,
-            PythonListValue => PythonBuiltinTypes.List,
-            PythonTupleValue => PythonBuiltinTypes.Tuple,
-            PythonDictionaryValue => PythonBuiltinTypes.Dict,
-            PythonSetValue { IsFrozen: true } => PythonBuiltinTypes.Frozenset,
-            PythonSetValue => PythonBuiltinTypes.Set,
-            PythonManagedObjectValue instance => instance.Type,
-            PythonExceptionValue { ManagedType: { } managedType } => managedType,
-            PythonExceptionValue exception => _builtins.TryGetValue(
-                exception.TypeName,
-                out var exceptionType
-            )
-                ? exceptionType
-                : new PythonExceptionTypeValue(exception.TypeName),
-            var other => PythonBuiltinTypes.CreateOpaque(ManagedObjectProtocols.GetTypeName(other)),
-        };
+            return ConstructDynamicType(arguments, span);
+        }
+        if (arguments.Count != 1)
+        {
+            throw Fault("DPY4003", "type() takes 1 or 3 arguments", span, "TypeError");
+        }
+        var value = arguments[0];
+        var typeName = PythonBuiltinTypes.GetRuntimeTypeName(value);
+        if (
+            value is not (PythonManagedObjectValue or PythonExceptionValue)
+            && _builtins.TryGetValue(typeName, out var builtin)
+            && builtin is PythonBuiltinTypeValue
+        )
+        {
+            return builtin;
+        }
+        return PythonBuiltinTypes.GetRuntimeType(value);
+    }
+
+    private PythonManagedTypeValue ConstructDynamicType(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments[0] is not PythonTextValue name)
+        {
+            throw Fault(
+                "DPY4003",
+                $"type.__new__() argument 1 must be str, not {ManagedObjectProtocols.GetTypeName(arguments[0])}",
+                span,
+                "TypeError"
+            );
+        }
+        if (name.Value.Contains('\0', StringComparison.Ordinal))
+        {
+            throw Fault(
+                "DPY4003",
+                "type name must not contain null characters",
+                span,
+                "ValueError"
+            );
+        }
+        if (arguments[1] is not PythonTupleValue bases)
+        {
+            throw Fault(
+                "DPY4003",
+                $"type.__new__() argument 2 must be tuple, not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
+                span,
+                "TypeError"
+            );
+        }
+        if (arguments[2] is not PythonDictionaryValue dictionary)
+        {
+            throw Fault(
+                "DPY4003",
+                $"type.__new__() argument 3 must be dict, not {ManagedObjectProtocols.GetTypeName(arguments[2])}",
+                span,
+                "TypeError"
+            );
+        }
+        var type = CreateClassValue(name.Value, bases, span);
+        // type.__new__ copies the namespace; subsequent writes through the source
+        // dictionary must not mutate the completed class.
+        foreach (var item in dictionary.Items)
+        {
+            type.Attributes.Dictionary.Items.Add(
+                new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
+            );
+        }
+        type.Attributes.Dictionary.SizeVersion++;
+        if (!type.Attributes.TryGetValue("__module__", out _))
+        {
+            type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");
+        }
+        FinalizeClassMetadata(type, span);
+        InitializeClassAttributeNames(type, span);
+        return type;
+    }
+
+    private static void FinalizeClassMetadata(PythonManagedTypeValue type, TextSpan span)
+    {
+        if (type.Attributes.TryGetValue("__qualname__", out var qualifiedName))
+        {
+            if (qualifiedName is not PythonTextValue qualifiedText)
+            {
+                throw Fault(
+                    "DPY4003",
+                    $"type __qualname__ must be a str, not {ManagedObjectProtocols.GetTypeName(qualifiedName)}",
+                    span,
+                    "TypeError"
+                );
+            }
+            type.QualName = qualifiedText.Value;
+            type.Attributes.Remove("__qualname__");
+        }
+        if (
+            type.Attributes.TryGetValue("__module__", out var module)
+            && module is PythonTextValue moduleText
+        )
+        {
+            type.Module = moduleText.Value;
+        }
+        if (!type.Attributes.TryGetValue("__doc__", out _))
+        {
+            type.Attributes["__doc__"] = PythonNoneValue.Instance;
+        }
     }
 
     private PythonValue Sum(IReadOnlyList<PythonValue> arguments, TextSpan span)
@@ -6849,8 +6992,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             PythonBuiltinTypeValue { Name: "object" } => true,
             PythonBuiltinTypeValue builtinType => cls is PythonBuiltinTypeValue candidate
                 && (
-                    candidate.Name == builtinType.Name
-                    || candidate.Name == "bool" && builtinType.Name == "int"
+                    ReferenceEquals(candidate, builtinType)
+                    || ReferenceEquals(candidate, PythonBuiltinTypes.Bool)
+                        && ReferenceEquals(builtinType, PythonBuiltinTypes.Int)
                 ),
             PythonExceptionTypeValue exceptionType => cls switch
             {
@@ -7462,6 +7606,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
             ),
             (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
                 AreDictionariesEqual(leftDictionary, rightDictionary),
+
+            (PythonBuiltinTypeValue, PythonBuiltinTypeValue) => ReferenceEquals(left, right),
+            (PythonManagedTypeValue, PythonManagedTypeValue) => ReferenceEquals(left, right),
+            (PythonExceptionTypeValue, PythonExceptionTypeValue) => ReferenceEquals(left, right),
             (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>

@@ -2,6 +2,7 @@
 // comparison key derived from user identity.
 #pragma warning disable CA1308
 
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Numerics;
 using System.Text;
@@ -12,6 +13,147 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Built-in type objects usable as constructors and isinstance class info.</summary>
 internal static class PythonBuiltinTypes
 {
+    private static readonly ConcurrentDictionary<string, PythonBuiltinTypeValue> OpaqueTypes = new(
+        StringComparer.Ordinal
+    );
+    private static readonly ConcurrentDictionary<string, PythonBuiltinTypeValue> ConstructorTypes =
+        new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, PythonExceptionTypeValue> ExceptionTypes =
+        new(StringComparer.Ordinal);
+
+    internal static readonly PythonBuiltinTypeValue Type = new(
+        "type",
+        (arguments, span) => UserObjectProtocols.Dispatcher!.ConstructType(arguments, span)
+    );
+
+    internal static PythonBuiltinTypeValue GetConstructorType(
+        PythonBuiltinFunctionValue function
+    ) =>
+        ConstructorTypes.GetOrAdd(
+            function.Name,
+            static (name, hasKeywords) =>
+                new PythonBuiltinTypeValue(
+                    name,
+                    (arguments, span) =>
+                        UserObjectProtocols
+                            .Dispatcher!.GetBuiltinConstructor(name)
+                            .Invoke(arguments, span),
+                    hasKeywords
+                        ? (arguments, names, values, span) =>
+                            UserObjectProtocols
+                                .Dispatcher!.GetBuiltinConstructor(name)
+                                .InvokeWithKeywords!(arguments, names, values, span)
+                        : null
+                ),
+            function.InvokeWithKeywords is not null
+        );
+
+    internal static PythonExceptionTypeValue GetExceptionType(string name) =>
+        ExceptionTypes.GetOrAdd(name, static key => new PythonExceptionTypeValue(key));
+
+    internal static PythonTupleValue GetBases(PythonValue type) =>
+        type switch
+        {
+            PythonBuiltinTypeValue builtin
+                when ReferenceEquals(builtin, PythonBuiltinFunctions.Object) => new([]),
+            PythonBuiltinTypeValue builtin when ReferenceEquals(builtin, Bool) => new([Int]),
+            PythonBuiltinTypeValue => new([PythonBuiltinFunctions.Object]),
+            PythonManagedTypeValue managed
+                when ReferenceEquals(managed, PythonBuiltinFunctions.ObjectType) => new([]),
+            PythonManagedTypeValue { DeclaredBases: { Count: > 0 } declared } => new([.. declared]),
+            PythonManagedTypeValue { Bases.Count: > 0 } managed => new([.. managed.Bases]),
+            PythonManagedTypeValue { ExceptionBaseName: { } baseName } => new([
+                GetExceptionType(baseName),
+            ]),
+            PythonManagedTypeValue => new([PythonBuiltinFunctions.Object]),
+            PythonExceptionTypeValue exception
+                when PythonVirtualMachine.GetBuiltinExceptionBase(exception.Name) is { } baseName =>
+                new([GetExceptionType(baseName)]),
+            PythonExceptionTypeValue => new([PythonBuiltinFunctions.Object]),
+            _ => throw new ArgumentException("Expected a Python type.", nameof(type)),
+        };
+
+    internal static PythonTupleValue GetMro(PythonValue type)
+    {
+        if (
+            type is PythonManagedTypeValue managed
+            && !ReferenceEquals(managed, PythonBuiltinFunctions.ObjectType)
+        )
+        {
+            var entries = managed.Mro.Cast<PythonValue>().ToList();
+            var oldest = managed.Mro[^1];
+            if (oldest.ExceptionBaseName is { } exceptionBase)
+            {
+                entries.AddRange(GetMro(GetExceptionType(exceptionBase)).Elements);
+            }
+            else
+            {
+                entries.Add(PythonBuiltinFunctions.Object);
+            }
+            return new([.. entries]);
+        }
+        if (ReferenceEquals(type, PythonBuiltinFunctions.ObjectType))
+        {
+            type = PythonBuiltinFunctions.Object;
+        }
+        var bases = GetBases(type).Elements;
+        return bases.Length == 0 ? new([type]) : new([type, .. GetMro(bases[0]).Elements]);
+    }
+
+    internal static PythonValue GetRuntimeType(PythonValue value) =>
+        value switch
+        {
+            PythonBuiltinTypeValue or PythonManagedTypeValue or PythonExceptionTypeValue => Type,
+            PythonTruthValue => Bool,
+            PythonWholeNumberValue => Int,
+            PythonFloatingPointValue => Float,
+            PythonComplexValue => PythonBuiltinFunctions.Complex,
+            PythonTextValue => Str,
+            PythonByteSequenceValue => Bytes,
+            PythonTemplateValue => PythonStandardModules.TemplateType,
+            PythonInterpolationValue => PythonStandardModules.InterpolationType,
+            PythonListValue => List,
+            PythonTupleValue => Tuple,
+            PythonDictionaryValue => Dict,
+            PythonMappingProxyValue => PythonMappingProxies.Type,
+            PythonSetValue { IsFrozen: true } => Frozenset,
+            PythonSetValue => Set,
+            PythonManagedObjectValue instance
+                when ReferenceEquals(instance.Type, PythonBuiltinFunctions.ObjectType) =>
+                PythonBuiltinFunctions.Object,
+            PythonManagedObjectValue instance => instance.Type,
+            PythonExceptionValue { ManagedType: { } managedType } => managedType,
+            PythonExceptionValue exception => GetExceptionType(exception.TypeName),
+            _ => ConstructorTypes.TryGetValue(GetRuntimeTypeName(value), out var constructorType)
+                ? constructorType
+                : CreateOpaque(GetRuntimeTypeName(value)),
+        };
+
+    internal static string GetRuntimeTypeName(PythonValue value) =>
+        value switch
+        {
+            PythonBuiltinTypeValue => "type",
+            PythonSuperProxyValue => "super",
+            PythonIteratorValue { Iterable: PythonEnumerateSourceValue } => "enumerate",
+            PythonIteratorValue { Iterable: PythonZipSourceValue } => "zip",
+            PythonIteratorValue { Iterable: PythonMapSourceValue } => "map",
+            PythonIteratorValue { Iterable: PythonFilterSourceValue } => "filter",
+            PythonIteratorValue { Iterable: PythonListValue } => "list_iterator",
+            PythonIteratorValue { Iterable: PythonTupleValue } => "tuple_iterator",
+            PythonIteratorValue { Iterable: PythonTextValue text }
+                when text.Value.All(character => character <= 127) => "str_ascii_iterator",
+            PythonIteratorValue { Iterable: PythonTextValue } => "str_iterator",
+            PythonIteratorValue { Iterable: PythonRangeValue } => "range_iterator",
+            PythonIteratorValue { Iterable: PythonDictionaryValue } => "dict_keyiterator",
+            PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_keys" } } =>
+                "dict_keyiterator",
+            PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_values" } } =>
+                "dict_valueiterator",
+            PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_items" } } =>
+                "dict_itemiterator",
+            _ => ManagedObjectProtocols.GetTypeName(value),
+        };
+
     internal static readonly PythonBuiltinTypeValue Bool = new("bool", ConstructBool);
     internal static readonly PythonBuiltinTypeValue Bytes = new(
         "bytes",
@@ -62,14 +204,18 @@ internal static class PythonBuiltinTypes
         [Bool, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
-        new(
+        OpaqueTypes.GetOrAdd(
             name,
-            (_, span) =>
-                throw ManagedObjectProtocols.Fault(
-                    "DPY4009",
-                    $"The type '{name}' is not constructible in this runtime slice.",
-                    span,
-                    "TypeError"
+            static key =>
+                new(
+                    key,
+                    (_, span) =>
+                        throw ManagedObjectProtocols.Fault(
+                            "DPY4009",
+                            $"The type '{key}' is not constructible in this runtime slice.",
+                            span,
+                            "TypeError"
+                        )
                 )
         );
 
@@ -90,6 +236,10 @@ internal static class PythonBuiltinTypes
             "Template" => value is PythonTemplateValue,
             "Interpolation" => value is PythonInterpolationValue,
             "object" => true,
+            "type" => value
+                is PythonBuiltinTypeValue
+                    or PythonManagedTypeValue
+                    or PythonExceptionTypeValue,
             _ => false,
         };
 

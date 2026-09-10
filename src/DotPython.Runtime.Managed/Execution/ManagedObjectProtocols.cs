@@ -126,6 +126,25 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
+        if (name == "__class__" && target is not PythonManagedObjectValue)
+        {
+            return UserObjectProtocols.Dispatcher is null
+                ? PythonBuiltinTypes.GetRuntimeType(target)
+                : PythonBuiltinTypes.Type.Construct([target], span);
+        }
+        if (target is PythonBuiltinTypeValue or PythonManagedTypeValue or PythonExceptionTypeValue)
+        {
+            if (name == "__mro__")
+                return PythonBuiltinTypes.GetMro(target);
+            if (name == "__bases__")
+                return PythonBuiltinTypes.GetBases(target);
+            if (name == "__base__")
+            {
+                var bases = PythonBuiltinTypes.GetBases(target).Elements;
+                return bases.Length == 0 ? PythonNoneValue.Instance : bases[0];
+            }
+        }
+
         switch (target)
         {
             case PythonModuleValue module when name == "__dict__":
@@ -207,18 +226,16 @@ internal static class ManagedObjectProtocols
                 return new PythonMappingProxyValue(type.Attributes.Dictionary);
             case PythonMappingProxyValue proxy:
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
+            case PythonManagedTypeValue type when name == "__name__":
+                return new PythonTextValue(type.Name);
+            case PythonManagedTypeValue type when name == "__qualname__":
+                return new PythonTextValue(type.QualName ?? type.Name);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return BindDescriptor(value, null, type, span, name);
-            case PythonManagedTypeValue type when name == "__name__" || name == "__qualname__":
-                return new PythonTextValue(type.Name);
             case PythonManagedTypeValue type when name == "__module__":
                 return type.Module is null
                     ? new PythonTextValue("builtins")
                     : new PythonTextValue(type.Module);
-            case PythonManagedTypeValue type when name == "__mro__":
-                return new PythonTupleValue([.. type.Mro.Cast<PythonValue>()]);
-            case PythonManagedTypeValue type when name == "__bases__":
-                return new PythonTupleValue([.. type.Bases.Cast<PythonValue>()]);
             case PythonManagedTypeValue type:
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
@@ -796,8 +813,40 @@ internal static class ManagedObjectProtocols
 
                 SetInstanceAttribute(instance, name, value, span);
                 return;
+            case PythonManagedTypeValue type when name is "__name__" or "__qualname__":
+                if (value is not PythonTextValue text)
+                {
+                    throw Fault(
+                        "DPY4023",
+                        $"can only assign string to {type.Name}.{name}, not '{GetTypeName(value)}'",
+                        span,
+                        "TypeError"
+                    );
+                }
+                if (name == "__name__")
+                {
+                    if (text.Value.Contains('\0', StringComparison.Ordinal))
+                    {
+                        throw Fault(
+                            "DPY4023",
+                            "type name must not contain null characters",
+                            span,
+                            "ValueError"
+                        );
+                    }
+                    type.Name = text.Value;
+                }
+                else
+                {
+                    type.QualName = text.Value;
+                }
+                return;
             case PythonManagedTypeValue type:
                 type.Attributes[name] = value;
+                if (name == "__module__")
+                {
+                    type.Module = value is PythonTextValue moduleText ? moduleText.Value : null;
+                }
                 return;
             default:
                 throw Fault(
@@ -1065,6 +1114,14 @@ internal static class ManagedObjectProtocols
 
                 DeleteInstanceAttribute(instance, name, span);
                 return;
+            case PythonManagedTypeValue type
+                when name is "__name__" or "__qualname__" or "__module__":
+                throw Fault(
+                    "DPY4023",
+                    $"cannot delete '{name}' attribute of immutable type '{type.Name}'",
+                    span,
+                    "TypeError"
+                );
             case PythonManagedTypeValue type when type.Attributes.Remove(name):
                 return;
             case PythonManagedTypeValue type:
@@ -2498,7 +2555,8 @@ internal static class ManagedObjectProtocols
             PythonInterpolationValue => "Interpolation",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
-            PythonManagedTypeValue => "type",
+            PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
+            PythonSuperProxyValue => "super",
             PythonPropertyValue => "property",
             PythonStaticMethodValue => "staticmethod",
             PythonClassMethodValue => "classmethod",
