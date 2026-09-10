@@ -276,8 +276,10 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue { Name: "object" }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectMember):
                 return objectMember;
-            case PythonFunctionValue function when name == "__name__" || name == "__qualname__":
+            case PythonFunctionValue function when name == "__name__":
                 return new PythonTextValue(function.Name);
+            case PythonFunctionValue function when name == "__qualname__":
+                return new PythonTextValue(function.QualName ?? function.Name);
             case PythonFunctionValue function when name == "__module__":
                 return function.Globals.TryGetValue("__name__", out var functionModule)
                     ? functionModule

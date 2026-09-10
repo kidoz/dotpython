@@ -719,6 +719,8 @@ internal sealed record PythonFunctionValue(
     IReadOnlyDictionary<string, PythonValue>? KeywordDefaults = null
 ) : PythonValue
 {
+    internal string? QualName { get; init; }
+
     internal PythonAttributeDictionary Attributes { get; set; } = new();
 
     internal override string ToDisplayString() => $"<function {Name}>";

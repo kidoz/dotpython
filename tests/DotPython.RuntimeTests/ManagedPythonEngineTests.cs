@@ -1864,7 +1864,7 @@ public sealed class ManagedPythonEngineTests
         Assert.Equal(
             $"caught Function 'act' received an unexpected keyword argument 'wrong'.{Environment.NewLine}"
                 + $"caught Function 'act' received multiple values for argument 'first'.{Environment.NewLine}"
-                + $"caught Function 'act' is missing a value for argument 'first'.{Environment.NewLine}",
+                + $"caught act() missing 1 required positional argument: 'first'{Environment.NewLine}",
             output.ToString()
         );
     }

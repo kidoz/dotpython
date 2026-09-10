@@ -16,6 +16,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private static readonly PythonCell[] NoCells = [];
     private static readonly PythonValue[] NoDefaults = [];
+    private static readonly ConditionalWeakTable<PreparedPythonCode, string> CodeQualifiedNames =
+        new();
     private static readonly IReadOnlyDictionary<string, string?> ExceptionBaseNames =
         new Dictionary<string, string?>(StringComparer.Ordinal)
         {
@@ -4321,6 +4323,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         var firstPositionalDefault = positionalCount - function.Defaults.Length;
+        List<string>? missingPositional = null;
         for (var index = 0; index < positionalCount; index++)
         {
             if (assigned[index])
@@ -4330,17 +4333,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
             if (index < firstPositionalDefault)
             {
-                throw Fault(
-                    "DPY4009",
-                    $"Function '{function.Name}' is missing a value for argument "
-                        + $"'{variableNames[index]}'.",
-                    span
-                );
+                (missingPositional ??= []).Add(variableNames[index]);
+                continue;
             }
 
             slots[index] = function.Defaults[index - firstPositionalDefault];
         }
 
+        if (missingPositional is not null)
+            throw MissingRequiredArguments(function, missingPositional, "positional", span);
+
+        List<string>? missingKeywordOnly = null;
         for (var index = keywordOnlyStart; index < keywordOnlyStart + keywordOnlyCount; index++)
         {
             if (assigned[index])
@@ -4353,18 +4356,40 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 || !function.KeywordDefaults.TryGetValue(variableNames[index], out var value)
             )
             {
-                throw Fault(
-                    "DPY4009",
-                    $"Function '{function.Name}' is missing a value for keyword-only "
-                        + $"argument '{variableNames[index]}'.",
-                    span
-                );
+                (missingKeywordOnly ??= []).Add(variableNames[index]);
+                continue;
             }
 
             slots[index] = value;
         }
 
+        if (missingKeywordOnly is not null)
+            throw MissingRequiredArguments(function, missingKeywordOnly, "keyword-only", span);
+
         return slots;
+    }
+
+    private static PythonRuntimeException MissingRequiredArguments(
+        PythonFunctionValue function,
+        IReadOnlyList<string> names,
+        string kind,
+        TextSpan span
+    )
+    {
+        var quoted = names.Select(name => $"'{name}'").ToArray();
+        var formatted = quoted.Length switch
+        {
+            1 => quoted[0],
+            2 => $"{quoted[0]} and {quoted[1]}",
+            _ => string.Join(", ", quoted[..^1]) + $", and {quoted[^1]}",
+        };
+        return Fault(
+            "DPY4009",
+            $"{function.QualName ?? function.Name}() missing {names.Count} required {kind} "
+                + $"argument{(names.Count == 1 ? "" : "s")}: {formatted}",
+            span,
+            "TypeError"
+        );
     }
 
     private void ExtendListOnStack(PythonInstruction instruction)
@@ -5484,6 +5509,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
+        if (argumentCount < minimumCount)
+            throw MissingRequiredArguments(
+                function,
+                function
+                    .Code.Definition.VariableNames.Skip(argumentCount)
+                    .Take(minimumCount - argumentCount)
+                    .ToArray(),
+                "positional",
+                span
+            );
+
         var expectation =
             minimumCount == maximumCount
                 ? $"{maximumCount}"
@@ -5664,7 +5700,34 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 defaults,
                 keywordDefaults
             )
+            {
+                QualName = GetDefinedCodeQualifiedName(code),
+            }
         );
+    }
+
+    private string GetDefinedCodeQualifiedName(PreparedPythonCode code)
+    {
+        if (CodeQualifiedNames.TryGetValue(code, out var existing))
+            return existing;
+        var name = code.Definition.Name;
+        var parentDefinition = CurrentFrame.Code.Definition;
+        var functionScope = !CurrentFrame.IsModule && CurrentFrame.ClassConstruction is null;
+        var declaredGlobal = parentDefinition.Instructions.Any(instruction =>
+            (
+                instruction.OpCode == PythonOpCode.StoreGlobal
+                || functionScope && instruction.OpCode == PythonOpCode.StoreName
+            )
+            && parentDefinition.Names[instruction.Operand] == name
+        );
+        if (!CurrentFrame.IsModule && !declaredGlobal)
+        {
+            var parent = CodeQualifiedNames.TryGetValue(CurrentFrame.Code, out var parentName)
+                ? parentName
+                : CurrentFrame.Code.Definition.Name;
+            name = parent + (CurrentFrame.ClassConstruction is null ? ".<locals>." : ".") + name;
+        }
+        return CodeQualifiedNames.GetValue(code, _ => name);
     }
 
     private void MakeInterpolation(TextSpan span)
@@ -5768,6 +5831,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             keywords,
             instruction.Span
         );
+        var qualifiedName = GetDefinedCodeQualifiedName(code);
         PushClassBodyFrame(construction.Namespace, code, closure);
         CurrentFrame.ClassConstruction = construction;
         if (
@@ -5795,7 +5859,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         PythonNamespaceMapping.Set(
             construction.Namespace,
             "__qualname__",
-            new PythonTextValue(code.Definition.Name),
+            new PythonTextValue(qualifiedName),
             instruction.Span
         );
     }
