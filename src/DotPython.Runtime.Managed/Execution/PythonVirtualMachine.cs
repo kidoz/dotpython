@@ -457,12 +457,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(frame.Code.GetConstant(instruction.Operand));
                 break;
             case PythonOpCode.LoadName:
+            case PythonOpCode.LoadGlobal:
                 _evaluationStack.Push(
                     LoadName(
                         frame.Code,
                         instructionIndex,
                         frame.Code.Definition.Names[instruction.Operand],
-                        instruction.Span
+                        instruction.Span,
+                        instruction.OpCode == PythonOpCode.LoadGlobal
                     )
                 );
                 break;
@@ -475,8 +477,29 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 }
                 else
                 {
-                    frame.ClassNamespace.Attributes[storedName] = storedValue;
+                    PythonNamespaceMapping.Set(
+                        frame.ClassNamespace,
+                        storedName,
+                        storedValue,
+                        instruction.Span
+                    );
                 }
+                break;
+            case PythonOpCode.StoreGlobal:
+                frame.Globals.SetValue(
+                    frame.Code.Definition.Names[instruction.Operand],
+                    Pop(instruction.Span)
+                );
+                break;
+            case PythonOpCode.DeleteGlobal:
+                var globalName = frame.Code.Definition.Names[instruction.Operand];
+                if (!frame.Globals.Remove(globalName))
+                    throw Fault(
+                        "DPY4002",
+                        $"name '{globalName}' is not defined",
+                        instruction.Span,
+                        "NameError"
+                    );
                 break;
             case PythonOpCode.DeleteName:
                 DeleteName(ref frame, instruction);
@@ -499,6 +522,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 break;
             case PythonOpCode.StoreLocal:
                 StoreLocal(instruction.Operand, Pop(instruction.Span), instruction.Span);
+                break;
+            case PythonOpCode.LoadClassCell:
+                _evaluationStack.Push(LoadClassCell(instruction.Operand, instruction.Span));
                 break;
             case PythonOpCode.LoadCell:
                 _evaluationStack.Push(LoadCell(instruction.Operand, instruction.Span));
@@ -1500,13 +1526,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         PreparedPythonCode code,
         int instructionIndex,
         string name,
-        TextSpan span
+        TextSpan span,
+        bool bypassClassNamespace = false
     )
     {
-        var classNamespace = CurrentFrame.ClassNamespace;
+        var classNamespace = bypassClassNamespace ? null : CurrentFrame.ClassNamespace;
         if (
             classNamespace is not null
-            && classNamespace.Attributes.TryGetValue(name, out var classValue)
+            && PythonNamespaceMapping.TryGet(classNamespace, name, span, out var classValue)
         )
         {
             return classValue;
@@ -1538,9 +1565,21 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         var name = frame.Code.Definition.Names[instruction.Operand];
         if (frame.ClassNamespace is not null)
         {
-            if (frame.ClassNamespace.Attributes.Remove(name))
+            try
             {
-                return;
+                if (PythonNamespaceMapping.Delete(frame.ClassNamespace, name, instruction.Span))
+                    return;
+            }
+            catch (PythonRaisedException)
+            {
+                // DELETE_NAME replaces Python deletion errors with NameError.
+            }
+            catch (PythonRuntimeException fault)
+                when (fault.PythonExceptionTypeName is not null
+                    || PythonErrorIndicator.GetPythonExceptionTypeName(fault.Code) is not null
+                )
+            {
+                // Host cancellation, instruction limits, and VM faults still propagate.
             }
         }
         else if (frame.Globals.Remove(name))
@@ -1548,7 +1587,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
-        throw Fault("DPY4002", $"Name '{name}' is not defined.", instruction.Span, "NameError");
+        throw Fault("DPY4002", $"name '{name}' is not defined", instruction.Span, "NameError");
     }
 
     private void DeleteLocal(int index, TextSpan span)
@@ -1626,6 +1665,24 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         _locals[frame.LocalsBase + index] = value;
+    }
+
+    private PythonValue LoadClassCell(int index, TextSpan span)
+    {
+        var frame = CurrentFrame;
+        if ((uint)index >= (uint)frame.Cells.Length)
+            throw Fault("DPY4007", "The DotPython closure-cell index is invalid.", span);
+        var definition = frame.Code.Definition;
+        var name =
+            index < definition.CellVariableNames.Count
+                ? definition.CellVariableNames[index]
+                : definition.FreeVariableNames[index - definition.CellVariableNames.Count];
+        if (
+            frame.ClassNamespace is not null
+            && PythonNamespaceMapping.TryGet(frame.ClassNamespace, name, span, out var value)
+        )
+            return value;
+        return LoadCell(index, span);
     }
 
     private PythonValue LoadCell(int index, TextSpan span)
@@ -2801,20 +2858,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     }
 
     private static bool IsAttributeErrorFault(Exception exception) =>
-        exception switch
-        {
-            PythonRuntimeException fault => string.Equals(
-                fault.PythonExceptionTypeName,
-                "AttributeError",
-                StringComparison.Ordinal
-            ),
-            PythonRaisedException raised => string.Equals(
-                raised.Value.TypeName,
-                "AttributeError",
-                StringComparison.Ordinal
-            ),
-            _ => false,
-        };
+        PythonNamespaceMapping.IsPythonException(exception, "AttributeError");
 
     private static void RequireAttributeArguments(
         string builtin,
@@ -2848,7 +2892,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         name = text.Value;
     }
 
-    private PythonDictionaryValue NamespaceBuiltin(
+    private PythonValue NamespaceBuiltin(
         string name,
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
@@ -2899,12 +2943,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
     }
 
-    private PythonDictionaryValue CurrentFrameLocals(TextSpan span)
+    private PythonValue CurrentFrameLocals(TextSpan span)
     {
         ref var frame = ref CurrentFrame;
         if (frame.ClassNamespace is { } classNamespace)
         {
-            return classNamespace.Attributes.Dictionary;
+            return classNamespace;
         }
 
         if (frame.IsModule)
@@ -5426,7 +5470,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         PythonCell[] cells,
         bool hasReturnLocalContinuation = false,
         PythonModuleValue? initializingModule = null,
-        PythonManagedTypeValue? classNamespace = null,
+        PythonValue? classNamespace = null,
         PythonValue? returnOverride = null,
         bool requireNoneReturn = false,
         PythonGeneratorValue? generator = null,
@@ -5690,14 +5734,36 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             keywords,
             instruction.Span
         );
-        var type = new PythonManagedTypeValue(code.Definition.Name)
-        {
-            Attributes = new PythonAttributeDictionary(construction.Namespace),
-        };
-        type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");
-        type.Attributes["__qualname__"] = new PythonTextValue(code.Definition.Name);
-        PushClassBodyFrame(type, code, closure);
+        PushClassBodyFrame(construction.Namespace, code, closure);
         CurrentFrame.ClassConstruction = construction;
+        if (
+            !PythonNamespaceMapping.TryGet(
+                construction.Namespace,
+                "__name__",
+                instruction.Span,
+                out var moduleName
+            )
+            && !CurrentFrame.Globals.TryGetValue("__name__", out moduleName)
+            && !_builtins.TryGetValue("__name__", out moduleName)
+        )
+            throw Fault(
+                "DPY4002",
+                "Name '__name__' is not defined.",
+                instruction.Span,
+                "NameError"
+            );
+        PythonNamespaceMapping.Set(
+            construction.Namespace,
+            "__module__",
+            moduleName,
+            instruction.Span
+        );
+        PythonNamespaceMapping.Set(
+            construction.Namespace,
+            "__qualname__",
+            new PythonTextValue(code.Definition.Name),
+            instruction.Span
+        );
     }
 
     private PythonManagedTypeValue CreateClassValue(
@@ -5799,7 +5865,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         value is PythonBuiltinTypeValue { Name: "object" };
 
     private void PushClassBodyFrame(
-        PythonManagedTypeValue type,
+        PythonValue classNamespace,
         PreparedPythonCode code,
         PythonCell[] closure
     )
@@ -5813,8 +5879,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             0,
             cells,
             hasReturnLocalContinuation,
-            classNamespace: type,
-            returnOverride: type
+            classNamespace: classNamespace
         );
     }
 
@@ -6081,9 +6146,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 if (cellNames[index] != "__class__")
                     continue;
                 classCell = CurrentFrame.Cells[index];
-                ManagedObjectProtocols.SetDictionaryItem(
+                PythonNamespaceMapping.Set(
                     construction.Namespace,
-                    new PythonTextValue("__classcell__"),
+                    "__classcell__",
                     new PythonClassCellValue(classCell),
                     construction.Span
                 );
@@ -6416,6 +6481,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 "TypeError"
             );
         }
+        if (bases.Elements.Any(value => !PythonTypeProtocols.IsType(value)))
+            throw Fault(
+                "DPY4003",
+                "type() doesn't support MRO entry resolution; use types.new_class()",
+                span,
+                "TypeError"
+            );
         var winner = SelectMetaclass(metaclass, bases, span);
         if (!ReferenceEquals(winner, metaclass))
             return InvokeMetaclassNew(
@@ -8378,7 +8450,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             int evaluationStackBase,
             bool hasReturnLocalContinuation,
             PythonModuleValue? initializingModule,
-            PythonManagedTypeValue? classNamespace,
+            PythonValue? classNamespace,
             PythonValue? returnOverride,
             bool requireNoneReturn,
             PythonGeneratorValue? generator = null,
@@ -8419,7 +8491,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         internal PythonCell[] Cells { get; }
 
-        internal PythonManagedTypeValue? ClassNamespace { get; }
+        internal PythonValue? ClassNamespace { get; }
 
         internal PendingClassConstruction? ClassConstruction { get; set; }
 

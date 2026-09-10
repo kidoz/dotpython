@@ -8,10 +8,11 @@ internal sealed partial class PythonVirtualMachine
         string Name,
         PythonTupleValue Bases,
         PythonValue Metaclass,
-        PythonDictionaryValue Namespace,
+        PythonValue Namespace,
         string[] KeywordNames,
         PythonValue[] KeywordValues,
-        TextSpan Span
+        TextSpan Span,
+        PythonTupleValue? OriginalBases = null
     );
 
     private sealed record PythonClassCellValue(PythonCell Cell) : PythonValue
@@ -69,15 +70,10 @@ internal sealed partial class PythonVirtualMachine
     )
     {
         if (
-            !ReferenceEquals(candidate, PythonBuiltinTypes.Type)
-            && candidate is not PythonManagedTypeValue { IsMetaclass: true }
+            candidate
+            is not (PythonManagedTypeValue or PythonBuiltinTypeValue or PythonExceptionTypeValue)
         )
-            throw Fault(
-                "DPY4003",
-                "Only type-based metaclasses are supported in this runtime slice.",
-                span,
-                "TypeError"
-            );
+            return candidate;
         var winner = candidate;
         foreach (var baseType in bases.Elements)
         {
@@ -106,7 +102,11 @@ internal sealed partial class PythonVirtualMachine
         TextSpan span
     )
     {
-        PythonValue candidate = PythonBuiltinTypes.Type;
+        var resolvedBases = ResolveClassBases(bases, span);
+        PythonValue candidate =
+            resolvedBases.Elements.Length == 0
+                ? PythonBuiltinTypes.Type
+                : PythonBuiltinTypes.GetRuntimeType(resolvedBases.Elements[0]);
         var names = new List<string>();
         var values = new List<PythonValue>();
         foreach (var item in keywords.Items)
@@ -121,23 +121,94 @@ internal sealed partial class PythonVirtualMachine
                 values.Add(item.Value);
             }
         }
-        var metaclass = SelectMetaclass(candidate, bases, span);
-        var prepare = ManagedObjectProtocols.GetAttribute(metaclass, "__prepare__", span);
-        var prepared = InvokeCallableNested(
-            prepare,
-            [new PythonTextValue(name), bases],
+        var metaclass = SelectMetaclass(candidate, resolvedBases, span);
+        var prepared = TryGetClassConstructionAttribute(
+            metaclass,
+            "__prepare__",
             span,
-            [.. names],
-            [.. values]
-        );
-        if (prepared is not PythonDictionaryValue dictionary)
+            out var prepare
+        )
+            ? InvokeCallableNested(
+                prepare,
+                [new PythonTextValue(name), resolvedBases],
+                span,
+                [.. names],
+                [.. values]
+            )
+            : new PythonDictionaryValue([]);
+        if (!PythonNamespaceMapping.IsMapping(prepared))
             throw Fault(
                 "DPY4003",
                 $"{TypeDisplayName(metaclass)}.__prepare__() must return a mapping, not {ManagedObjectProtocols.GetTypeName(prepared)}",
                 span,
                 "TypeError"
             );
-        return new(name, bases, metaclass, dictionary, [.. names], [.. values], span);
+        return new(
+            name,
+            resolvedBases,
+            metaclass,
+            prepared,
+            [.. names],
+            [.. values],
+            span,
+            ReferenceEquals(resolvedBases, bases) ? null : bases
+        );
+    }
+
+    private PythonTupleValue ResolveClassBases(PythonTupleValue bases, TextSpan span)
+    {
+        List<PythonValue>? resolved = null;
+        for (var index = 0; index < bases.Elements.Length; index++)
+        {
+            var baseValue = bases.Elements[index];
+            if (
+                baseValue
+                    is PythonManagedTypeValue
+                        or PythonBuiltinTypeValue
+                        or PythonExceptionTypeValue
+                || !TryGetClassConstructionAttribute(
+                    baseValue,
+                    "__mro_entries__",
+                    span,
+                    out var resolve
+                )
+            )
+            {
+                resolved?.Add(baseValue);
+                continue;
+            }
+            var replacement = InvokeCallableNested(resolve, [bases], span);
+            if (replacement is not PythonTupleValue tuple)
+                throw Fault("DPY4003", "__mro_entries__ must return a tuple", span, "TypeError");
+            if (resolved is null)
+            {
+                resolved = [];
+                for (var previous = 0; previous < index; previous++)
+                    resolved.Add(bases.Elements[previous]);
+            }
+            resolved.AddRange(tuple.Elements);
+        }
+        return resolved is null ? bases : new PythonTupleValue([.. resolved]);
+    }
+
+    private static bool TryGetClassConstructionAttribute(
+        PythonValue value,
+        string name,
+        TextSpan span,
+        out PythonValue attribute
+    )
+    {
+        try
+        {
+            attribute = ManagedObjectProtocols.GetAttribute(value, name, span);
+            return true;
+        }
+        catch (Exception exception)
+            when (PythonNamespaceMapping.IsPythonException(exception, "AttributeError"))
+        {
+            attribute = PythonNoneValue.Instance;
+            return false;
+        }
     }
 
     private PythonValue CompleteClassConstruction(
@@ -145,14 +216,21 @@ internal sealed partial class PythonVirtualMachine
         PythonCell? cell
     )
     {
-        var result = InvokeMetaclassConstructor(
+        if (construction.OriginalBases is { } originalBases)
+            PythonNamespaceMapping.Set(
+                construction.Namespace,
+                "__orig_bases__",
+                originalBases,
+                construction.Span
+            );
+        var result = InvokeCallableNested(
             construction.Metaclass,
             [new PythonTextValue(construction.Name), construction.Bases, construction.Namespace],
+            construction.Span,
             construction.KeywordNames,
-            construction.KeywordValues,
-            construction.Span
+            construction.KeywordValues
         );
-        if (result is PythonManagedTypeValue && cell is not null)
+        if (PythonTypeProtocols.IsType(result) && cell is not null)
         {
             if (cell.Value is null)
                 throw Fault(

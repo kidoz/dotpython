@@ -63,7 +63,7 @@ internal sealed class PreparedPythonCode
         _globalLoadCacheIndexes = new int[definition.Instructions.Count];
         _globalLoadCaches = new GlobalLoadCache[
             definition.Instructions.Count(instruction =>
-                instruction.OpCode == PythonOpCode.LoadName
+                instruction.OpCode is PythonOpCode.LoadName or PythonOpCode.LoadGlobal
             )
         ];
         _localCellIndexes = new int[definition.VariableNames.Count];
@@ -104,6 +104,7 @@ internal sealed class PreparedPythonCode
                     _callCacheIndexes[index] = ++callCacheIndex;
                     break;
                 case PythonOpCode.LoadName:
+                case PythonOpCode.LoadGlobal:
                     _globalLoadCacheIndexes[index] = ++globalLoadCacheIndex;
                     break;
                 case PythonOpCode.CompareLessThan:

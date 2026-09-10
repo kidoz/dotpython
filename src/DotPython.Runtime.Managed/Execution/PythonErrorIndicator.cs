@@ -50,7 +50,7 @@ internal sealed class PythonErrorIndicator
         return true;
     }
 
-    private static string? GetPythonExceptionTypeName(string code) =>
+    internal static string? GetPythonExceptionTypeName(string code) =>
         code switch
         {
             "DPY4002" => "NameError",

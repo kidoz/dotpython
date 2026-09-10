@@ -2783,15 +2783,7 @@ internal static class ManagedObjectProtocols
     }
 
     private static bool IsAttributeError(Exception error) =>
-        error switch
-        {
-            PythonRuntimeException fault => fault.PythonExceptionTypeName == "AttributeError",
-            PythonRaisedException raised => raised.Value.TypeName == "AttributeError"
-                || raised.Value.ManagedType?.Mro.Any(type =>
-                    type.ExceptionBaseName == "AttributeError"
-                ) == true,
-            _ => false,
-        };
+        PythonNamespaceMapping.IsPythonException(error, "AttributeError");
 
     private static bool IsDataDescriptor(PythonValue value) =>
         value switch
