@@ -365,6 +365,16 @@ internal static class PythonBuiltinFunctions
     {
         RequireArgumentCount("reversed", arguments, 1, 1, span);
         var sequence = arguments[0];
+        if (
+            sequence
+            is PythonMappingProxyValue
+                or PythonDictionaryValue
+                or PythonDictionaryViewValue
+        )
+        {
+            return PythonMappingProxies.GetReverseIterator(sequence, span);
+        }
+
         if (sequence is PythonManagedObjectValue instance)
         {
             if (
@@ -420,8 +430,7 @@ internal static class PythonBuiltinFunctions
             [
                 .. bytes.Value.Select(item => (PythonValue)PythonWholeNumberValue.Create(item)),
             ],
-            PythonRangeValue or PythonDictionaryValue or PythonDictionaryViewValue =>
-                ManagedObjectProtocols.MaterializeValues(sequence, span),
+            PythonRangeValue => ManagedObjectProtocols.MaterializeValues(sequence, span),
             _ => throw NotReversible(sequence, span),
         };
         values.Reverse();

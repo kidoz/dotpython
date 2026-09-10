@@ -351,6 +351,11 @@ internal static class PythonStandardModules
         IReadOnlyList<string> searchRoots
     )
     {
+        modules["types"] = PythonModuleDefinition.Native(
+            "<dotpython types>",
+            false,
+            globals => globals.SetValue("MappingProxyType", PythonMappingProxies.Type)
+        );
         modules["math"] = PythonModuleDefinition.Native(
             "<dotpython math>",
             isPackage: false,

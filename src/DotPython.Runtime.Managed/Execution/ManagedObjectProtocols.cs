@@ -203,6 +203,10 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
+            case PythonManagedTypeValue type when name == "__dict__":
+                return new PythonMappingProxyValue(type.Attributes.Dictionary);
+            case PythonMappingProxyValue proxy:
+                return PythonMappingProxies.GetAttribute(proxy, name, span);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return BindDescriptor(value, null, type, span, name);
             case PythonManagedTypeValue type when name == "__name__" || name == "__qualname__":
@@ -757,6 +761,16 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonManagedTypeValue when name == "__dict__":
+                throw Fault(
+                    "DPY4023",
+                    "attribute '__dict__' of 'type' objects is not writable",
+                    span,
+                    "AttributeError"
+                );
+            case PythonMappingProxyValue:
+                throw MissingAttribute("mappingproxy", name, span);
+
             case PythonModuleValue when name == "__dict__":
                 throw Fault("DPY4022", "readonly attribute", span, "AttributeError");
             case PythonModuleValue module:
@@ -1012,6 +1026,16 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonManagedTypeValue when name == "__dict__":
+                throw Fault(
+                    "DPY4023",
+                    "attribute '__dict__' of 'type' objects is not writable",
+                    span,
+                    "AttributeError"
+                );
+            case PythonMappingProxyValue:
+                throw MissingAttribute("mappingproxy", name, span);
+
             case PythonModuleValue when name == "__dict__":
                 throw Fault("DPY4022", "readonly attribute", span, "AttributeError");
             case PythonExceptionValue { ManagedType: { } exceptionClass } exception
@@ -1062,8 +1086,9 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => bytes.Value.Length,
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
+            PythonMappingProxyValue proxy => GetLength(proxy.Mapping, span),
             PythonDictionaryValue dictionary => dictionary.Items.Count,
-            PythonDictionaryViewValue view => view.Snapshot.Elements.Count,
+            PythonDictionaryViewValue view => view.Dictionary.Items.Count,
             PythonSetValue set => set.Elements.Count,
             PythonRangeValue range => range.Count <= int.MaxValue
                 ? (int)range.Count
@@ -1341,9 +1366,13 @@ internal static class ManagedObjectProtocols
             return new PythonIteratorValue(new PythonTupleValue([.. items]), -1);
         }
 
+        if (value is PythonMappingProxyValue proxy)
+        {
+            return GetIterator(proxy.Mapping, span, userIteration);
+        }
         if (value is PythonDictionaryViewValue view)
         {
-            return GetIterator(view.Snapshot, span);
+            return new PythonIteratorValue(view, view.Dictionary.SizeVersion);
         }
 
         if (value is PythonFileValue file)
@@ -1396,6 +1425,11 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(iterator);
         iterator.StopIteration = null;
+        if (iterator.IsExhausted)
+        {
+            value = PythonNoneValue.Instance;
+            return false;
+        }
         switch (iterator.Iterable)
         {
             case PythonFileValue file:
@@ -1415,6 +1449,26 @@ internal static class ManagedObjectProtocols
             case PythonTupleValue tuple when iterator.Index < tuple.Elements.Length:
                 value = tuple.Elements[iterator.Index++];
                 return true;
+            case PythonDictionaryViewValue view:
+                if (view.Dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
+                {
+                    throw Fault(
+                        "DPY4016",
+                        "dictionary changed size during iteration",
+                        span,
+                        "RuntimeError"
+                    );
+                }
+                if (iterator.Index < view.Dictionary.Items.Count)
+                {
+                    value = PythonMappingProxies.ViewItem(
+                        view.Dictionary.Items[iterator.Index++],
+                        view.Kind
+                    );
+                    return true;
+                }
+                iterator.IsExhausted = true;
+                break;
             case PythonDictionaryValue dictionary:
                 if (dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
                 {
@@ -1432,6 +1486,7 @@ internal static class ManagedObjectProtocols
                     return true;
                 }
 
+                iterator.IsExhausted = true;
                 break;
             case PythonTextValue text:
             {
@@ -1732,6 +1787,8 @@ internal static class ManagedObjectProtocols
 
                 return PythonWholeNumberValue.Create(range.Start + range.Step * position);
             }
+            case PythonMappingProxyValue proxy:
+                return GetItem(proxy.Mapping, index, span);
             case PythonDictionaryValue dictionary
                 when TryFindDictionaryItem(dictionary, index, out var item):
                 return item.Value;
@@ -1772,6 +1829,14 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonMappingProxyValue:
+                throw Fault(
+                    "DPY4011",
+                    "'mappingproxy' object does not support item assignment",
+                    span,
+                    "TypeError"
+                );
+
             case PythonListValue list when index is PythonSliceValue slice:
                 AssignListSlice(list, slice, value, span);
                 return;
@@ -1867,6 +1932,10 @@ internal static class ManagedObjectProtocols
             return text.Value.Contains(substring.Value, StringComparison.Ordinal);
         }
 
+        if (container is PythonMappingProxyValue proxy)
+        {
+            return Contains(proxy.Mapping, item, span, userIteration);
+        }
         if (container is PythonDictionaryValue dictionary)
         {
             return TryFindDictionaryItem(dictionary, item, out _);
@@ -2033,6 +2102,14 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonMappingProxyValue:
+                throw Fault(
+                    "DPY4011",
+                    "'mappingproxy' object does not support item deletion",
+                    span,
+                    "TypeError"
+                );
+
             case PythonListValue list when index is PythonSliceValue slice:
             {
                 var indices = EnumerateSliceIndices(slice, list.Elements.Count, span).ToList();
@@ -2192,9 +2269,10 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
+            PythonMappingProxyValue proxy => GetLength(proxy.Mapping) != 0,
             PythonDictionaryValue dictionary => dictionary.Items.Count != 0,
             PythonRangeValue range => !range.Count.IsZero,
-            PythonDictionaryViewValue view => view.Snapshot.Elements.Count != 0,
+            PythonDictionaryViewValue view => view.Dictionary.Items.Count != 0,
             PythonSetValue set => set.Elements.Count != 0,
             PythonExternalObjectValue external => IsExternalTruthy(external),
             PythonManagedObjectValue instance => !UserObjectProtocols.TryIsTrue(
@@ -2239,6 +2317,10 @@ internal static class ManagedObjectProtocols
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
+        if (left is PythonMappingProxyValue leftProxy)
+        {
+            return RichCompare(leftProxy.Mapping, right, comparison, span);
+        }
         if (UserObjectProtocols.TryRichCompare(left, right, comparison, span, out var userResult))
         {
             return PythonTruthValue.FromBoolean(IsTrue(userResult));
@@ -2252,6 +2334,11 @@ internal static class ManagedObjectProtocols
         if (right is PythonExternalObjectValue rightExternal)
         {
             return rightExternal.Protocol.RichCompare(left, Reverse(comparison), span);
+        }
+
+        if (right is PythonMappingProxyValue rightProxy)
+        {
+            return RichCompare(rightProxy.Mapping, left, Reverse(comparison), span);
         }
 
         if (comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual)
@@ -2303,6 +2390,7 @@ internal static class ManagedObjectProtocols
         var modulus = (BigInteger.One << 61) - 1;
         BigInteger hash = value switch
         {
+            PythonMappingProxyValue proxy => ComputePythonHash(proxy.Mapping, span),
             PythonTruthValue truth => truth.Value ? 1 : 0,
             PythonWholeNumberValue whole when whole.Value >= 0 => whole.Value % modulus,
             PythonWholeNumberValue whole => -((-whole.Value) % modulus),
@@ -2344,6 +2432,7 @@ internal static class ManagedObjectProtocols
             ),
             PythonModuleValue module => RuntimeHelpers.GetHashCode(module),
             PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
+            PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
                 "DPY4014",
                 $"unhashable type: '{GetTypeName(value)}'",
@@ -2393,6 +2482,7 @@ internal static class ManagedObjectProtocols
             PythonListValue => "list",
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
+            PythonMappingProxyValue => "mappingproxy",
             PythonSliceValue => "slice",
             PythonSetValue set => set.IsFrozen ? "frozenset" : "set",
             PythonDictionaryViewValue view => view.Kind,
@@ -2751,6 +2841,10 @@ internal static class ManagedObjectProtocols
 
     internal static bool AreEqual(PythonValue left, PythonValue right)
     {
+        if (left is PythonMappingProxyValue leftProxy)
+        {
+            return AreEqual(leftProxy.Mapping, right);
+        }
         if (UserObjectProtocols.TryAreEqual(left, right, out var userEqual))
         {
             return userEqual;
@@ -2768,6 +2862,11 @@ internal static class ManagedObjectProtocols
             return rightExternal
                 .Protocol.RichCompare(left, PythonRichComparison.Equal, default)
                 .Value;
+        }
+
+        if (right is PythonMappingProxyValue rightProxy)
+        {
+            return AreEqual(rightProxy.Mapping, left);
         }
 
         if (left is PythonSetValue || right is PythonSetValue)
@@ -2870,9 +2969,18 @@ internal static class ManagedObjectProtocols
 
     internal static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
     {
+        if (left is PythonMappingProxyValue leftProxy)
+        {
+            return CompareOrdered(leftProxy.Mapping, right, span);
+        }
         if (UserObjectProtocols.TryCompareOrdered(left, right, span, out var userOrdering))
         {
             return userOrdering;
+        }
+
+        if (right is PythonMappingProxyValue rightProxy)
+        {
+            return -CompareOrdered(rightProxy.Mapping, left, span);
         }
 
         left = PromoteTruthValue(left);

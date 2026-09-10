@@ -7032,6 +7032,19 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     {
         var right = Pop(span);
         var left = Pop(span);
+        if (binaryOpCode == PythonOpCode.BinaryOr)
+        {
+            if (left is PythonMappingProxyValue)
+            {
+                throw Fault(
+                    "DPY4003",
+                    "'|=' is not supported by mappingproxy; use '|' instead",
+                    span,
+                    "TypeError"
+                );
+            }
+            right = PythonMappingProxies.Unwrap(right);
+        }
         switch (left)
         {
             case PythonListValue list when binaryOpCode == PythonOpCode.BinaryAdd:
@@ -7244,6 +7257,10 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
+        if (left is PythonMappingProxyValue leftProxy)
+        {
+            return ApplyComparison(opCode, leftProxy.Mapping, right, span);
+        }
         var richComparison = opCode switch
         {
             PythonOpCode.CompareLessThan => PythonRichComparison.LessThan,
@@ -7286,6 +7303,19 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
                 _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
             };
             return rightExternal.Protocol.RichCompare(left, reversed, span);
+        }
+
+        if (right is PythonMappingProxyValue rightProxy)
+        {
+            var reversed = opCode switch
+            {
+                PythonOpCode.CompareLessThan => PythonOpCode.CompareGreaterThan,
+                PythonOpCode.CompareLessThanOrEqual => PythonOpCode.CompareGreaterThanOrEqual,
+                PythonOpCode.CompareGreaterThan => PythonOpCode.CompareLessThan,
+                PythonOpCode.CompareGreaterThanOrEqual => PythonOpCode.CompareLessThanOrEqual,
+                _ => opCode,
+            };
+            return ApplyComparison(reversed, rightProxy.Mapping, left, span);
         }
 
         if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
@@ -7343,7 +7373,9 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
     private static bool AreEqual(PythonValue left, PythonValue right)
     {
         if (
-            left is PythonExternalObjectValue
+            left is PythonMappingProxyValue
+            || right is PythonMappingProxyValue
+            || left is PythonExternalObjectValue
             || right is PythonExternalObjectValue
             || left is PythonSetValue
             || right is PythonSetValue
@@ -7499,6 +7531,11 @@ internal sealed class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
+        if (opCode == PythonOpCode.BinaryOr)
+        {
+            left = PythonMappingProxies.Unwrap(left);
+            right = PythonMappingProxies.Unwrap(right);
+        }
         if (UserObjectProtocols.TryApplyBinary(opCode, left, right, span, out var userResult))
         {
             return userResult;

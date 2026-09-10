@@ -380,35 +380,19 @@ internal static class PythonBuiltinMethods
             "keys",
             0,
             0,
-            (dictionary, _) =>
-                new PythonDictionaryViewValue(
-                    "dict_keys",
-                    new PythonListValue([.. dictionary.Items.Select(item => item.Key)])
-                )
+            (dictionary, _) => new PythonDictionaryViewValue("dict_keys", dictionary)
         ),
         ["values"] = Dictionary(
             "values",
             0,
             0,
-            (dictionary, _) =>
-                new PythonDictionaryViewValue(
-                    "dict_values",
-                    new PythonListValue([.. dictionary.Items.Select(item => item.Value)])
-                )
+            (dictionary, _) => new PythonDictionaryViewValue("dict_values", dictionary)
         ),
         ["items"] = Dictionary(
             "items",
             0,
             0,
-            (dictionary, _) =>
-                new PythonDictionaryViewValue(
-                    "dict_items",
-                    new PythonListValue([
-                        .. dictionary.Items.Select(item =>
-                            (PythonValue)new PythonTupleValue([item.Key, item.Value])
-                        ),
-                    ])
-                )
+            (dictionary, _) => new PythonDictionaryViewValue("dict_items", dictionary)
         ),
         ["pop"] = Dictionary(
             "pop",
@@ -852,6 +836,7 @@ internal static class PythonBuiltinMethods
 
     private static void MergeInto(PythonDictionaryValue dictionary, PythonValue source)
     {
+        source = PythonMappingProxies.Unwrap(source);
         if (source is PythonDictionaryValue other)
         {
             foreach (var item in other.Items.ToArray())

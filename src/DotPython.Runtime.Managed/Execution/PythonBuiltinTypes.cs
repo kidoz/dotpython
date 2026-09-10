@@ -545,13 +545,32 @@ internal static class PythonBuiltinTypes
             return dictionary;
         }
 
-        if (arguments[0] is PythonDictionaryValue source)
+        var sourceValue = PythonMappingProxies.Unwrap(arguments[0]);
+        if (sourceValue is PythonDictionaryValue source)
         {
             foreach (var item in source.Items)
             {
-                ManagedObjectProtocols.SetDictionaryItem(dictionary, item.Key, item.Value, span);
+                dictionary.Items.Add(
+                    new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
+                );
             }
-
+            return dictionary;
+        }
+        if (arguments[0] is PythonMappingProxyValue)
+        {
+            var keysMethod = ManagedObjectProtocols.GetAttribute(sourceValue, "keys", span);
+            var keys = UserObjectProtocols.Dispatcher is { } dispatcher
+                ? dispatcher.Invoke(keysMethod, [], span)
+                : ManagedObjectProtocols.Call(keysMethod, [], span);
+            foreach (var key in ManagedObjectProtocols.MaterializeValues(keys, span))
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    key,
+                    ManagedObjectProtocols.GetItem(sourceValue, key, span),
+                    span
+                );
+            }
             return dictionary;
         }
 

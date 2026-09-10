@@ -939,10 +939,44 @@ internal sealed record PythonSliceValue(PythonValue Start, PythonValue Stop, Pyt
         + $"{Step.ToRepresentationString()})";
 }
 
-internal sealed record PythonDictionaryViewValue(string Kind, PythonListValue Snapshot)
+internal sealed record PythonMappingProxyValue(PythonValue Mapping) : PythonValue
+{
+    internal override string ToDisplayString() => Mapping.ToDisplayString();
+
+    internal override string ToRepresentationString()
+    {
+        if (!PythonRepresentationGuard.TryEnter(this))
+            return "mappingproxy({...})";
+        try
+        {
+            return $"mappingproxy({Mapping.ToRepresentationString()})";
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
+}
+
+internal sealed record PythonDictionaryViewValue(string Kind, PythonDictionaryValue Dictionary)
     : PythonValue
 {
-    internal override string ToDisplayString() => $"{Kind}({Snapshot.ToDisplayString()})";
+    internal PythonListValue Snapshot =>
+        new([.. Dictionary.Items.Select(item => PythonMappingProxies.ViewItem(item, Kind))]);
+
+    internal override string ToDisplayString()
+    {
+        if (!PythonRepresentationGuard.TryEnter(this))
+            return "...";
+        try
+        {
+            return $"{Kind}({Snapshot.ToDisplayString()})";
+        }
+        finally
+        {
+            PythonRepresentationGuard.Exit(this);
+        }
+    }
 }
 
 internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
@@ -1045,6 +1079,8 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDic
     : PythonValue
 {
     internal PythonExceptionValue? StopIteration { get; set; }
+
+    internal bool IsExhausted { get; set; }
 
     internal int Index { get; set; }
 
