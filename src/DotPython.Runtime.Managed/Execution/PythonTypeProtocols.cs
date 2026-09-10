@@ -12,11 +12,67 @@ internal static class PythonTypeProtocols
         ReferenceEquals(value, PythonBuiltinTypes.Type)
         || value is PythonManagedTypeValue { IsMetaclass: true };
 
+    private static readonly Lazy<Dictionary<string, PythonValue>> OwnAttributes = new(
+        CreateOwnAttributes
+    );
+    private static readonly Lazy<PythonDictionaryValue> Dictionary = new(CreateDictionary);
+
+    internal static PythonDictionaryValue GetDictionary() => Dictionary.Value;
+
     internal static bool TryGetAttribute(string name, out PythonValue value)
+    {
+        if (OwnAttributes.Value.TryGetValue(name, out value!))
+            return true;
+        if (name == "__init_subclass__")
+        {
+            value = InitSubclass;
+            return true;
+        }
+        return false;
+    }
+
+    private static Dictionary<string, PythonValue> CreateOwnAttributes()
+    {
+        var attributes = new Dictionary<string, PythonValue>(StringComparer.Ordinal);
+        foreach (
+            var name in new[]
+            {
+                "__new__",
+                "__init__",
+                "__call__",
+                "__prepare__",
+                "__getattribute__",
+                "__setattr__",
+                "__delattr__",
+            }
+        )
+        {
+            CreateAttribute(name, out var value);
+            attributes.Add(name, value);
+        }
+        foreach (var name in PythonTypeMetadata.Names)
+            attributes.Add(name, new PythonTypeMetadataDescriptorValue(name));
+        return attributes;
+    }
+
+    private static PythonDictionaryValue CreateDictionary()
+    {
+        var dictionary = new PythonDictionaryValue([]);
+        foreach (var (name, value) in OwnAttributes.Value)
+            ManagedObjectProtocols.SetDictionaryItem(
+                dictionary,
+                new PythonTextValue(name),
+                value,
+                default
+            );
+        return dictionary;
+    }
+
+    private static bool CreateAttribute(string name, out PythonValue value)
     {
         value = name switch
         {
-            "__new__" => new PythonStaticMethodValue(New),
+            "__new__" => New,
             "__init__" => Slot(name, Initialize),
             "__call__" => Slot(
                 name,

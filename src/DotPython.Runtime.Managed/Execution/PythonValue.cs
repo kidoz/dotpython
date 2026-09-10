@@ -396,6 +396,24 @@ internal sealed record PythonBoundMethodValue(
     internal override string ToDisplayString() => $"<bound method {Name}>";
 }
 
+internal sealed record PythonTypeMetadataDescriptorValue(string Name) : PythonValue
+{
+    internal PythonValue Get(PythonValue? instance, PythonValue? owner, TextSpan span) =>
+        PythonTypeMetadata.Get(this, instance, owner, span);
+
+    internal void Set(PythonValue instance, PythonValue value, TextSpan span) =>
+        PythonTypeMetadata.Set(this, instance, value, span);
+
+    internal void Delete(PythonValue instance, TextSpan span) =>
+        PythonTypeMetadata.Delete(this, instance, span);
+
+    internal PythonValue GetAttribute(string name, TextSpan span) =>
+        PythonTypeMetadata.GetAttribute(this, name, span);
+
+    internal override string ToDisplayString() =>
+        $"<{(Name == "__base__" ? "member" : "attribute")} '{Name}' of 'type' objects>";
+}
+
 internal sealed record PythonDescriptorValue(
     string Name,
     Func<PythonValue, PythonValue> Get,

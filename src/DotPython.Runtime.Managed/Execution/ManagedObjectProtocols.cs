@@ -117,6 +117,47 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    private static bool TryGetMetaclassAttribute(
+        PythonValue target,
+        string name,
+        out PythonValue metaclass,
+        out PythonValue attribute
+    )
+    {
+        if (!PythonTypeProtocols.IsType(target))
+        {
+            metaclass = null!;
+            attribute = null!;
+            return false;
+        }
+        metaclass = PythonBuiltinTypes.GetRuntimeType(target);
+        return metaclass is PythonManagedTypeValue managed
+            ? TryGetTypeAttribute(managed, name, out attribute)
+            : PythonTypeProtocols.TryGetAttribute(name, out attribute);
+    }
+
+    private static void RejectBuiltinTypeMutation(
+        PythonValue target,
+        string name,
+        string operation,
+        TextSpan span
+    )
+    {
+        var typeName = target switch
+        {
+            PythonBuiltinTypeValue builtin => builtin.Name,
+            PythonExceptionTypeValue exception => exception.Name,
+            _ => null,
+        };
+        if (typeName is not null)
+            throw Fault(
+                "DPY4023",
+                $"cannot {operation} '{name}' attribute of immutable type '{typeName}'",
+                span,
+                "TypeError"
+            );
+    }
+
     internal static PythonValue GetAttributeCore(
         PythonValue target,
         string name,
@@ -127,18 +168,16 @@ internal static class ManagedObjectProtocols
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         if (
-            target
-                is PythonManagedTypeValue
-                {
-                    Metaclass: PythonManagedTypeValue descriptorMetaclass
-                } classObject
-            && TryGetTypeAttribute(descriptorMetaclass, name, out var metaDescriptor)
+            TryGetMetaclassAttribute(
+                target,
+                name,
+                out var descriptorMetaclass,
+                out var metaDescriptor
+            )
             && IsDataDescriptor(metaDescriptor)
             && HasDescriptorGetter(metaDescriptor)
         )
-        {
-            return BindDescriptor(metaDescriptor, classObject, descriptorMetaclass, span, name);
-        }
+            return BindDescriptor(metaDescriptor, target, descriptorMetaclass, span, name);
 
         if (name == "__class__" && target is not PythonManagedObjectValue)
         {
@@ -146,21 +185,6 @@ internal static class ManagedObjectProtocols
                 ? PythonBuiltinTypes.GetRuntimeType(target)
                 : PythonBuiltinTypes.Type.Construct([target], span);
         }
-        if (target is PythonBuiltinTypeValue or PythonManagedTypeValue or PythonExceptionTypeValue)
-        {
-            if (name == "__mro__")
-                return PythonBuiltinTypes.GetMro(target);
-            if (name == "__bases__")
-                return PythonBuiltinTypes.GetBases(target);
-            if (name == "__base__")
-            {
-                if (target is PythonManagedTypeValue { LayoutBase: { } layoutBase })
-                    return layoutBase;
-                var bases = PythonBuiltinTypes.GetBases(target).Elements;
-                return bases.Length == 0 ? PythonNoneValue.Instance : bases[0];
-            }
-        }
-
         switch (target)
         {
             case PythonModuleValue module when name == "__dict__":
@@ -198,20 +222,10 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
-            case PythonManagedTypeValue type when name == "__dict__":
-                return new PythonMappingProxyValue(type.Attributes.Dictionary);
             case PythonMappingProxyValue proxy:
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
-            case PythonManagedTypeValue type when name == "__name__":
-                return new PythonTextValue(type.Name);
-            case PythonManagedTypeValue type when name == "__qualname__":
-                return new PythonTextValue(type.QualName ?? type.Name);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return BindDescriptor(value, null, type, span, name);
-            case PythonManagedTypeValue type when name == "__module__":
-                return type.Module is null
-                    ? new PythonTextValue("builtins")
-                    : new PythonTextValue(type.Module);
             case PythonManagedTypeValue { IsMetaclass: false }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(
                     name,
@@ -228,6 +242,8 @@ internal static class ManagedObjectProtocols
                 throw MissingAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetAttribute(name, span);
+            case PythonTypeMetadataDescriptorValue descriptor:
+                return descriptor.GetAttribute(name, span);
             case PythonPropertyValue property:
                 return PythonBuiltinFunctions.GetPropertyAttribute(property, name, span);
             case PythonStaticMethodValue staticMethod when name == "__func__":
@@ -800,6 +816,13 @@ internal static class ManagedObjectProtocols
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
 
+        RejectBuiltinTypeMutation(target, name, "set", span);
+        if (
+            TryGetMetaclassAttribute(target, name, out _, out var metaclassDescriptor)
+            && TrySetDescriptor(metaclassDescriptor, target, name, value, span)
+        )
+            return;
+
         switch (target)
         {
             case PythonFunctionValue function when name == "__dict__":
@@ -810,17 +833,6 @@ internal static class ManagedObjectProtocols
             case PythonFunctionValue function when !IsFunctionMetadataName(name):
                 function.Attributes[name] = value;
                 return;
-            case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
-                when TryGetTypeAttribute(meta, name, out var metaDescriptor)
-                    && TrySetDescriptor(metaDescriptor, type, name, value, span):
-                return;
-            case PythonManagedTypeValue when name == "__dict__":
-                throw Fault(
-                    "DPY4023",
-                    "attribute '__dict__' of 'type' objects is not writable",
-                    span,
-                    "AttributeError"
-                );
             case PythonMappingProxyValue:
                 throw MissingAttribute("mappingproxy", name, span);
 
@@ -848,34 +860,6 @@ internal static class ManagedObjectProtocols
                 }
 
                 SetInstanceAttribute(instance, name, value, span);
-                return;
-            case PythonManagedTypeValue type when name is "__name__" or "__qualname__":
-                if (value is not PythonTextValue text)
-                {
-                    throw Fault(
-                        "DPY4023",
-                        $"can only assign string to {type.Name}.{name}, not '{GetTypeName(value)}'",
-                        span,
-                        "TypeError"
-                    );
-                }
-                if (name == "__name__")
-                {
-                    if (text.Value.Contains('\0', StringComparison.Ordinal))
-                    {
-                        throw Fault(
-                            "DPY4023",
-                            "type name must not contain null characters",
-                            span,
-                            "ValueError"
-                        );
-                    }
-                    type.Name = text.Value;
-                }
-                else
-                {
-                    type.QualName = text.Value;
-                }
                 return;
             case PythonManagedTypeValue type:
                 type.Attributes[name] = value;
@@ -1047,6 +1031,9 @@ internal static class ManagedObjectProtocols
 
         switch (descriptorValue)
         {
+            case PythonTypeMetadataDescriptorValue descriptor:
+                descriptor.Set(instance, value, span);
+                return true;
             case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
                 throw Fault("DPY4023", $"Attribute '{name}' is read-only.", span, "AttributeError");
             case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
@@ -1081,6 +1068,9 @@ internal static class ManagedObjectProtocols
 
         switch (descriptorValue)
         {
+            case PythonTypeMetadataDescriptorValue descriptor:
+                descriptor.Delete(instance, span);
+                return true;
             case PythonDescriptorValue { IsDataDescriptor: true }:
                 throw Fault(
                     "DPY4023",
@@ -1145,6 +1135,13 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
+        RejectBuiltinTypeMutation(target, name, "set", span);
+        if (
+            TryGetMetaclassAttribute(target, name, out _, out var metaclassDescriptor)
+            && TryDeleteDescriptor(metaclassDescriptor, target, name, span)
+        )
+            return;
+
         switch (target)
         {
             case PythonFunctionValue when name == "__dict__":
@@ -1154,17 +1151,6 @@ internal static class ManagedObjectProtocols
                 return;
             case PythonFunctionValue:
                 throw MissingAttribute("function", name, span);
-            case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
-                when TryGetTypeAttribute(meta, name, out var metaDescriptor)
-                    && TryDeleteDescriptor(metaDescriptor, type, name, span):
-                return;
-            case PythonManagedTypeValue when name == "__dict__":
-                throw Fault(
-                    "DPY4023",
-                    "attribute '__dict__' of 'type' objects is not writable",
-                    span,
-                    "AttributeError"
-                );
             case PythonMappingProxyValue:
                 throw MissingAttribute("mappingproxy", name, span);
 
@@ -1197,14 +1183,6 @@ internal static class ManagedObjectProtocols
 
                 DeleteInstanceAttribute(instance, name, span);
                 return;
-            case PythonManagedTypeValue type
-                when name is "__name__" or "__qualname__" or "__module__":
-                throw Fault(
-                    "DPY4023",
-                    $"cannot delete '{name}' attribute of immutable type '{type.Name}'",
-                    span,
-                    "TypeError"
-                );
             case PythonManagedTypeValue type when type.Attributes.Remove(name):
                 return;
             case PythonManagedTypeValue type:
@@ -2642,6 +2620,8 @@ internal static class ManagedObjectProtocols
                 metaclass.Name,
             PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
+            PythonTypeMetadataDescriptorValue { Name: "__base__" } => "member_descriptor",
+            PythonTypeMetadataDescriptorValue => "getset_descriptor",
             PythonPropertyValue => "property",
             PythonStaticMethodValue => "staticmethod",
             PythonClassMethodValue => "classmethod",
@@ -2717,7 +2697,7 @@ internal static class ManagedObjectProtocols
         value switch
         {
             PythonDescriptorValue descriptor => descriptor.IsDataDescriptor,
-            PythonPropertyValue => true,
+            PythonPropertyValue or PythonTypeMetadataDescriptorValue => true,
             _ => GetManagedType(value) is { } type
                 && (
                     TryGetTypeAttribute(type, "__set__", out _)
@@ -2726,7 +2706,7 @@ internal static class ManagedObjectProtocols
         };
 
     private static bool HasDescriptorGetter(PythonValue value) =>
-        value is PythonDescriptorValue or PythonPropertyValue
+        value is PythonDescriptorValue or PythonPropertyValue or PythonTypeMetadataDescriptorValue
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
 
     private static bool TryInvokeUserDescriptorMutation(
@@ -2785,6 +2765,7 @@ internal static class ManagedObjectProtocols
 
         return value switch
         {
+            PythonTypeMetadataDescriptorValue descriptor => descriptor.Get(instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),
             PythonPropertyValue property when instance is not null => GetPropertyValue(
                 property,
