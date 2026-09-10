@@ -1,13 +1,13 @@
-using DotPython.Language.Ast;
-
-namespace DotPython.Lint;
+namespace DotPython.Language.Ast;
 
 // Explicit child edges keep traversal independent of reflection and runtime metadata.
-internal static class PythonAstChildren
+/// <summary>Enumerates immediate AST children without applying scope or source-offset semantics.</summary>
+public static class PythonAstTraversal
 {
-    internal static IEnumerable<PythonNode?> Get(PythonNode node) =>
+    public static IEnumerable<PythonNode?> GetChildren(PythonNode node) =>
         node switch
         {
+            null => throw new ArgumentNullException(nameof(node)),
             PythonModule n => [.. n.Statements],
             PythonAssignmentStatement n => [n.Target, n.Value, .. (n.ChainedTargets ?? [])],
             PythonAugmentedAssignmentStatement n => [n.Target, n.Value],

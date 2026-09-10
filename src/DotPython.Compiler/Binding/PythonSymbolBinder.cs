@@ -6,6 +6,21 @@ namespace DotPython.Compiler.Binding;
 
 public static class PythonSymbolBinder
 {
+    /// <summary>
+    /// Builds optional per-occurrence tooling information without changing normal compilation.
+    /// Cancellation is observed around binding and during the semantic traversal.
+    /// </summary>
+    public static PythonSemanticModel Analyze(
+        PythonModule module,
+        CancellationToken cancellationToken = default
+    )
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var binding = Bind(module);
+        cancellationToken.ThrowIfCancellationRequested();
+        return PythonSemanticModelBuilder.Build(module, binding, cancellationToken);
+    }
+
     public static PythonBindingResult Bind(PythonModule module)
     {
         ArgumentNullException.ThrowIfNull(module);
@@ -322,7 +337,7 @@ public static class PythonSymbolBinder
         return scope;
     }
 
-    private static PythonBoundScope BindExpressionScope(
+    internal static PythonBoundScope BindExpressionScope(
         PythonExpression definition,
         PythonBoundScope[] ancestors,
         List<Diagnostic> diagnostics

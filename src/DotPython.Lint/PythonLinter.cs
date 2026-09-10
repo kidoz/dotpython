@@ -99,7 +99,7 @@ public static class PythonLinter
                     break;
             }
 
-            foreach (var child in PythonAstChildren.Get(node))
+            foreach (var child in PythonAstTraversal.GetChildren(node))
             {
                 if (child is not null)
                 {
