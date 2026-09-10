@@ -13,7 +13,7 @@ internal sealed class PythonModuleCatalog
     private const int MaxDiscoveredEntries = 50_000;
     private const int MaxDiscoveredPayloadLength = 128 * 1024 * 1024;
     private const int MaxMetadataFileLength = 1024 * 1024;
-    private const int MaxSourceFileLength = 8 * 1024 * 1024;
+    private const int MaxSourceFileLength = PythonSourceDecoder.MaximumByteLength;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     private PythonModuleCatalog(
@@ -474,13 +474,12 @@ internal sealed class PythonModuleCatalog
                     return;
                 }
 
-                var source = new SourceText(
-                    ReadUtf8File(file, MaxSourceFileLength, "Python source"),
-                    file.FullName
-                );
+                // Snapshot bounded bytes now, but decode only when this module is
+                // imported. Unrelated malformed sources must not prevent startup.
+                var bytes = ReadFileBytes(file, MaxSourceFileLength, "Python source");
                 AddModule(
                     sourceName,
-                    PythonModuleDefinition.FromSource(source, isPackage),
+                    PythonModuleDefinition.FromSourceBytes(bytes, file.FullName, isPackage),
                     rootIndex
                 );
                 return;
@@ -600,6 +599,13 @@ internal sealed class PythonModuleCatalog
 
         private string ReadUtf8File(FileInfo file, int maximumLength, string kind)
         {
+            var bytes = ReadFileBytes(file, maximumLength, kind);
+            var offset = bytes.AsSpan().StartsWith(Encoding.UTF8.Preamble) ? 3 : 0;
+            return StrictUtf8.GetString(bytes, offset, bytes.Length - offset);
+        }
+
+        private byte[] ReadFileBytes(FileInfo file, int maximumLength, string kind)
+        {
             using var stream = OpenBoundedRead(file, maximumLength, kind);
             CountPayload(file, stream.Length);
             var bytes = new byte[checked((int)stream.Length)];
@@ -611,8 +617,7 @@ internal sealed class PythonModuleCatalog
                 );
             }
 
-            var offset = bytes.AsSpan().StartsWith(Encoding.UTF8.Preamble) ? 3 : 0;
-            return StrictUtf8.GetString(bytes, offset, bytes.Length - offset);
+            return bytes;
         }
 
         private sealed record DiscoveredDistribution(string Version, string Origin, int RootIndex);

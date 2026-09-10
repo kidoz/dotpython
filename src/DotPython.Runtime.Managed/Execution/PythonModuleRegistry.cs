@@ -66,7 +66,7 @@ internal sealed class PythonModuleRegistry
                 );
             }
 
-            if (definition.Source is { } source && source.Length > MaxModuleSourceLength)
+            if (definition.SourceLengthUpperBound > MaxModuleSourceLength)
             {
                 throw new ArgumentException(
                     $"Managed module '{name}' exceeds the {MaxModuleSourceLength} character source limit.",
@@ -74,7 +74,9 @@ internal sealed class PythonModuleRegistry
                 );
             }
 
-            totalSourceLength += definition.Source?.Length ?? 0;
+            // Supported byte encodings never expand past one UTF-16 code unit
+            // per byte. Account conservatively without decoding unimported files.
+            totalSourceLength += definition.SourceLengthUpperBound;
             if (totalSourceLength > MaxTotalSourceLength)
             {
                 throw new ArgumentException(

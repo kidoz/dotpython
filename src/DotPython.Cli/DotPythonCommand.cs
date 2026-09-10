@@ -60,21 +60,20 @@ internal static class DotPythonCommand
             return 2;
         }
 
-        if (
-            !TryReadSource(
-                arguments,
-                standardInput,
-                standardError,
-                out var source,
-                out var moduleSearchPath
-            )
-        )
-        {
-            return 2;
-        }
-
         try
         {
+            if (
+                !TryReadSource(
+                    arguments,
+                    standardInput,
+                    standardError,
+                    out var source,
+                    out var moduleSearchPath
+                )
+            )
+            {
+                return 2;
+            }
             var engine = new ManagedPythonEngine(
                 new ManagedModuleDiscoveryOptions { SearchPaths = [moduleSearchPath] }
             );
@@ -111,6 +110,12 @@ internal static class DotPythonCommand
                 WriteDiagnostic(result.Source, diagnostic, standardError);
             }
 
+            return 1;
+        }
+        catch (PythonRuntimeException exception)
+            when (exception.PythonExceptionTypeName == "SyntaxError")
+        {
+            standardError.WriteLine($"{arguments[0]}: SyntaxError: {exception.Message}");
             return 1;
         }
         catch (OperationCanceledException)
@@ -287,7 +292,7 @@ internal static class DotPythonCommand
         try
         {
             var fullPath = Path.GetFullPath(arguments[0]);
-            source = new SourceText(File.ReadAllText(fullPath), fullPath);
+            source = PythonSourceDecoder.ReadFile(fullPath);
             moduleSearchPath = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
             return true;
         }

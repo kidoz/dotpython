@@ -11,7 +11,8 @@ internal sealed class PythonModuleDefinition
         DotPythonModuleArtifact? artifact = null,
         bool isPackage = false,
         Action<PythonGlobalNamespace>? initialize = null,
-        string? nativeExtensionPath = null
+        string? nativeExtensionPath = null,
+        byte[]? sourceBytes = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(origin);
@@ -21,6 +22,7 @@ internal sealed class PythonModuleDefinition
         IsPackage = isPackage;
         Initialize = initialize;
         NativeExtensionPath = nativeExtensionPath;
+        _sourceBytes = sourceBytes;
     }
 
     internal DotPythonModuleArtifact? Artifact { get; }
@@ -36,6 +38,21 @@ internal sealed class PythonModuleDefinition
     internal string Origin { get; }
 
     internal SourceText? Source { get; }
+
+    private readonly byte[]? _sourceBytes;
+
+    internal int SourceLengthUpperBound => Source?.Length ?? _sourceBytes?.Length ?? 0;
+
+    internal SourceText? GetSource(TextSpan importSpan) =>
+        _sourceBytes is null
+            ? Source
+            : PythonSourceDecoder.Decode(_sourceBytes, Origin, importSpan);
+
+    internal static PythonModuleDefinition FromSourceBytes(
+        byte[] bytes,
+        string origin,
+        bool isPackage
+    ) => new(origin, isPackage: isPackage, sourceBytes: bytes);
 
     internal static PythonModuleDefinition FromArtifact(
         DotPythonModuleArtifact artifact,

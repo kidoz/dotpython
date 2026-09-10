@@ -107,6 +107,11 @@ from `__init__.py`, source modules, validated DotPython `.dpyc` artifacts, and t
 `*.dist-info/METADATA` records. The snapshot is immutable after construction; the first configured
 root wins across roots, while ambiguous source/artifact identities within one root are rejected.
 
+Discovery captures bounded source bytes and decodes a module when it is imported. An unrelated
+file with invalid source encoding therefore does not prevent startup. Script files and discovered
+modules support UTF-8 (including a BOM), ASCII, and Latin-1 encoding declarations, with Python
+newline normalization. Other source codecs are not yet supported.
+
 ```csharp
 var engine = new ManagedPythonEngine(
     new ManagedModuleDiscoveryOptions

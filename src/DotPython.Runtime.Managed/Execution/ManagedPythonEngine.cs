@@ -341,7 +341,7 @@ public sealed class ManagedPythonEngine
             return PrepareCode(definition.Artifact.Code);
         }
 
-        var source = definition.Source;
+        var source = definition.GetSource(importSpan);
         if (source is null)
         {
             throw new PythonRuntimeException(
