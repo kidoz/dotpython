@@ -15,7 +15,7 @@ public sealed class ParserGenerationTests
             "src",
             "DotPython.ParserGenerator",
             "Grammar",
-            "python315-subset.gram"
+            "python314-subset.gram"
         );
         var generatedPath = Path.Combine(
             repositoryRoot,
@@ -25,6 +25,11 @@ public sealed class ParserGenerationTests
             "PythonGrammar.g.cs"
         );
         var grammar = File.ReadAllText(grammarPath);
+        Assert.StartsWith(
+            $"# DotPython executable PEG subset, version {ParserGeneratorCapabilities.ExecutableSubsetVersion}.",
+            grammar,
+            StringComparison.Ordinal
+        );
 
         var first = PythonParserSourceGenerator.Generate(grammar);
         var second = PythonParserSourceGenerator.Generate(grammar);

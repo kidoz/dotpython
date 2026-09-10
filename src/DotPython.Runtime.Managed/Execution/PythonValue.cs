@@ -548,7 +548,7 @@ internal sealed record PythonStreamValue(PythonStreamKind Kind) : PythonValue
         };
 
     internal override string ToDisplayString() =>
-        $"<_io.TextIOWrapper name='{Name}' mode='{(Kind == PythonStreamKind.StandardInput ? "r" : "w")}' encoding='utf-8'>";
+        $"<_io.TextIOWrapper name='{Name}' mode='{(Kind == PythonStreamKind.StandardInput ? "r" : "w")}' encoding='UTF-8'>";
 }
 
 internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
@@ -1076,9 +1076,8 @@ internal sealed record PythonFileValue(string Name, string Mode, string Content)
         return text;
     }
 
-    // Python 3.15 reports the PEP 686 default encoding in lowercase.
     internal override string ToDisplayString() =>
-        $"<_io.TextIOWrapper name='{Name}' mode='{Mode}' encoding='utf-8'>";
+        $"<_io.TextIOWrapper name='{Name}' mode='{Mode}' encoding='UTF-8'>";
 }
 
 internal static class PythonRepresentationGuard

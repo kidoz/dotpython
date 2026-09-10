@@ -78,7 +78,7 @@ public sealed class WorkerHandshakeNegotiatorTests
                 "dotpython-managed-abi3",
                 "1.0.0",
                 "dotpython-managed",
-                "3.15",
+                "3.14",
                 "arm64",
                 "sha256:test",
                 Guid.NewGuid(),

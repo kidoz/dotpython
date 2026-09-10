@@ -25,7 +25,7 @@ format: native-format
     dotnet csharpier format .
 
 # Pinned PEG grammar for the current Python language target (see ADR-015 for the re-pin procedure).
-python_grammar := "src/DotPython.ParserGenerator/Grammar/python315-subset.gram"
+python_grammar := "src/DotPython.ParserGenerator/Grammar/python314-subset.gram"
 generated_parser := "src/DotPython.ParserGenerator/Generated/PythonGrammar.g.cs"
 
 # Regenerate the checked-in executable parser from the pinned PEG grammar.

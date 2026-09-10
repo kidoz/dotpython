@@ -59,7 +59,7 @@ public sealed class DotPythonModuleArtifactTests
         var restored = DotPythonModuleManifestJson.Deserialize(json);
 
         Assert.Equal(
-            "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.15\","
+            "{\"formatVersion\":4,\"moduleName\":\"pricing\",\"languageVersion\":\"3.14\","
                 + "\"bytecodeFormatVersion\":31,\"exports\":[{\"pythonName\":\"calculate\","
                 + "\"contractName\":\"Calculate\",\"kind\":\"function\"}]}",
             json
@@ -512,7 +512,7 @@ public sealed class DotPythonModuleArtifactTests
             DotPythonModuleManifestJson.Deserialize(unsupportedLanguage)
         );
         Assert.Contains(
-            "Supported artifact versions: 3.14, 3.15",
+            "Supported artifact versions: 3.14",
             unsupportedFailure.Message,
             StringComparison.Ordinal
         );
@@ -525,6 +525,25 @@ public sealed class DotPythonModuleArtifactTests
                 Compile("print(42)"),
                 exports: null,
                 languageVersion: new Version(3, 16)
+            )
+        );
+    }
+
+    [Fact]
+    public void Artifacts_RejectTheFormerNewerLanguageTarget()
+    {
+        const string manifest =
+            "{\"formatVersion\":4,\"moduleName\":\"sample\",\"languageVersion\":\"3.15\","
+            + "\"bytecodeFormatVersion\":31,\"exports\":[]}";
+        Assert.Throws<InvalidDataException>(() =>
+            DotPythonModuleManifestJson.Deserialize(manifest)
+        );
+        Assert.Throws<ArgumentException>(() =>
+            DotPythonModuleArtifact.Create(
+                "sample",
+                Compile("print(42)"),
+                exports: null,
+                languageVersion: new Version(3, 15)
             )
         );
     }

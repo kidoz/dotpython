@@ -44,7 +44,7 @@ public sealed class ManagedRuntimeDescriptorTests
         {
             ProviderId = "dotpython-managed-abi3",
             ProviderVersion = "0.1.0",
-            PythonRuntimeVersion = "3.15",
+            PythonRuntimeVersion = "3.14",
             CapabilityManifestVersion = "1",
             Abi = PythonNativeExtensionAbi.CpythonStableAbi,
             SupportLevel = PythonNativeExtensionSupportLevel.Qualified,

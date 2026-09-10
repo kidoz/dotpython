@@ -17,10 +17,10 @@
   },
   "upstreamPythonSuite": {
     "evidenceFile": "anyver-upstream-qualification.json",
-    "evidenceSha256": "57232bef27caddc7890ad567088c0755cbb1a884cf46aefb4ab3d7116f4be5b8",
+    "evidenceSha256": "e03e817d1099dcb3d6fbea85754c3089569a2cee574f5d19a0c236c70751f1d4",
     "sourceTestFile": "tests/test_anyver.py",
     "sourceTestFileSha256": "9432cc519e7caa01295df0ec83c4f37ad246073c0841a1ca58578a281552fe6e",
-    "collector": "pytest 9.1.1 on Python 3.15.0rc2",
+    "collector": "pytest 9.1.1 on Python 3.14.7",
     "executionIsolation": "worker-process",
     "collectedCases": 325,
     "passed": 325,

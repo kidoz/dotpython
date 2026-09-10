@@ -472,7 +472,7 @@ internal static class UserObjectProtocols
             {
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
-                    $"{ManagedObjectProtocols.GetTypeName(value)}.__bool__() must return a bool, not {ManagedObjectProtocols.GetTypeName(result)}",
+                    $"__bool__ should return bool, returned {ManagedObjectProtocols.GetTypeName(result)}",
                     default,
                     "TypeError"
                 );
@@ -662,12 +662,12 @@ internal static class UserObjectProtocols
 
         if (TryInvoke(instance, "__str__", [], default, out var text))
         {
-            return RequireText(instance, text, "__str__");
+            return RequireText(text, "__str__");
         }
 
         if (TryInvoke(instance, "__repr__", [], default, out var representation))
         {
-            return RequireText(instance, representation, "__repr__");
+            return RequireText(representation, "__repr__");
         }
 
         return null;
@@ -680,7 +680,7 @@ internal static class UserObjectProtocols
             return null;
         }
 
-        return RequireText(instance, text, "__repr__");
+        return RequireText(text, "__repr__");
     }
 
     /// <summary>`format(x, spec)` / f-string specs through `__format__`.</summary>
@@ -711,7 +711,7 @@ internal static class UserObjectProtocols
             {
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
-                    $"{instance.Type.Name}.__format__() must return a str, not {ManagedObjectProtocols.GetTypeName(result)}",
+                    $"__format__ must return a str, not {ManagedObjectProtocols.GetTypeName(result)}",
                     span,
                     "TypeError"
                 );
@@ -758,7 +758,7 @@ internal static class UserObjectProtocols
                 {
                     throw ManagedObjectProtocols.Fault(
                         "DPY4003",
-                        $"{ManagedObjectProtocols.GetTypeName(value)}.{name}() must return an int, not {ManagedObjectProtocols.GetTypeName(converted)}",
+                        $"{name} returned non-int (type {ManagedObjectProtocols.GetTypeName(converted)})",
                         span,
                         "TypeError"
                     );
@@ -795,7 +795,7 @@ internal static class UserObjectProtocols
         {
             throw ManagedObjectProtocols.Fault(
                 "DPY4003",
-                $"{ManagedObjectProtocols.GetTypeName(value)}.__index__() must return an int, not {ManagedObjectProtocols.GetTypeName(converted)}",
+                $"__index__ returned non-int (type {ManagedObjectProtocols.GetTypeName(converted)})",
                 span,
                 "TypeError"
             );
@@ -819,7 +819,7 @@ internal static class UserObjectProtocols
             {
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
-                    $"{ManagedObjectProtocols.GetTypeName(value)}.__float__() must return a float, not {ManagedObjectProtocols.GetTypeName(converted)}",
+                    $"__float__ returned non-float (type {ManagedObjectProtocols.GetTypeName(converted)})",
                     span,
                     "TypeError"
                 );
@@ -870,16 +870,12 @@ internal static class UserObjectProtocols
         TextSpan span
     ) => TryInvokeOnInstance(instance, "__delattr__", [new PythonTextValue(name)], span, out _);
 
-    private static string RequireText(
-        PythonManagedObjectValue instance,
-        PythonValue value,
-        string method
-    ) =>
+    private static string RequireText(PythonValue value, string method) =>
         value is PythonTextValue text
             ? text.Value
             : throw ManagedObjectProtocols.Fault(
                 "DPY4003",
-                $"{instance.Type.Name}.{method}() must return a str, not {ManagedObjectProtocols.GetTypeName(value)}",
+                $"{method} returned non-string (type {ManagedObjectProtocols.GetTypeName(value)})",
                 default,
                 "TypeError"
             );

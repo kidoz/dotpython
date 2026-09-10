@@ -7,21 +7,21 @@ namespace DotPython.ParserTests;
 public sealed class LanguageFrontEndTests
 {
     [Fact]
-    public void CurrentLanguageVersion_TargetsPython315()
+    public void CurrentLanguageVersion_TargetsPython314()
     {
-        Assert.Equal(new Version(3, 15), PythonLanguageVersion.Current);
+        Assert.Equal(new Version(3, 14), PythonLanguageVersion.Current);
     }
 
     [Fact]
     public void SupportedArtifactVersions_ContainCurrentAndRejectOthers()
     {
-        Assert.Contains(
+        Assert.Equal(
             PythonLanguageVersion.Current,
-            PythonLanguageVersion.SupportedArtifactVersions
+            Assert.Single(PythonLanguageVersion.SupportedArtifactVersions)
         );
-        Assert.True(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 15)));
-        Assert.True(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 15, 0)));
-        // ADR-015 rule 2: the previous version stays accepted for one release line.
+        Assert.False(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 15)));
+        Assert.False(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 15, 0)));
+        // The single-current-target 3.14 release does not accept newer language stamps.
         Assert.True(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 14)));
         Assert.True(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 14, 6)));
         Assert.False(PythonLanguageVersion.IsSupportedArtifactVersion(new Version(3, 13)));
