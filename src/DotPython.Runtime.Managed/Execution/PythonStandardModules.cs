@@ -1660,7 +1660,7 @@ internal static class PythonStandardModules
     private static IReadOnlyList<PythonValue> GetExceptionArguments(
         PythonExceptionValue exception
     ) =>
-        exception.GroupExceptions is { } nested && exception.EffectiveArguments.Count != 2
+        exception.GroupExceptions is { } nested && exception.Arguments is null
             ?
             [
                 new PythonTextValue(exception.Message),

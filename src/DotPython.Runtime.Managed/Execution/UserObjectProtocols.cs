@@ -12,7 +12,22 @@ internal interface IUserObjectDispatcher
 {
     PythonManagedTypeValue ExceptionGroupType { get; }
 
+    (bool HasValue, PythonValue Value) ThrowGenerator(
+        PythonGeneratorValue generator,
+        PythonValue exception,
+        TextSpan span
+    );
+
+    (bool HasValue, PythonValue Value) ResumeGenerator(
+        PythonGeneratorValue generator,
+        PythonValue? sent,
+        PythonExceptionValue? injected,
+        TextSpan span
+    );
+
     PythonValue Invoke(PythonValue callable, PythonValue[] arguments, TextSpan span);
+
+    (bool HasValue, PythonValue Value) StepUserIterator(PythonValue nextMethod, TextSpan span);
 
     PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);
 

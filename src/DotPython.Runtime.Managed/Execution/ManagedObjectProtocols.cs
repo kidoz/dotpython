@@ -352,11 +352,11 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
                 return exceptionDictionary.Attributes.Dictionary;
             case PythonExceptionValue exceptionValue when name == "args":
-                return new PythonTupleValue([.. exceptionValue.EffectiveArguments]);
+                return exceptionValue.ArgumentTuple;
             case PythonExceptionValue { TypeName: "SystemExit" } systemExit when name == "code":
-                return systemExit.EffectiveArguments.Count == 0
+                return systemExit.ConstructorArguments.Count == 0
                     ? PythonNoneValue.Instance
-                    : systemExit.EffectiveArguments[0];
+                    : systemExit.ConstructorArguments[0];
             case PythonExceptionValue stopIteration
                 when name == "value"
                     && (
@@ -371,13 +371,13 @@ internal static class ManagedObjectProtocols
                                     entry is PythonExceptionTypeValue { Name: "StopIteration" }
                                 )
                     ):
-                return stopIteration.EffectiveArguments.Count == 0
+                return stopIteration.ConstructorArguments.Count == 0
                     ? PythonNoneValue.Instance
-                    : stopIteration.EffectiveArguments[0];
+                    : stopIteration.ConstructorArguments[0];
             case PythonExceptionValue { GroupExceptions: not null } group when name == "message":
                 return new PythonTextValue(group.Message);
-            case PythonExceptionValue { GroupExceptions: { } nested } when name == "exceptions":
-                return new PythonTupleValue([.. nested.Cast<PythonValue>()]);
+            case PythonExceptionValue { GroupExceptions: not null } group when name == "exceptions":
+                return group.GroupExceptionTuple;
             case PythonExceptionValue exceptionInstance
                 when exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
                 return exceptionAttribute;
@@ -572,10 +572,7 @@ internal static class ManagedObjectProtocols
                                 asyncGenerator,
                                 PythonAsyncGeneratorStepKind.Throw,
                                 null,
-                                ConvertToExceptionValue(
-                                    RequireSingleArgument("athrow", arguments, methodSpan),
-                                    methodSpan
-                                )
+                                RequireSingleArgument("athrow", arguments, methodSpan)
                             )
                     ),
                     "aclose" => AsyncGeneratorMethod(
@@ -877,6 +874,27 @@ internal static class ManagedObjectProtocols
                 exceptionInstance.Attributes = new PythonAttributeDictionary(
                     RequireNamespaceDictionary(value, span)
                 );
+                return;
+            case PythonExceptionValue exceptionInstance when name == "args":
+                var arguments =
+                    value as PythonTupleValue
+                    ?? new PythonTupleValue([.. MaterializeValues(value, span)]);
+                exceptionInstance.AssignArguments(arguments);
+                if (exceptionInstance.GroupExceptions is null)
+                {
+                    exceptionInstance.Message = arguments.Elements.Length switch
+                    {
+                        0 => string.Empty,
+                        1
+                            when PythonBuiltinTypes
+                                .GetMro(PythonBuiltinTypes.GetRuntimeType(exceptionInstance))
+                                .Elements.Any(entry =>
+                                    entry is PythonExceptionTypeValue { Name: "KeyError" }
+                                ) => arguments.Elements[0].ToRepresentationString(),
+                        1 => arguments.Elements[0].ToDisplayString(),
+                        _ => arguments.ToDisplayString(),
+                    };
+                }
                 return;
             case PythonExceptionValue exceptionInstance:
                 exceptionInstance.Attributes[name] = value;
@@ -1190,6 +1208,8 @@ internal static class ManagedObjectProtocols
                 return;
             case PythonExceptionValue when name == "__dict__":
                 throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
+            case PythonExceptionValue when name == "args":
+                throw Fault("DPY4023", "args may not be deleted", span, "TypeError");
             case PythonModuleValue module when module.Globals.Remove(name):
                 return;
             case PythonModuleValue module:
@@ -1323,27 +1343,6 @@ internal static class ManagedObjectProtocols
         return arguments[0];
     }
 
-    internal static PythonExceptionValue ConvertToExceptionValue(
-        PythonValue value,
-        TextSpan span
-    ) =>
-        value switch
-        {
-            PythonExceptionValue raised => raised,
-            PythonExceptionTypeValue type => new PythonExceptionValue(type.Name, string.Empty),
-            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                new PythonExceptionValue(exceptionClass.Name, string.Empty)
-                {
-                    ManagedType = exceptionClass,
-                },
-            _ => throw Fault(
-                "DPY4003",
-                "Exceptions must derive from BaseException.",
-                span,
-                "TypeError"
-            ),
-        };
-
     private static PythonValue SendToGenerator(
         PythonGeneratorValue generator,
         IReadOnlyList<PythonValue> arguments,
@@ -1403,21 +1402,11 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        var exception = ConvertToExceptionValue(arguments[0], span);
-        if (generator is { IsCoroutine: true, State: PythonGeneratorState.Completed })
-        {
-            throw ReusedCoroutineFault(span);
-        }
-
-        if (generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed)
-        {
-            // A fresh or exhausted generator never runs its body: it closes and the
-            // exception propagates to the caller.
-            generator.State = PythonGeneratorState.Completed;
-            throw new PythonRaisedException(exception);
-        }
-
-        var advanced = generator.ResumeCore!(null, exception);
+        var advanced = UserObjectProtocols.Dispatcher!.ThrowGenerator(
+            generator,
+            arguments[0],
+            span
+        );
         if (advanced.HasValue)
         {
             return advanced.Value;
@@ -1436,9 +1425,10 @@ internal static class ManagedObjectProtocols
 
         try
         {
-            var advanced = generator.ResumeCore!(
-                null,
-                new PythonExceptionValue("GeneratorExit", string.Empty)
+            var advanced = UserObjectProtocols.Dispatcher!.ThrowGenerator(
+                generator,
+                new PythonExceptionValue("GeneratorExit", string.Empty),
+                span
             );
             if (advanced.HasValue)
             {

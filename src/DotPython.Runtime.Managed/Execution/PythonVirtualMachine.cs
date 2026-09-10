@@ -2492,17 +2492,82 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
+    private static void CompleteAsyncGeneratorStep(PythonAsyncGeneratorStepValue step)
+    {
+        step.Completed = true;
+        if (ReferenceEquals(step.Generator.ActiveAsyncStep, step))
+            step.Generator.ActiveAsyncStep = null;
+    }
+
     private void DriveAsyncGeneratorStep(
         PythonAsyncGeneratorStepValue step,
         PythonValue sent,
-        TextSpan span
+        TextSpan span,
+        PythonValue? thrown = null
+    )
+    {
+        if (step.Completed)
+            throw Fault(
+                "DPY4016",
+                step.Kind
+                    is PythonAsyncGeneratorStepKind.Close
+                        or PythonAsyncGeneratorStepKind.Throw
+                    ? "cannot reuse already awaited aclose()/athrow()"
+                    : "cannot reuse already awaited __anext__()/asend()",
+                span,
+                "RuntimeError"
+            );
+        try
+        {
+            DriveAsyncGeneratorStepCore(step, sent, span, thrown);
+        }
+        catch
+        {
+            CompleteAsyncGeneratorStep(step);
+            throw;
+        }
+    }
+
+    private void DriveAsyncGeneratorStepCore(
+        PythonAsyncGeneratorStepValue step,
+        PythonValue sent,
+        TextSpan span,
+        PythonValue? thrown
     )
     {
         var generator = step.Generator;
         (bool HasValue, PythonValue Value) advanced;
         if (!step.Started)
         {
+            if (
+                generator.State == PythonGeneratorState.Running
+                || generator.ActiveAsyncStep is not null
+            )
+                throw Fault(
+                    "DPY4035",
+                    step.Kind switch
+                    {
+                        PythonAsyncGeneratorStepKind.Throw =>
+                            "athrow(): asynchronous generator is already running",
+                        PythonAsyncGeneratorStepKind.Close =>
+                            "aclose(): asynchronous generator is already running",
+                        _ => "anext(): asynchronous generator is already running",
+                    },
+                    span,
+                    "RuntimeError"
+                );
+            if (
+                generator.State == PythonGeneratorState.Completed
+                && step.Kind == PythonAsyncGeneratorStepKind.Throw
+            )
+            {
+                _evaluationStack.Push(PythonNoneValue.Instance);
+                _evaluationStack.Push(PythonTruthValue.False);
+                CompleteAsyncGeneratorStep(step);
+                return;
+            }
             step.Started = true;
+            generator.ActiveAsyncStep = step;
             if (
                 step.Kind == PythonAsyncGeneratorStepKind.Send
                 && generator.State == PythonGeneratorState.Created
@@ -2525,18 +2590,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 generator.State = PythonGeneratorState.Completed;
                 _evaluationStack.Push(PythonNoneValue.Instance);
                 _evaluationStack.Push(PythonTruthValue.False);
+                CompleteAsyncGeneratorStep(step);
                 return;
-            }
-
-            if (
-                generator.State is PythonGeneratorState.Created or PythonGeneratorState.Completed
-                && step.Kind is PythonAsyncGeneratorStepKind.Throw
-            )
-            {
-                // Mirrors sync generators: a fresh or exhausted generator never runs
-                // its body — it closes and the exception propagates to the awaiter.
-                generator.State = PythonGeneratorState.Completed;
-                throw new PythonRaisedException(step.Injected!);
             }
 
             switch (step.Kind)
@@ -2548,14 +2603,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     );
                     break;
                 case PythonAsyncGeneratorStepKind.Throw:
-                    advanced = generator.ResumeCore!(null, step.Injected);
+                    advanced = ThrowGenerator(generator, step.ExceptionArgument!, span);
                     break;
                 case PythonAsyncGeneratorStepKind.Close:
                     try
                     {
-                        advanced = generator.ResumeCore!(
-                            null,
-                            new PythonExceptionValue("GeneratorExit", string.Empty)
+                        advanced = ThrowGenerator(
+                            generator,
+                            new PythonExceptionValue("GeneratorExit", string.Empty),
+                            span
                         );
                     }
                     catch (PythonRaisedException raised)
@@ -2577,7 +2633,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         else
         {
-            advanced = generator.ResumeCore!(sent is PythonNoneValue ? null : sent, null);
+            advanced = thrown is not null
+                ? ThrowGenerator(generator, thrown, span)
+                : generator.ResumeCore!(sent is PythonNoneValue ? null : sent, null);
         }
 
         if (advanced.HasValue)
@@ -2597,6 +2655,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 // The generator's own yield completes this await with the value.
                 _evaluationStack.Push(wrapped.Value);
                 _evaluationStack.Push(PythonTruthValue.False);
+                CompleteAsyncGeneratorStep(step);
                 return;
             }
 
@@ -2610,6 +2669,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             _evaluationStack.Push(PythonNoneValue.Instance);
             _evaluationStack.Push(PythonTruthValue.False);
+            CompleteAsyncGeneratorStep(step);
             return;
         }
 
@@ -2617,10 +2677,26 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             _evaluationStack.Push(fallback);
             _evaluationStack.Push(PythonTruthValue.False);
+            CompleteAsyncGeneratorStep(step);
             return;
         }
 
         throw CreateRaisedException(new PythonExceptionValue("StopAsyncIteration", string.Empty));
+    }
+
+    private (bool HasValue, PythonValue Value) ThrowAsyncGeneratorStep(
+        PythonAsyncGeneratorStepValue step,
+        PythonValue exception,
+        TextSpan span
+    )
+    {
+        // An outer coroutine can delegate throw() into an async-generator step
+        // that is suspended in its own inner await. Keep that step's ownership
+        // until it either suspends again or completes through the usual driver.
+        DriveAsyncGeneratorStep(step, PythonNoneValue.Instance, span, exception);
+        var suspended = ManagedObjectProtocols.IsTrue(Pop(span));
+        var value = Pop(span);
+        return (suspended, value);
     }
 
     private void ApplyGetAwaitable(PythonInstruction instruction) =>
@@ -2731,7 +2807,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         return WrapUserIterator(InvokeCallableNested(iterMethod, [], span), span);
     }
 
-    private PythonIteratorValue WrapUserIterator(PythonValue result, TextSpan span)
+    private static PythonIteratorValue WrapUserIterator(PythonValue result, TextSpan span)
     {
         switch (result)
         {
@@ -2746,7 +2822,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     out var nextMethod
                 ):
                 return new PythonIteratorValue(
-                    new PythonUserIteratorSourceValue(() => StepUserIterator(nextMethod, span)),
+                    new PythonUserIteratorSourceValue(() =>
+                        UserObjectProtocols.Dispatcher!.StepUserIterator(nextMethod, span)
+                    )
+                    {
+                        OriginalIterator = iteratorInstance,
+                    },
                     -1
                 );
             default:
@@ -3172,6 +3253,20 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private void ApplyYieldFromStep(PythonInstruction instruction)
     {
+        var iterator = ApplyYieldFromStepCore(instruction);
+        if (
+            Peek(instruction.Span) == PythonTruthValue.True
+            && CurrentFrame.Generator is { } generator
+        )
+        {
+            var state = (GeneratorFrameState)generator.OwnedFrameState!;
+            state.Delegation = iterator;
+            state.DelegationContinuation = CurrentFrame.InstructionPointer;
+        }
+    }
+
+    private PythonIteratorValue ApplyYieldFromStepCore(PythonInstruction instruction)
+    {
         var sent = Pop(instruction.Span);
         var target = Peek(instruction.Span);
         if (target is not PythonIteratorValue iterator)
@@ -3193,13 +3288,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(PythonTruthValue.False);
             }
 
-            return;
+            return iterator;
         }
 
         if (iterator.Iterable is PythonAsyncGeneratorStepValue step)
         {
             DriveAsyncGeneratorStep(step, sent, instruction.Span);
-            return;
+            return iterator;
         }
 
         if (ManagedObjectProtocols.TryGetNext(iterator, out var element, instruction.Span))
@@ -3216,6 +3311,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             );
             _evaluationStack.Push(PythonTruthValue.False);
         }
+        return iterator;
     }
 
     private void ApplyMatchKeys(PythonInstruction instruction)
@@ -3509,7 +3605,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         _frames[--_frameCount] = default;
     }
 
-    private PythonGeneratorValue CreateGenerator(
+    private static PythonGeneratorValue CreateGenerator(
         PythonFunctionValue function,
         PythonValue[] slots,
         TextSpan span
@@ -3544,7 +3640,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             IsAsyncGenerator =
                 function.Code.Definition.IsCoroutine && function.Code.Definition.IsGenerator,
         };
-        generator.ResumeCore = (sent, injected) => ResumeGenerator(generator, sent, injected, span);
+        generator.ResumeCore = (sent, injected) =>
+            UserObjectProtocols.Dispatcher!.ResumeGenerator(generator, sent, injected, span);
         return generator;
     }
 
@@ -3564,10 +3661,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             case PythonGeneratorState.Running when generator.IsCoroutine:
                 throw Fault("DPY4035", "coroutine already executing", span, "RuntimeError");
             case PythonGeneratorState.Running:
-                throw Fault("DPY4035", "Generator already executing.", span, "ValueError");
+                throw Fault("DPY4035", "generator already executing", span, "ValueError");
         }
 
         var starting = generator.State == PythonGeneratorState.Created;
+        ((GeneratorFrameState)generator.OwnedFrameState!).Delegation = null;
         generator.State = PythonGeneratorState.Running;
         var baseFrameCount = _frameCount;
         var stackDepthBefore = _evaluationStack.Count;
@@ -5176,13 +5274,20 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 throw Fault("DPY4009", $"{type.Name}.__init__ is not callable.", span, "TypeError");
             }
 
-            InvokeCallableNested(
+            var initialized = InvokeCallableNested(
                 initializerFunction,
                 PrependArgument(exception, arguments),
                 span,
                 keywordNames,
                 keywordValues
             );
+            if (initialized is not PythonNoneValue)
+                throw Fault(
+                    "DPY4003",
+                    $"__init__() should return None, not '{ManagedObjectProtocols.GetTypeName(initialized)}'",
+                    span,
+                    "TypeError"
+                );
         }
         else if (keywordNames.Length != 0)
         {
@@ -5575,6 +5680,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private sealed class GeneratorFrameState
     {
+        internal PythonIteratorValue? Delegation { get; set; }
+
+        internal int DelegationContinuation { get; set; }
+
         internal Stack<PythonRaisedException> ActiveExceptions { get; } = new();
 
         internal List<PythonExceptionBlock> ExceptionBlocks { get; } = [];

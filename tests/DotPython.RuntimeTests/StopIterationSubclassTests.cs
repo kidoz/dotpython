@@ -18,7 +18,7 @@ public sealed class StopIterationSubclassTests
         };
 
         Assert.Same(value, ManagedObjectProtocols.GetAttribute(exception, "value"));
-        var empty = ManagedObjectProtocols.ConvertToExceptionValue(childType, default);
+        var empty = new PythonExceptionValue("Child", string.Empty) { ManagedType = childType };
         Assert.Same(PythonNoneValue.Instance, ManagedObjectProtocols.GetAttribute(empty, "value"));
         var unrelated = new PythonExceptionValue("StopIteration", "value")
         {

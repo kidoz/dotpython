@@ -657,14 +657,76 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal bool SuppressContext { get; set; }
 
+    private IReadOnlyList<PythonExceptionValue>? _groupExceptions;
+    private IReadOnlyList<PythonValue>? _groupArguments;
+    private PythonTupleValue? _groupExceptionTuple;
+
     /// <summary>The nested exceptions of an exception group; null for plain exceptions.</summary>
-    internal IReadOnlyList<PythonExceptionValue>? GroupExceptions { get; init; }
+    internal IReadOnlyList<PythonExceptionValue>? GroupExceptions
+    {
+        get => _groupExceptions;
+        init
+        {
+            _groupExceptions = value;
+            _groupArguments = _arguments;
+            _groupExceptionTuple = null;
+        }
+    }
+
+    internal PythonTupleValue GroupExceptionTuple
+    {
+        get
+        {
+            if (_groupExceptionTuple is not null)
+                return _groupExceptionTuple;
+            var exceptions = GroupExceptions!;
+            // An exact tuple supplied to the constructor is retained by CPython.
+            // Capture constructor args separately: later args writes do not change children.
+            if (
+                _groupArguments is { Count: 2 }
+                && _groupArguments[1] is PythonTupleValue tuple
+                && tuple.Elements.Length == exceptions.Count
+                && tuple
+                    .Elements.Where((item, index) => !ReferenceEquals(item, exceptions[index]))
+                    .Any() == false
+            )
+                return _groupExceptionTuple = tuple;
+            return _groupExceptionTuple = new([.. exceptions.Cast<PythonValue>()]);
+        }
+    }
 
     /// <summary>
     /// The constructor arguments (`e.args`); null when the value was created from a
     /// bare message, in which case the args derive from <see cref="Message"/>.
     /// </summary>
-    internal IReadOnlyList<PythonValue>? Arguments { get; set; }
+    private IReadOnlyList<PythonValue>? _arguments;
+    private PythonTupleValue? _argumentTuple;
+    private IReadOnlyList<PythonValue>? _constructorArguments;
+
+    internal IReadOnlyList<PythonValue>? Arguments
+    {
+        get => _arguments;
+        set
+        {
+            _arguments = value;
+            _argumentTuple = null;
+            if (GroupExceptions is not null)
+                _groupArguments ??= value;
+        }
+    }
+
+    internal PythonTupleValue ArgumentTuple => _argumentTuple ??= new([.. EffectiveArguments]);
+
+    internal IReadOnlyList<PythonValue> ConstructorArguments =>
+        _constructorArguments ?? EffectiveArguments;
+
+    internal void AssignArguments(PythonTupleValue arguments)
+    {
+        // Builtin exception fields such as StopIteration.value are independent of args.
+        _constructorArguments ??= EffectiveArguments;
+        _arguments = arguments.Elements;
+        _argumentTuple = arguments;
+    }
 
     internal IReadOnlyList<PythonValue> EffectiveArguments =>
         Arguments
@@ -829,6 +891,8 @@ internal sealed record PythonGeneratorValue : PythonValue
 
     internal PythonGeneratorState State { get; set; } = PythonGeneratorState.Created;
 
+    internal PythonAsyncGeneratorStepValue? ActiveAsyncStep { get; set; }
+
     internal PythonValue YieldedValue { get; set; } = PythonNoneValue.Instance;
 
     /// <summary>
@@ -966,13 +1030,14 @@ internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
 }
 
 /// <summary>
-/// A lazy iteration source over a user-defined iterator: `MoveNext` captures the VM
-/// and the bound `__next__`, converting a raised StopIteration into exhaustion.
+/// A lazy iteration source retaining the original iterator for throw/close delegation.
 /// </summary>
 internal sealed record PythonUserIteratorSourceValue(
     Func<(bool HasValue, PythonValue Value)> MoveNext
 ) : PythonValue
 {
+    internal PythonValue? OriginalIterator { get; init; }
+
     internal override string ToDisplayString() => "<iterator>";
 }
 
@@ -1002,10 +1067,12 @@ internal sealed record PythonAsyncGeneratorStepValue(
     PythonGeneratorValue Generator,
     PythonAsyncGeneratorStepKind Kind,
     PythonValue? Argument,
-    PythonExceptionValue? Injected
+    PythonValue? ExceptionArgument
 ) : PythonValue
 {
     internal bool Started { get; set; }
+
+    internal bool Completed { get; set; }
 
     /// <summary>`anext(agen, default)`: completes with this instead of StopAsyncIteration.</summary>
     internal PythonValue? ExhaustedDefault { get; init; }
