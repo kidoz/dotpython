@@ -5,6 +5,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using DotPython.Language.Text;
 
@@ -20,6 +21,12 @@ internal static class PythonBuiltinTypes
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, PythonExceptionTypeValue> ExceptionTypes =
         new(StringComparer.Ordinal);
+
+    // Builtin value kinds currently model immutable hierarchies. Key by identity
+    // without retaining unreachable types or caching mutable managed state.
+    private static readonly ConditionalWeakTable<PythonValue, PythonTupleValue> BuiltinBases =
+        new();
+    private static readonly ConditionalWeakTable<PythonValue, PythonTupleValue> BuiltinMros = new();
 
     internal static readonly PythonBuiltinTypeValue Type = new(
         "type",
@@ -53,7 +60,16 @@ internal static class PythonBuiltinTypes
     internal static PythonExceptionTypeValue GetExceptionType(string name) =>
         ExceptionTypes.GetOrAdd(name, static key => new PythonExceptionTypeValue(key));
 
-    internal static PythonTupleValue GetBases(PythonValue type) =>
+    internal static PythonTupleValue GetBases(PythonValue type)
+    {
+        if (ReferenceEquals(type, PythonBuiltinFunctions.ObjectType))
+            type = PythonBuiltinFunctions.Object;
+        return type is PythonBuiltinTypeValue or PythonExceptionTypeValue
+            ? BuiltinBases.GetValue(type, ComputeBases)
+            : ComputeBases(type);
+    }
+
+    private static PythonTupleValue ComputeBases(PythonValue type) =>
         type switch
         {
             PythonBuiltinTypeValue builtin
@@ -115,6 +131,11 @@ internal static class PythonBuiltinTypes
         {
             type = PythonBuiltinFunctions.Object;
         }
+        return BuiltinMros.GetValue(type, ComputeBuiltinMro);
+    }
+
+    private static PythonTupleValue ComputeBuiltinMro(PythonValue type)
+    {
         if (type is PythonExceptionTypeValue { Name: "ExceptionGroup" })
             return new([
                 type,
