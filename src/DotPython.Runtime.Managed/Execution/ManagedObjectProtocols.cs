@@ -321,6 +321,14 @@ internal static class ManagedObjectProtocols
                 return function.Globals.TryGetValue("__name__", out var functionModule)
                     ? functionModule
                     : PythonNoneValue.Instance;
+            case PythonFunctionValue function when name == "__dict__":
+                return function.Attributes.Dictionary;
+            case PythonFunctionValue function
+                when !IsFunctionMetadataName(name)
+                    && function.Attributes.TryGetValue(name, out var functionAttribute):
+                return functionAttribute;
+            case PythonFunctionValue:
+                throw MissingAttribute("function", name, span);
             case PythonStreamValue stream:
                 return GetStreamAttribute(stream, name, span);
             case PythonBoundUserMethodValue boundUserMethod when name == "__name__":
@@ -866,6 +874,14 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonFunctionValue function when name == "__dict__":
+                function.Attributes = new PythonAttributeDictionary(
+                    RequireNamespaceDictionary(value, span)
+                );
+                return;
+            case PythonFunctionValue function when !IsFunctionMetadataName(name):
+                function.Attributes[name] = value;
+                return;
             case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
                 when TryGetTypeAttribute(meta, name, out var metaDescriptor)
                     && TrySetDescriptor(metaDescriptor, type, name, value, span):
@@ -961,6 +977,25 @@ internal static class ManagedObjectProtocols
             span,
             "TypeError"
         );
+
+    // Function runtime metadata keeps its existing dedicated attribute behavior;
+    // arbitrary user state belongs to the function dictionary instead.
+    private static bool IsFunctionMetadataName(string name) =>
+        name
+            is "__class__"
+                or "__name__"
+                or "__qualname__"
+                or "__module__"
+                or "__doc__"
+                or "__annotations__"
+                or "__annotate__"
+                or "__defaults__"
+                or "__kwdefaults__"
+                or "__code__"
+                or "__globals__"
+                or "__closure__"
+                or "__builtins__"
+                or "__type_params__";
 
     /// <summary>
     /// The default attribute lookup for a managed instance (data descriptors, the
@@ -1184,6 +1219,13 @@ internal static class ManagedObjectProtocols
 
         switch (target)
         {
+            case PythonFunctionValue when name == "__dict__":
+                throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
+            case PythonFunctionValue function
+                when !IsFunctionMetadataName(name) && function.Attributes.Remove(name):
+                return;
+            case PythonFunctionValue:
+                throw MissingAttribute("function", name, span);
             case PythonManagedTypeValue { Metaclass: PythonManagedTypeValue meta } type
                 when TryGetTypeAttribute(meta, name, out var metaDescriptor)
                     && TryDeleteDescriptor(metaDescriptor, type, name, span):
