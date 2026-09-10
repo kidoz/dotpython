@@ -21,6 +21,11 @@ public static class PythonLinter
                 "tuple-assert",
                 "A tuple with a non-starred element is always truthy; assert its intended condition."
             ),
+            new(
+                "DPYL004",
+                "unused-import",
+                "The imported binding is never referenced in a visible lexical scope."
+            ),
         ]);
 
     /// <summary>Validates exact rule identifiers. An invalid configuration throws ArgumentException.</summary>
@@ -111,6 +116,12 @@ public static class PythonLinter
                     pending.Push((child, childOffset));
                 }
             }
+        }
+
+        if (enabled.Contains("DPYL004"))
+        {
+            foreach (var import in UnusedImportAnalysis.Find(parse.Module, cancellationToken))
+                Report(Rules[3], import.Occurrence.Span, 0);
         }
 
         return new PythonLintResult(source, diagnostics);

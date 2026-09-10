@@ -7,6 +7,29 @@ namespace DotPython.DifferentialTests;
 public sealed class PythonLintCommandTests
 {
     [Fact]
+    public void Lint_UnusedImportsAreEnabledByDefaultWithoutImportingPackages()
+    {
+        var result = Run(
+            ["lint", "--output-format", "json", "-"],
+            "import package_that_does_not_exist as unused\n"
+        );
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Error);
+        using var json = JsonDocument.Parse(result.Output);
+        var diagnostic = Assert.Single(json.RootElement.EnumerateArray());
+        Assert.Equal("DPYL004", diagnostic.GetProperty("code").GetString());
+        Assert.Equal(8, diagnostic.GetProperty("column").GetInt32());
+        Assert.Equal(
+            0,
+            Run(
+                ["lint", "--ignore", "DPYL004", "-"],
+                "import package_that_does_not_exist\n"
+            ).ExitCode
+        );
+    }
+
+    [Fact]
     public void Lint_StdinWritesJsonWithFilenameAndPositions()
     {
         var result = Run(

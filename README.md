@@ -99,13 +99,36 @@ dotnet run --project src/DotPython.Cli -- lint --output-format json --stdin-file
 | `DPYL001` | Bare `except:` catches every exception, including interruption and exit signals. |
 | `DPYL002` | A list, dictionary, or set literal used as a function/lambda default is shared between calls. |
 | `DPYL003` | An asserted tuple containing a non-starred element is always truthy. |
+| `DPYL004` | An imported binding has no reference in a visible lexical scope. |
 
 Rules also visit nested definitions and expressions. Mutable-default checks cover
 literal displays; constructor calls, comprehensions, and nested mutable objects
 inside immutable defaults are outside this initial rule. Tuple assertions consisting
 only of starred elements are not reported, since the resulting tuple may be empty.
 
-All three rules are enabled by default. `--select` replaces that set; `--ignore`
+Unused-import analysis distinguishes module, function, lambda, comprehension, and
+class scopes; a same-spelled parameter or local does not use an outer import.
+Defaults, decorators, annotations (including quoted forward references), and f/t-string
+interpolations count as references. `global` and `nonlocal` redirect references to
+their owning scopes. Attribute names such as `obj.os` do not count as uses of an
+unrelated `os` import.
+
+`DPYL004` preserves explicit re-exports (`from helpers import Item as Item`), names in
+literal module `__all__` lists/tuples and their concatenations, `+=`, `append`, or
+`extend` operations, and `__future__` imports. It conservatively skips imports inside
+try statements, imports exposed as class attributes, and scopes potentially observed
+through direct `exec`, `eval`, `globals`, `locals`, or `vars` calls. Unknown or escaped
+`__all__` values preserve module imports. Ordinary conditional imports are checked;
+a reference in either branch keeps all imports of the same lexical binding.
+
+This analysis does not track which assignment reaches a read. Repeated imports or
+assignments to a used binding are retained, as are unaliased dotted imports sharing a
+used package name. Quoted annotations are inspected for name references without type
+inference. If execution binding rejects the file, the unused-import rule is skipped;
+the existing compiler remains responsible for its required diagnostics. No import is
+automatically removed; intentional side-effect imports can use a `DPYL004` suppression.
+
+All four rules are enabled by default. `--select` replaces that set; `--ignore`
 removes rules from it. Both accept comma-separated exact identifiers and reject
 unknown identifiers. Repeated options use the last value. An empty CLI `--select ""`
 disables lint rules. Parser diagnostics remain enabled, and a file with parser errors
@@ -165,7 +188,7 @@ SDK projects can opt into the same rules:
 <PropertyGroup>
   <DotPythonLintEnabled>true</DotPythonLintEnabled>
   <DotPythonLintWarningsAsErrors>true</DotPythonLintWarningsAsErrors>
-  <DotPythonLintSelect>DPYL001,DPYL002,DPYL003</DotPythonLintSelect>
+  <DotPythonLintSelect>DPYL001,DPYL002,DPYL003,DPYL004</DotPythonLintSelect>
   <DotPythonLintIgnore>DPYL001</DotPythonLintIgnore>
 </PropertyGroup>
 ```

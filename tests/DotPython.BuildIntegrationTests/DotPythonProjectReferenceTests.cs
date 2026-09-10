@@ -152,7 +152,7 @@ public sealed class DotPythonProjectReferenceTests
             var sourcePath = Path.Combine(fixtureRoot, "PricingRules", "pricing.py");
             await File.AppendAllTextAsync(
                 sourcePath,
-                "\ndef lint_example():\n    assert (False,)\n",
+                "\ndef lint_example():\n    import package_that_does_not_exist\n    assert (False,)\n",
                 TestContext.Current.CancellationToken
             );
             await RunDotNetAsync(fixtureRoot, temporaryRoot, buildArguments);
@@ -164,6 +164,11 @@ public sealed class DotPythonProjectReferenceTests
                 StringComparison.Ordinal
             );
             var lintWrite = File.GetLastWriteTimeUtc(facadePath);
+            Assert.Contains(
+                "warning DPYL004",
+                warning.StandardOutput + warning.StandardError,
+                StringComparison.Ordinal
+            );
             var lintFailure = await RunDotNetExpectFailureAsync(
                 fixtureRoot,
                 temporaryRoot,
@@ -174,6 +179,11 @@ public sealed class DotPythonProjectReferenceTests
                 lintFailure.StandardOutput + lintFailure.StandardError,
                 StringComparison.Ordinal
             );
+            Assert.Contains(
+                "error DPYL004",
+                lintFailure.StandardOutput + lintFailure.StandardError,
+                StringComparison.Ordinal
+            );
             Assert.Equal(lintWrite, File.GetLastWriteTimeUtc(facadePath));
             var ignored = await RunDotNetAsync(
                 fixtureRoot,
@@ -181,7 +191,8 @@ public sealed class DotPythonProjectReferenceTests
                 [
                     .. lintArguments,
                     "-p:DotPythonLintWarningsAsErrors=true",
-                    "-p:DotPythonLintIgnore=DPYL003",
+                    "-p:DotPythonLintSelect=DPYL004",
+                    "-p:DotPythonLintIgnore=DPYL004",
                 ]
             );
             Assert.DoesNotContain(
