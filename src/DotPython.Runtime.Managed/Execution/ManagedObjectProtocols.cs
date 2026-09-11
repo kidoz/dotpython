@@ -425,13 +425,9 @@ internal static class ManagedObjectProtocols
                 return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
             case PythonExceptionValue suppressSource when name == "__suppress_context__":
                 return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
-            case PythonIteratorValue { Iterable: PythonSequenceIteratorSourceValue } iterator
-                when name == "__length_hint__":
-                return new PythonBoundMethodValue(
-                    name,
-                    iterator,
-                    PythonLengthHints.SequenceIteratorMethod
-                );
+            case PythonIteratorValue iterator
+                when name == "__length_hint__" && PythonLengthHints.SupportsIterator(iterator):
+                return new PythonBoundMethodValue(name, iterator, PythonLengthHints.IteratorMethod);
             case PythonExceptionValue tracebackSource when name == "with_traceback":
                 // The managed model does not carry traceback objects; the method
                 // accepts and ignores its argument, returning the exception itself.
@@ -1652,6 +1648,8 @@ internal static class ManagedObjectProtocols
             value = PythonNoneValue.Instance;
             return false;
         }
+        if (iterator.Iterable is PythonListValue or PythonTupleValue or PythonRangeValue)
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
         switch (iterator.Iterable)
         {
             case PythonFileValue file:
@@ -1671,6 +1669,9 @@ internal static class ManagedObjectProtocols
             case PythonTupleValue tuple when iterator.Index < tuple.Elements.Length:
                 value = tuple.Elements[iterator.Index++];
                 return true;
+            case PythonListValue or PythonTupleValue:
+                iterator.IsExhausted = true;
+                break;
             case PythonDictionaryViewValue view:
                 if (view.Dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
                 {
@@ -1729,14 +1730,14 @@ internal static class ManagedObjectProtocols
                 return true;
             case PythonRangeValue range:
             {
-                var current = range.Start + range.Step * iterator.Index;
+                var current = range.Start + range.Step * iterator.RangeIndex;
                 if (range.Step > 0 ? current < range.Stop : current > range.Stop)
                 {
-                    iterator.Index++;
+                    iterator.RangeIndex++;
                     value = PythonWholeNumberValue.Create(current);
                     return true;
                 }
-
+                iterator.IsExhausted = true;
                 break;
             }
             case PythonEnumerateSourceValue enumerateSource:

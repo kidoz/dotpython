@@ -6,17 +6,17 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Length estimates and their Python-visible callback/validation semantics.</summary>
 internal static class PythonLengthHints
 {
-    internal static readonly PythonProtocolFunctionValue SequenceIteratorMethod = new(
+    internal static readonly PythonProtocolFunctionValue IteratorMethod = new(
         "__length_hint__",
         (receiver, arguments) =>
         {
             if (arguments.Count != 0)
                 throw Error(
-                    $"iterator.__length_hint__() takes no arguments ({arguments.Count} given)",
+                    $"{PythonBuiltinTypes.GetRuntimeTypeName(receiver!)}.__length_hint__() takes no arguments ({arguments.Count} given)",
                     "TypeError",
                     default
                 );
-            return GetSequenceIteratorHint((PythonIteratorValue)receiver!, default);
+            return GetIteratorHint((PythonIteratorValue)receiver!, default);
         }
     );
 
@@ -30,16 +30,21 @@ internal static class PythonLengthHints
         catch (Exception error) when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
         { }
 
-        PythonValue method;
-        if (value is PythonIteratorValue { Iterable: PythonSequenceIteratorSourceValue })
-            method = new PythonBoundMethodValue("__length_hint__", value, SequenceIteratorMethod);
-        else if (!ManagedObjectProtocols.TryGetSpecialMethod(value, "__length_hint__", out method))
-            return defaultValue;
+        PythonValue? method = null;
+        var iterator = value as PythonIteratorValue;
+        if (iterator is null || !SupportsIterator(iterator))
+        {
+            iterator = null;
+            if (!ManagedObjectProtocols.TryGetSpecialMethod(value, "__length_hint__", out method))
+                return defaultValue;
+        }
 
         PythonValue result;
         try
         {
-            result = UserObjectProtocols.Dispatcher!.Invoke(method, [], span);
+            result = iterator is not null
+                ? GetIteratorHint(iterator, span)
+                : UserObjectProtocols.Dispatcher!.Invoke(method!, [], span);
         }
         catch (Exception error) when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
         {
@@ -61,6 +66,32 @@ internal static class PythonLengthHints
         if (hint < 0)
             throw Error("__length_hint__() should return >= 0", "ValueError", span);
         return hint;
+    }
+
+    internal static bool SupportsIterator(PythonIteratorValue iterator) =>
+        iterator.Iterable
+            is PythonSequenceIteratorSourceValue
+                or PythonListValue
+                or PythonTupleValue
+                or PythonRangeValue;
+
+    private static PythonValue GetIteratorHint(PythonIteratorValue iterator, TextSpan span)
+    {
+        if (iterator.IsExhausted)
+            return PythonWholeNumberValue.Create(0);
+        return iterator.Iterable switch
+        {
+            PythonListValue list => PythonWholeNumberValue.Create(
+                Math.Max(0, list.Elements.Count - iterator.Index)
+            ),
+            PythonTupleValue tuple => PythonWholeNumberValue.Create(
+                Math.Max(0, tuple.Elements.Length - iterator.Index)
+            ),
+            PythonRangeValue range => PythonWholeNumberValue.Create(
+                BigInteger.Max(0, range.Count - iterator.RangeIndex)
+            ),
+            _ => GetSequenceIteratorHint(iterator, span),
+        };
     }
 
     private static PythonValue GetSequenceIteratorHint(PythonIteratorValue iterator, TextSpan span)

@@ -182,7 +182,9 @@ internal static class PythonBuiltinTypes
             PythonIteratorValue { Iterable: PythonTextValue text }
                 when text.Value.All(character => character <= 127) => "str_ascii_iterator",
             PythonIteratorValue { Iterable: PythonTextValue } => "str_iterator",
-            PythonIteratorValue { Iterable: PythonRangeValue } => "range_iterator",
+            PythonIteratorValue { Iterable: PythonRangeValue range } => GetRangeIteratorTypeName(
+                range
+            ),
             PythonIteratorValue { Iterable: PythonDictionaryValue } => "dict_keyiterator",
             PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_keys" } } =>
                 "dict_keyiterator",
@@ -192,6 +194,34 @@ internal static class PythonBuiltinTypes
                 "dict_itemiterator",
             _ => ManagedObjectProtocols.GetTypeName(value),
         };
+
+    private static string GetRangeIteratorTypeName(PythonRangeValue range)
+    {
+        // CPython uses C long for the fast cursor, including on Windows where it is 32-bit.
+        var narrow = OperatingSystem.IsWindows() || IntPtr.Size == 4;
+        var minimum = new BigInteger(narrow ? int.MinValue : long.MinValue);
+        var maximum = new BigInteger(narrow ? int.MaxValue : long.MaxValue);
+        if (
+            range.Start < minimum
+            || range.Start > maximum
+            || range.Stop < minimum
+            || range.Stop > maximum
+            || range.Step < minimum
+            || range.Step > maximum
+            || range.Count > maximum
+        )
+            return "longrange_iterator";
+        if (
+            !range.Count.IsZero
+            && (
+                range.Step > 0
+                    ? range.Stop > maximum - (range.Step - 1)
+                    : range.Stop < minimum + (-1 - range.Step)
+            )
+        )
+            return "longrange_iterator";
+        return "range_iterator";
+    }
 
     internal static readonly PythonBuiltinTypeValue Bool = new("bool", ConstructBool);
     internal static readonly PythonBuiltinTypeValue Bytes = new(

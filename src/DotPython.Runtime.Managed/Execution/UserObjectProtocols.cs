@@ -45,6 +45,8 @@ internal interface IUserObjectDispatcher
 
     PythonIteratorValue GetUserIterator(PythonManagedObjectValue instance, TextSpan span);
 
+    void CheckIterationWork(TextSpan span);
+
     (bool HasValue, PythonValue Value) StepSequenceIterator(
         PythonSequenceIteratorSourceValue source,
         TextSpan span

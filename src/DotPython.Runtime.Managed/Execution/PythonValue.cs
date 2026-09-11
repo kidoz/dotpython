@@ -1272,6 +1272,9 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDic
 
     internal int Index { get; set; }
 
+    // Range cursors can advance beyond the managed collection index limit.
+    internal BigInteger RangeIndex { get; set; }
+
     internal override string ToDisplayString() => "<collection_iterator>";
 }
 
