@@ -1538,9 +1538,12 @@ internal static class ManagedObjectProtocols
             return iterator;
         }
 
-        if (value is PythonManagedObjectValue instance && userIteration is not null)
+        if (value is PythonManagedObjectValue instance)
         {
-            return userIteration(instance, span);
+            if (userIteration is not null)
+                return userIteration(instance, span);
+            if (UserObjectProtocols.Dispatcher is { } dispatcher)
+                return dispatcher.GetUserIterator(instance, span);
         }
 
         if (value is PythonGeneratorValue generatorValue)
@@ -1859,6 +1862,20 @@ internal static class ManagedObjectProtocols
 
                 iterator.StopIteration = filterSource.Inner.StopIteration;
                 break;
+            case PythonSequenceIteratorSourceValue sequenceSource:
+            {
+                var step = UserObjectProtocols.Dispatcher!.StepSequenceIterator(
+                    sequenceSource,
+                    span
+                );
+                if (step.HasValue)
+                {
+                    value = step.Value;
+                    return true;
+                }
+                iterator.IsExhausted = true;
+                break;
+            }
             case PythonUserIteratorSourceValue userSource:
             {
                 var step = userSource.MoveNext();
@@ -2119,6 +2136,7 @@ internal static class ManagedObjectProtocols
         if (
             container is PythonManagedObjectValue instance
             && !UserObjectProtocols.DefinesSpecialMethod(instance, "__iter__")
+            && !UserObjectProtocols.DefinesSpecialMethod(instance, "__getitem__")
         )
         {
             throw Fault(

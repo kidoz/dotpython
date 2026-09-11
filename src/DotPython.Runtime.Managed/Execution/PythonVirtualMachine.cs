@@ -2744,17 +2744,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
-        if (!ManagedObjectProtocols.TryGetInstanceMethod(instance, "__iter__", out var iterMethod))
-        {
-            throw Fault(
-                "DPY4015",
-                $"'{instance.Type.Name}' object is not iterable",
-                span,
-                "TypeError"
-            );
-        }
-
-        return WrapUserIterator(InvokeCallableNested(iterMethod, [], span), span);
+        return WrapUserIterator(GetUserIteratorResult(instance, span), span);
     }
 
     private static PythonIteratorValue WrapUserIterator(PythonValue result, TextSpan span)
@@ -2766,7 +2756,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             case PythonGeneratorValue { IsCoroutine: false }:
                 return new PythonIteratorValue(result, -1);
             case PythonManagedObjectValue iteratorInstance
-                when ManagedObjectProtocols.TryGetInstanceMethod(
+                when ManagedObjectProtocols.TryGetSpecialMethod(
                     iteratorInstance,
                     "__next__",
                     out var nextMethod
@@ -2848,20 +2838,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private PythonValue IterateUserInstance(PythonManagedObjectValue instance, TextSpan span)
     {
-        if (!ManagedObjectProtocols.TryGetInstanceMethod(instance, "__iter__", out var iterMethod))
-        {
-            throw Fault(
-                "DPY4015",
-                $"'{instance.Type.Name}' object is not iterable",
-                span,
-                "TypeError"
-            );
-        }
-
-        var result = InvokeCallableNested(iterMethod, [], span);
+        var result = GetUserIteratorResult(instance, span);
         if (
             result is PythonManagedObjectValue iteratorInstance
-            && ManagedObjectProtocols.TryGetInstanceMethod(iteratorInstance, "__next__", out _)
+            && ManagedObjectProtocols.TryGetSpecialMethod(iteratorInstance, "__next__", out _)
         )
         {
             return iteratorInstance;
@@ -4815,6 +4795,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 )
             );
         }
+
+        if (!IsExceptionGroupSequence(arguments[1]))
+            throw CreateRaisedException(
+                new PythonExceptionValue(
+                    "TypeError",
+                    "second argument (exceptions) must be a sequence"
+                )
+            );
 
         var elements = ManagedObjectProtocols.MaterializeValues(
             arguments[1],

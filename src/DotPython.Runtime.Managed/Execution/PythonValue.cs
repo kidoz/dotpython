@@ -1045,6 +1045,16 @@ internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
     }
 }
 
+/// <summary>An index-based sequence cursor with no retained execution context.</summary>
+internal sealed record PythonSequenceIteratorSourceValue : PythonValue
+{
+    internal required PythonManagedObjectValue? Sequence { get; set; }
+
+    internal long NextIndex { get; set; }
+
+    internal override string ToDisplayString() => "<iterator>";
+}
+
 /// <summary>
 /// A lazy iteration source retaining the original iterator for throw/close delegation.
 /// </summary>

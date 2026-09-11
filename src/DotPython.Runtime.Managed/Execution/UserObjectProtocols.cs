@@ -43,6 +43,13 @@ internal interface IUserObjectDispatcher
 
     (bool HasValue, PythonValue Value) StepUserIterator(PythonValue nextMethod, TextSpan span);
 
+    PythonIteratorValue GetUserIterator(PythonManagedObjectValue instance, TextSpan span);
+
+    (bool HasValue, PythonValue Value) StepSequenceIterator(
+        PythonSequenceIteratorSourceValue source,
+        TextSpan span
+    );
+
     PythonValue ConstructType(IReadOnlyList<PythonValue> arguments, TextSpan span);
 
     PythonValue GetSubclasses(PythonValue type, TextSpan span);
@@ -612,12 +619,16 @@ internal static class UserObjectProtocols
     )
     {
         contains = false;
-        if (!TryInvokeOnInstance(container, "__contains__", [item], span, out var result))
-        {
+        if (!TryGetSpecialMethod(container, "__contains__", out var method, out _))
             return false;
-        }
-
-        contains = ManagedObjectProtocols.IsTrue(result);
+        if (method is PythonNoneValue)
+            throw ManagedObjectProtocols.Fault(
+                "DPY4015",
+                $"'{ManagedObjectProtocols.GetTypeName(container)}' object is not a container",
+                span,
+                "TypeError"
+            );
+        contains = ManagedObjectProtocols.IsTrue(_dispatcher!.Invoke(method, [item], span));
         return true;
     }
 

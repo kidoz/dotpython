@@ -81,7 +81,7 @@ internal sealed partial class PythonVirtualMachine
                 span,
                 "RecursionError"
             );
-        CheckExceptionGroupWork(span);
+        CheckProtocolWork(span);
         if (matches(exception))
             return (exception, null);
         if (exception.GroupExceptions is null)
@@ -238,22 +238,6 @@ internal sealed partial class PythonVirtualMachine
         ]);
     }
 
-    private void CheckExceptionGroupWork(TextSpan span)
-    {
-        if (_deferredControlFlowCount == 0)
-        {
-            _cancellationToken.ThrowIfCancellationRequested();
-            if (_instructionsExecuted++ >= _instructionLimit)
-                throw Fault("DPY4001", "The managed instruction limit was exceeded.", span);
-        }
-        else if (_deferredCleanupInstructions++ >= MaximumDeferredCleanupInstructions)
-            throw Fault(
-                "DPY4032",
-                $"Deferred cleanup exceeded the {MaximumDeferredCleanupInstructions} instruction limit.",
-                span
-            );
-    }
-
     private void CollectExceptionLeaves(
         PythonExceptionValue exception,
         HashSet<PythonExceptionValue> leaves,
@@ -264,7 +248,7 @@ internal sealed partial class PythonVirtualMachine
         pending.Push(exception);
         while (pending.TryPop(out var current))
         {
-            CheckExceptionGroupWork(span);
+            CheckProtocolWork(span);
             if (current.GroupExceptions is null)
                 leaves.Add(current);
             else
