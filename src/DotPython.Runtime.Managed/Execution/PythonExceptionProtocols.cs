@@ -3,9 +3,14 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
-/// <summary>Allocation and initialization slots for represented builtin exception types.</summary>
+/// <summary>Shared methods and construction slots for represented builtin exception types.</summary>
 internal static class PythonExceptionProtocols
 {
+    private static readonly PythonProtocolFunctionValue AddNoteMethod = new(
+        "add_note",
+        (receiver, arguments) => AddNote(receiver, arguments, [], default),
+        (receiver, arguments, names, _) => AddNote(receiver, arguments, names, default)
+    );
     private static readonly ConcurrentDictionary<string, PythonValue> Allocators = new(
         StringComparer.Ordinal
     );
@@ -19,6 +24,11 @@ internal static class PythonExceptionProtocols
         out PythonValue value
     )
     {
+        if (type.Name == "BaseException" && name == "add_note")
+        {
+            value = AddNoteMethod;
+            return true;
+        }
         if (name == "__new__" && OwnsAllocator(type.Name))
         {
             value = Allocators.GetOrAdd(
@@ -53,6 +63,58 @@ internal static class PythonExceptionProtocols
         }
         value = null!;
         return false;
+    }
+
+    private static PythonNoneValue AddNote(
+        PythonValue? receiver,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywords,
+        TextSpan span
+    )
+    {
+        if (receiver is null)
+        {
+            if (arguments.Count == 0)
+                throw Error(
+                    "descriptor 'add_note' of 'BaseException' object needs an argument",
+                    span
+                );
+            receiver = arguments[0];
+            arguments = arguments.Skip(1).ToArray();
+        }
+        if (receiver is not PythonExceptionValue exception)
+            throw Error(
+                $"descriptor 'add_note' for 'BaseException' objects doesn't apply to a '{ManagedObjectProtocols.GetTypeName(receiver)}' object",
+                span
+            );
+        if (keywords.Count != 0)
+            throw Error("BaseException.add_note() takes no keyword arguments", span);
+        if (arguments.Count != 1)
+            throw Error(
+                $"BaseException.add_note() takes exactly one argument ({arguments.Count} given)",
+                span
+            );
+        if (arguments[0] is not PythonTextValue)
+            throw Error(
+                $"add_note() argument must be str, not {(arguments[0] is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(arguments[0]))}",
+                span
+            );
+        PythonValue? notes = null;
+        try
+        {
+            notes = ManagedObjectProtocols.GetAttribute(exception, "__notes__", span);
+        }
+        catch (Exception error)
+            when (PythonNamespaceMapping.IsPythonException(error, "AttributeError")) { }
+        if (notes is null)
+        {
+            notes = new PythonListValue([]);
+            ManagedObjectProtocols.SetAttribute(exception, "__notes__", notes, span);
+        }
+        if (notes is not PythonListValue list)
+            throw Error("Cannot add note: __notes__ is not a list", span);
+        list.Elements.Add(arguments[0]);
+        return PythonNoneValue.Instance;
     }
 
     internal static bool TryGetAttribute(PythonValue type, string name, out PythonValue value)

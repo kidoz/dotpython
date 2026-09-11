@@ -396,7 +396,7 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue { GroupExceptions: not null } group when name == "exceptions":
                 return group.GroupExceptionTuple;
             case PythonExceptionValue exceptionInstance
-                when name is "__new__" or "__init__"
+                when name is "__new__" or "__init__" or "add_note"
                     && PythonExceptionProtocols.TryGetAttribute(
                         PythonBuiltinTypes.GetRuntimeType(exceptionInstance),
                         name,
@@ -410,7 +410,8 @@ internal static class ManagedObjectProtocols
                     name
                 );
             case PythonExceptionValue exceptionInstance
-                when exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
+                when name is not ("__cause__" or "__context__" or "__suppress_context__")
+                    && exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
                 return exceptionAttribute;
             case PythonExceptionValue contextSource when name == "__context__":
                 return (PythonValue?)contextSource.Context ?? PythonNoneValue.Instance;
@@ -928,6 +929,29 @@ internal static class ManagedObjectProtocols
                     };
                 }
                 return;
+            case PythonExceptionValue exceptionInstance when name is "__cause__" or "__context__":
+                if (value is not (PythonExceptionValue or PythonNoneValue))
+                    throw Fault(
+                        "DPY4003",
+                        name == "__cause__"
+                            ? "exception cause must be None or derive from BaseException"
+                            : "exception context must be None or derive from BaseException",
+                        span,
+                        "TypeError"
+                    );
+                if (name == "__cause__")
+                {
+                    exceptionInstance.Cause = value as PythonExceptionValue;
+                    exceptionInstance.SuppressContext = true;
+                }
+                else
+                    exceptionInstance.Context = value as PythonExceptionValue;
+                return;
+            case PythonExceptionValue exceptionInstance when name == "__suppress_context__":
+                if (value is not PythonTruthValue truth)
+                    throw Fault("DPY4003", "attribute value type must be bool", span, "TypeError");
+                exceptionInstance.SuppressContext = truth.Value;
+                return;
             case PythonExceptionValue exceptionInstance:
                 exceptionInstance.HasInstanceDictionary = true;
                 exceptionInstance.Attributes[name] = value;
@@ -1243,6 +1267,10 @@ internal static class ManagedObjectProtocols
                 throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
             case PythonExceptionValue when name == "args":
                 throw Fault("DPY4023", "args may not be deleted", span, "TypeError");
+            case PythonExceptionValue when name is "__cause__" or "__context__":
+                throw Fault("DPY4003", name + " may not be deleted", span, "TypeError");
+            case PythonExceptionValue when name == "__suppress_context__":
+                throw Fault("DPY4003", "can't delete numeric/char attribute", span, "TypeError");
             case PythonModuleValue module when module.Globals.Remove(name):
                 return;
             case PythonModuleValue module:
