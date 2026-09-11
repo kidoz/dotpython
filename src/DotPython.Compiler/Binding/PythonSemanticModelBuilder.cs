@@ -129,11 +129,20 @@ internal sealed class PythonSemanticModelBuilder
         PythonNameOccurrenceKind kind,
         PythonBoundScope scope,
         int offset,
-        bool knownExport = false
+        bool knownExport = false,
+        bool isQuotedAnnotation = false
     )
     {
         var index = _occurrences.Count;
-        _occurrences.Add(new(name, new TextSpan(span.Start + offset, span.Length), kind, scope));
+        _occurrences.Add(
+            new(
+                name,
+                new TextSpan(span.Start + offset, span.Length),
+                kind,
+                scope,
+                isQuotedAnnotation
+            )
+        );
         if (
             kind
             is PythonNameOccurrenceKind.Definition
@@ -534,7 +543,8 @@ internal sealed class PythonSemanticModelBuilder
                         literal.Span,
                         PythonNameOccurrenceKind.Annotation,
                         scope,
-                        offset
+                        offset,
+                        isQuotedAnnotation: true
                     );
                 else if (
                     tokens[index].Kind == SyntaxTokenKind.StringLiteral
@@ -640,6 +650,9 @@ internal sealed class PythonSemanticModelBuilder
                     symbol,
                     fallback
                 )
+                {
+                    IsQuotedAnnotation = occurrence.IsQuotedAnnotation,
+                }
             );
         }
         var imports = _imports
@@ -669,6 +682,7 @@ internal sealed class PythonSemanticModelBuilder
         string Name,
         TextSpan Span,
         PythonNameOccurrenceKind Kind,
-        PythonBoundScope Scope
+        PythonBoundScope Scope,
+        bool IsQuotedAnnotation
     );
 }

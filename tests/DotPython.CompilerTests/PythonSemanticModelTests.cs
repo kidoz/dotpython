@@ -10,6 +10,20 @@ namespace DotPython.CompilerTests;
 public sealed class PythonSemanticModelTests
 {
     [Fact]
+    public void Analyze_ExposesMangledLookupSpellingForUnresolvedNames()
+    {
+        var model = Analyze(new SourceText("class C:\n    def f(self): return __missing\n"));
+        var occurrence = Assert.Single(
+            model.Occurrences,
+            o => o.Kind == PythonNameOccurrenceKind.Read
+        );
+        Assert.Equal("__missing", occurrence.Name);
+        Assert.Equal("_C__missing", occurrence.LookupName);
+        Assert.Null(occurrence.Symbol);
+        Assert.False(occurrence.IsQuotedAnnotation);
+    }
+
+    [Fact]
     public void Analyze_TracksDistinctImportsReadsAndWritesWithLexicalIdentity()
     {
         var source = new SourceText(
@@ -165,6 +179,8 @@ public sealed class PythonSemanticModelTests
         Assert.Equal(2, annotations.Length);
         Assert.All(annotations, occurrence => Assert.Same(imported, occurrence.Symbol));
         Assert.Equal("'list[Item]'", source.GetText(annotations[0].Span));
+        Assert.True(annotations[0].IsQuotedAnnotation);
+        Assert.False(annotations[1].IsQuotedAnnotation);
         Assert.Contains("Item", model.ExportedNames);
         Assert.False(model.HasDynamicExports);
     }

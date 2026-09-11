@@ -43,7 +43,14 @@ public sealed record PythonNameOccurrence(
     PythonBoundScope Scope,
     PythonSymbol? Symbol,
     PythonSymbol? FallbackSymbol
-);
+)
+{
+    /// <summary>The lookup spelling after Python private-name mangling, even when unresolved.</summary>
+    public string LookupName => Scope.MangleName(Name);
+
+    /// <summary>True for conservatively tokenized string contents, which may include type metadata.</summary>
+    public bool IsQuotedAnnotation { get; init; }
+}
 
 public sealed record PythonImportBinding(
     PythonNameOccurrence Occurrence,

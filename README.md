@@ -179,7 +179,9 @@ Source tooling can also call `PythonSymbolBinder.Analyze(parseResult.Module,
 cancellationToken)` from `DotPython.Compiler.Binding`. The optional semantic model
 exposes lexical symbols, per-occurrence references/declarations with source spans,
 imports, export metadata, and binding diagnostics. Class-body fallback lookups are
-explicit, and unresolved globals/builtins have a null symbol. Check the model's
+explicit, and unresolved globals/builtins have a null symbol. `IsQuotedAnnotation`
+distinguishes conservative string-content references from actual annotation name nodes.
+`LookupName` exposes private-name mangling even when a reference has no symbol. Check the model's
 diagnostics before consuming it. Normal compilation does not build this model.
 
 SDK projects can opt into the same rules:
