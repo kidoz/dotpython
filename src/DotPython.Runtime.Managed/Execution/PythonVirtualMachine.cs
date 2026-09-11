@@ -769,6 +769,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(
                     new PythonExceptStarStateValue
                     {
+                        Original = GetActiveException(instruction.Span),
                         Rest = GetActiveException(instruction.Span).Value,
                     }
                 );
@@ -954,6 +955,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     var block = frame.ExceptionBlocks[^1];
                     frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
                     ClearEvaluationStack(block.EvaluationStackDepth);
+                    // Discard exceptions belonging to handlers exited by this unwind.
+                    // Keep enclosing handlers active when entering a nested catch/finally.
+                    while (frame.ActiveExceptions.Count > block.ActiveExceptionDepth)
+                        frame.ActiveExceptions.Pop();
                     if (block.Kind == PythonExceptionBlockKind.Except)
                     {
                         if (exception is not PythonRaisedException catchable)
@@ -1035,8 +1040,23 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         frame.ExceptionBlocks.Add(
-            new PythonExceptionBlock(kind, handlerTarget, _evaluationStack.Count)
+            new PythonExceptionBlock(
+                kind,
+                handlerTarget,
+                _evaluationStack.Count,
+                frame.ActiveExceptions.Count
+            )
+            {
+                StarClause =
+                    kind == PythonExceptionBlockKind.Except
+                    && _evaluationStack.TryPeek(out var top)
+                    && top is PythonExceptStarStateValue { AwaitingClause: true } state
+                        ? state
+                        : null,
+            }
         );
+        if (frame.ExceptionBlocks[^1].StarClause is { } clause)
+            clause.AwaitingClause = false;
     }
 
     private static void PopExceptionBlock(ref PythonFrame frame, TextSpan span)
@@ -1046,6 +1066,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             throw Fault("DPY4007", "The managed exception block stack is empty.", span);
         }
 
+        if (frame.ExceptionBlocks[^1].StarClause is { } clause)
+            RestoreExceptStarContext(ref frame, clause);
         frame.ExceptionBlocks.RemoveAt(frame.ExceptionBlocks.Count - 1);
     }
 
@@ -1150,7 +1172,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         if (CurrentFrame.ActiveExceptions.Count == 0)
         {
             throw CreateRaisedException(
-                new PythonExceptionValue("RuntimeError", "No active exception to reraise.")
+                new PythonExceptionValue("RuntimeError", "No active exception to reraise")
             );
         }
 
@@ -1295,7 +1317,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             );
         if (argumentCount != 2 && CurrentFrame.ActiveExceptions.TryPeek(out var activeContext))
         {
-            exception.Context = activeContext.Value;
+            if (!ReferenceEquals(exception, activeContext.Value))
+                exception.Context = activeContext.Value;
         }
 
         throw CreateRaisedException(exception);
@@ -2348,6 +2371,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
         }
 
+        ValidateExceptStarHandler(handlerType, instruction.Span);
         if (state.Rest is null)
         {
             _evaluationStack.Push(PythonNoneValue.Instance);
@@ -2355,7 +2379,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
-        var (matched, rest) = SplitExceptionByType(state.Rest, handlerType, instruction.Span);
+        var (matched, rest) = SplitExceptionGroup(
+            state.Rest,
+            exception => MatchesExceptionType(exception, handlerType, instruction.Span),
+            true,
+            instruction.Span
+        );
         state.Rest = rest;
         if (matched is null)
         {
@@ -2379,61 +2408,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             : matched;
         _evaluationStack.Push(bound);
         _evaluationStack.Push(PythonTruthValue.True);
-    }
-
-    private (PythonExceptionValue? Matched, PythonExceptionValue? Remainder) SplitExceptionByType(
-        PythonExceptionValue exception,
-        PythonValue handlerType,
-        TextSpan span
-    )
-    {
-        // The condition applies to group nodes as a whole first (PEP 654 split), then
-        // recurses, rebuilding matched/rest groups that preserve message and type.
-        if (MatchesExceptionType(exception, handlerType, span))
-        {
-            return (exception, null);
-        }
-
-        if (exception.GroupExceptions is null)
-        {
-            return (null, exception);
-        }
-
-        var matchedChildren = new List<PythonExceptionValue>();
-        var restChildren = new List<PythonExceptionValue>();
-        foreach (var child in exception.GroupExceptions)
-        {
-            var (matched, rest) = SplitExceptionByType(child, handlerType, span);
-            if (matched is not null)
-            {
-                matchedChildren.Add(matched);
-            }
-
-            if (rest is not null)
-            {
-                restChildren.Add(rest);
-            }
-        }
-
-        return (
-            matchedChildren.Count == 0 ? null : DeriveExceptionGroup(exception, matchedChildren),
-            restChildren.Count == 0 ? null : DeriveExceptionGroup(exception, restChildren)
-        );
-    }
-
-    private PythonExceptionValue DeriveExceptionGroup(
-        PythonExceptionValue source,
-        List<PythonExceptionValue> children
-    )
-    {
-        var result = CreateExceptionGroupValue([
-            new PythonTextValue(source.Message),
-            new PythonListValue([.. children.Cast<PythonValue>()]),
-        ]);
-        result.Cause = source.Cause;
-        result.Context = source.Context;
-        result.SuppressContext = source.SuppressContext;
-        return result;
+        CurrentFrame.ActiveExceptions.Pop();
+        CurrentFrame.ActiveExceptions.Push(CreateRaisedException(bound));
+        state.AwaitingClause = true;
     }
 
     private void ApplyExceptStarCollect(ref PythonFrame frame, PythonInstruction instruction)
@@ -2450,57 +2427,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         state.Raised.Add(raised.Value);
+        RestoreExceptStarContext(ref frame, state);
     }
 
     private void ApplyExceptStarFinish(ref PythonFrame frame, PythonInstruction instruction)
     {
         if (Pop(instruction.Span) is not PythonExceptStarStateValue state)
-        {
             throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
-        }
-
-        if (state.Raised.Count == 0 && state.Rest is null)
-        {
-            // Fully handled: consume the active exception like ClearException.
-            if (frame.ActiveExceptions.Count == 0)
-            {
-                throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
-            }
-
-            frame.ActiveExceptions.Pop();
-            return;
-        }
-
-        if (state.Raised.Count == 0)
-        {
-            // Nothing matched or handler bodies were clean: the remainder re-raises
-            // with its original structure.
-            throw CreateRaisedException(state.Rest!);
-        }
-
-        if (state.Raised.Count == 1 && state.Rest is null)
-        {
-            // A single handler-raised exception propagates raw.
-            throw CreateRaisedException(state.Raised[0]);
-        }
-
-        var items = new List<PythonExceptionValue>(state.Raised);
-        if (state.Rest is not null)
-        {
-            items.Add(state.Rest);
-        }
-
-        var allExceptions = items.All(item => IsExceptionSubclass(item, "Exception"));
-        throw CreateRaisedException(
-            new PythonExceptionValue(
-                allExceptions ? "ExceptionGroup" : "BaseExceptionGroup",
-                string.Empty
-            )
-            {
-                ManagedType = allExceptions ? _modules.ExceptionGroupType : null,
-                GroupExceptions = items,
-            }
-        );
+        var result = RecombineExceptionGroup(state, instruction.Span);
+        if (result is not null)
+            throw CreateRaisedException(result);
+        if (frame.ActiveExceptions.Count == 0)
+            throw Fault("DPY4007", "The except* handler state is invalid.", instruction.Span);
+        frame.ActiveExceptions.Pop();
     }
 
     private static void CompleteAsyncGeneratorStep(PythonAsyncGeneratorStepValue step)
@@ -8641,8 +8580,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private readonly record struct PythonExceptionBlock(
         PythonExceptionBlockKind Kind,
         int HandlerTarget,
-        int EvaluationStackDepth
-    );
+        int EvaluationStackDepth,
+        int ActiveExceptionDepth
+    )
+    {
+        internal PythonExceptStarStateValue? StarClause { get; init; }
+    }
 
     private readonly record struct PythonPendingFinally(
         Exception? Exception,

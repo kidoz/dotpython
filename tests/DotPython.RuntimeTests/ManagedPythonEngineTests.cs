@@ -1797,7 +1797,7 @@ public sealed class ManagedPythonEngineTests
         Assert.Equal(
             $"caught 1{Environment.NewLine}cleanup 1{Environment.NewLine}"
                 + $"caught 2{Environment.NewLine}cleanup 2{Environment.NewLine}"
-                + $"no-active No active exception to reraise.{Environment.NewLine}",
+                + $"no-active No active exception to reraise{Environment.NewLine}",
             output.ToString()
         );
     }

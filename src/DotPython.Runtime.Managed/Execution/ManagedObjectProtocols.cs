@@ -396,7 +396,13 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue { GroupExceptions: not null } group when name == "exceptions":
                 return group.GroupExceptionTuple;
             case PythonExceptionValue exceptionInstance
-                when name is "__new__" or "__init__" or "add_note"
+                when name
+                    is "__new__"
+                        or "__init__"
+                        or "derive"
+                        or "split"
+                        or "subgroup"
+                        or "add_note"
                     && PythonExceptionProtocols.TryGetAttribute(
                         PythonBuiltinTypes.GetRuntimeType(exceptionInstance),
                         name,

@@ -653,6 +653,10 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal bool HasInstanceDictionary { get; set; }
 
+    // Private traceback identity for except* reraising; public traceback objects
+    // remain outside the represented exception API.
+    internal object? TracebackIdentity { get; set; }
+
     internal PythonExceptionValue? Cause { get; set; }
 
     internal PythonExceptionValue? Context { get; set; }
@@ -773,6 +777,10 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 /// </summary>
 internal sealed record PythonExceptStarStateValue : PythonValue
 {
+    internal required PythonRaisedException Original { get; init; }
+
+    internal bool AwaitingClause { get; set; }
+
     internal PythonExceptionValue? Rest { get; set; }
 
     internal List<PythonExceptionValue> Raised { get; } = [];

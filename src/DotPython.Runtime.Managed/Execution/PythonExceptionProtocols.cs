@@ -11,6 +11,9 @@ internal static class PythonExceptionProtocols
         (receiver, arguments) => AddNote(receiver, arguments, [], default),
         (receiver, arguments, names, _) => AddNote(receiver, arguments, names, default)
     );
+    private static readonly ConcurrentDictionary<string, PythonValue> GroupMethods = new(
+        StringComparer.Ordinal
+    );
     private static readonly ConcurrentDictionary<string, PythonValue> Allocators = new(
         StringComparer.Ordinal
     );
@@ -27,6 +30,20 @@ internal static class PythonExceptionProtocols
         if (type.Name == "BaseException" && name == "add_note")
         {
             value = AddNoteMethod;
+            return true;
+        }
+        if (type.Name == "BaseExceptionGroup" && name is "derive" or "split" or "subgroup")
+        {
+            value = GroupMethods.GetOrAdd(
+                name,
+                method => new PythonProtocolFunctionValue(
+                    method,
+                    (receiver, arguments) =>
+                        InvokeGroupMethod(method, receiver, arguments, [], default),
+                    (receiver, arguments, names, _) =>
+                        InvokeGroupMethod(method, receiver, arguments, names, default)
+                )
+            );
             return true;
         }
         if (name == "__new__" && OwnsAllocator(type.Name))
@@ -63,6 +80,41 @@ internal static class PythonExceptionProtocols
         }
         value = null!;
         return false;
+    }
+
+    private static PythonValue InvokeGroupMethod(
+        string name,
+        PythonValue? receiver,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywords,
+        TextSpan span
+    )
+    {
+        if (receiver is null)
+        {
+            if (arguments.Count == 0)
+                throw Error(
+                    $"descriptor '{name}' of 'BaseExceptionGroup' object needs an argument",
+                    span
+                );
+            receiver = arguments[0];
+            arguments = arguments.Skip(1).ToArray();
+        }
+        if (receiver is not PythonExceptionValue { GroupExceptions: not null } group)
+            throw Error(
+                $"descriptor '{name}' for 'BaseExceptionGroup' objects doesn't apply to a '{ManagedObjectProtocols.GetTypeName(receiver)}' object",
+                span
+            );
+        if (keywords.Count != 0)
+            throw Error($"{name}() takes no keyword arguments", span);
+        if (arguments.Count != 1)
+            throw Error($"{name} expected 1 argument, got {arguments.Count}", span);
+        return UserObjectProtocols.Dispatcher!.InvokeExceptionGroupMethod(
+            name,
+            group,
+            arguments[0],
+            span
+        );
     }
 
     private static PythonNoneValue AddNote(

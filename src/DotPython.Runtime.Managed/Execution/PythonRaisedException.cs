@@ -48,6 +48,7 @@ internal sealed class PythonRaisedException : Exception
         }
 
         _traceback.Add(new PythonTracebackFrame(codeName, span));
+        Value.TracebackIdentity = new object();
     }
 }
 
