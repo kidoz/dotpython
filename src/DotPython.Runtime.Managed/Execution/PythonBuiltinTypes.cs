@@ -706,7 +706,9 @@ internal static class PythonBuiltinTypes
         RequireArguments("list", arguments, 0, 1, span);
         return arguments.Count == 0
             ? new PythonListValue([])
-            : new PythonListValue(ManagedObjectProtocols.MaterializeValues(arguments[0], span));
+            : new PythonListValue(
+                ManagedObjectProtocols.MaterializeValues(arguments[0], span, useLengthHint: true)
+            );
     }
 
     private static PythonTupleValue ConstructTuple(
@@ -727,18 +729,8 @@ internal static class PythonBuiltinTypes
         TextSpan span
     )
     {
-        List<PythonValue> Materialize(PythonValue iterable)
-        {
-            // Preserve mapping-vs-pairs selection before invoking any user iterator.
-            if (
-                iterable is PythonManagedObjectValue
-                && UserObjectProtocols.Dispatcher is { } dispatcher
-            )
-            {
-                return ((PythonListValue)dispatcher.Invoke(List, [iterable], span)).Elements;
-            }
-            return ManagedObjectProtocols.MaterializeValues(iterable, span);
-        }
+        List<PythonValue> Materialize(PythonValue iterable) =>
+            ManagedObjectProtocols.MaterializeValues(iterable, span);
 
         RequireArguments("dict", arguments, 0, 1, span);
         var dictionary = new PythonDictionaryValue([]);

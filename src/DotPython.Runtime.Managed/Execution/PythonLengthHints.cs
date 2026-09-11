@@ -1,0 +1,139 @@
+using System.Numerics;
+using DotPython.Language.Text;
+
+namespace DotPython.Runtime.Managed.Execution;
+
+/// <summary>Length estimates and their Python-visible callback/validation semantics.</summary>
+internal static class PythonLengthHints
+{
+    internal static readonly PythonProtocolFunctionValue SequenceIteratorMethod = new(
+        "__length_hint__",
+        (receiver, arguments) =>
+        {
+            if (arguments.Count != 0)
+                throw Error(
+                    $"iterator.__length_hint__() takes no arguments ({arguments.Count} given)",
+                    "TypeError",
+                    default
+                );
+            return GetSequenceIteratorHint((PythonIteratorValue)receiver!, default);
+        }
+    );
+
+    internal static long GetLengthHint(PythonValue value, TextSpan span, long defaultValue = 8)
+    {
+        try
+        {
+            if (TryGetLength(value, span, out var length))
+                return length;
+        }
+        catch (Exception error) when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
+        { }
+
+        PythonValue method;
+        if (value is PythonIteratorValue { Iterable: PythonSequenceIteratorSourceValue })
+            method = new PythonBoundMethodValue("__length_hint__", value, SequenceIteratorMethod);
+        else if (!ManagedObjectProtocols.TryGetSpecialMethod(value, "__length_hint__", out method))
+            return defaultValue;
+
+        PythonValue result;
+        try
+        {
+            result = UserObjectProtocols.Dispatcher!.Invoke(method, [], span);
+        }
+        catch (Exception error) when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
+        {
+            return defaultValue;
+        }
+        if (result is PythonNotImplementedValue)
+            return defaultValue;
+        var integer = result switch
+        {
+            PythonWholeNumberValue whole => whole.Value,
+            PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+            _ => throw Error(
+                $"__length_hint__ must be an integer, not {ManagedObjectProtocols.GetTypeName(result)}",
+                "TypeError",
+                span
+            ),
+        };
+        var hint = ToIndexSize(integer, span);
+        if (hint < 0)
+            throw Error("__length_hint__() should return >= 0", "ValueError", span);
+        return hint;
+    }
+
+    private static PythonValue GetSequenceIteratorHint(PythonIteratorValue iterator, TextSpan span)
+    {
+        var source = (PythonSequenceIteratorSourceValue)iterator.Iterable;
+        if (source.Sequence is not { } sequence)
+            return PythonWholeNumberValue.Create(0);
+        if (!TryGetLength(sequence, span, out var length))
+            return PythonNotImplementedValue.Instance;
+        // __len__ may advance or exhaust the iterator, so read its index after the callback.
+        return PythonWholeNumberValue.Create(Math.Max(0, length - source.NextIndex));
+    }
+
+    private static bool TryGetLength(PythonValue value, TextSpan span, out long length)
+    {
+        if (ManagedObjectProtocols.GetManagedType(value) is not null)
+        {
+            if (!ManagedObjectProtocols.TryGetSpecialMethod(value, "__len__", out var method))
+            {
+                length = 0;
+                return false;
+            }
+            var result = UserObjectProtocols.Dispatcher!.Invoke(method, [], span);
+            BigInteger integer;
+            if (result is PythonWholeNumberValue whole)
+                integer = whole.Value;
+            else if (result is PythonTruthValue truth)
+                integer = truth.Value ? BigInteger.One : BigInteger.Zero;
+            else if (!UserObjectProtocols.TryConvertToIndex(result, span, out integer))
+                throw Error(
+                    $"'{ManagedObjectProtocols.GetTypeName(result)}' object cannot be interpreted as an integer",
+                    "TypeError",
+                    span
+                );
+            length = ToIndexSize(integer, span, "cannot fit 'int' into an index-sized integer");
+            if (length < 0)
+                throw Error("__len__() should return >= 0", "ValueError", span);
+            return true;
+        }
+        if (value is PythonRangeValue range)
+        {
+            length = ToIndexSize(range.Count, span, "Python int too large to convert to C ssize_t");
+            return true;
+        }
+        if (
+            value
+            is PythonTextValue
+                or PythonByteSequenceValue
+                or PythonListValue
+                or PythonTupleValue
+                or PythonMappingProxyValue
+                or PythonDictionaryValue
+                or PythonDictionaryViewValue
+                or PythonSetValue
+                or PythonExternalObjectValue
+        )
+        {
+            length = ManagedObjectProtocols.GetLength(value, span);
+            return true;
+        }
+        length = 0;
+        return false;
+    }
+
+    private static long ToIndexSize(
+        BigInteger value,
+        TextSpan span,
+        string message = "Python int too large to convert to C ssize_t"
+    ) =>
+        value < long.MinValue || value > long.MaxValue
+            ? throw Error(message, "OverflowError", span)
+            : (long)value;
+
+    private static PythonRuntimeException Error(string message, string type, TextSpan span) =>
+        ManagedObjectProtocols.Fault("DPY4003", message, span, type);
+}

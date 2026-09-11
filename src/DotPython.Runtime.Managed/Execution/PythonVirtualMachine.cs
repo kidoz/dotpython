@@ -2706,9 +2706,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     }
 
     /// <summary>
-    /// Builtin constructors and iterable-consuming builtin methods run in static
-    /// protocol code that cannot execute user `__iter__` frames; materialize
-    /// user-iterable arguments here, where the VM is available.
+    /// Normalize iterable inputs for the remaining legacy builtin entry points.
+    /// List construction and extension retain the original input so their shared
+    /// protocol path controls iterator creation, length hints and incremental consumption.
     /// </summary>
     private PythonValue[] PreResolveIterableArguments(
         PythonValue callable,
@@ -2718,8 +2718,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         var consumesIterable = callable switch
         {
-            PythonBuiltinTypeValue type => type.Name is "list" or "tuple" or "set" or "frozenset",
-            PythonBoundMethodValue method => method.Function.Name is "join" or "extend",
+            PythonBuiltinTypeValue type => type.Name is "tuple" or "set" or "frozenset",
+            PythonBoundMethodValue method => method.Function.Name is "join",
             _ => false,
         };
         if (
@@ -7128,7 +7128,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         var values = ManagedObjectProtocols.MaterializeValues(
             arguments[0],
             span,
-            _userIterationDispatcher
+            _userIterationDispatcher,
+            useLengthHint: true
         );
         try
         {

@@ -425,6 +425,13 @@ internal static class ManagedObjectProtocols
                 return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
             case PythonExceptionValue suppressSource when name == "__suppress_context__":
                 return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
+            case PythonIteratorValue { Iterable: PythonSequenceIteratorSourceValue } iterator
+                when name == "__length_hint__":
+                return new PythonBoundMethodValue(
+                    name,
+                    iterator,
+                    PythonLengthHints.SequenceIteratorMethod
+                );
             case PythonExceptionValue tracebackSource when name == "with_traceback":
                 // The managed model does not carry traceback objects; the method
                 // accepts and ignores its argument, returning the exception itself.
@@ -2378,8 +2385,16 @@ internal static class ManagedObjectProtocols
         UserIterationDispatcher? userIteration = null
     )
     {
-        var values = MaterializeValues(iterable, span, userIteration);
-        list.Elements.AddRange(values);
+        if (iterable is PythonListValue source)
+        {
+            list.Elements.AddRange(source.Elements);
+            return;
+        }
+        var iterator = GetIterator(iterable, span, userIteration);
+        // Validate hints and run their callbacks; grow only as values actually arrive.
+        PythonLengthHints.GetLengthHint(iterable, span);
+        while (TryGetNext(iterator, out var value, span))
+            list.Elements.Add(value);
     }
 
     internal static void RepeatListInPlace(PythonListValue list, PythonValue count, TextSpan span)
@@ -2468,16 +2483,17 @@ internal static class ManagedObjectProtocols
     internal static List<PythonValue> MaterializeValues(
         PythonValue iterable,
         TextSpan span,
-        UserIterationDispatcher? userIteration = null
+        UserIterationDispatcher? userIteration = null,
+        bool useLengthHint = false
     )
     {
-        var values = new List<PythonValue>();
         var iterator = GetIterator(iterable, span, userIteration);
+        var capacity = useLengthHint
+            ? (int)Math.Min(PythonLengthHints.GetLengthHint(iterable, span), 1024)
+            : 0;
+        var values = new List<PythonValue>(capacity);
         while (TryGetNext(iterator, out var value, span))
-        {
             values.Add(value);
-        }
-
         return values;
     }
 

@@ -137,7 +137,12 @@ internal sealed partial class PythonVirtualMachine
                 result,
                 "__notes__",
                 new PythonListValue(
-                    ManagedObjectProtocols.MaterializeValues(notes, span, _userIterationDispatcher)
+                    ManagedObjectProtocols.MaterializeValues(
+                        notes,
+                        span,
+                        _userIterationDispatcher,
+                        useLengthHint: true
+                    )
                 ),
                 span
             );
