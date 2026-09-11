@@ -225,7 +225,7 @@ internal static class PythonTypeLayout
         ReferenceEquals(value, expected)
         || PythonBuiltinTypes.GetMro(value).Elements.Any(entry => ReferenceEquals(entry, expected));
 
-    private static string Name(PythonValue type) =>
+    internal static string Name(PythonValue type) =>
         type switch
         {
             PythonManagedTypeValue managed => managed.Name,

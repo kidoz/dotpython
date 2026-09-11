@@ -271,6 +271,13 @@ internal static class ManagedObjectProtocols
             or PythonExceptionTypeValue when name is "mro" or "__subclasses__":
                 PythonTypeProtocols.TryGetAttribute(name, out var mroMethod);
                 return BindDescriptor(mroMethod, target, PythonBuiltinTypes.Type, span, name);
+            case PythonExceptionTypeValue exceptionType
+                when PythonExceptionProtocols.TryGetAttribute(
+                    exceptionType,
+                    name,
+                    out var exceptionSlot
+                ):
+                return exceptionSlot;
             case PythonBuiltinTypeValue builtin when name == "__init_subclass__":
                 return BindDescriptor(PythonTypeProtocols.InitSubclass, null, builtin, span, name);
             case PythonBuiltinTypeValue { Name: "object" }
@@ -350,13 +357,23 @@ internal static class ManagedObjectProtocols
                 }
                 return BindDescriptor(classAttribute, exception, exceptionClass, span, name);
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
+                exceptionDictionary.HasInstanceDictionary = true;
                 return exceptionDictionary.Attributes.Dictionary;
             case PythonExceptionValue exceptionValue when name == "args":
                 return exceptionValue.ArgumentTuple;
-            case PythonExceptionValue { TypeName: "SystemExit" } systemExit when name == "code":
-                return systemExit.ConstructorArguments.Count == 0
-                    ? PythonNoneValue.Instance
-                    : systemExit.ConstructorArguments[0];
+            case PythonExceptionValue systemExit
+                when name == "code"
+                    && PythonBuiltinTypes
+                        .GetMro(PythonBuiltinTypes.GetRuntimeType(systemExit))
+                        .Elements.Any(entry =>
+                            entry is PythonExceptionTypeValue { Name: "SystemExit" }
+                        ):
+                return systemExit.ConstructorArguments.Count switch
+                {
+                    0 => PythonNoneValue.Instance,
+                    1 => systemExit.ConstructorArguments[0],
+                    _ => new PythonTupleValue([.. systemExit.ConstructorArguments]),
+                };
             case PythonExceptionValue stopIteration
                 when name == "value"
                     && (
@@ -378,6 +395,20 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(group.Message);
             case PythonExceptionValue { GroupExceptions: not null } group when name == "exceptions":
                 return group.GroupExceptionTuple;
+            case PythonExceptionValue exceptionInstance
+                when name is "__new__" or "__init__"
+                    && PythonExceptionProtocols.TryGetAttribute(
+                        PythonBuiltinTypes.GetRuntimeType(exceptionInstance),
+                        name,
+                        out var slot
+                    ):
+                return BindDescriptor(
+                    slot,
+                    exceptionInstance,
+                    PythonBuiltinTypes.GetRuntimeType(exceptionInstance),
+                    span,
+                    name
+                );
             case PythonExceptionValue exceptionInstance
                 when exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
                 return exceptionAttribute;
@@ -874,6 +905,7 @@ internal static class ManagedObjectProtocols
                 exceptionInstance.Attributes = new PythonAttributeDictionary(
                     RequireNamespaceDictionary(value, span)
                 );
+                exceptionInstance.HasInstanceDictionary = true;
                 return;
             case PythonExceptionValue exceptionInstance when name == "args":
                 var arguments =
@@ -897,6 +929,7 @@ internal static class ManagedObjectProtocols
                 }
                 return;
             case PythonExceptionValue exceptionInstance:
+                exceptionInstance.HasInstanceDictionary = true;
                 exceptionInstance.Attributes[name] = value;
                 return;
             case PythonManagedObjectValue instance:
@@ -1295,10 +1328,19 @@ internal static class ManagedObjectProtocols
         IReadOnlyList<PythonValue> arguments
     )
     {
+        exception.PreserveSpecializedArguments();
         exception.Arguments = [.. arguments];
+        if (exception.GroupExceptions is not null)
+            return;
         exception.Message = arguments.Count switch
         {
             0 => string.Empty,
+            1
+                when PythonBuiltinTypes
+                    .GetMro(PythonBuiltinTypes.GetRuntimeType(exception))
+                    .Elements.Any(entry =>
+                        entry is PythonExceptionTypeValue { Name: "KeyError" }
+                    ) => arguments[0].ToRepresentationString(),
             1 => arguments[0].ToDisplayString(),
             _ => new PythonTupleValue([.. arguments]).ToDisplayString(),
         };
@@ -2859,22 +2901,6 @@ internal static class ManagedObjectProtocols
             if (TryGetOwnTypeAttribute(current, name, out value!))
                 return true;
             if (
-                current is PythonExceptionTypeValue
-                && name == "__init__"
-                && proxy.Instance is PythonExceptionValue exception
-            )
-            {
-                value = new PythonProtocolFunctionValue(
-                    "__init__",
-                    (_, arguments) =>
-                    {
-                        ApplyBaseExceptionInit(exception, arguments);
-                        return PythonNoneValue.Instance;
-                    }
-                );
-                return true;
-            }
-            if (
                 ReferenceEquals(current, PythonBuiltinFunctions.Object)
                 && PythonBuiltinFunctions.TryGetObjectProtocol(name, out value!)
             )
@@ -2893,6 +2919,8 @@ internal static class ManagedObjectProtocols
     {
         if (type is PythonManagedTypeValue managed)
             return managed.Attributes.TryGetValue(name, out value!);
+        if (type is PythonExceptionTypeValue exception)
+            return PythonExceptionProtocols.TryGetOwnAttribute(exception, name, out value!);
         if (ReferenceEquals(type, PythonBuiltinTypes.Type) && name != "__init_subclass__")
             return PythonTypeProtocols.TryGetAttribute(name, out value!);
         // Keep other object defaults in their existing explicit fallback paths: exposing

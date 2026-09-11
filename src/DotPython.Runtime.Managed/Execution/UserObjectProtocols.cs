@@ -12,6 +12,13 @@ internal interface IUserObjectDispatcher
 {
     PythonManagedTypeValue ExceptionGroupType { get; }
 
+    PythonExceptionValue AllocateException(
+        string allocator,
+        PythonValue type,
+        PythonValue[] arguments,
+        TextSpan span
+    );
+
     (bool HasValue, PythonValue Value) ThrowGenerator(
         PythonGeneratorValue generator,
         PythonValue exception,

@@ -1584,7 +1584,7 @@ internal static class PythonStandardModules
         return copy;
     }
 
-    private static PythonExceptionValue CopyException(
+    private static PythonValue CopyException(
         PythonExceptionValue exception,
         bool deep,
         Dictionary<PythonValue, PythonValue>? memo,
@@ -1596,7 +1596,7 @@ internal static class PythonStandardModules
         {
             ValidateExceptionConstructorGraph(exception, span);
         }
-        PythonExceptionValue copy;
+        PythonValue copy;
         if (mode == DeepCopyMode.PickleSnapshot)
         {
             // Capturing the graph must not execute the exception constructor.
@@ -1604,13 +1604,15 @@ internal static class PythonStandardModules
             var nested = exception.GroupExceptions is null
                 ? null
                 : new List<PythonExceptionValue>();
-            copy = new PythonExceptionValue(exception.TypeName, exception.Message)
+            var snapshot = new PythonExceptionValue(exception.TypeName, exception.Message)
             {
                 ManagedType = exception.ManagedType,
                 GroupExceptions = nested,
+                HasInstanceDictionary = exception.HasInstanceDictionary,
             };
+            copy = snapshot;
             memo![exception] = copy;
-            copy.Arguments = GetExceptionArguments(exception)
+            snapshot.Arguments = GetExceptionArguments(exception)
                 .Select(argument => DeepCopy(argument, memo, span, mode))
                 .ToArray();
             if (nested is not null)
@@ -1633,7 +1635,7 @@ internal static class PythonStandardModules
                 && memo!.TryGetValue(exception, out var recursiveCopy)
             )
             {
-                return (PythonExceptionValue)recursiveCopy;
+                return recursiveCopy;
             }
 
             copy = ReconstructException(exception, arguments, span);
@@ -1645,16 +1647,68 @@ internal static class PythonStandardModules
 
         // BaseException's default reduction contains args and custom state, not
         // the active traceback, cause/context, or suppression flag.
-        CopyAttributes(
-            exception.Attributes.Dictionary,
-            copy.Attributes.Dictionary,
-            deep,
-            memo,
-            span,
-            mode,
-            exceptionState: true
-        );
+        if (exception.HasInstanceDictionary || exception.Attributes.Dictionary.Items.Count != 0)
+        {
+            if (copy is PythonExceptionValue restoredException)
+            {
+                restoredException.HasInstanceDictionary = true;
+                CopyAttributes(
+                    exception.Attributes.Dictionary,
+                    restoredException.Attributes.Dictionary,
+                    deep,
+                    memo,
+                    span,
+                    mode,
+                    exceptionState: true
+                );
+            }
+            else
+            {
+                ApplyForeignExceptionState(
+                    exception.Attributes.Dictionary,
+                    copy,
+                    deep,
+                    memo,
+                    span,
+                    mode
+                );
+            }
+        }
         return copy;
+    }
+
+    private static void ApplyForeignExceptionState(
+        PythonDictionaryValue source,
+        PythonValue target,
+        bool deep,
+        Dictionary<PythonValue, PythonValue>? memo,
+        TextSpan span,
+        DeepCopyMode mode
+    )
+    {
+        var state = deep ? DeepCopy(source, memo!, span, mode) : source;
+        PythonValue? setter = null;
+        try
+        {
+            setter = ManagedObjectProtocols.GetAttribute(target, "__setstate__", span);
+        }
+        catch (Exception error)
+            when (PythonNamespaceMapping.IsPythonException(error, "AttributeError")) { }
+        if (setter is not null)
+        {
+            if (UserObjectProtocols.Dispatcher is { } dispatcher)
+                dispatcher.Invoke(setter, [state], span);
+            else
+                ManagedObjectProtocols.Call(setter, [state], span);
+            return;
+        }
+
+        var dictionary = ManagedObjectProtocols.GetAttribute(target, "__dict__", span);
+        var update = ManagedObjectProtocols.GetAttribute(dictionary, "update", span);
+        if (UserObjectProtocols.Dispatcher is { } updateDispatcher)
+            updateDispatcher.Invoke(update, [state], span);
+        else
+            ManagedObjectProtocols.Call(update, [state], span);
     }
 
     private static IReadOnlyList<PythonValue> GetExceptionArguments(
@@ -1726,7 +1780,7 @@ internal static class PythonStandardModules
         }
     }
 
-    private static PythonExceptionValue ReconstructException(
+    private static PythonValue ReconstructException(
         PythonExceptionValue exception,
         PythonValue[] arguments,
         TextSpan span
@@ -1737,14 +1791,7 @@ internal static class PythonStandardModules
             var type =
                 (PythonValue?)exception.ManagedType
                 ?? new PythonExceptionTypeValue(exception.TypeName);
-            return dispatcher.Invoke(type, arguments, span) is PythonExceptionValue restored
-                ? restored
-                : throw new PythonRuntimeException(
-                    "DPY4028",
-                    "Exception reconstruction did not return an exception.",
-                    span,
-                    "TypeError"
-                );
+            return dispatcher.Invoke(type, arguments, span);
         }
 
         // Static protocol callers have no interpreter frames. Builtin exception

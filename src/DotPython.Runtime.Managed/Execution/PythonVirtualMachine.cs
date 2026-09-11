@@ -1268,7 +1268,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             cause = Pop(span);
         }
 
-        var exception = CreateExceptionValue(Pop(span), span);
+        var exceptionSource = Pop(span);
+        var exception = CreateExceptionValue(exceptionSource, span);
         if (argumentCount == 2)
         {
             if (cause is PythonNoneValue)
@@ -1281,9 +1282,20 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 exception.SuppressContext = true;
             }
         }
-        else if (CurrentFrame.ActiveExceptions.TryPeek(out var active))
+        // CPython attaches the explicit cause before normalizing a foreign
+        // exception returned by a class constructor.
+        if (
+            exceptionSource is PythonExceptionTypeValue or PythonManagedTypeValue
+            && !IsSubclassOf(PythonBuiltinTypes.GetRuntimeType(exception), exceptionSource, span)
+        )
+            exception = RequireExceptionInstance(
+                InvokeCallableNested(exceptionSource, [exception], span),
+                exceptionSource,
+                span
+            );
+        if (argumentCount != 2 && CurrentFrame.ActiveExceptions.TryPeek(out var activeContext))
         {
-            exception.Context = active.Value;
+            exception.Context = activeContext.Value;
         }
 
         throw CreateRaisedException(exception);
@@ -1293,9 +1305,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         value switch
         {
             PythonExceptionValue exception => exception,
-            PythonExceptionTypeValue type => CreateExceptionValue(type, []),
-            PythonManagedTypeValue { ExceptionBaseName: not null } exceptionClass =>
-                ConstructExceptionInstance(exceptionClass, [], [], [], span),
+            PythonExceptionTypeValue or PythonManagedTypeValue { ExceptionBaseName: not null } =>
+                RequireExceptionInstance(InvokeCallableNested(value, [], span), value, span),
             _ => throw CreateRaisedException(
                 new PythonExceptionValue("TypeError", "Exceptions must derive from BaseException.")
             ),
@@ -5241,7 +5252,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    private PythonExceptionValue ConstructExceptionInstance(
+    private PythonValue ConstructExceptionInstance(
         PythonManagedTypeValue type,
         PythonValue[] arguments,
         string[] keywordNames,
@@ -5249,52 +5260,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
-        // CPython sets `args` from the constructor call before __init__ runs; a
-        // super().__init__(...) call may rebind them afterwards.
-        var exception = ReferenceEquals(
-            PythonTypeLayout.GetSolidBase(type),
-            PythonBuiltinTypes.GetExceptionType("BaseExceptionGroup")
-        )
-            ? CreateExceptionGroupValue(arguments, type)
-            : new PythonExceptionValue(
-                type.Name,
-                arguments.Length == 1
-                && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
-                    ? arguments[0].ToRepresentationString()
-                    : ComposeExceptionMessage(arguments)
-            )
-            {
-                Arguments = [.. arguments],
-                ManagedType = type,
-            };
-        if (ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
-        {
-            if (initializer is not PythonFunctionValue initializerFunction)
-            {
-                throw Fault("DPY4009", $"{type.Name}.__init__ is not callable.", span, "TypeError");
-            }
-
-            var initialized = InvokeCallableNested(
-                initializerFunction,
-                PrependArgument(exception, arguments),
-                span,
+        if (
+            TryConstructThroughNew(
+                type,
+                arguments,
                 keywordNames,
-                keywordValues
-            );
-            if (initialized is not PythonNoneValue)
-                throw Fault(
-                    "DPY4003",
-                    $"__init__() should return None, not '{ManagedObjectProtocols.GetTypeName(initialized)}'",
-                    span,
-                    "TypeError"
-                );
-        }
-        else if (keywordNames.Length != 0)
-        {
-            throw Fault("DPY4009", $"{type.Name}() takes no keyword arguments.", span, "TypeError");
-        }
-
-        return exception;
+                keywordValues,
+                span,
+                out var created
+            )
+        )
+            return created;
+        throw Fault("DPY4003", $"cannot create '{type.Name}' instances", span, "TypeError");
     }
 
     private void ConstructManagedInstance(
@@ -5501,39 +5478,64 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return false;
         }
 
-        var callable = constructor is PythonStaticMethodValue staticMethod
-            ? staticMethod.Function
-            : constructor;
-        created = InvokeCallableNested(
-            callable,
-            PrependArgument(type, positional),
+        var callable = ManagedObjectProtocols.BindDescriptor(
+            constructor,
+            null,
+            type,
             span,
-            keywordNames,
-            keywordValues
+            "__new__"
         );
         if (
-            created is PythonManagedObjectValue instance
-            && instance.Type.Mro.Any(candidate => ReferenceEquals(candidate, type))
-            && ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer)
-            && initializer is PythonFunctionValue initFunction
+            type.ExceptionBaseName is not null
+            && PythonExceptionProtocols.UsesInheritedAllocator(type)
         )
         {
+            // A native allocation slot is inherited through the physical base,
+            // independently of custom-MRO attribute lookup. Explicit __new__ calls
+            // still use their owning builtin's subtype and safety validation.
+            var allocator = PythonTypeLayout.GetSolidBase(type)
+                is PythonExceptionTypeValue { Name: "OSError" or "BaseExceptionGroup" } specialized
+                ? specialized.Name
+                : "BaseException";
+            created = AllocateException(allocator, type, positional, span);
+        }
+        else
+            created = InvokeCallableNested(
+                callable,
+                PrependArgument(type, positional),
+                span,
+                keywordNames,
+                keywordValues
+            );
+        var actualType = PythonBuiltinTypes.GetRuntimeType(created);
+        if (
+            PythonBuiltinTypes
+                .GetMro(actualType)
+                .Elements.Any(candidate => ReferenceEquals(candidate, type))
+            && PythonExceptionProtocols.TryGetAttribute(actualType, "__init__", out var initializer)
+        )
+        {
+            var bound = ManagedObjectProtocols.BindDescriptor(
+                initializer,
+                created,
+                actualType,
+                span,
+                "__init__"
+            );
             var initResult = InvokeCallableNested(
-                initFunction,
-                PrependArgument(instance, positional),
+                bound,
+                positional,
                 span,
                 keywordNames,
                 keywordValues
             );
             if (initResult is not PythonNoneValue)
-            {
                 throw Fault(
                     "DPY4003",
                     $"__init__() should return None, not '{ManagedObjectProtocols.GetTypeName(initResult)}'",
                     span,
                     "TypeError"
                 );
-            }
         }
 
         return true;

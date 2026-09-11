@@ -651,6 +651,8 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
     /// <summary>Instance attributes assigned by user exception-class `__init__` bodies.</summary>
     internal PythonAttributeDictionary Attributes { get; set; } = new();
 
+    internal bool HasInstanceDictionary { get; set; }
+
     internal PythonExceptionValue? Cause { get; set; }
 
     internal PythonExceptionValue? Context { get; set; }
@@ -719,6 +721,12 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal IReadOnlyList<PythonValue> ConstructorArguments =>
         _constructorArguments ?? EffectiveArguments;
+
+    internal void InitializeSpecializedArguments(IReadOnlyList<PythonValue> arguments) =>
+        _constructorArguments = [.. arguments];
+
+    internal void PreserveSpecializedArguments() =>
+        _constructorArguments ??= [.. EffectiveArguments];
 
     internal void AssignArguments(PythonTupleValue arguments)
     {
