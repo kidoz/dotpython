@@ -19,7 +19,7 @@ public sealed class PythonLinterTests
     [InlineData("text = f\"{f'{(lambda x=[]: x)()}'}\"\n", "DPYL002", "[]")]
     [InlineData("assert (False, 'message')\n", "DPYL003", "(False, 'message')")]
     [InlineData("assert ((False,))\n", "DPYL003", "((False,))")]
-    [InlineData("assert (*items, False)\n", "DPYL003", "(*items, False)")]
+    [InlineData("items = []; assert (*items, False)\n", "DPYL003", "(*items, False)")]
     public void Analyze_ReportsRuleAndExactSourceSpan(string text, string code, string fragment)
     {
         var source = new SourceText(text, "example.py");
@@ -41,7 +41,7 @@ public sealed class PythonLinterTests
     [InlineData("assert False, 'message'\n")]
     [InlineData("assert (False)\n")]
     [InlineData("assert ()\n")]
-    [InlineData("assert (*items,)\n")]
+    [InlineData("items = []; assert (*items,)\n")]
     [InlineData("# def f(x=[]): pass\nx = 'assert (False,)'\n")]
     public void Analyze_DoesNotReportCounterexamples(string text)
     {

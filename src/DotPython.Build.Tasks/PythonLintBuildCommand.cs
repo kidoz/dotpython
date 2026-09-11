@@ -19,6 +19,7 @@ internal static class PythonLintBuildCommand
                         "--lint-source"
                         or "--lint-select"
                         or "--lint-ignore"
+                        or "--lint-known-globals"
                         or "--lint-warnings-as-errors"
                     )
                 || !values.TryAdd(name, arguments[index + 1])
@@ -54,6 +55,11 @@ internal static class PythonLintBuildCommand
                 values.TryGetValue("--lint-select", out var select) && select.Length > 0
                     ? SplitCodes(select)
                     : null,
+            KnownGlobals =
+                values.TryGetValue("--lint-known-globals", out var knownGlobals)
+                && knownGlobals.Length > 0
+                    ? SplitCodes(knownGlobals)
+                    : [],
             Ignore =
                 values.TryGetValue("--lint-ignore", out var ignore) && ignore.Length > 0
                     ? SplitCodes(ignore)

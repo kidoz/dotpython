@@ -20,6 +20,7 @@ internal static class PythonLintCommand
             var paths = new List<string>();
             string[]? select = null;
             string[] ignore = [];
+            string[] knownGlobals = [];
             var format = "text";
             var stdinFilename = "<stdin>";
             var pathsOnly = false;
@@ -43,7 +44,13 @@ internal static class PythonLintCommand
                 }
                 if (
                     argument
-                    is not ("--select" or "--ignore" or "--output-format" or "--stdin-filename")
+                    is not (
+                        "--select"
+                        or "--ignore"
+                        or "--known-globals"
+                        or "--output-format"
+                        or "--stdin-filename"
+                    )
                 )
                 {
                     throw new ArgumentException($"Unknown lint option '{argument}'.");
@@ -60,6 +67,9 @@ internal static class PythonLintCommand
                         break;
                     case "--ignore":
                         ignore = SplitCodes(value);
+                        break;
+                    case "--known-globals":
+                        knownGlobals = SplitCodes(value);
                         break;
                     case "--output-format":
                         format = value;
@@ -80,7 +90,12 @@ internal static class PythonLintCommand
                     "Supply files/directories, or '-' alone to lint stdin."
                 );
             }
-            var options = new PythonLintOptions { Select = select, Ignore = ignore };
+            var options = new PythonLintOptions
+            {
+                Select = select,
+                Ignore = ignore,
+                KnownGlobals = knownGlobals,
+            };
             PythonLinter.ValidateOptions(options);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -239,6 +254,9 @@ internal static class PythonLintCommand
         output.WriteLine("Usage: dotpython lint [options] <files/directories... | ->");
         output.WriteLine("  --select CODES          comma-separated exact rule IDs (default: all)");
         output.WriteLine("  --ignore CODES          comma-separated exact rule IDs to disable");
+        output.WriteLine(
+            "  --known-globals NAMES   comma-separated global identifiers supplied by the host"
+        );
         output.WriteLine("  --output-format FORMAT  text (default) or json");
         output.WriteLine("  --stdin-filename PATH   diagnostic filename for stdin");
         output.WriteLine("  --                      treat remaining arguments as paths");

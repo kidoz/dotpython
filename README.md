@@ -100,6 +100,7 @@ dotnet run --project src/DotPython.Cli -- lint --output-format json --stdin-file
 | `DPYL002` | A list, dictionary, or set literal used as a function/lambda default is shared between calls. |
 | `DPYL003` | An asserted tuple containing a non-starred element is always truthy. |
 | `DPYL004` | An imported binding has no reference in a visible lexical scope. |
+| `DPYL005` | A name read has no visible lexical definition, builtin, or declared host global. |
 
 Rules also visit nested definitions and expressions. Mutable-default checks cover
 literal displays; constructor calls, comprehensions, and nested mutable objects
@@ -124,11 +125,33 @@ a reference in either branch keeps all imports of the same lexical binding.
 This analysis does not track which assignment reaches a read. Repeated imports or
 assignments to a used binding are retained, as are unaliased dotted imports sharing a
 used package name. Quoted annotations are inspected for name references without type
-inference. If execution binding rejects the file, the unused-import rule is skipped;
+inference. If execution binding rejects the file, the semantic lint rules are skipped;
 the existing compiler remains responsible for its required diagnostics. No import is
 automatically removed; intentional side-effect imports can use a `DPYL004` suppression.
 
-All four rules are enabled by default. `--select` replaces that set; `--ignore`
+`DPYL005` checks ordinary reads and unquoted annotation names using the same semantic
+model. It recognizes the [Python 3.14 builtin vocabulary](https://docs.python.org/3.14/library/functions.html),
+including exceptions and common site helpers, and conventional module metadata names.
+This catalogue does not guarantee that every builtin is implemented by the managed
+runtime. Attributes and quoted annotation contents are not checked for undefined names.
+The rule is lexical: assignments anywhere in the owning scope count as definitions,
+so it does not detect reads before assignment, conditional initialization, or deleted
+bindings. Invalid binding skips both semantic rules.
+
+Dynamic namespaces receive conservative treatment: a direct `exec`, `eval`, `globals`,
+`locals`, or `vars` call anywhere in the file skips `DPYL005` for the entire file,
+including nested functions. Aliases and arbitrary namespace mutations are not inferred.
+This can hide real typos, including when one of those function names is shadowed.
+Unknown `__all__` contents alone do not disable undefined-name checks.
+
+Declare globals supplied by a .NET host with `PythonLintOptions.KnownGlobals`, CLI
+`--known-globals host,context`, or SDK `DotPythonLintKnownGlobals`. Names must be exact
+Python identifiers accepted by the current parser; matching is case-sensitive and uses
+mangled lookup names for private class identifiers. The CLI/SDK accept comma-separated
+names, and repeated CLI options use the last value. These settings declare name
+availability for linting; the embedding host must still supply the runtime values.
+
+All five rules are enabled by default. `--select` replaces that set; `--ignore`
 removes rules from it. Both accept comma-separated exact identifiers and reject
 unknown identifiers. Repeated options use the last value. An empty CLI `--select ""`
 disables lint rules. Parser diagnostics remain enabled, and a file with parser errors
@@ -165,8 +188,8 @@ Embedded callers can reference `DotPython.Lint` directly:
 
 ```csharp
 var result = PythonLinter.Analyze(
-    new SourceText("def collect(items=[]): pass", "example.py"),
-    new PythonLintOptions { Select = ["DPYL002"] },
+    new SourceText("result = host.calculate(context)", "example.py"),
+    new PythonLintOptions { KnownGlobals = ["host", "context"] },
     cancellationToken);
 ```
 
@@ -190,7 +213,8 @@ SDK projects can opt into the same rules:
 <PropertyGroup>
   <DotPythonLintEnabled>true</DotPythonLintEnabled>
   <DotPythonLintWarningsAsErrors>true</DotPythonLintWarningsAsErrors>
-  <DotPythonLintSelect>DPYL001,DPYL002,DPYL003,DPYL004</DotPythonLintSelect>
+  <DotPythonLintSelect>DPYL001,DPYL002,DPYL003,DPYL004,DPYL005</DotPythonLintSelect>
+  <DotPythonLintKnownGlobals>host,context</DotPythonLintKnownGlobals>
   <DotPythonLintIgnore>DPYL001</DotPythonLintIgnore>
 </PropertyGroup>
 ```

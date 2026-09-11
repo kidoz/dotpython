@@ -152,7 +152,7 @@ public sealed class DotPythonProjectReferenceTests
             var sourcePath = Path.Combine(fixtureRoot, "PricingRules", "pricing.py");
             await File.AppendAllTextAsync(
                 sourcePath,
-                "\ndef lint_example():\n    import package_that_does_not_exist\n    assert (False,)\n",
+                "\ndef lint_example():\n    import package_that_does_not_exist\n    assert (False,)\n    return host_context\n",
                 TestContext.Current.CancellationToken
             );
             await RunDotNetAsync(fixtureRoot, temporaryRoot, buildArguments);
@@ -160,6 +160,11 @@ public sealed class DotPythonProjectReferenceTests
             var warning = await RunDotNetAsync(fixtureRoot, temporaryRoot, lintArguments);
             Assert.Contains(
                 "warning DPYL003",
+                warning.StandardOutput + warning.StandardError,
+                StringComparison.Ordinal
+            );
+            Assert.Contains(
+                "warning DPYL005",
                 warning.StandardOutput + warning.StandardError,
                 StringComparison.Ordinal
             );
@@ -184,7 +189,42 @@ public sealed class DotPythonProjectReferenceTests
                 lintFailure.StandardOutput + lintFailure.StandardError,
                 StringComparison.Ordinal
             );
+            Assert.Contains(
+                "error DPYL005",
+                lintFailure.StandardOutput + lintFailure.StandardError,
+                StringComparison.Ordinal
+            );
             Assert.Equal(lintWrite, File.GetLastWriteTimeUtc(facadePath));
+            var known = await RunDotNetAsync(
+                fixtureRoot,
+                temporaryRoot,
+                [
+                    .. lintArguments,
+                    "-p:DotPythonLintWarningsAsErrors=true",
+                    "-p:DotPythonLintSelect=DPYL005",
+                    "-p:DotPythonLintKnownGlobals=host_context",
+                ]
+            );
+            Assert.DoesNotContain(
+                "DPYL005",
+                known.StandardOutput + known.StandardError,
+                StringComparison.Ordinal
+            );
+            Assert.Equal(lintWrite, File.GetLastWriteTimeUtc(facadePath));
+            var unknown = await RunDotNetExpectFailureAsync(
+                fixtureRoot,
+                temporaryRoot,
+                [
+                    .. lintArguments,
+                    "-p:DotPythonLintWarningsAsErrors=true",
+                    "-p:DotPythonLintSelect=DPYL005",
+                ]
+            );
+            Assert.Contains(
+                "error DPYL005",
+                unknown.StandardOutput + unknown.StandardError,
+                StringComparison.Ordinal
+            );
             var ignored = await RunDotNetAsync(
                 fixtureRoot,
                 temporaryRoot,

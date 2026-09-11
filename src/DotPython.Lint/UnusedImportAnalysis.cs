@@ -1,16 +1,14 @@
 using DotPython.Compiler.Binding;
-using DotPython.Language.Ast;
 
 namespace DotPython.Lint;
 
 internal static class UnusedImportAnalysis
 {
     internal static IEnumerable<PythonImportBinding> Find(
-        PythonModule module,
+        PythonSemanticModel model,
         CancellationToken cancellationToken
     )
     {
-        var model = PythonSymbolBinder.Analyze(module, cancellationToken);
         if (model.Diagnostics.Count != 0)
             yield break;
 

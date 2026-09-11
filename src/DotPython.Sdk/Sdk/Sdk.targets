@@ -69,7 +69,7 @@
         DependsOnTargets="DotPythonValidateProject"
         Condition="'$(DotPythonLintEnabled)' == 'true'"
     >
-        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --lint-source &quot;@(PythonCompile->'%(FullPath)')&quot; --lint-select &quot;$(DotPythonLintSelect)&quot; --lint-ignore &quot;$(DotPythonLintIgnore)&quot; --lint-warnings-as-errors &quot;$(DotPythonLintWarningsAsErrors)&quot;" />
+        <Exec Command="&quot;$(DotPythonDotNetHost)&quot; exec &quot;$(DotPythonBuildToolPath)&quot; --lint-source &quot;@(PythonCompile->'%(FullPath)')&quot; --lint-select &quot;$(DotPythonLintSelect)&quot; --lint-ignore &quot;$(DotPythonLintIgnore)&quot; --lint-known-globals &quot;$(DotPythonLintKnownGlobals)&quot; --lint-warnings-as-errors &quot;$(DotPythonLintWarningsAsErrors)&quot;" />
     </Target>
 
     <Target Name="DotPythonCollectGeneratedOutputs" DependsOnTargets="DotPythonGenerateModule">

@@ -7,6 +7,37 @@ namespace DotPython.DifferentialTests;
 public sealed class PythonLintCommandTests
 {
     [Fact]
+    public void Lint_UndefinedNamesUseHostGlobalsAndJsonLocations()
+    {
+        const string source = "print(host, missing)\n";
+        var result = Run(
+            ["lint", "--known-globals", "host", "--output-format", "json", "-"],
+            source
+        );
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Error);
+        using var json = JsonDocument.Parse(result.Output);
+        var diagnostic = Assert.Single(json.RootElement.EnumerateArray());
+        Assert.Equal("DPYL005", diagnostic.GetProperty("code").GetString());
+        Assert.Equal(
+            "Name 'missing' has no visible definition.",
+            diagnostic.GetProperty("message").GetString()
+        );
+        Assert.Equal(13, diagnostic.GetProperty("column").GetInt32());
+        Assert.Equal(20, diagnostic.GetProperty("endColumn").GetInt32());
+        Assert.Equal(0, Run(["lint", "--known-globals", "host, missing", "-"], source).ExitCode);
+        Assert.Equal(0, Run(["lint", "--ignore", "DPYL005", "-"], source).ExitCode);
+        Assert.Equal(
+            1,
+            Run(
+                ["lint", "--known-globals", "host,missing", "--known-globals", "host", "-"],
+                source
+            ).ExitCode
+        );
+        Assert.Equal(1, Run(["lint", "--known-globals", "", "-"], source).ExitCode);
+    }
+
+    [Fact]
     public void Lint_UnusedImportsAreEnabledByDefaultWithoutImportingPackages()
     {
         var result = Run(
@@ -64,6 +95,9 @@ public sealed class PythonLintCommandTests
     }
 
     [Theory]
+    [InlineData("--known-globals", "host.value")]
+    [InlineData("--known-globals", "host,,other")]
+    [InlineData("--known-globals", "class")]
     [InlineData("--bad", "x")]
     [InlineData("--output-format", "xml")]
     [InlineData("--select", "DPYL999")]

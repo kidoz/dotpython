@@ -1,3 +1,4 @@
+using DotPython.Compiler.Binding;
 using DotPython.Language.Ast;
 using DotPython.Language.Diagnostics;
 using DotPython.Language.Text;
@@ -26,13 +27,23 @@ public static class PythonLinter
                 "unused-import",
                 "The imported binding is never referenced in a visible lexical scope."
             ),
+            new("DPYL005", "undefined-name", "The name has no visible definition."),
         ]);
 
-    /// <summary>Validates exact rule identifiers. An invalid configuration throws ArgumentException.</summary>
+    /// <summary>Validates exact rule identifiers and additional global names. An invalid configuration throws ArgumentException.</summary>
     public static void ValidateOptions(PythonLintOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Ignore);
+        ArgumentNullException.ThrowIfNull(options.KnownGlobals);
+        foreach (var name in options.KnownGlobals)
+        {
+            if (!IsIdentifier(name))
+                throw new ArgumentException(
+                    $"Invalid known global '{name}'; expected a Python identifier.",
+                    nameof(options)
+                );
+        }
         foreach (var code in (options.Select ?? []).Concat(options.Ignore))
         {
             if (!Rules.Any(rule => string.Equals(rule.Code, code, StringComparison.Ordinal)))
@@ -118,15 +129,31 @@ public static class PythonLinter
             }
         }
 
-        if (enabled.Contains("DPYL004"))
+        if (enabled.Contains("DPYL004") || enabled.Contains("DPYL005"))
         {
-            foreach (var import in UnusedImportAnalysis.Find(parse.Module, cancellationToken))
-                Report(Rules[3], import.Occurrence.Span, 0);
+            var model = PythonSymbolBinder.Analyze(parse.Module, cancellationToken);
+            if (enabled.Contains("DPYL004"))
+                foreach (var import in UnusedImportAnalysis.Find(model, cancellationToken))
+                    Report(Rules[3], import.Occurrence.Span, 0);
+            if (enabled.Contains("DPYL005"))
+                foreach (
+                    var occurrence in UndefinedNameAnalysis.Find(
+                        model,
+                        options.KnownGlobals,
+                        cancellationToken
+                    )
+                )
+                    Report(
+                        Rules[4],
+                        occurrence.Span,
+                        0,
+                        $"Name '{occurrence.Name}' has no visible definition."
+                    );
         }
 
         return new PythonLintResult(source, diagnostics);
 
-        void Report(PythonLintRule rule, TextSpan span, int offset)
+        void Report(PythonLintRule rule, TextSpan span, int offset, string? message = null)
         {
             if (!enabled.Contains(rule.Code))
             {
@@ -139,9 +166,26 @@ public static class PythonLinter
                 return;
             }
             diagnostics.Add(
-                new Diagnostic(rule.Code, rule.Description, DiagnosticSeverity.Warning, span)
+                new Diagnostic(
+                    rule.Code,
+                    message ?? rule.Description,
+                    DiagnosticSeverity.Warning,
+                    span
+                )
             );
         }
+    }
+
+    private static bool IsIdentifier(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return false;
+        var parsed = PythonParser.Parse(new SourceText(name));
+        return parsed.Success
+            && parsed.Module.Statements
+                is [PythonExpressionStatement { Expression: PythonNameExpression identifier }]
+            && identifier.Name == name
+            && identifier.Span.Length == name.Length;
     }
 
     private static PythonExpression Unwrap(PythonExpression expression)
