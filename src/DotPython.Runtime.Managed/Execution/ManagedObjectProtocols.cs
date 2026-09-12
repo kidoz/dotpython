@@ -2018,7 +2018,7 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(builder.ToString());
             }
             case PythonListValue list:
-                return list.Elements[GetSequenceIndex(index, list.Elements.Count, span)];
+                return list.Elements[GetListIndex(list, index, span)];
             case PythonTupleValue tuple:
                 return tuple.Elements[GetSequenceIndex(index, tuple.Elements.Length, span)];
             case PythonTextValue text:
@@ -2133,7 +2133,7 @@ internal static class ManagedObjectProtocols
                 AssignListSlice(list, slice, value, span);
                 return;
             case PythonListValue list:
-                list.Elements[GetSequenceIndex(index, list.Elements.Count, span)] = value;
+                list.Elements[GetListIndex(list, index, span, assignment: true)] = value;
                 return;
             case PythonDictionaryValue dictionary:
                 SetDictionaryItem(dictionary, index, value, span);
@@ -2474,7 +2474,7 @@ internal static class ManagedObjectProtocols
                 return;
             }
             case PythonListValue list:
-                list.Elements.RemoveAt(GetSequenceIndex(index, list.Elements.Count, span));
+                list.Elements.RemoveAt(GetListIndex(list, index, span, assignment: true));
                 return;
             case PythonDictionaryValue dictionary
                 when TryFindDictionaryItem(dictionary, index, out var item):
@@ -3193,6 +3193,48 @@ internal static class ManagedObjectProtocols
         }
         value = null!;
         return false;
+    }
+
+    private static int GetListIndex(
+        PythonListValue list,
+        PythonValue index,
+        TextSpan span,
+        bool assignment = false
+    )
+    {
+        BigInteger value;
+        if (PromoteTruthValue(index) is PythonWholeNumberValue whole)
+            value = whole.Value;
+        else if (!UserObjectProtocols.TryConvertToIndex(index, span, out value))
+            throw Fault(
+                "DPY4011",
+                $"list indices must be integers or slices, not {GetTypeName(index)}",
+                span,
+                "TypeError"
+            );
+
+        var minimum = IntPtr.Size == sizeof(long) ? new BigInteger(long.MinValue) : int.MinValue;
+        var maximum = IntPtr.Size == sizeof(long) ? new BigInteger(long.MaxValue) : int.MaxValue;
+        if (value < minimum || value > maximum)
+            throw Fault(
+                "DPY4012",
+                $"cannot fit '{GetTypeName(index)}' into an index-sized integer",
+                span,
+                "IndexError"
+            );
+
+        // __index__ may resize the list, so normalize only after conversion completes.
+        var count = list.Elements.Count;
+        if (value < 0)
+            value += count;
+        if (value < 0 || value >= count)
+            throw Fault(
+                "DPY4012",
+                assignment ? "list assignment index out of range" : "list index out of range",
+                span,
+                "IndexError"
+            );
+        return (int)value;
     }
 
     internal static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
