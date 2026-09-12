@@ -4512,30 +4512,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private void UpdateDictionaryOnStack(PythonInstruction instruction)
     {
-        if (Pop(instruction.Span) is not PythonDictionaryValue source)
-        {
-            throw Fault(
-                "DPY4009",
-                "Argument after ** must be a mapping.",
-                instruction.Span,
-                "TypeError"
-            );
-        }
-
+        var source = Pop(instruction.Span);
         if (Peek(instruction.Operand, instruction.Span) is not PythonDictionaryValue accumulator)
-        {
             throw Fault("DPY4007", "The dictionary accumulator is invalid.", instruction.Span);
-        }
-
-        foreach (var item in source.Items)
-        {
-            ManagedObjectProtocols.SetDictionaryItem(
-                accumulator,
-                item.Key,
-                item.Value,
-                instruction.Span
-            );
-        }
+        PythonBuiltinMethods.MergeInto(accumulator, source, instruction.Span, mappingOnly: true);
     }
 
     private void UnpackSequenceStarred(PythonInstruction instruction)
@@ -7451,7 +7431,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     "TypeError"
                 );
             }
-            right = PythonMappingProxies.Unwrap(right);
         }
         switch (left)
         {
@@ -7477,18 +7456,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(set);
                 return;
             }
-            case PythonDictionaryValue dictionary
-                when right is PythonDictionaryValue other && binaryOpCode == PythonOpCode.BinaryOr:
-                foreach (var item in other.Items)
-                {
-                    ManagedObjectProtocols.SetDictionaryItem(
-                        dictionary,
-                        item.Key,
-                        item.Value,
-                        span
-                    );
-                }
-
+            case PythonDictionaryValue dictionary when binaryOpCode == PythonOpCode.BinaryOr:
+                PythonBuiltinMethods.MergeInto(dictionary, right, span);
                 _evaluationStack.Push(dictionary);
                 return;
             case PythonManagedObjectValue
@@ -8074,16 +8043,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             && right is PythonDictionaryValue rightDictionary
         )
         {
-            var merged = new PythonDictionaryValue([]);
-            foreach (var item in leftDictionary.Items)
-            {
-                ManagedObjectProtocols.SetDictionaryItem(merged, item.Key, item.Value, span);
-            }
-
-            foreach (var item in rightDictionary.Items)
-            {
-                ManagedObjectProtocols.SetDictionaryItem(merged, item.Key, item.Value, span);
-            }
+            var merged = leftDictionary.ShallowCopy(span);
+            ManagedObjectProtocols.MergeDictionary(merged, rightDictionary, span);
 
             return merged;
         }

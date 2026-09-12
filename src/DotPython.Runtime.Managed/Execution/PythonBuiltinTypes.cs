@@ -773,15 +773,9 @@ internal static class PythonBuiltinTypes
             return dictionary;
         }
 
-        var sourceValue = PythonMappingProxies.Unwrap(arguments[0]);
-        if (sourceValue is PythonDictionaryValue source)
+        if (arguments[0] is PythonDictionaryValue source)
         {
-            foreach (var item in source.Items)
-            {
-                dictionary.AddItem(
-                    new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
-                );
-            }
+            ManagedObjectProtocols.MergeDictionary(dictionary, source, span);
             return dictionary;
         }
         PythonValue? keysMethod;

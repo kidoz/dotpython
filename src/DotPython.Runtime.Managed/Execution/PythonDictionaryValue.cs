@@ -1,3 +1,5 @@
+using DotPython.Language.Text;
+
 namespace DotPython.Runtime.Managed.Execution;
 
 /// <summary>Live insertion-ordered items and the compact-dictionary entry positions seen by cursors.</summary>
@@ -6,6 +8,7 @@ internal sealed record PythonDictionaryValue : PythonValue
     private readonly List<PythonDictionaryItemValue> _items = [];
     private readonly List<PythonDictionaryItemValue?> _entries = [];
     private long _usable;
+    private long _tableSize = 1;
     private bool _stringKeys = true;
 
     internal PythonDictionaryValue(List<PythonDictionaryItemValue> items)
@@ -20,20 +23,20 @@ internal sealed record PythonDictionaryValue : PythonValue
 
     internal PythonDictionaryItemValue? GetEntry(int position) => _entries[position];
 
-    private void EnsureKeyKind(PythonValue key)
+    private void EnsureKeyKind(PythonValue key, TextSpan span)
     {
         if (_stringKeys && key is not PythonTextValue)
         {
-            Compact();
+            Compact(span);
             _stringKeys = false;
         }
     }
 
-    internal void AddItem(PythonDictionaryItemValue item)
+    internal void AddItem(PythonDictionaryItemValue item, TextSpan span = default)
     {
-        EnsureKeyKind(item.Key);
+        EnsureKeyKind(item.Key, span);
         if (_usable == 0)
-            Compact();
+            Compact(span);
         _entries.Add(item);
         _items.Add(item);
         _usable--;
@@ -58,20 +61,89 @@ internal sealed record PythonDictionaryValue : PythonValue
         _entries.Clear();
         _items.Clear();
         _usable = 0;
+        _tableSize = 1;
         _stringKeys = true;
         SizeVersion++;
     }
 
-    private void Compact()
+    internal PythonDictionaryValue ShallowCopy(TextSpan span = default)
     {
-        // CPython 3.14 combined tables grow to a power of two >= used*3;
-        // only two thirds of the slots admit entries. Deleted slots consume capacity
-        // until compaction, even when the active dictionary size has been restored.
-        long size = 8;
-        while (size < (long)_items.Count * 3)
-            size *= 2;
+        var copy = new PythonDictionaryValue([]);
+        if (_items.Count == 0)
+            return copy;
+        // Combined-table copies retain holes while at least two thirds of the
+        // entry high-water mark is live (integer truncation is observable).
+        if (_items.Count >= (long)_entries.Count * 2 / 3)
+            copy.CloneStorage(this, span);
+        else
+            ManagedObjectProtocols.MergeDictionary(copy, this, span);
+        return copy;
+    }
+
+    internal bool TryCloneForMerge(PythonDictionaryValue source, TextSpan span)
+    {
+        if (
+            _items.Count != 0
+            || source._items.Count != source._entries.Count
+            || (source._tableSize != 8 && source._tableSize / 2 * 2 / 3 >= source._items.Count)
+        )
+            return false;
+        CloneStorage(source, span);
+        return true;
+    }
+
+    private void CloneStorage(PythonDictionaryValue source, TextSpan span)
+    {
+        // Build before publishing so host interruption cannot leave partial storage.
+        List<PythonDictionaryItemValue?> entries = [];
+        List<PythonDictionaryItemValue> items = [];
+        foreach (var item in source._entries)
+        {
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+            var clone = item is null
+                ? null
+                : new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash);
+            entries.Add(clone);
+            if (clone is not null)
+                items.Add(clone);
+        }
         _entries.Clear();
-        _entries.AddRange(_items);
+        _entries.AddRange(entries);
+        _items.Clear();
+        _items.AddRange(items);
+        _tableSize = source._tableSize;
+        _usable = source._usable;
+        _stringKeys = source._stringKeys;
+        SizeVersion++;
+    }
+
+    internal void PrepareMerge(PythonDictionaryValue source, TextSpan span)
+    {
+        // CPython compares total table capacity, not remaining insertion room,
+        // and reserves for all source keys even if some will only replace values.
+        if (_tableSize * 2 / 3 < source._items.Count)
+        {
+            Resize((((long)_items.Count + source._items.Count) * 3 + 1) / 2, span);
+            _stringKeys &= source._stringKeys;
+        }
+    }
+
+    private void Compact(TextSpan span) => Resize((long)_items.Count * 3, span);
+
+    private void Resize(long minimumSize, TextSpan span)
+    {
+        long size = 8;
+        while (size < minimumSize)
+            size *= 2;
+        List<PythonDictionaryItemValue?> entries = [];
+        foreach (var item in _items)
+        {
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+            entries.Add(item);
+        }
+        _entries.Clear();
+        _entries.AddRange(entries);
+        _tableSize = size;
         _usable = size * 2 / 3 - _items.Count;
     }
 

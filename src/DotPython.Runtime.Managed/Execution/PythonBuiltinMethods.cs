@@ -504,19 +504,7 @@ internal static class PythonBuiltinMethods
                 return value;
             }
         ),
-        ["copy"] = Dictionary(
-            "copy",
-            0,
-            0,
-            (dictionary, _) =>
-                new PythonDictionaryValue([
-                    .. dictionary.Items.Select(item => new PythonDictionaryItemValue(
-                        item.Key,
-                        item.Value,
-                        item.KeyHash
-                    )),
-                ])
-        ),
+        ["copy"] = Dictionary("copy", 0, 0, (dictionary, _) => dictionary.ShallowCopy()),
     };
 
     private static readonly Dictionary<string, PythonProtocolFunctionValue> TupleMethods = new(
@@ -831,22 +819,53 @@ internal static class PythonBuiltinMethods
             }
         );
 
-    private static void MergeInto(PythonDictionaryValue dictionary, PythonValue source)
+    internal static void MergeInto(
+        PythonDictionaryValue dictionary,
+        PythonValue source,
+        TextSpan span = default,
+        bool mappingOnly = false
+    )
     {
-        source = PythonMappingProxies.Unwrap(source);
         if (source is PythonDictionaryValue other)
         {
-            foreach (var item in other.Items.ToArray())
-            {
-                ManagedObjectProtocols.SetDictionaryItem(dictionary, item.Key, item.Value, default);
-            }
-
+            ManagedObjectProtocols.MergeDictionary(dictionary, other, span);
             return;
         }
-
-        foreach (var pair in ManagedObjectProtocols.MaterializeValues(source, default))
+        PythonValue? keysMethod;
+        try
         {
-            var elements = ManagedObjectProtocols.MaterializeValues(pair, default);
+            keysMethod = ManagedObjectProtocols.GetAttribute(source, "keys", span);
+        }
+        catch (Exception error)
+            when (PythonNamespaceMapping.IsPythonException(error, "AttributeError"))
+        {
+            keysMethod = null;
+        }
+        if (keysMethod is not null)
+        {
+            var keys = UserObjectProtocols.Dispatcher is { } dispatcher
+                ? dispatcher.Invoke(keysMethod, [], span)
+                : ManagedObjectProtocols.Call(keysMethod, [], span);
+            foreach (var key in ManagedObjectProtocols.MaterializeValues(keys, span))
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    key,
+                    PythonNamespaceMapping.GetItem(source, key, span),
+                    span
+                );
+            return;
+        }
+        if (mappingOnly)
+            throw new PythonRuntimeException(
+                "DPY4009",
+                $"'{ManagedObjectProtocols.GetTypeName(source)}' object is not a mapping",
+                span,
+                "TypeError"
+            );
+
+        foreach (var pair in ManagedObjectProtocols.MaterializeValues(source, span))
+        {
+            var elements = ManagedObjectProtocols.MaterializeValues(pair, span);
             if (elements.Count != 2)
             {
                 throw Fault(
@@ -855,7 +874,7 @@ internal static class PythonBuiltinMethods
                 );
             }
 
-            ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], default);
+            ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], span);
         }
     }
 

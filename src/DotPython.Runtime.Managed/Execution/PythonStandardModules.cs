@@ -1384,13 +1384,7 @@ internal static class PythonStandardModules
         value switch
         {
             PythonListValue list => new PythonListValue([.. list.Elements]),
-            PythonDictionaryValue dictionary => new PythonDictionaryValue([
-                .. dictionary.Items.Select(item => new PythonDictionaryItemValue(
-                    item.Key,
-                    item.Value,
-                    item.KeyHash
-                )),
-            ]),
+            PythonDictionaryValue dictionary => dictionary.ShallowCopy(span),
             PythonSetValue { IsFrozen: false } set => new PythonSetValue([.. set.Elements]),
             PythonTemplateValue template => new PythonTemplateValue(
                 template.Strings,

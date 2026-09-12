@@ -3147,7 +3147,39 @@ internal static class ManagedObjectProtocols
             return;
         }
 
-        dictionary.AddItem(new PythonDictionaryItemValue(key, value, keyHash));
+        dictionary.AddItem(new PythonDictionaryItemValue(key, value, keyHash), span);
+    }
+
+    internal static void MergeDictionary(
+        PythonDictionaryValue dictionary,
+        PythonDictionaryValue source,
+        TextSpan span
+    )
+    {
+        if (ReferenceEquals(dictionary, source) || source.Items.Count == 0)
+            return;
+        if (dictionary.TryCloneForMerge(source, span))
+            return;
+        dictionary.PrepareMerge(source, span);
+        var count = source.Items.Count;
+        for (var position = 0; position < source.EntryCount; position++)
+        {
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+            var item = source.GetEntry(position);
+            if (item is null)
+                continue;
+            // Read the value before equality can call back into either dictionary.
+            var value = item.Value;
+            if (TryFindDictionaryItem(dictionary, item.Key, item.KeyHash, out var existing))
+                existing.Value = value;
+            else
+                dictionary.AddItem(
+                    new PythonDictionaryItemValue(item.Key, value, item.KeyHash),
+                    span
+                );
+            if (source.Items.Count != count)
+                throw Fault("DPY4016", "dict mutated during update", span, "RuntimeError");
+        }
     }
 
     internal static bool TryFindDictionaryItem(
