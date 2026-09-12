@@ -2162,6 +2162,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             case "min":
             case "max":
             {
+                if (positional.Length == 0)
+                    throw Fault(
+                        "DPY4003",
+                        $"{builtin.Name} expected at least 1 argument, got 0",
+                        span,
+                        "TypeError"
+                    );
                 PythonValue? key = null;
                 PythonValue? defaultValue = null;
                 for (var index = 0; index < keywordNames.Length; index++)
@@ -6656,47 +6663,67 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             throw Fault(
                 "DPY4003",
-                $"{name}() expected at least 1 argument (0 given).",
+                $"{name} expected at least 1 argument, got 0",
                 span,
                 "TypeError"
             );
         }
 
-        var candidates =
+        if (arguments.Count > 1 && defaultValue is not null)
+            throw Fault(
+                "DPY4003",
+                $"Cannot specify a default for {name}() with multiple positional arguments",
+                span,
+                "TypeError"
+            );
+
+        var iterator =
             arguments.Count == 1
-                ? ManagedObjectProtocols.MaterializeValues(
-                    arguments[0],
-                    span,
-                    _userIterationDispatcher
-                )
-                : [.. arguments];
-        if (candidates.Count == 0)
+                ? ManagedObjectProtocols.GetIterator(arguments[0], span, _userIterationDispatcher)
+                : null;
+        var useKey = key is not null and not PythonNoneValue;
+        var comparison = greater ? PythonRichComparison.GreaterThan : PythonRichComparison.LessThan;
+        PythonValue? best = null;
+        PythonValue? bestKey = null;
+        var position = 0;
+        while (true)
         {
-            if (defaultValue is not null)
+            CheckProtocolWork(span);
+            PythonValue candidate;
+            if (iterator is not null)
             {
-                return defaultValue;
+                if (!ManagedObjectProtocols.TryGetNext(iterator, out candidate, span))
+                    break;
+            }
+            else
+            {
+                if (position >= arguments.Count)
+                    break;
+                candidate = arguments[position++];
             }
 
-            throw Fault("DPY4012", $"{name}() iterable argument is empty", span, "ValueError");
-        }
-
-        var useKey = key is not null and not PythonNoneValue;
-        var best = candidates[0];
-        var bestKey = useKey ? InvokeCallableNested(key!, [best], span) : best;
-        for (var index = 1; index < candidates.Count; index++)
-        {
-            var candidateKey = useKey
-                ? InvokeCallableNested(key!, [candidates[index]], span)
-                : candidates[index];
-            var comparison = ManagedObjectProtocols.CompareOrdered(candidateKey, bestKey, span);
-            if (greater ? comparison > 0 : comparison < 0)
+            // Evaluate and compare each key before requesting another item.
+            var candidateKey = useKey ? InvokeCallableNested(key!, [candidate], span) : candidate;
+            if (
+                best is null
+                || ManagedObjectProtocols.IsTrue(
+                    ManagedObjectProtocols.RichCompareValue(
+                        candidateKey,
+                        bestKey!,
+                        comparison,
+                        span
+                    )
+                )
+            )
             {
-                best = candidates[index];
+                best = candidate;
                 bestKey = candidateKey;
             }
         }
 
-        return best;
+        return best
+            ?? defaultValue
+            ?? throw Fault("DPY4012", $"{name}() iterable argument is empty", span, "ValueError");
     }
 
     private static PythonWholeNumberValue HashValue(
