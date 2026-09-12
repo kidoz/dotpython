@@ -37,6 +37,9 @@ internal delegate PythonIteratorValue UserIterationDispatcher(
 /// </summary>
 internal static class ManagedObjectProtocols
 {
+    [ThreadStatic]
+    private static int _sequenceComparisonDepth;
+
     internal static PythonValue Call(
         PythonValue callable,
         IReadOnlyList<PythonValue> arguments,
@@ -2692,17 +2695,24 @@ internal static class ManagedObjectProtocols
         PythonValue right,
         PythonRichComparison comparison,
         TextSpan span = default
+    ) => PythonTruthValue.FromBoolean(IsTrue(RichCompareValue(left, right, comparison, span)));
+
+    internal static PythonValue RichCompareValue(
+        PythonValue left,
+        PythonValue right,
+        PythonRichComparison comparison,
+        TextSpan span = default
     )
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
         if (left is PythonMappingProxyValue leftProxy)
         {
-            return RichCompare(leftProxy.Mapping, right, comparison, span);
+            return RichCompareValue(leftProxy.Mapping, right, comparison, span);
         }
         if (UserObjectProtocols.TryRichCompare(left, right, comparison, span, out var userResult))
         {
-            return PythonTruthValue.FromBoolean(IsTrue(userResult));
+            return userResult;
         }
 
         if (left is PythonExternalObjectValue leftExternal)
@@ -2717,8 +2727,25 @@ internal static class ManagedObjectProtocols
 
         if (right is PythonMappingProxyValue rightProxy)
         {
-            return RichCompare(rightProxy.Mapping, left, Reverse(comparison), span);
+            return RichCompareValue(rightProxy.Mapping, left, Reverse(comparison), span);
         }
+
+        if (left is PythonListValue leftList && right is PythonListValue rightList)
+            return CompareSequenceValues(
+                leftList.Elements,
+                rightList.Elements,
+                comparison,
+                span,
+                isList: true
+            );
+        if (left is PythonTupleValue leftTuple && right is PythonTupleValue rightTuple)
+            return CompareSequenceValues(
+                leftTuple.Elements,
+                rightTuple.Elements,
+                comparison,
+                span,
+                isList: false
+            );
 
         if (comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual)
         {
@@ -2734,6 +2761,8 @@ internal static class ManagedObjectProtocols
         if (
             left is not PythonComplexValue
             && right is not PythonComplexValue
+            && IsNumeric(PromoteTruthValue(left))
+            && IsNumeric(PromoteTruthValue(right))
             && HasUnorderedFloatingPointOperand(left, right)
         )
         {
@@ -3510,13 +3539,23 @@ internal static class ManagedObjectProtocols
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
-            (PythonListValue leftList, PythonListValue rightList) => AreSequencesEqual(
-                leftList.Elements,
-                rightList.Elements
+            (PythonListValue leftList, PythonListValue rightList) => IsTrue(
+                CompareSequenceValues(
+                    leftList.Elements,
+                    rightList.Elements,
+                    PythonRichComparison.Equal,
+                    default,
+                    isList: true
+                )
             ),
-            (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => AreSequencesEqual(
-                leftTuple.Elements,
-                rightTuple.Elements
+            (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => IsTrue(
+                CompareSequenceValues(
+                    leftTuple.Elements,
+                    rightTuple.Elements,
+                    PythonRichComparison.Equal,
+                    default,
+                    isList: false
+                )
             ),
             (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
                 AreDictionariesEqual(leftDictionary, rightDictionary),
@@ -3524,25 +3563,59 @@ internal static class ManagedObjectProtocols
         };
     }
 
-    private static bool AreSequencesEqual(
+    private static PythonValue CompareSequenceValues(
         IReadOnlyList<PythonValue> left,
-        IReadOnlyList<PythonValue> right
+        IReadOnlyList<PythonValue> right,
+        PythonRichComparison comparison,
+        TextSpan span,
+        bool isList
     )
     {
-        if (left.Count != right.Count)
+        if (_sequenceComparisonDepth >= 128)
+            throw Fault(
+                "DPY4005",
+                "maximum recursion depth exceeded in comparison",
+                span,
+                "RecursionError"
+            );
+        _sequenceComparisonDepth++;
+        try
         {
-            return false;
-        }
+            if (
+                isList
+                && left.Count != right.Count
+                && comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual
+            )
+                return PythonTruthValue.FromBoolean(comparison == PythonRichComparison.NotEqual);
 
-        for (var index = 0; index < left.Count; index++)
-        {
-            if (!AreEqual(left[index], right[index]))
+            var index = 0;
+            for (; index < left.Count && index < right.Count; index++)
             {
-                return false;
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                var leftItem = left[index];
+                var rightItem = right[index];
+                if (!ReferenceEquals(leftItem, rightItem) && !AreEqual(leftItem, rightItem))
+                    break;
             }
-        }
 
-        return true;
+            // Equality and truth callbacks can resize either list, even when false.
+            if (index >= left.Count || index >= right.Count)
+                return RichCompareValue(
+                    PythonWholeNumberValue.Create(left.Count),
+                    PythonWholeNumberValue.Create(right.Count),
+                    comparison,
+                    span
+                );
+            if (comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual)
+                return PythonTruthValue.FromBoolean(comparison == PythonRichComparison.NotEqual);
+
+            // CPython rereads the current items before dispatching the requested operator.
+            return RichCompareValue(left[index], right[index], comparison, span);
+        }
+        finally
+        {
+            _sequenceComparisonDepth--;
+        }
     }
 
     private static bool AreDictionariesEqual(

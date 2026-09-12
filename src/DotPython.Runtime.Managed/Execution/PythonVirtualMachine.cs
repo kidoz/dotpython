@@ -7727,6 +7727,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return ApplyComparison(reversed, rightProxy.Mapping, left, span);
         }
 
+        if (
+            left is PythonListValue && right is PythonListValue
+            || left is PythonTupleValue && right is PythonTupleValue
+        )
+            return ManagedObjectProtocols.RichCompareValue(left, right, richComparison, span);
+
         if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
         {
             var equal = AreEqual(left, right);
@@ -7828,14 +7834,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
-            (PythonListValue leftList, PythonListValue rightList) => AreSequencesEqual(
-                leftList.Elements,
-                rightList.Elements
-            ),
-            (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => AreSequencesEqual(
-                leftTuple.Elements,
-                rightTuple.Elements
-            ),
+            (PythonListValue, PythonListValue) or (PythonTupleValue, PythonTupleValue) =>
+                ManagedObjectProtocols.AreEqual(left, right),
             (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
                 AreDictionariesEqual(leftDictionary, rightDictionary),
 
@@ -7854,27 +7854,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             (PythonInterpolationValue, PythonInterpolationValue) => ReferenceEquals(left, right),
             _ => false,
         };
-    }
-
-    private static bool AreSequencesEqual(
-        IReadOnlyList<PythonValue> left,
-        IReadOnlyList<PythonValue> right
-    )
-    {
-        if (left.Count != right.Count)
-        {
-            return false;
-        }
-
-        for (var index = 0; index < left.Count; index++)
-        {
-            if (!AreEqual(left[index], right[index]))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static bool AreDictionariesEqual(
