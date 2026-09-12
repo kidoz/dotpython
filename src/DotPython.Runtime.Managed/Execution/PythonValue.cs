@@ -1157,6 +1157,8 @@ internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
 
 internal sealed record PythonTupleValue(PythonValue[] Elements) : PythonValue
 {
+    internal long CachedHash { get; set; } = -1;
+
     internal override string ToDisplayString()
     {
         if (!PythonRepresentationGuard.TryEnter(this))

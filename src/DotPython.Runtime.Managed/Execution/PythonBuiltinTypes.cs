@@ -747,6 +747,8 @@ internal static class PythonBuiltinTypes
     )
     {
         RequireArguments("tuple", arguments, 0, 1, span);
+        if (arguments.Count == 1 && arguments[0] is PythonTupleValue existing)
+            return existing;
         return arguments.Count == 0
             ? new PythonTupleValue([])
             : new PythonTupleValue([

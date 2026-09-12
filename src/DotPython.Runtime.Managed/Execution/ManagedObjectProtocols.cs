@@ -2175,6 +2175,7 @@ internal static class ManagedObjectProtocols
         }
 
         tuple.Elements[index] = value;
+        tuple.CachedHash = -1;
     }
 
     internal static bool Contains(
@@ -2484,7 +2485,7 @@ internal static class ManagedObjectProtocols
                 span,
                 "TypeError"
             );
-        AddToSetKnownHash(set, value, ComputePythonHash(value, span), span);
+        AddToSetKnownHash(set, value, GetInsertionHash(value, "set element", span), span);
     }
 
     internal static void AddToSetKnownHash(
@@ -2714,6 +2715,7 @@ internal static class ManagedObjectProtocols
         {
             PythonMappingProxyValue proxy => ComputePythonHash(proxy.Mapping, span),
             PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
+            PythonTupleValue tuple => GetTupleHash(tuple, span),
             PythonTruthValue truth => truth.Value ? 1 : 0,
             PythonWholeNumberValue whole => PythonNumericHash.Integer(whole.Value),
             PythonFloatingPointValue floating => PythonNumericHash.Float(floating, floating.Value),
@@ -2737,7 +2739,7 @@ internal static class ManagedObjectProtocols
                 ComputePythonHash(value, span).GetHashCode(),
             PythonTextValue text => StringComparer.Ordinal.GetHashCode(text.Value),
             PythonByteSequenceValue bytes => GetByteHash(bytes.Value),
-            PythonTupleValue tuple => GetTupleHash(tuple, span),
+            PythonTupleValue tuple => new BigInteger(GetTupleHash(tuple, span)).GetHashCode(),
             PythonManagedObjectValue instance => UserObjectProtocols.TryGetHash(
                 instance,
                 span,
@@ -3218,7 +3220,30 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        SetDictionaryItemKnownHash(dictionary, key, value, ComputePythonHash(key, span), span);
+        SetDictionaryItemKnownHash(
+            dictionary,
+            key,
+            value,
+            GetInsertionHash(key, "dict key", span),
+            span
+        );
+    }
+
+    private static BigInteger GetInsertionHash(PythonValue value, string role, TextSpan span)
+    {
+        try
+        {
+            return ComputePythonHash(value, span);
+        }
+        catch (PythonRuntimeException error) when (error.PythonExceptionTypeName == "TypeError")
+        {
+            throw Fault(
+                error.Code,
+                $"cannot use '{GetTypeName(value)}' as a {role} ({error.Message})",
+                span,
+                "TypeError"
+            );
+        }
     }
 
     private static void SetDictionaryItemKnownHash(
@@ -3308,7 +3333,8 @@ internal static class ManagedObjectProtocols
         {
             PythonSetValue set => set.IsFrozen,
             PythonListValue or PythonDictionaryValue => false,
-            PythonTupleValue tuple => tuple.Elements.All(IsHashable),
+            // Tuples have a hash slot; hashing discovers unhashable children in order.
+            PythonTupleValue => true,
             PythonManagedObjectValue instance => UserObjectProtocols.IsHashable(instance),
             _ => true,
         };
@@ -3577,15 +3603,35 @@ internal static class ManagedObjectProtocols
         left is PythonFloatingPointValue { Value: var leftValue } && double.IsNaN(leftValue)
         || right is PythonFloatingPointValue { Value: var rightValue } && double.IsNaN(rightValue);
 
-    private static int GetTupleHash(PythonTupleValue tuple, TextSpan span)
+    private static long GetTupleHash(PythonTupleValue tuple, TextSpan span)
     {
-        var hash = new HashCode();
-        foreach (var value in tuple.Elements)
-        {
-            hash.Add(GetPythonHash(value, span));
-        }
+        if (tuple.CachedHash != -1)
+            return tuple.CachedHash;
 
-        return hash.ToHashCode();
+        // CPython's 64-bit tuple xxHash variant consumes full Python child hashes.
+        const ulong prime1 = 11400714785074694791UL;
+        const ulong prime2 = 14029467366897019727UL;
+        const ulong prime5 = 2870177450012600261UL;
+        unchecked
+        {
+            var accumulator = prime5;
+            foreach (var value in tuple.Elements)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                var lane = (ulong)(ComputePythonHash(value, span) & ulong.MaxValue);
+                accumulator += lane * prime2;
+                accumulator = BitOperations.RotateLeft(accumulator, 31);
+                accumulator *= prime1;
+            }
+            accumulator += (ulong)tuple.Elements.Length ^ (prime5 ^ 3527539UL);
+            if (accumulator == ulong.MaxValue)
+                accumulator = 1546275796UL;
+
+            // Publish only successful results. Reentrant successful hashes retain
+            // their cache if this outer computation fails, or are replaced on success.
+            tuple.CachedHash = (long)accumulator;
+            return tuple.CachedHash;
+        }
     }
 
     private static bool IsNumeric(PythonValue value) =>
