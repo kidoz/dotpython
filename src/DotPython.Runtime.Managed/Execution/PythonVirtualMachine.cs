@@ -7968,6 +7968,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
             if (left is PythonTupleValue leftTuple && right is PythonTupleValue rightTuple)
             {
+                if (leftTuple.Elements.Length == 0)
+                    return rightTuple;
+                if (rightTuple.Elements.Length == 0)
+                    return leftTuple;
                 return new PythonTupleValue([.. leftTuple.Elements, .. rightTuple.Elements]);
             }
         }
@@ -8113,6 +8117,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 "OverflowError"
             );
         }
+
+        if (sequence is PythonTupleValue && (source.Count == 0 || repetitions == BigInteger.One))
+            return sequence;
 
         if (source.Count == 0 || repetitions <= 0)
         {

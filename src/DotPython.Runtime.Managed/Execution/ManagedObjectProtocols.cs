@@ -1991,10 +1991,15 @@ internal static class ManagedObjectProtocols
             }
             case PythonTupleValue tuple when index is PythonSliceValue slice:
             {
-                var result = new List<PythonValue>();
-                foreach (
-                    var elementIndex in EnumerateSliceIndices(slice, tuple.Elements.Length, span)
+                var (start, stop, step) = GetSliceIndices(slice, tuple.Elements.Length, span);
+                if (
+                    tuple.Elements.Length == 0
+                    || start == 0 && stop == tuple.Elements.Length && step == 1
                 )
+                    return tuple;
+
+                var result = new List<PythonValue>();
+                foreach (var elementIndex in EnumerateSliceIndices(start, stop, step))
                 {
                     result.Add(tuple.Elements[elementIndex]);
                 }
@@ -2251,20 +2256,16 @@ internal static class ManagedObjectProtocols
     )
     {
         var (start, stop, step) = GetSliceIndices(slice, length, span);
-        if (step > 0)
-        {
-            for (var index = start; index < stop; index += step)
-            {
-                yield return index;
-            }
-        }
-        else
-        {
-            for (var index = start; index > stop; index += step)
-            {
-                yield return index;
-            }
-        }
+        foreach (var index in EnumerateSliceIndices(start, stop, step))
+            yield return index;
+    }
+
+    private static IEnumerable<int> EnumerateSliceIndices(int start, int stop, int step)
+    {
+        // A clamped step can cross Int32's boundary after the last valid element.
+        // Keep the cursor wide so it terminates instead of wrapping into the sequence.
+        for (long index = start; step > 0 ? index < stop : index > stop; index += step)
+            yield return (int)index;
     }
 
     internal static (int Start, int Stop, int Step) GetSliceIndices(
