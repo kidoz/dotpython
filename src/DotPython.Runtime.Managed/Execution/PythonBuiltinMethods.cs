@@ -270,17 +270,8 @@ internal static class PythonBuiltinMethods
         ["index"] = List(
             "index",
             1,
-            1,
-            (list, arguments) =>
-            {
-                var index = FindElement(list.Elements, arguments[0]);
-                if (index < 0)
-                {
-                    throw Fault("The value was not found in the list.", "ValueError");
-                }
-
-                return PythonWholeNumberValue.Create(index);
-            }
+            3,
+            (list, arguments) => FindSequenceIndex(list.Elements, arguments, "list")
         ),
         ["count"] = List(
             "count",
@@ -513,16 +504,8 @@ internal static class PythonBuiltinMethods
     {
         ["index"] = Tuple(
             "index",
-            (tuple, arguments) =>
-            {
-                var index = FindElement(tuple.Elements, arguments[0]);
-                if (index < 0)
-                {
-                    throw Fault("The value was not found in the tuple.", "ValueError");
-                }
-
-                return PythonWholeNumberValue.Create(index);
-            }
+            (tuple, arguments) => FindSequenceIndex(tuple.Elements, arguments, "tuple"),
+            maximumArguments: 3
         ),
         ["count"] = Tuple(
             "count",
@@ -911,13 +894,14 @@ internal static class PythonBuiltinMethods
 
     private static PythonProtocolFunctionValue Tuple(
         string name,
-        Func<PythonTupleValue, IReadOnlyList<PythonValue>, PythonValue> implementation
+        Func<PythonTupleValue, IReadOnlyList<PythonValue>, PythonValue> implementation,
+        int maximumArguments = 1
     ) =>
         new(
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, 1, 1);
+                RequireArguments(name, arguments, 1, maximumArguments);
                 return implementation((PythonTupleValue)target!, arguments);
             }
         );
@@ -983,7 +967,51 @@ internal static class PythonBuiltinMethods
         System.Numerics.BigInteger maximum
     ) => value < minimum ? minimum : (value > maximum ? maximum : value);
 
-    private static int FindElement(IReadOnlyList<PythonValue> elements, PythonValue value)
+    private static PythonWholeNumberValue FindSequenceIndex(
+        IReadOnlyList<PythonValue> elements,
+        IReadOnlyList<PythonValue> arguments,
+        string typeName
+    )
+    {
+        // Both conversions may mutate the list; normalize only after both finish.
+        var start = arguments.Count > 1 ? GetSearchBound(arguments[1]) : 0;
+        var stop = arguments.Count > 2 ? GetSearchBound(arguments[2]) : long.MaxValue;
+        var count = elements.Count;
+        if (start < 0)
+            start = Math.Max(0, start + count);
+        if (stop < 0)
+            stop = Math.Max(0, stop + count);
+
+        // Do not cap stop at the initial list length: comparisons may append items.
+        for (var index = start; index < stop && index < elements.Count; index++)
+        {
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(default);
+            var element = elements[(int)index];
+            if (
+                ReferenceEquals(element, arguments[0])
+                || ManagedObjectProtocols.AreEqual(element, arguments[0])
+            )
+                return PythonWholeNumberValue.Create(index);
+        }
+        throw Fault($"{typeName}.index(x): x not in {typeName}", "ValueError");
+    }
+
+    private static long GetSearchBound(PythonValue value)
+    {
+        System.Numerics.BigInteger bound;
+        if (value is PythonWholeNumberValue whole)
+            bound = whole.Value;
+        else if (value is PythonTruthValue truth)
+            bound = truth.Value ? 1 : 0;
+        else if (!UserObjectProtocols.TryConvertToIndex(value, default, out bound))
+            throw Fault("slice indices must be integers or have an __index__ method", "TypeError");
+
+        var minimum = IntPtr.Size == sizeof(long) ? long.MinValue : int.MinValue;
+        var maximum = IntPtr.Size == sizeof(long) ? long.MaxValue : int.MaxValue;
+        return (long)BigIntegerClamp(bound, minimum, maximum);
+    }
+
+    private static int FindElement(List<PythonValue> elements, PythonValue value)
     {
         for (var index = 0; index < elements.Count; index++)
         {
