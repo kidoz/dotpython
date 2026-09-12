@@ -83,6 +83,14 @@ internal sealed record PythonDictionaryValue : PythonValue
         return dictionary;
     }
 
+    internal static PythonDictionaryValue CreateFromSetStorage(int count, TextSpan span)
+    {
+        var dictionary = new PythonDictionaryValue([]);
+        dictionary.Resize(((long)count * 3 + 1) / 2, span);
+        dictionary._stringKeys = false;
+        return dictionary;
+    }
+
     internal PythonDictionaryValue CreateFromKeysStorage(TextSpan span)
     {
         var dictionary = new PythonDictionaryValue([]);

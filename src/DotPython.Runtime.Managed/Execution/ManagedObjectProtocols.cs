@@ -2228,6 +2228,8 @@ internal static class ManagedObjectProtocols
         {
             return TryFindDictionaryItem(dictionary, item, out _);
         }
+        if (container is PythonSetValue set)
+            return FindSetEntry(set, item, span) >= 0;
 
         var iterator = GetIterator(container, span, userIteration);
         while (TryGetNext(iterator, out var candidate, span))
@@ -2476,47 +2478,70 @@ internal static class ManagedObjectProtocols
     internal static void AddToSet(PythonSetValue set, PythonValue value, TextSpan span)
     {
         if (!IsHashable(value))
-        {
             throw Fault(
                 "DPY4014",
                 $"cannot use '{GetTypeName(value)}' as a set element (unhashable type: '{GetTypeName(value)}')",
                 span,
                 "TypeError"
             );
-        }
-
-        foreach (var element in set.Elements)
-        {
-            if (KeysMatch(element, value, span))
-            {
-                return;
-            }
-        }
-
-        set.Elements.Add(value);
+        AddToSetKnownHash(set, value, ComputePythonHash(value, span), span);
     }
 
-    /// <summary>
-    /// Key identity for hashed containers: identical, or hash-equal and `==`. Builtin
-    /// values always hash consistently with equality, so the hash gate only matters for
-    /// user classes whose `__eq__` and `__hash__` disagree (CPython keeps both entries).
-    /// </summary>
-    internal static bool KeysMatch(PythonValue candidate, PythonValue key, TextSpan span = default)
+    internal static void AddToSetKnownHash(
+        PythonSetValue set,
+        PythonValue value,
+        BigInteger hash,
+        TextSpan span
+    )
     {
-        if (ReferenceEquals(candidate, key))
-        {
-            return true;
-        }
+        if (FindSetEntry(set, value, hash, span, forInsertion: true) < 0)
+            set.AddEntry(value, hash);
+    }
 
-        if (
-            (candidate is PythonManagedObjectValue || key is PythonManagedObjectValue)
-            && ComputePythonHash(candidate, span) != ComputePythonHash(key, span)
-        )
-        {
-            return false;
-        }
+    internal static int FindSetEntry(PythonSetValue set, PythonValue value, TextSpan span = default)
+    {
+        // Python membership/removal accepts a mutable set as a frozenset lookup key.
+        if (value is PythonSetValue { IsFrozen: false } mutable)
+            value = mutable.Copy(frozen: true, span: span);
+        return FindSetEntry(set, value, ComputePythonHash(value, span), span);
+    }
 
-        return AreEqual(candidate, key);
+    internal static int FindSetEntry(
+        PythonSetValue set,
+        PythonValue value,
+        BigInteger hash,
+        TextSpan span,
+        bool forInsertion = false
+    )
+    {
+        for (var index = 0; index < set.Entries.Count; index++)
+        {
+            // A work unit covers at most 64 dense positions; restart checks also
+            // bound reentrant equality that repeatedly mutates the set.
+            if ((index & 63) == 0)
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+            var entry = set.Entries[index];
+            if (
+                entry.Hash != hash
+                && !(
+                    IsNumeric(PromoteTruthValue(entry.Value)) && IsNumeric(PromoteTruthValue(value))
+                )
+            )
+                continue;
+            var version = set.MutationVersion;
+            var matches = ReferenceEquals(entry.Value, value) || AreEqual(entry.Value, value);
+            // CPython add accepts a successful comparison before its restart test.
+            if (matches && forInsertion)
+                return index;
+            if (set.MutationVersion != version)
+            {
+                index = -1;
+                continue;
+            }
+            if (matches)
+                return index;
+        }
+        return -1;
     }
 
     internal static PythonSetValue CreateSet(IReadOnlyList<PythonValue> values, TextSpan span)
@@ -2645,6 +2670,9 @@ internal static class ManagedObjectProtocols
             );
         }
 
+        if (left is PythonSetValue leftSet && right is PythonSetValue rightSet)
+            return PythonSetOperations.CompareOrdered(leftSet, rightSet, comparison, span);
+
         if (HasUnorderedFloatingPointOperand(left, right))
         {
             return PythonTruthValue.False;
@@ -2687,9 +2715,20 @@ internal static class ManagedObjectProtocols
         BigInteger hash = value switch
         {
             PythonMappingProxyValue proxy => ComputePythonHash(proxy.Mapping, span),
+            PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
             PythonTruthValue truth => truth.Value ? 1 : 0,
             PythonWholeNumberValue whole when whole.Value >= 0 => whole.Value % modulus,
             PythonWholeNumberValue whole => -((-whole.Value) % modulus),
+            PythonFloatingPointValue floating
+                when double.IsFinite(floating.Value)
+                    && Math.Truncate(floating.Value) == floating.Value => ComputePythonHash(
+                PythonWholeNumberValue.Create(new BigInteger(floating.Value)),
+                span
+            ),
+            PythonComplexValue complex when complex.Value.Imaginary == 0 => ComputePythonHash(
+                new PythonFloatingPointValue(complex.Value.Real),
+                span
+            ),
             PythonExternalObjectValue external => external.Protocol.GetHash(span),
             PythonManagedObjectValue instance
                 when UserObjectProtocols.TryGetHash(instance, span, out var userHash) => userHash,
@@ -2727,7 +2766,8 @@ internal static class ManagedObjectProtocols
                 RuntimeHelpers.GetHashCode(method.Function)
             ),
             PythonModuleValue module => RuntimeHelpers.GetHashCode(module),
-            PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
+            PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span)
+                .GetHashCode(),
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
                 "DPY4014",
@@ -2739,16 +2779,30 @@ internal static class ManagedObjectProtocols
         };
     }
 
-    private static int GetFrozenSetHash(PythonSetValue frozen, TextSpan span)
+    private static BigInteger GetFrozenSetHash(PythonSetValue frozen, TextSpan span)
     {
-        // Order-insensitive combination so equal frozensets hash equally.
-        var hash = 0;
-        foreach (var element in frozen.Elements)
+        if (frozen.CachedFrozenHash is { } cached)
+            return cached;
+        // CPython's order-independent 64-bit mixing, using stored insertion hashes.
+        // The represented entry hashes still follow each value's qualified hash policy.
+        ulong hash = 0;
+        unchecked
         {
-            hash ^= GetPythonHash(element, span);
+            foreach (var entry in frozen.Entries)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                var value = (ulong)(entry.Hash & ulong.MaxValue);
+                hash ^= ((value ^ 89869747UL) ^ (value << 16)) * 3644798167UL;
+            }
+            hash ^= ((ulong)frozen.Elements.Count + 1) * 1927868237UL;
+            hash ^= (hash >> 11) ^ (hash >> 25);
+            hash = hash * 69069UL + 907133923UL;
+            if (hash == ulong.MaxValue)
+                hash = 590923713UL;
+            var result = new BigInteger((long)hash);
+            frozen.CachedFrozenHash = result;
+            return result;
         }
-
-        return HashCode.Combine(hash, frozen.Elements.Count);
     }
 
     internal static byte[] GetBytes(PythonByteSequenceValue value)
@@ -3136,6 +3190,20 @@ internal static class ManagedObjectProtocols
             }
             return dictionary;
         }
+        if (source is PythonSetValue sourceSet)
+        {
+            var dictionary = PythonDictionaryValue.CreateFromSetStorage(
+                sourceSet.Elements.Count,
+                span
+            );
+            for (var position = 0; position < sourceSet.Entries.Count; position++)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                var entry = sourceSet.Entries[position];
+                SetDictionaryItemKnownHash(dictionary, entry.Value, fill, entry.Hash, span);
+            }
+            return dictionary;
+        }
         var result = new PythonDictionaryValue([]);
         var iterator = GetIterator(source, span);
         // Insert before requesting the next key: hashing may change the iterable
@@ -3213,7 +3281,7 @@ internal static class ManagedObjectProtocols
         out PythonDictionaryItemValue item
     ) => TryFindDictionaryItem(dictionary, key, ComputePythonHash(key), out item);
 
-    private static bool TryFindDictionaryItem(
+    internal static bool TryFindDictionaryItem(
         PythonDictionaryValue dictionary,
         PythonValue key,
         BigInteger keyHash,
@@ -3224,17 +3292,16 @@ internal static class ManagedObjectProtocols
         {
             var candidate = dictionary.Items[index];
             var version = dictionary.SizeVersion;
-            // Retain existing builtin numeric equality semantics; user keys use
-            // the insertion hash, never a callback re-entering namespace lookup.
+            // Identity does not bypass insertion hashes: one mutable-hash key
+            // object can occupy multiple distinct entries in a Python dictionary.
             var matches =
-                ReferenceEquals(candidate.Key, key)
-                || (
-                    (
-                        candidate.Key is not PythonManagedObjectValue
-                            && key is not PythonManagedObjectValue
-                        || candidate.KeyHash == keyHash
-                    ) && AreEqual(candidate.Key, key)
-                );
+                (
+                    candidate.KeyHash == keyHash
+                    || (
+                        IsNumeric(PromoteTruthValue(candidate.Key))
+                        && IsNumeric(PromoteTruthValue(key))
+                    )
+                ) && (ReferenceEquals(candidate.Key, key) || AreEqual(candidate.Key, key));
             if (dictionary.SizeVersion != version)
             {
                 // Equality may execute Python and structurally mutate this dictionary.
@@ -3298,9 +3365,7 @@ internal static class ManagedObjectProtocols
             return left is PythonSetValue leftSet
                 && right is PythonSetValue rightSet
                 && leftSet.Elements.Count == rightSet.Elements.Count
-                && leftSet.Elements.All(element =>
-                    rightSet.Elements.Any(candidate => AreEqual(candidate, element))
-                );
+                && PythonSetOperations.IsSubset(leftSet, rightSet);
         }
 
         left = PromoteTruthValue(left);

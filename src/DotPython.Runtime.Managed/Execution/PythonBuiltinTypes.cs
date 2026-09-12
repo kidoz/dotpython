@@ -667,10 +667,7 @@ internal static class PythonBuiltinTypes
         RequireArguments("set", arguments, 0, 1, span);
         return arguments.Count == 0
             ? new PythonSetValue([])
-            : ManagedObjectProtocols.CreateSet(
-                ManagedObjectProtocols.MaterializeValues(arguments[0], span),
-                span
-            );
+            : PythonSetOperations.Create(arguments[0], span);
     }
 
     private static PythonSetValue ConstructFrozenset(
@@ -679,14 +676,13 @@ internal static class PythonBuiltinTypes
     )
     {
         RequireArguments("frozenset", arguments, 0, 1, span);
-        var deduplicated =
-            arguments.Count == 0
-                ? new PythonSetValue([])
-                : ManagedObjectProtocols.CreateSet(
-                    ManagedObjectProtocols.MaterializeValues(arguments[0], span),
-                    span
-                );
-        return new PythonSetValue(deduplicated.Elements) { IsFrozen = true };
+        if (arguments.Count == 0)
+            return new PythonSetValue([]) { IsFrozen = true };
+        if (arguments[0] is PythonSetValue { IsFrozen: true } frozen)
+            return frozen;
+        if (arguments[0] is PythonSetValue set)
+            return set.Copy(frozen: true, span: span);
+        return PythonSetOperations.Create(arguments[0], span).Copy(frozen: true, span: span);
     }
 
     private static PythonTextValue ConstructStr(IReadOnlyList<PythonValue> arguments, TextSpan span)

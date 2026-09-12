@@ -555,13 +555,13 @@ internal static class PythonBuiltinMethods
             1,
             (set, arguments) =>
             {
-                var index = FindElement(set.Elements, arguments[0]);
+                var index = ManagedObjectProtocols.FindSetEntry(set, arguments[0]);
                 if (index < 0)
                 {
                     throw ManagedObjectProtocols.MissingKey(arguments[0]);
                 }
 
-                set.Elements.RemoveAt(index);
+                set.RemoveEntry(index);
                 return PythonNoneValue.Instance;
             }
         ),
@@ -571,10 +571,10 @@ internal static class PythonBuiltinMethods
             1,
             (set, arguments) =>
             {
-                var index = FindElement(set.Elements, arguments[0]);
+                var index = ManagedObjectProtocols.FindSetEntry(set, arguments[0]);
                 if (index >= 0)
                 {
-                    set.Elements.RemoveAt(index);
+                    set.RemoveEntry(index);
                 }
 
                 return PythonNoneValue.Instance;
@@ -586,11 +586,11 @@ internal static class PythonBuiltinMethods
             0,
             (set, _) =>
             {
-                set.Elements.Clear();
+                set.ClearEntries();
                 return PythonNoneValue.Instance;
             }
         ),
-        ["copy"] = Set("copy", 0, 0, (set, _) => new PythonSetValue([.. set.Elements])),
+        ["copy"] = Set("copy", 0, 0, (set, _) => set.Copy()),
         ["pop"] = Set(
             "pop",
             0,
@@ -605,25 +605,22 @@ internal static class PythonBuiltinMethods
                 }
 
                 var first = set.Elements[0];
-                set.Elements.RemoveAt(0);
+                set.RemoveEntry(0);
                 return first;
             }
         ),
-        ["update"] = SetMutator(
-            "update",
-            (set, others) => Combine(set, others, SetOperation.Union)
-        ),
+        ["update"] = SetMutator("update", PythonSetOperations.Operation.Union),
         ["intersection_update"] = SetMutator(
             "intersection_update",
-            (set, others) => Combine(set, others, SetOperation.Intersection)
+            PythonSetOperations.Operation.Intersection
         ),
         ["difference_update"] = SetMutator(
             "difference_update",
-            (set, others) => Combine(set, others, SetOperation.Difference)
+            PythonSetOperations.Operation.Difference
         ),
         ["symmetric_difference_update"] = SetMutator(
             "symmetric_difference_update",
-            (set, others) => Combine(set, others, SetOperation.SymmetricDifference)
+            PythonSetOperations.Operation.SymmetricDifference
         ),
     };
 
@@ -631,12 +628,7 @@ internal static class PythonBuiltinMethods
         StringComparer.Ordinal
     )
     {
-        ["copy"] = Set(
-            "copy",
-            0,
-            0,
-            (set, _) => new PythonSetValue([.. set.Elements]) { IsFrozen = true }
-        ),
+        ["copy"] = Set("copy", 0, 0, (set, _) => set),
     };
 
     internal static bool TryGet(
@@ -675,109 +667,68 @@ internal static class PythonBuiltinMethods
         StringComparer.Ordinal
     )
     {
-        ["union"] = SetQuery("union", (set, others) => Combine(set, others, SetOperation.Union)),
+        ["union"] = SetQuery(
+            "union",
+            (set, others) => Combine(set, others, PythonSetOperations.Operation.Union)
+        ),
         ["intersection"] = SetQuery(
             "intersection",
-            (set, others) => Combine(set, others, SetOperation.Intersection)
+            (set, others) => Combine(set, others, PythonSetOperations.Operation.Intersection)
         ),
         ["difference"] = SetQuery(
             "difference",
-            (set, others) => Combine(set, others, SetOperation.Difference)
+            (set, others) => Combine(set, others, PythonSetOperations.Operation.Difference)
         ),
         ["symmetric_difference"] = SetQuery(
             "symmetric_difference",
-            (set, others) => Combine(set, others, SetOperation.SymmetricDifference),
+            (set, others) =>
+                Combine(set, others, PythonSetOperations.Operation.SymmetricDifference),
             exactlyOne: true
         ),
         ["issubset"] = Set(
             "issubset",
             1,
             1,
-            (set, arguments) =>
-                Truth(
-                    set.Elements.All(element =>
-                        ManagedObjectProtocols.Contains(AsSet(arguments[0]), element)
-                    )
-                )
+            (set, arguments) => Truth(PythonSetOperations.IsSubset(set, arguments[0]))
         ),
         ["issuperset"] = Set(
             "issuperset",
             1,
             1,
-            (set, arguments) =>
-                Truth(
-                    AsSet(arguments[0])
-                        .Elements.All(element => ManagedObjectProtocols.Contains(set, element))
-                )
+            (set, arguments) => Truth(PythonSetOperations.IsSuperset(set, arguments[0]))
         ),
         ["isdisjoint"] = Set(
             "isdisjoint",
             1,
             1,
-            (set, arguments) =>
-                Truth(
-                    !AsSet(arguments[0])
-                        .Elements.Any(element => ManagedObjectProtocols.Contains(set, element))
-                )
+            (set, arguments) => Truth(PythonSetOperations.IsDisjoint(set, arguments[0]))
         ),
     };
 
-    private enum SetOperation
-    {
-        Union,
-        Intersection,
-        Difference,
-        SymmetricDifference,
-    }
-
-    private static PythonSetValue AsSet(PythonValue value) =>
-        value as PythonSetValue
-        ?? ManagedObjectProtocols.CreateSet(
-            ManagedObjectProtocols.MaterializeValues(value, default),
-            default
-        );
-
-    /// <summary>Applies the operation with each operand in turn, returning a new set.</summary>
     private static PythonSetValue Combine(
         PythonSetValue set,
         IReadOnlyList<PythonValue> others,
-        SetOperation operation
+        PythonSetOperations.Operation operation
     )
     {
-        var result = new PythonSetValue([.. set.Elements]);
-        foreach (var operand in others)
+        if (others.Count == 0)
+            return set.Copy();
+        if (operation == PythonSetOperations.Operation.Union)
         {
-            var other = AsSet(operand);
-            result = operation switch
-            {
-                SetOperation.Union => ManagedObjectProtocols.CreateSet(
-                    [.. result.Elements, .. other.Elements],
-                    default
-                ),
-                SetOperation.Intersection => new PythonSetValue([
-                    .. result.Elements.Where(element =>
-                        ManagedObjectProtocols.Contains(other, element)
-                    ),
-                ]),
-                SetOperation.Difference => new PythonSetValue([
-                    .. result.Elements.Where(element =>
-                        !ManagedObjectProtocols.Contains(other, element)
-                    ),
-                ]),
-                _ => ManagedObjectProtocols.CreateSet(
-                    [
-                        .. result.Elements.Where(element =>
-                            !ManagedObjectProtocols.Contains(other, element)
-                        ),
-                        .. other.Elements.Where(element =>
-                            !ManagedObjectProtocols.Contains(result, element)
-                        ),
-                    ],
-                    default
-                ),
-            };
+            var union = set.Copy();
+            foreach (var operand in others)
+                if (!ReferenceEquals(set, operand))
+                    PythonSetOperations.Update(union, operand);
+            return union;
         }
-
+        var result = PythonSetOperations.Combine(set, others[0], operation);
+        for (var index = 1; index < others.Count; index++)
+        {
+            if (operation == PythonSetOperations.Operation.Difference)
+                PythonSetOperations.DifferenceUpdate(result, others[index]);
+            else
+                result = PythonSetOperations.Combine(result, others[index], operation);
+        }
         return result;
     }
 
@@ -791,30 +742,42 @@ internal static class PythonBuiltinMethods
             (target, arguments) =>
             {
                 if (exactlyOne)
-                {
                     RequireArguments(name, arguments, 1, 1);
-                }
-
-                var set = (PythonSetValue)target!;
-                var combined = combine(set, arguments);
-                return set.IsFrozen
-                    ? new PythonSetValue(combined.Elements) { IsFrozen = true }
-                    : combined;
+                return combine((PythonSetValue)target!, arguments);
             }
         );
 
     private static PythonProtocolFunctionValue SetMutator(
         string name,
-        Func<PythonSetValue, IReadOnlyList<PythonValue>, PythonSetValue> combine
+        PythonSetOperations.Operation operation
     ) =>
         new(
             name,
             (target, arguments) =>
             {
+                if (operation == PythonSetOperations.Operation.SymmetricDifference)
+                    RequireArguments(name, arguments, 1, 1);
                 var set = (PythonSetValue)target!;
-                var combined = combine(set, arguments);
-                set.Elements.Clear();
-                set.Elements.AddRange(combined.Elements);
+                if (operation == PythonSetOperations.Operation.Intersection)
+                {
+                    set.ReplaceEntries(Combine(set, arguments, operation));
+                    return PythonNoneValue.Instance;
+                }
+                foreach (var source in arguments)
+                {
+                    switch (operation)
+                    {
+                        case PythonSetOperations.Operation.Union:
+                            PythonSetOperations.Update(set, source);
+                            break;
+                        case PythonSetOperations.Operation.Difference:
+                            PythonSetOperations.DifferenceUpdate(set, source);
+                            break;
+                        default:
+                            PythonSetOperations.SymmetricDifferenceUpdate(set, source);
+                            break;
+                    }
+                }
                 return PythonNoneValue.Instance;
             }
         );

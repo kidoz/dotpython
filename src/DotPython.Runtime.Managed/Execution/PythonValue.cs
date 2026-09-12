@@ -1013,38 +1013,6 @@ internal sealed record PythonFilterSourceValue(
     internal override string ToDisplayString() => "<filter>";
 }
 
-internal sealed record PythonSetValue(List<PythonValue> Elements) : PythonValue
-{
-    /// <summary>Whether this value is a `frozenset` (immutable, hashable) rather than a `set`.</summary>
-    internal bool IsFrozen { get; init; }
-
-    internal override string ToDisplayString()
-    {
-        if (Elements.Count == 0)
-        {
-            return IsFrozen ? "frozenset()" : "set()";
-        }
-
-        if (!PythonRepresentationGuard.TryEnter(this))
-        {
-            return IsFrozen ? "frozenset({...})" : "{...}";
-        }
-
-        try
-        {
-            var elements =
-                "{"
-                + string.Join(", ", Elements.Select(element => element.ToRepresentationString()))
-                + "}";
-            return IsFrozen ? $"frozenset({elements})" : elements;
-        }
-        finally
-        {
-            PythonRepresentationGuard.Exit(this);
-        }
-    }
-}
-
 /// <summary>An index-based sequence cursor with no retained execution context.</summary>
 internal sealed record PythonSequenceIteratorSourceValue : PythonValue
 {

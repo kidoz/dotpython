@@ -4502,16 +4502,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             throw Fault("DPY4007", "The set accumulator is invalid.", instruction.Span);
         }
 
-        foreach (
-            var value in ManagedObjectProtocols.MaterializeValues(
-                iterable,
-                instruction.Span,
-                _userIterationDispatcher
-            )
-        )
-        {
-            ManagedObjectProtocols.AddToSet(accumulator, value, instruction.Span);
-        }
+        PythonSetOperations.Update(accumulator, iterable, instruction.Span);
     }
 
     private void UpdateDictionaryOnStack(PythonInstruction instruction)
@@ -7454,9 +7445,21 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                             or PythonOpCode.BinarySubtract
                             or PythonOpCode.BinaryXor:
             {
-                var updated = (PythonSetValue)ApplyBinary(binaryOpCode, set, right, span);
-                set.Elements.Clear();
-                set.Elements.AddRange(updated.Elements);
+                switch (binaryOpCode)
+                {
+                    case PythonOpCode.BinaryOr:
+                        PythonSetOperations.Update(set, right, span);
+                        break;
+                    case PythonOpCode.BinarySubtract:
+                        PythonSetOperations.DifferenceUpdate(set, right, span);
+                        break;
+                    case PythonOpCode.BinaryXor:
+                        PythonSetOperations.SymmetricDifferenceUpdate(set, right, span);
+                        break;
+                    default:
+                        set.ReplaceEntries(PythonSetOperations.Intersect(set, right, span), span);
+                        break;
+                }
                 _evaluationStack.Push(set);
                 return;
             }
@@ -7706,6 +7709,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 opCode == PythonOpCode.CompareEqual ? equal : !equal
             );
         }
+
+        if (left is PythonSetValue leftSet && right is PythonSetValue rightSet)
+            return PythonSetOperations.CompareOrdered(leftSet, rightSet, richComparison, span);
 
         var promotedLeft = PromoteTruthValue(left);
         var promotedRight = PromoteTruthValue(right);
@@ -8105,39 +8111,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
-        IEnumerable<PythonValue> elements = opCode switch
+        PythonSetOperations.Operation? operation = opCode switch
         {
-            PythonOpCode.BinaryOr => [.. left.Elements, .. right.Elements],
-            PythonOpCode.BinaryAnd => left.Elements.Where(element =>
-                right.Elements.Any(candidate => ManagedObjectProtocols.AreEqual(candidate, element))
-            ),
-            PythonOpCode.BinarySubtract => left.Elements.Where(element =>
-                !right.Elements.Any(candidate =>
-                    ManagedObjectProtocols.AreEqual(candidate, element)
-                )
-            ),
-            PythonOpCode.BinaryXor =>
-            [
-                .. left.Elements.Where(element =>
-                    !right.Elements.Any(candidate =>
-                        ManagedObjectProtocols.AreEqual(candidate, element)
-                    )
-                ),
-                .. right.Elements.Where(element =>
-                    !left.Elements.Any(candidate =>
-                        ManagedObjectProtocols.AreEqual(candidate, element)
-                    )
-                ),
-            ],
-            _ => null!,
+            PythonOpCode.BinaryOr => PythonSetOperations.Operation.Union,
+            PythonOpCode.BinaryAnd => PythonSetOperations.Operation.Intersection,
+            PythonOpCode.BinarySubtract => PythonSetOperations.Operation.Difference,
+            PythonOpCode.BinaryXor => PythonSetOperations.Operation.SymmetricDifference,
+            _ => null,
         };
-        if (elements is null)
-        {
-            return null;
-        }
-
-        var result = ManagedObjectProtocols.CreateSet([.. elements], span);
-        return left.IsFrozen ? new PythonSetValue(result.Elements) { IsFrozen = true } : result;
+        return operation.HasValue
+            ? PythonSetOperations.Combine(left, right, operation.Value, span)
+            : null;
     }
 
     private static PythonValue RepeatSequence(

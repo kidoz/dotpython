@@ -1385,7 +1385,7 @@ internal static class PythonStandardModules
         {
             PythonListValue list => new PythonListValue([.. list.Elements]),
             PythonDictionaryValue dictionary => dictionary.ShallowCopy(span),
-            PythonSetValue { IsFrozen: false } set => new PythonSetValue([.. set.Elements]),
+            PythonSetValue { IsFrozen: false } set => set.Copy(span: span),
             PythonTemplateValue template => new PythonTemplateValue(
                 template.Strings,
                 template.Interpolations
@@ -1454,7 +1454,11 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var element in set.Elements)
                 {
-                    copy.Elements.Add(DeepCopy(element, memo, span, mode));
+                    ManagedObjectProtocols.AddToSet(
+                        copy,
+                        DeepCopy(element, memo, span, mode),
+                        span
+                    );
                 }
 
                 return copy;
