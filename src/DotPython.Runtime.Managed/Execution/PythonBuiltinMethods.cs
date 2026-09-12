@@ -206,14 +206,15 @@ internal static class PythonBuiltinMethods
             2,
             (list, arguments) =>
             {
-                var index = RequireInteger("insert", arguments[0]);
+                var index = GetListMethodIndex(arguments[0]);
+                var count = list.Elements.Count;
                 if (index < 0)
                 {
-                    index += list.Elements.Count;
+                    index += count;
                 }
 
-                index = Math.Clamp(index, 0, list.Elements.Count);
-                list.Elements.Insert(index, arguments[1]);
+                index = BigIntegerClamp(index, 0, count);
+                list.Elements.Insert((int)index, arguments[1]);
                 return PythonNoneValue.Instance;
             }
         ),
@@ -223,21 +224,20 @@ internal static class PythonBuiltinMethods
             1,
             (list, arguments) =>
             {
-                if (list.Elements.Count == 0)
+                // Index conversion can resize even an initially empty list.
+                var index = arguments.Count == 0 ? -1 : GetListMethodIndex(arguments[0]);
+                var count = list.Elements.Count;
+                if (count == 0)
                 {
-                    throw Fault("Cannot pop from an empty list.", "IndexError");
+                    throw Fault("pop from empty list", "IndexError");
                 }
 
-                var index =
-                    arguments.Count == 0
-                        ? list.Elements.Count - 1
-                        : ManagedObjectProtocols.GetSequenceIndex(
-                            arguments[0],
-                            list.Elements.Count,
-                            default
-                        );
-                var value = list.Elements[index];
-                list.Elements.RemoveAt(index);
+                if (index < 0)
+                    index += count;
+                if (index < 0 || index >= count)
+                    throw Fault("pop index out of range", "IndexError");
+                var value = list.Elements[(int)index];
+                list.Elements.RemoveAt((int)index);
                 return value;
             }
         ),
@@ -951,14 +951,31 @@ internal static class PythonBuiltinMethods
                 "TypeError"
             );
 
-    private static int RequireInteger(string name, PythonValue value) =>
-        value is PythonWholeNumberValue wholeNumber
-            ? (int)BigIntegerClamp(wholeNumber.Value, int.MinValue, int.MaxValue)
-            : throw Fault(
-                $"Method '{name}' expected an integer argument, "
-                    + $"but received {ManagedObjectProtocols.GetTypeName(value)}.",
+    private static System.Numerics.BigInteger GetListMethodIndex(PythonValue value)
+    {
+        System.Numerics.BigInteger index;
+        if (value is PythonWholeNumberValue whole)
+            index = whole.Value;
+        else if (value is PythonTruthValue truth)
+            index = truth.Value ? 1 : 0;
+        else if (!UserObjectProtocols.TryConvertToIndex(value, default, out index))
+            throw Fault(
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted as an integer",
                 "TypeError"
             );
+
+        var minimum =
+            IntPtr.Size == sizeof(long)
+                ? new System.Numerics.BigInteger(long.MinValue)
+                : int.MinValue;
+        var maximum =
+            IntPtr.Size == sizeof(long)
+                ? new System.Numerics.BigInteger(long.MaxValue)
+                : int.MaxValue;
+        if (index < minimum || index > maximum)
+            throw Fault("Python int too large to convert to C ssize_t", "OverflowError");
+        return index;
+    }
 
     private static System.Numerics.BigInteger BigIntegerClamp(
         System.Numerics.BigInteger value,
