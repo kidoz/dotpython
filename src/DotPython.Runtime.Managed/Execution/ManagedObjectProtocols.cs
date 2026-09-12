@@ -51,6 +51,11 @@ internal static class ManagedObjectProtocols
             PythonBuiltinFunctionValue builtin => builtin.Invoke(arguments, span),
             PythonBuiltinTypeValue builtinType => builtinType.Construct(arguments, span),
             PythonProtocolFunctionValue function => function.Invoke(null, arguments),
+            PythonBoundMethodValue
+            {
+                Target: PythonIteratorValue iterator,
+                Name: "__iter__" or "__next__"
+            } method => PythonIteratorProtocols.Invoke(iterator, method.Name, arguments, span),
             PythonBoundMethodValue method => method.Function.Invoke(method.Target, arguments),
             PythonExternalObjectValue external => external.Protocol.Call(arguments, span),
             PythonManagedTypeValue type when type.Construct is not null => type.Construct(
@@ -425,6 +430,14 @@ internal static class ManagedObjectProtocols
                 return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
             case PythonExceptionValue suppressSource when name == "__suppress_context__":
                 return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
+            case PythonIteratorValue iterator when name is "__iter__" or "__next__":
+                return new PythonBoundMethodValue(
+                    name,
+                    iterator,
+                    name == "__iter__"
+                        ? PythonIteratorProtocols.IterMethod
+                        : PythonIteratorProtocols.NextMethod
+                );
             case PythonIteratorValue iterator
                 when name == "__length_hint__" && PythonLengthHints.SupportsIterator(iterator):
                 return new PythonBoundMethodValue(name, iterator, PythonLengthHints.IteratorMethod);
