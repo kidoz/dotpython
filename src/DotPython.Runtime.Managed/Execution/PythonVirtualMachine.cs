@@ -7434,6 +7434,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(list);
                 return;
             case PythonListValue list when binaryOpCode == PythonOpCode.BinaryMultiply:
+                if (
+                    UserObjectProtocols.TryApplyBinary(
+                        binaryOpCode,
+                        left,
+                        right,
+                        span,
+                        out var repeated
+                    )
+                )
+                {
+                    _evaluationStack.Push(repeated);
+                    return;
+                }
                 ManagedObjectProtocols.RepeatListInPlace(list, right, span);
                 _evaluationStack.Push(list);
                 return;
@@ -7467,16 +7480,28 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 PythonBuiltinMethods.MergeInto(dictionary, right, span);
                 _evaluationStack.Push(dictionary);
                 return;
-            case PythonManagedObjectValue
-                when UserObjectProtocols.TryApplyInPlace(
-                    binaryOpCode,
-                    left,
-                    right,
+            case PythonManagedObjectValue:
+                if (
+                    UserObjectProtocols.TryApplyInPlace(
+                        binaryOpCode,
+                        left,
+                        right,
+                        span,
+                        out var userResult
+                    )
+                )
+                {
+                    _evaluationStack.Push(userResult);
+                    return;
+                }
+                // A user object's in-place sequence slot does not fall back to
+                // repeating the right-hand builtin after its numeric slots decline.
+                throw Fault(
+                    "DPY4005",
+                    $"unsupported operand type(s) for {UserObjectProtocols.GetBinaryOperatorSymbol(binaryOpCode)}=: '{ManagedObjectProtocols.GetTypeName(left)}' and '{ManagedObjectProtocols.GetTypeName(right)}'",
                     span,
-                    out var userResult
-                ):
-                _evaluationStack.Push(userResult);
-                return;
+                    "TypeError"
+                );
         }
 
         _evaluationStack.Push(ApplyBinary(binaryOpCode, left, right, span));
@@ -7978,31 +8003,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (opCode == PythonOpCode.BinaryMultiply)
         {
-            if (left is PythonTextValue text && right is PythonWholeNumberValue count)
+            var sequence =
+                left is PythonListValue or PythonTupleValue or PythonTextValue ? left
+                : right is PythonListValue or PythonTupleValue or PythonTextValue ? right
+                : null;
+            if (sequence is not null)
             {
-                return Repeat(text, count, span);
-            }
-
-            if (right is PythonTextValue reverseText && left is PythonWholeNumberValue reverseCount)
-            {
-                return Repeat(reverseText, reverseCount, span);
-            }
-
-            var (sequence, repetitions) = (left, right) switch
-            {
-                (PythonListValue or PythonTupleValue, PythonWholeNumberValue times) => (
-                    left,
-                    (BigInteger?)times.Value
-                ),
-                (PythonWholeNumberValue times, PythonListValue or PythonTupleValue) => (
-                    right,
-                    (BigInteger?)times.Value
-                ),
-                _ => (PythonNoneValue.Instance, null),
-            };
-            if (repetitions is { } sequenceCount)
-            {
-                return RepeatSequence(sequence, sequenceCount, span);
+                var count = PythonSequenceRepetition.GetCount(
+                    ReferenceEquals(sequence, left) ? right : left,
+                    span
+                );
+                return sequence is PythonTextValue text
+                    ? Repeat(text, PythonWholeNumberValue.Create(count), span)
+                    : RepeatSequence(sequence, count, span);
             }
         }
 
@@ -8104,20 +8117,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             PythonTupleValue tuple => tuple.Elements,
             _ => throw Fault("DPY4005", "Unsupported operands for binary operator.", span),
         };
-        var minimumIndex =
-            IntPtr.Size == sizeof(long) ? new BigInteger(long.MinValue) : int.MinValue;
-        var maximumIndex =
-            IntPtr.Size == sizeof(long) ? new BigInteger(long.MaxValue) : int.MaxValue;
-        if (repetitions < minimumIndex || repetitions > maximumIndex)
-        {
-            throw Fault(
-                "DPY4011",
-                "The repetition count does not fit an index-sized integer.",
-                span,
-                "OverflowError"
-            );
-        }
-
         if (sequence is PythonTupleValue && (source.Count == 0 || repetitions == BigInteger.One))
             return sequence;
 
@@ -8126,16 +8125,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return sequence is PythonListValue ? new PythonListValue([]) : new PythonTupleValue([]);
         }
 
-        var count = repetitions <= int.MaxValue ? (int)repetitions : int.MaxValue;
-        if ((long)source.Count * count > 10_000_000)
-        {
-            throw Fault(
-                "DPY4011",
-                "The repeated sequence exceeds the supported size.",
-                span,
-                "OverflowError"
-            );
-        }
+        var count = PythonSequenceRepetition.GetBoundedCount(
+            source.Count,
+            repetitions,
+            10_000_000,
+            span
+        );
 
         var elements = new List<PythonValue>(source.Count * count);
         for (var repetition = 0; repetition < count; repetition++)
@@ -8311,7 +8306,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     )
     {
-        if (count.Value <= 0)
+        if (count.Value <= 0 || text.Value.Length == 0)
         {
             return new PythonTextValue(string.Empty);
         }

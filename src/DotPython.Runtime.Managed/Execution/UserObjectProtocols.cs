@@ -197,7 +197,8 @@ internal static class UserObjectProtocols
         string name,
         PythonValue[] arguments,
         TextSpan span,
-        out PythonValue result
+        out PythonValue result,
+        bool invokeNone = false
     )
     {
         if (!TryGetSpecialMethod(value, name, out var method, out _))
@@ -206,7 +207,7 @@ internal static class UserObjectProtocols
             return false;
         }
 
-        if (method is PythonNoneValue)
+        if (method is PythonNoneValue && !invokeNone)
         {
             // `__hash__ = None` and friends disable the protocol instead of defining it.
             result = null!;
@@ -250,7 +251,10 @@ internal static class UserObjectProtocols
             && rightInstance.Type.Mro.Contains(leftInstance.Type)
             && DefinesSpecialMethod(right, names.Reflected);
 
-        if (reflectedFirst && TryInvoke(right, names.Reflected, [left], span, out result))
+        if (
+            reflectedFirst
+            && TryInvoke(right, names.Reflected, [left], span, out result, invokeNone: true)
+        )
         {
             if (result is not PythonNotImplementedValue)
             {
@@ -258,7 +262,7 @@ internal static class UserObjectProtocols
             }
         }
 
-        if (TryInvoke(left, names.Forward, [right], span, out result))
+        if (TryInvoke(left, names.Forward, [right], span, out result, invokeNone: true))
         {
             if (result is not PythonNotImplementedValue)
             {
@@ -266,13 +270,26 @@ internal static class UserObjectProtocols
             }
         }
 
-        if (!reflectedFirst && TryInvoke(right, names.Reflected, [left], span, out result))
+        if (
+            !reflectedFirst
+            && TryInvoke(right, names.Reflected, [left], span, out result, invokeNone: true)
+        )
         {
             if (result is not PythonNotImplementedValue)
             {
                 return true;
             }
         }
+
+        // Sequence repetition follows failed numeric slots, including reflected ones.
+        if (
+            opCode == PythonOpCode.BinaryMultiply
+            && (
+                left is PythonListValue or PythonTupleValue or PythonTextValue
+                || right is PythonListValue or PythonTupleValue or PythonTextValue
+            )
+        )
+            return false;
 
         throw ManagedObjectProtocols.Fault(
             "DPY4005",
@@ -304,7 +321,7 @@ internal static class UserObjectProtocols
         }
 
         if (
-            TryInvoke(left, names.InPlace, [right], span, out result)
+            TryInvoke(left, names.InPlace, [right], span, out result, invokeNone: true)
             && result is not PythonNotImplementedValue
         )
         {
@@ -838,11 +855,13 @@ internal static class UserObjectProtocols
         if (
             _dispatcher is null
             || value is not PythonManagedObjectValue
-            || !TryInvoke(value, "__index__", [], span, out var converted)
+            || !TryGetSpecialMethod(value, "__index__", out var method, out _)
         )
         {
             return false;
         }
+
+        var converted = _dispatcher.Invoke(method, [], span);
 
         if (converted is PythonTruthValue truth)
         {

@@ -1979,10 +1979,10 @@ internal static class ManagedObjectProtocols
         {
             case PythonListValue list when index is PythonSliceValue slice:
             {
+                var unpacked = UnpackSlice(slice, span);
+                var (start, stop, step) = AdjustSliceIndices(unpacked, list.Elements.Count);
                 var result = new List<PythonValue>();
-                foreach (
-                    var elementIndex in EnumerateSliceIndices(slice, list.Elements.Count, span)
-                )
+                foreach (var elementIndex in EnumerateSliceIndices(start, stop, step))
                 {
                     result.Add(list.Elements[elementIndex]);
                 }
@@ -2274,21 +2274,43 @@ internal static class ManagedObjectProtocols
         TextSpan span
     )
     {
+        return AdjustSliceIndices(UnpackSlice(slice, span), length);
+    }
+
+    private static (int Start, int Stop, int Step) UnpackSlice(
+        PythonSliceValue slice,
+        TextSpan span
+    )
+    {
         var step = slice.Step is PythonNoneValue ? 1 : GetSliceBound(slice.Step, span);
         if (step == 0)
         {
-            throw Fault("DPY4012", "The slice step cannot be zero.", span, "ValueError");
+            throw Fault("DPY4012", "slice step cannot be zero", span, "ValueError");
         }
 
+        // Convert in Python's step/start/stop order, before observing a mutable
+        // sequence's length: any __index__ callback may change that sequence.
         var start =
             slice.Start is PythonNoneValue
-                ? (step > 0 ? 0 : length - 1)
-                : AdjustSliceIndex(GetSliceBound(slice.Start, span), length, step);
+                ? (step > 0 ? 0 : int.MaxValue)
+                : GetSliceBound(slice.Start, span);
         var stop =
             slice.Stop is PythonNoneValue
-                ? (step > 0 ? length : -1)
-                : AdjustSliceIndex(GetSliceBound(slice.Stop, span), length, step);
+                ? (step > 0 ? int.MaxValue : int.MinValue)
+                : GetSliceBound(slice.Stop, span);
         return (start, stop, step);
+    }
+
+    private static (int Start, int Stop, int Step) AdjustSliceIndices(
+        (int Start, int Stop, int Step) slice,
+        int length
+    )
+    {
+        return (
+            AdjustSliceIndex(slice.Start, length, slice.Step),
+            AdjustSliceIndex(slice.Stop, length, slice.Step),
+            slice.Step
+        );
     }
 
     private static int AdjustSliceIndex(int index, int length, int step)
@@ -2314,23 +2336,32 @@ internal static class ManagedObjectProtocols
 
     private static int GetSliceBound(PythonValue value, TextSpan span)
     {
-        var promoted = PromoteTruthValue(value);
-        if (promoted is not PythonWholeNumberValue wholeNumber)
+        BigInteger bound;
+        if (PromoteTruthValue(value) is PythonWholeNumberValue wholeNumber)
         {
-            throw Fault("DPY4011", "Slice indices must be integers or None.", span, "TypeError");
+            bound = wholeNumber.Value;
+        }
+        else if (!UserObjectProtocols.TryConvertToIndex(value, span, out bound))
+        {
+            throw Fault(
+                "DPY4011",
+                "slice indices must be integers or None or have an __index__ method",
+                span,
+                "TypeError"
+            );
         }
 
-        if (wholeNumber.Value > int.MaxValue)
+        if (bound > int.MaxValue)
         {
             return int.MaxValue;
         }
 
-        if (wholeNumber.Value < int.MinValue)
+        if (bound < int.MinValue)
         {
             return int.MinValue;
         }
 
-        return (int)wholeNumber.Value;
+        return (int)bound;
     }
 
     internal static void AssignListSlice(
@@ -2340,8 +2371,9 @@ internal static class ManagedObjectProtocols
         TextSpan span
     )
     {
-        var values = MaterializeValues(value, span);
-        var (start, stop, step) = GetSliceIndices(slice, list.Elements.Count, span);
+        var unpacked = UnpackSlice(slice, span);
+        var values = MaterializeSliceValues(value, span);
+        var (start, stop, step) = AdjustSliceIndices(unpacked, list.Elements.Count);
         if (step == 1)
         {
             if (stop < start)
@@ -2354,13 +2386,13 @@ internal static class ManagedObjectProtocols
             return;
         }
 
-        var indices = EnumerateSliceIndices(slice, list.Elements.Count, span).ToList();
+        var indices = EnumerateSliceIndices(start, stop, step).ToList();
         if (indices.Count != values.Count)
         {
             throw Fault(
                 "DPY4012",
-                $"An extended slice of size {indices.Count} cannot accept "
-                    + $"{values.Count} value(s).",
+                $"attempt to assign sequence of size {values.Count} "
+                    + $"to extended slice of size {indices.Count}",
                 span,
                 "ValueError"
             );
@@ -2370,6 +2402,32 @@ internal static class ManagedObjectProtocols
         {
             list.Elements[indices[position]] = values[position];
         }
+    }
+
+    private static List<PythonValue> MaterializeSliceValues(PythonValue value, TextSpan span)
+    {
+        if (value is PythonListValue list)
+            return [.. list.Elements];
+        if (value is PythonTupleValue tuple)
+            return [.. tuple.Elements];
+
+        PythonIteratorValue iterator;
+        try
+        {
+            iterator = GetIterator(value, span);
+        }
+        catch (Exception error) when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
+        {
+            throw Fault("DPY4011", "must assign iterable to extended slice", span, "TypeError");
+        }
+
+        // PySequence_Fast materializes list(iter(value)). Keep the actual Python
+        // iterator so its second __iter__ call and its length hint remain visible.
+        var source = iterator.Iterable
+            is PythonUserIteratorSourceValue { OriginalIterator: { } original }
+            ? original
+            : (PythonValue)iterator;
+        return MaterializeValues(source, span, useLengthHint: true);
     }
 
     internal static void DeleteItem(PythonValue target, PythonValue index, TextSpan span = default)
@@ -2404,7 +2462,9 @@ internal static class ManagedObjectProtocols
 
             case PythonListValue list when index is PythonSliceValue slice:
             {
-                var indices = EnumerateSliceIndices(slice, list.Elements.Count, span).ToList();
+                var unpacked = UnpackSlice(slice, span);
+                var (start, stop, step) = AdjustSliceIndices(unpacked, list.Elements.Count);
+                var indices = EnumerateSliceIndices(start, stop, step).ToList();
                 indices.Sort();
                 for (var position = indices.Count - 1; position >= 0; position--)
                 {
@@ -2453,28 +2513,29 @@ internal static class ManagedObjectProtocols
 
     internal static void RepeatListInPlace(PythonListValue list, PythonValue count, TextSpan span)
     {
-        var promoted = PromoteTruthValue(count);
-        if (promoted is not PythonWholeNumberValue wholeNumber)
-        {
-            throw Fault(
-                "DPY4011",
-                "A list can only be repeated by an integer count.",
-                span,
-                "TypeError"
-            );
-        }
-
-        if (wholeNumber.Value <= 0)
+        var repetitions = PythonSequenceRepetition.GetCount(count, span);
+        if (repetitions <= 0)
         {
             list.Elements.Clear();
             return;
         }
+        if (list.Elements.Count == 0 || repetitions == BigInteger.One)
+            return;
 
-        var snapshot = list.Elements.ToArray();
-        for (var repetition = 1; repetition < wholeNumber.Value; repetition++)
+        var bounded = PythonSequenceRepetition.GetBoundedCount(
+            list.Elements.Count,
+            repetitions,
+            10_000_000,
+            span
+        );
+        var repeated = new List<PythonValue>(list.Elements.Count * bounded);
+        for (var repetition = 0; repetition < bounded; repetition++)
         {
-            list.Elements.AddRange(snapshot);
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+            repeated.AddRange(list.Elements);
         }
+        list.Elements.Clear();
+        list.Elements.AddRange(repeated);
     }
 
     internal static void AddToSet(PythonSetValue set, PythonValue value, TextSpan span)
