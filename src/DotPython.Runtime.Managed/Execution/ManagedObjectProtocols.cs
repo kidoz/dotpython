@@ -2521,12 +2521,7 @@ internal static class ManagedObjectProtocols
             if ((index & 63) == 0)
                 UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
             var entry = set.Entries[index];
-            if (
-                entry.Hash != hash
-                && !(
-                    IsNumeric(PromoteTruthValue(entry.Value)) && IsNumeric(PromoteTruthValue(value))
-                )
-            )
+            if (entry.Hash != hash)
                 continue;
             var version = set.MutationVersion;
             var matches = ReferenceEquals(entry.Value, value) || AreEqual(entry.Value, value);
@@ -2704,31 +2699,21 @@ internal static class ManagedObjectProtocols
         };
 
     /// <summary>
-    /// Computes the value returned by the Python <c>hash()</c> builtin. Integers follow
-    /// CPython's modular algorithm exactly; native values delegate to their tp_hash through
-    /// the Stable-ABI bridge; other hashable values reuse the runtime's internal hash.
+    /// Computes the value returned by the Python <c>hash()</c> builtin. Numeric values use
+    /// CPython's 64-bit algorithms; native values delegate to tp_hash through the Stable-ABI
+    /// bridge. Remaining hashable values use their qualified managed hash implementations.
     /// </summary>
     internal static BigInteger ComputePythonHash(PythonValue value, TextSpan span = default)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var modulus = (BigInteger.One << 61) - 1;
         BigInteger hash = value switch
         {
             PythonMappingProxyValue proxy => ComputePythonHash(proxy.Mapping, span),
             PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span),
             PythonTruthValue truth => truth.Value ? 1 : 0,
-            PythonWholeNumberValue whole when whole.Value >= 0 => whole.Value % modulus,
-            PythonWholeNumberValue whole => -((-whole.Value) % modulus),
-            PythonFloatingPointValue floating
-                when double.IsFinite(floating.Value)
-                    && Math.Truncate(floating.Value) == floating.Value => ComputePythonHash(
-                PythonWholeNumberValue.Create(new BigInteger(floating.Value)),
-                span
-            ),
-            PythonComplexValue complex when complex.Value.Imaginary == 0 => ComputePythonHash(
-                new PythonFloatingPointValue(complex.Value.Real),
-                span
-            ),
+            PythonWholeNumberValue whole => PythonNumericHash.Integer(whole.Value),
+            PythonFloatingPointValue floating => PythonNumericHash.Float(floating, floating.Value),
+            PythonComplexValue complex => PythonNumericHash.Complex(complex),
             PythonExternalObjectValue external => external.Protocol.GetHash(span),
             PythonManagedObjectValue instance
                 when UserObjectProtocols.TryGetHash(instance, span, out var userHash) => userHash,
@@ -2744,9 +2729,8 @@ internal static class ManagedObjectProtocols
         {
             PythonNoneValue => 0x1462_0a3,
             PythonTruthValue truth => truth.Value ? 1 : 0,
-            PythonWholeNumberValue whole => whole.Value.GetHashCode(),
-            PythonFloatingPointValue floatingPoint => GetFloatingPointHash(floatingPoint.Value),
-            PythonComplexValue complex => GetComplexHash(complex.Value),
+            PythonWholeNumberValue or PythonFloatingPointValue or PythonComplexValue =>
+                ComputePythonHash(value, span).GetHashCode(),
             PythonTextValue text => StringComparer.Ordinal.GetHashCode(text.Value),
             PythonByteSequenceValue bytes => GetByteHash(bytes.Value),
             PythonTupleValue tuple => GetTupleHash(tuple, span),
@@ -3295,13 +3279,8 @@ internal static class ManagedObjectProtocols
             // Identity does not bypass insertion hashes: one mutable-hash key
             // object can occupy multiple distinct entries in a Python dictionary.
             var matches =
-                (
-                    candidate.KeyHash == keyHash
-                    || (
-                        IsNumeric(PromoteTruthValue(candidate.Key))
-                        && IsNumeric(PromoteTruthValue(key))
-                    )
-                ) && (ReferenceEquals(candidate.Key, key) || AreEqual(candidate.Key, key));
+                candidate.KeyHash == keyHash
+                && (ReferenceEquals(candidate.Key, key) || AreEqual(candidate.Key, key));
             if (dictionary.SizeVersion != version)
             {
                 // Equality may execute Python and structurally mutate this dictionary.
@@ -3588,14 +3567,6 @@ internal static class ManagedObjectProtocols
 
         return hash.ToHashCode();
     }
-
-    private static int GetFloatingPointHash(double value) =>
-        double.IsFinite(value) && double.IsInteger(value)
-            ? new BigInteger(value).GetHashCode()
-            : value.GetHashCode();
-
-    private static int GetComplexHash(Complex value) =>
-        value.Imaginary == 0 ? GetFloatingPointHash(value.Real) : value.GetHashCode();
 
     private static bool HasUnorderedFloatingPointOperand(PythonValue left, PythonValue right) =>
         left is PythonFloatingPointValue { Value: var leftValue } && double.IsNaN(leftValue)

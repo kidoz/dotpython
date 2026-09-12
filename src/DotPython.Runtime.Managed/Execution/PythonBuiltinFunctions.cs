@@ -189,13 +189,19 @@ internal static class PythonBuiltinFunctions
             return new PythonComplexValue(ParseComplex(text.Value, span));
         }
 
+        if (arguments.Count == 1 && arguments[0] is PythonComplexValue existing)
+            return existing;
         var real = RequireComplexComponent("complex", arguments[0], span);
-        var imaginary =
-            arguments.Count == 2
-                ? RequireComplexComponent("complex", arguments[1], span)
-                : System.Numerics.Complex.Zero;
-        // complex(a, b) == a + b*1j, so an imaginary `b` rotates into the real part.
-        return new PythonComplexValue(real + imaginary * System.Numerics.Complex.ImaginaryOne);
+        if (arguments.Count == 1)
+            return new PythonComplexValue(real);
+        var imaginary = RequireComplexComponent("complex", arguments[1], span);
+        // Multiply neither component by zero: 0*infinity would turn a valid
+        // component into NaN. Scalar arguments also retain their signed zeros.
+        var realPart =
+            arguments[1] is PythonComplexValue ? real.Real - imaginary.Imaginary : real.Real;
+        var imaginaryPart =
+            arguments[0] is PythonComplexValue ? imaginary.Real + real.Imaginary : imaginary.Real;
+        return new PythonComplexValue(new Complex(realPart, imaginaryPart));
     }
 
     private static Complex RequireComplexComponent(string name, PythonValue value, TextSpan span)

@@ -704,8 +704,7 @@ internal static class UserObjectProtocols
             );
         }
 
-        // User hashes are reduced like `hash(int)` so equal integers hash equally.
-        hash = ManagedObjectProtocols.ComputePythonHash(whole, span);
+        hash = PythonNumericHash.UserResult(whole.Value);
         return true;
     }
 
