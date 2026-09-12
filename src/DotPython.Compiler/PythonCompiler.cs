@@ -392,35 +392,7 @@ public static class PythonCompiler
 
                     break;
                 case PythonDictionaryExpression dictionary:
-                    if (dictionary.Items.Any(item => item.Key is null))
-                    {
-                        Emit(PythonOpCode.BuildDictionary, 0, dictionary.Span);
-                        foreach (var item in dictionary.Items)
-                        {
-                            if (item.Key is null)
-                            {
-                                CompileExpression(item.Value);
-                                Emit(PythonOpCode.DictionaryUpdate, 0, item.Span);
-                            }
-                            else
-                            {
-                                CompileExpression(item.Key);
-                                CompileExpression(item.Value);
-                                Emit(PythonOpCode.DictionaryAdd, 0, item.Span);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        foreach (var item in dictionary.Items)
-                        {
-                            CompileExpression(item.Key!);
-                            CompileExpression(item.Value);
-                        }
-
-                        Emit(PythonOpCode.BuildDictionary, dictionary.Items.Count, dictionary.Span);
-                    }
-
+                    CompileDictionary(dictionary);
                     break;
                 case PythonSubscriptionExpression subscription:
                     CompileExpression(subscription.Target);
@@ -616,6 +588,87 @@ public static class PythonCompiler
             foreach (var element in elements)
             {
                 CompileExpression(element);
+            }
+        }
+
+        private void CompileDictionary(PythonDictionaryExpression dictionary)
+        {
+            // CPython 3.14 groups at most 17 pairs and batches only groups of 15 or fewer.
+            // Hash callbacks make both the evaluation order and these boundaries observable.
+            var haveDictionary = false;
+            var groupStart = 0;
+            for (var index = 0; index < dictionary.Items.Count; index++)
+            {
+                var item = dictionary.Items[index];
+                if (item.Key is null)
+                {
+                    FlushGroup(index);
+                    if (!haveDictionary)
+                    {
+                        Emit(PythonOpCode.BuildDictionary, 0, dictionary.Span);
+                        haveDictionary = true;
+                    }
+
+                    CompileExpression(item.Value);
+                    Emit(PythonOpCode.DictionaryUpdate, 0, item.Span);
+                    groupStart = index + 1;
+                }
+                else if (index - groupStart + 1 == 17)
+                {
+                    FlushGroup(index + 1);
+                }
+            }
+
+            FlushGroup(dictionary.Items.Count);
+            if (!haveDictionary)
+            {
+                Emit(PythonOpCode.BuildDictionary, 0, dictionary.Span);
+            }
+
+            void FlushGroup(int end)
+            {
+                if (end == groupStart)
+                {
+                    return;
+                }
+
+                CompileDictionaryGroup(dictionary, groupStart, end);
+                if (haveDictionary)
+                {
+                    Emit(PythonOpCode.DictionaryUpdate, 0, dictionary.Span);
+                }
+
+                haveDictionary = true;
+                groupStart = end;
+            }
+        }
+
+        private void CompileDictionaryGroup(
+            PythonDictionaryExpression dictionary,
+            int start,
+            int end
+        )
+        {
+            var incremental = end - start > 15;
+            if (incremental)
+            {
+                Emit(PythonOpCode.BuildDictionary, 0, dictionary.Span);
+            }
+
+            for (var index = start; index < end; index++)
+            {
+                var item = dictionary.Items[index];
+                CompileExpression(item.Key!);
+                CompileExpression(item.Value);
+                if (incremental)
+                {
+                    Emit(PythonOpCode.DictionaryAdd, 0, item.Span);
+                }
+            }
+
+            if (!incremental)
+            {
+                Emit(PythonOpCode.BuildDictionary, end - start, dictionary.Span);
             }
         }
 
