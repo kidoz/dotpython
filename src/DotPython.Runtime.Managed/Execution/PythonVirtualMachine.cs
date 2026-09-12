@@ -6557,11 +6557,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         // dictionary must not mutate the completed class.
         foreach (var item in dictionary.Items)
         {
-            type.Attributes.Dictionary.Items.Add(
+            type.Attributes.Dictionary.AddItem(
                 new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
             );
         }
-        type.Attributes.Dictionary.SizeVersion++;
         type.HasDeclaredSlots = type.Attributes.TryGetValue("__slots__", out _);
         if (!type.Attributes.TryGetValue("__module__", out _))
         {

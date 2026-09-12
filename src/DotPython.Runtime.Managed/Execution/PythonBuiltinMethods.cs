@@ -408,8 +408,7 @@ internal static class PythonBuiltinMethods
                     )
                 )
                 {
-                    dictionary.Items.Remove(item);
-                    dictionary.SizeVersion++;
+                    dictionary.RemoveItem(item);
                     return item.Value;
                 }
 
@@ -427,8 +426,7 @@ internal static class PythonBuiltinMethods
             0,
             (dictionary, _) =>
             {
-                dictionary.Items.Clear();
-                dictionary.SizeVersion++;
+                dictionary.ClearItems();
                 return PythonNoneValue.Instance;
             }
         ),
@@ -480,8 +478,7 @@ internal static class PythonBuiltinMethods
                 }
 
                 var last = dictionary.Items[^1];
-                dictionary.Items.RemoveAt(dictionary.Items.Count - 1);
-                dictionary.SizeVersion++;
+                dictionary.RemoveItem(last, trimTail: true);
                 return new PythonTupleValue([last.Key, last.Value]);
             }
         ),

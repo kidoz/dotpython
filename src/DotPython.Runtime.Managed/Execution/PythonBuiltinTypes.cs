@@ -778,7 +778,7 @@ internal static class PythonBuiltinTypes
         {
             foreach (var item in source.Items)
             {
-                dictionary.Items.Add(
+                dictionary.AddItem(
                     new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
                 );
             }

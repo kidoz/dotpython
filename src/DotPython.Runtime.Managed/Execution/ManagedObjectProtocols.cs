@@ -1701,28 +1701,9 @@ internal static class ManagedObjectProtocols
                 iterator.IsExhausted = true;
                 break;
             case PythonDictionaryViewValue view:
-                ValidateIteratorSize(iterator, view.Dictionary.Items.Count, "dictionary", span);
-                if (iterator.Index < view.Dictionary.Items.Count)
-                {
-                    value = PythonMappingProxies.ViewItem(
-                        view.Dictionary.Items[iterator.Index++],
-                        view.Kind
-                    );
-                    return true;
-                }
-                iterator.IsExhausted = true;
-                break;
+                return TryGetDictionaryNext(iterator, view.Dictionary, view.Kind, out value, span);
             case PythonDictionaryValue dictionary:
-                ValidateIteratorSize(iterator, dictionary.Items.Count, "dictionary", span);
-
-                if (iterator.Index < dictionary.Items.Count)
-                {
-                    value = dictionary.Items[iterator.Index++].Key;
-                    return true;
-                }
-
-                iterator.IsExhausted = true;
-                break;
+                return TryGetDictionaryNext(iterator, dictionary, "dict_keys", out value, span);
             case PythonTextValue text:
             {
                 var runes = text.Value.EnumerateRunes().ToArray();
@@ -1919,6 +1900,44 @@ internal static class ManagedObjectProtocols
             }
         }
 
+        value = PythonNoneValue.Instance;
+        return false;
+    }
+
+    private static bool TryGetDictionaryNext(
+        PythonIteratorValue iterator,
+        PythonDictionaryValue dictionary,
+        string kind,
+        out PythonValue value,
+        TextSpan span
+    )
+    {
+        ValidateIteratorSize(iterator, dictionary.Items.Count, "dictionary", span);
+        while (iterator.DictionaryPosition < dictionary.EntryCount)
+        {
+            var item = dictionary.GetEntry(iterator.DictionaryPosition);
+            if (item is null)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                iterator.DictionaryPosition++;
+                continue;
+            }
+            if (iterator.Index == iterator.ExpectedCollectionSize)
+            {
+                iterator.IsExhausted = true;
+                throw Fault(
+                    "DPY4016",
+                    "dictionary keys changed during iteration",
+                    span,
+                    "RuntimeError"
+                );
+            }
+            iterator.DictionaryPosition++;
+            iterator.Index++;
+            value = PythonMappingProxies.ViewItem(item, kind);
+            return true;
+        }
+        iterator.IsExhausted = true;
         value = PythonNoneValue.Instance;
         return false;
     }
@@ -2400,8 +2419,7 @@ internal static class ManagedObjectProtocols
                 return;
             case PythonDictionaryValue dictionary
                 when TryFindDictionaryItem(dictionary, index, out var item):
-                dictionary.Items.Remove(item);
-                dictionary.SizeVersion++;
+                dictionary.RemoveItem(item);
                 return;
             case PythonDictionaryValue:
                 throw MissingKey(index);
@@ -3129,8 +3147,7 @@ internal static class ManagedObjectProtocols
             return;
         }
 
-        dictionary.Items.Add(new PythonDictionaryItemValue(key, value, keyHash));
-        dictionary.SizeVersion++;
+        dictionary.AddItem(new PythonDictionaryItemValue(key, value, keyHash));
     }
 
     internal static bool TryFindDictionaryItem(

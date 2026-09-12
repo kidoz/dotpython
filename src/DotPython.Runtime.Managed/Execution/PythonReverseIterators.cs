@@ -80,7 +80,12 @@ internal static class PythonReverseIterators
             new PythonReverseIteratorSourceValue
             {
                 Sequence = sequence,
-                NextIndex = count - 1,
+                NextIndex = sequence switch
+                {
+                    PythonDictionaryValue dictionary => dictionary.EntryCount - 1,
+                    PythonDictionaryViewValue view => view.Dictionary.EntryCount - 1,
+                    _ => count - 1,
+                },
                 TypeName = name,
             },
             sequence is PythonDictionaryValue or PythonDictionaryViewValue ? (int)count : -1
@@ -117,12 +122,38 @@ internal static class PythonReverseIterators
             _ => null,
         };
         if (dictionary is not null)
+        {
             ManagedObjectProtocols.ValidateIteratorSize(
                 iterator,
                 dictionary.Items.Count,
                 "dictionary",
                 span
             );
+            if (source.NextIndex >= dictionary.EntryCount)
+            {
+                Exhaust(iterator, source);
+                return false;
+            }
+            while (source.NextIndex >= 0)
+            {
+                var item = dictionary.GetEntry((int)source.NextIndex);
+                if (item is null)
+                {
+                    UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                    source.NextIndex--;
+                    continue;
+                }
+                source.NextIndex--;
+                iterator.Index++;
+                value = PythonMappingProxies.ViewItem(
+                    item,
+                    sequence is PythonDictionaryViewValue view ? view.Kind : "dict_keys"
+                );
+                return true;
+            }
+            Exhaust(iterator, source);
+            return false;
+        }
         if (source.NextIndex < 0)
         {
             Exhaust(iterator, source);
@@ -131,15 +162,8 @@ internal static class PythonReverseIterators
         var index = source.NextIndex;
         try
         {
-            value = dictionary is not null
-                ? PythonMappingProxies.ViewItem(
-                    dictionary.Items[(int)index],
-                    sequence is PythonDictionaryViewValue view ? view.Kind : "dict_keys"
-                )
-                : GetSequenceItem(sequence, index, span);
+            value = GetSequenceItem(sequence, index, span);
             source.NextIndex = index - 1;
-            if (dictionary is not null)
-                iterator.Index++;
             return true;
         }
         catch (Exception error)

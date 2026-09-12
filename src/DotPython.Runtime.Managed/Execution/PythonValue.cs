@@ -1241,28 +1241,6 @@ internal sealed class PythonDictionaryItemValue
     internal PythonValue Value { get; set; }
 }
 
-internal sealed record PythonDictionaryValue(List<PythonDictionaryItemValue> Items) : PythonValue
-{
-    internal int SizeVersion { get; set; }
-
-    internal override string ToDisplayString()
-    {
-        if (!PythonRepresentationGuard.TryEnter(this))
-        {
-            return "{...}";
-        }
-
-        try
-        {
-            return $"{{{string.Join(", ", Items.Select(item => $"{item.Key.ToRepresentationString()}: {item.Value.ToRepresentationString()}"))}}}";
-        }
-        finally
-        {
-            PythonRepresentationGuard.Exit(this);
-        }
-    }
-}
-
 internal sealed record PythonReverseIteratorSourceValue : PythonValue
 {
     internal required PythonValue? Sequence { get; set; }
@@ -1283,6 +1261,8 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
     internal bool IsInvalidated { get; set; }
 
     internal int Index { get; set; }
+
+    internal int DictionaryPosition { get; set; }
 
     // Range cursors can advance beyond the managed collection index limit.
     internal BigInteger RangeIndex { get; set; }

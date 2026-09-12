@@ -1444,7 +1444,7 @@ internal static class PythonStandardModules
                 memo[value] = copy;
                 foreach (var item in dictionary.Items)
                 {
-                    copy.Items.Add(
+                    copy.AddItem(
                         new PythonDictionaryItemValue(
                             DeepCopy(item.Key, memo, span, mode),
                             DeepCopy(item.Value, memo, span, mode)

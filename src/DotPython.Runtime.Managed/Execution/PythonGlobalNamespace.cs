@@ -46,8 +46,7 @@ internal sealed class PythonGlobalNamespace
 
         SynchronizeSlots();
         var item = new PythonDictionaryItemValue(new PythonTextValue(name), value);
-        Dictionary.Items.Add(item);
-        Dictionary.SizeVersion++;
+        Dictionary.AddItem(item);
         _slots.Add(name, new PythonGlobalSlot(item));
         _indexedVersion = Dictionary.SizeVersion;
         _keysVersion = unchecked(_keysVersion + 1);
@@ -84,8 +83,7 @@ internal sealed class PythonGlobalNamespace
             return false;
         }
 
-        Dictionary.Items.Remove(slot.Item);
-        Dictionary.SizeVersion++;
+        Dictionary.RemoveItem(slot.Item);
         if (_hasNonStringKeys)
         {
             SynchronizeSlots();
