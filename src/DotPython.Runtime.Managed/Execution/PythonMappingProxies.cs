@@ -61,6 +61,8 @@ internal static class PythonMappingProxies
         TextSpan span
     )
     {
+        if (name == "__reversed__")
+            return new PythonBoundMethodValue(name, proxy, PythonReverseIterators.Method);
         if (name is not ("get" or "keys" or "values" or "items" or "copy"))
         {
             throw ManagedObjectProtocols.Fault(
@@ -83,64 +85,6 @@ internal static class PythonMappingProxies
                         : ManagedObjectProtocols.Call(method, arguments, span);
                 }
             )
-        );
-    }
-
-    internal static PythonIteratorValue GetReverseIterator(PythonValue value, TextSpan span)
-    {
-        value = Unwrap(value);
-        var dictionary = value switch
-        {
-            PythonDictionaryValue mapping => mapping,
-            PythonDictionaryViewValue view => view.Dictionary,
-            _ => null,
-        };
-        if (dictionary is null)
-        {
-            if (ManagedObjectProtocols.TryGetSpecialMethod(value, "__reversed__", out var method))
-            {
-                return ManagedObjectProtocols.GetIterator(
-                    UserObjectProtocols.Dispatcher!.Invoke(method, [], span),
-                    span
-                );
-            }
-            throw ManagedObjectProtocols.Fault(
-                "DPY4015",
-                $"'{ManagedObjectProtocols.GetTypeName(value)}' object is not reversible",
-                span,
-                "TypeError"
-            );
-        }
-        var version = dictionary.SizeVersion;
-        var index = dictionary.Items.Count;
-        var exhausted = false;
-        var kind = value is PythonDictionaryViewValue dictionaryView
-            ? dictionaryView.Kind
-            : "dict_keys";
-        return new PythonIteratorValue(
-            new PythonUserIteratorSourceValue(() =>
-            {
-                if (exhausted)
-                {
-                    return (false, PythonNoneValue.Instance);
-                }
-                if (dictionary.SizeVersion != version)
-                {
-                    throw ManagedObjectProtocols.Fault(
-                        "DPY4016",
-                        "dictionary changed size during iteration",
-                        span,
-                        "RuntimeError"
-                    );
-                }
-                if (index > 0)
-                {
-                    return (true, ViewItem(dictionary.Items[--index], kind));
-                }
-                exhausted = true;
-                return (false, PythonNoneValue.Instance);
-            }),
-            -1
         );
     }
 

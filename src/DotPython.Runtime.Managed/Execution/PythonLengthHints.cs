@@ -79,6 +79,7 @@ internal static class PythonLengthHints
     internal static bool SupportsIterator(PythonIteratorValue iterator) =>
         iterator.Iterable
             is PythonSequenceIteratorSourceValue
+                or PythonReverseIteratorSourceValue
                 or PythonListValue
                 or PythonTupleValue
                 or PythonRangeValue
@@ -94,6 +95,11 @@ internal static class PythonLengthHints
             return PythonWholeNumberValue.Create(0);
         return iterator.Iterable switch
         {
+            PythonReverseIteratorSourceValue reverse => PythonReverseIterators.GetHint(
+                iterator,
+                reverse,
+                span
+            ),
             PythonListValue list => PythonWholeNumberValue.Create(
                 Math.Max(0, list.Elements.Count - iterator.Index)
             ),
@@ -137,6 +143,15 @@ internal static class PythonLengthHints
         // __len__ may advance or exhaust the iterator, so read its index after the callback.
         return PythonWholeNumberValue.Create(Math.Max(0, length - source.NextIndex));
     }
+
+    internal static long GetSequenceLength(PythonValue value, TextSpan span) =>
+        TryGetLength(value, span, out var length)
+            ? length
+            : throw Error(
+                $"object of type '{ManagedObjectProtocols.GetTypeName(value)}' has no len()",
+                "TypeError",
+                span
+            );
 
     private static bool TryGetLength(PythonValue value, TextSpan span, out long length)
     {

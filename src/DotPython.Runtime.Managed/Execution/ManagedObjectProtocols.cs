@@ -430,6 +430,11 @@ internal static class ManagedObjectProtocols
                 return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
             case PythonExceptionValue suppressSource when name == "__suppress_context__":
                 return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
+            case PythonListValue
+            or PythonRangeValue
+            or PythonDictionaryValue
+            or PythonDictionaryViewValue when name == "__reversed__":
+                return new PythonBoundMethodValue(name, target, PythonReverseIterators.Method);
             case PythonIteratorValue iterator when name is "__iter__" or "__next__":
                 return new PythonBoundMethodValue(
                     name,
@@ -1673,6 +1678,8 @@ internal static class ManagedObjectProtocols
             UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
         switch (iterator.Iterable)
         {
+            case PythonReverseIteratorSourceValue reverse:
+                return PythonReverseIterators.TryGetNext(iterator, reverse, out value, span);
             case PythonFileValue file:
             {
                 EnsureFileOpen(file, span);
@@ -1916,7 +1923,7 @@ internal static class ManagedObjectProtocols
         return false;
     }
 
-    private static void ValidateIteratorSize(
+    internal static void ValidateIteratorSize(
         PythonIteratorValue iterator,
         int count,
         string kind,

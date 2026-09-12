@@ -173,6 +173,8 @@ internal static class PythonBuiltinTypes
         {
             PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
+            PythonIteratorValue { Iterable: PythonReverseIteratorSourceValue reverse } =>
+                reverse.TypeName,
             PythonIteratorValue { Iterable: PythonEnumerateSourceValue } => "enumerate",
             PythonIteratorValue { Iterable: PythonZipSourceValue } => "zip",
             PythonIteratorValue { Iterable: PythonMapSourceValue } => "map",

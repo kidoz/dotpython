@@ -1263,6 +1263,15 @@ internal sealed record PythonDictionaryValue(List<PythonDictionaryItemValue> Ite
     }
 }
 
+internal sealed record PythonReverseIteratorSourceValue : PythonValue
+{
+    internal required PythonValue? Sequence { get; set; }
+    internal required string TypeName { get; init; }
+    internal long NextIndex { get; set; }
+
+    internal override string ToDisplayString() => "<reverse iterator source>";
+}
+
 internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCollectionSize)
     : PythonValue
 {

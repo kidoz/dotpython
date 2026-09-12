@@ -361,89 +361,11 @@ internal static class PythonBuiltinFunctions
     // reversed
     // ----------------------------------------------------------------------------
 
-    private static PythonIteratorValue Reversed(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    private static PythonValue Reversed(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         RequireArgumentCount("reversed", arguments, 1, 1, span);
-        var sequence = arguments[0];
-        if (
-            sequence
-            is PythonMappingProxyValue
-                or PythonDictionaryValue
-                or PythonDictionaryViewValue
-        )
-        {
-            return PythonMappingProxies.GetReverseIterator(sequence, span);
-        }
-
-        if (sequence is PythonManagedObjectValue instance)
-        {
-            if (
-                UserObjectProtocols.TryGetSpecialMethod(
-                    instance,
-                    "__reversed__",
-                    out var method,
-                    out _
-                )
-            )
-            {
-                var iterator = UserObjectProtocols.Dispatcher!.Invoke(method, [], span);
-                return ManagedObjectProtocols.GetIterator(iterator, span);
-            }
-
-            if (
-                UserObjectProtocols.DefinesSpecialMethod(instance, "__len__")
-                && UserObjectProtocols.DefinesSpecialMethod(instance, "__getitem__")
-            )
-            {
-                var remaining = ManagedObjectProtocols.GetLength(instance, span);
-                return new PythonIteratorValue(
-                    new PythonUserIteratorSourceValue(() =>
-                        remaining > 0
-                            ? (
-                                true,
-                                ManagedObjectProtocols.GetItem(
-                                    instance,
-                                    PythonWholeNumberValue.Create(--remaining),
-                                    span
-                                )
-                            )
-                            : (false, PythonNoneValue.Instance)
-                    ),
-                    -1
-                );
-            }
-
-            throw NotReversible(sequence, span);
-        }
-
-        List<PythonValue> values = sequence switch
-        {
-            PythonListValue list => [.. list.Elements],
-            PythonTupleValue tuple => [.. tuple.Elements],
-            PythonTextValue text =>
-            [
-                .. text
-                    .Value.EnumerateRunes()
-                    .Select(rune => (PythonValue)new PythonTextValue(rune.ToString())),
-            ],
-            PythonByteSequenceValue bytes =>
-            [
-                .. bytes.Value.Select(item => (PythonValue)PythonWholeNumberValue.Create(item)),
-            ],
-            PythonRangeValue => ManagedObjectProtocols.MaterializeValues(sequence, span),
-            _ => throw NotReversible(sequence, span),
-        };
-        values.Reverse();
-        return new PythonIteratorValue(new PythonListValue(values), -1);
+        return PythonReverseIterators.Create(arguments[0], span);
     }
-
-    private static PythonRuntimeException NotReversible(PythonValue value, TextSpan span) =>
-        ManagedObjectProtocols.Fault(
-            "DPY4003",
-            $"'{ManagedObjectProtocols.GetTypeName(value)}' object is not reversible",
-            span,
-            "TypeError"
-        );
 
     // ----------------------------------------------------------------------------
     // object
