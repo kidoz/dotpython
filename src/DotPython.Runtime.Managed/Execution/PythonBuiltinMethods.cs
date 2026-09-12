@@ -250,10 +250,13 @@ internal static class PythonBuiltinMethods
                 var index = FindElement(list.Elements, arguments[0]);
                 if (index < 0)
                 {
-                    throw Fault("The value was not found in the list.", "ValueError");
+                    throw Fault("list.remove(x): x not in list", "ValueError");
                 }
 
-                list.Elements.RemoveAt(index);
+                // Equality may replace or remove the matched position. Delete the
+                // current item there, or succeed without deletion if it disappeared.
+                if (index < list.Elements.Count)
+                    list.Elements.RemoveAt(index);
                 return PythonNoneValue.Instance;
             }
         ),
@@ -277,12 +280,7 @@ internal static class PythonBuiltinMethods
             "count",
             1,
             1,
-            (list, arguments) =>
-                PythonWholeNumberValue.Create(
-                    list.Elements.Count(element =>
-                        ManagedObjectProtocols.AreEqual(element, arguments[0])
-                    )
-                )
+            (list, arguments) => CountSequenceElements(list.Elements, arguments[0])
         ),
         ["reverse"] = List(
             "reverse",
@@ -509,12 +507,7 @@ internal static class PythonBuiltinMethods
         ),
         ["count"] = Tuple(
             "count",
-            (tuple, arguments) =>
-                PythonWholeNumberValue.Create(
-                    tuple.Elements.Count(element =>
-                        ManagedObjectProtocols.AreEqual(element, arguments[0])
-                    )
-                )
+            (tuple, arguments) => CountSequenceElements(tuple.Elements, arguments[0])
         ),
     };
 
@@ -987,10 +980,7 @@ internal static class PythonBuiltinMethods
         {
             UserObjectProtocols.Dispatcher?.CheckIterationWork(default);
             var element = elements[(int)index];
-            if (
-                ReferenceEquals(element, arguments[0])
-                || ManagedObjectProtocols.AreEqual(element, arguments[0])
-            )
+            if (SequenceElementMatches(element, arguments[0]))
                 return PythonWholeNumberValue.Create(index);
         }
         throw Fault($"{typeName}.index(x): x not in {typeName}", "ValueError");
@@ -1015,7 +1005,8 @@ internal static class PythonBuiltinMethods
     {
         for (var index = 0; index < elements.Count; index++)
         {
-            if (ManagedObjectProtocols.AreEqual(elements[index], value))
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(default);
+            if (SequenceElementMatches(elements[index], value))
             {
                 return index;
             }
@@ -1023,6 +1014,26 @@ internal static class PythonBuiltinMethods
 
         return -1;
     }
+
+    private static PythonWholeNumberValue CountSequenceElements(
+        IReadOnlyList<PythonValue> elements,
+        PythonValue value
+    )
+    {
+        var count = 0;
+        // Each comparison may resize a list; inspect its live positions rather
+        // than an enumerator or a span captured before the first callback.
+        for (var index = 0; index < elements.Count; index++)
+        {
+            UserObjectProtocols.Dispatcher?.CheckIterationWork(default);
+            if (SequenceElementMatches(elements[index], value))
+                count++;
+        }
+        return PythonWholeNumberValue.Create(count);
+    }
+
+    private static bool SequenceElementMatches(PythonValue element, PythonValue value) =>
+        ReferenceEquals(element, value) || ManagedObjectProtocols.AreEqual(element, value);
 
     private static PythonValue SplitText(string text, IReadOnlyList<PythonValue> arguments)
     {
