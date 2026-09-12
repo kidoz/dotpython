@@ -7713,35 +7713,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         if (left is PythonSetValue leftSet && right is PythonSetValue rightSet)
             return PythonSetOperations.CompareOrdered(leftSet, rightSet, richComparison, span);
 
-        var promotedLeft = PromoteTruthValue(left);
-        var promotedRight = PromoteTruthValue(right);
-        if (
-            IsNumeric(promotedLeft)
-            && IsNumeric(promotedRight)
-            && (
-                promotedLeft is PythonFloatingPointValue
-                || promotedRight is PythonFloatingPointValue
-            )
-        )
+        if (IsNumeric(PromoteTruthValue(left)) && IsNumeric(PromoteTruthValue(right)))
         {
-            if (promotedLeft is PythonComplexValue || promotedRight is PythonComplexValue)
-            {
-                throw Fault("DPY4005", "Complex numbers cannot be ordered.", span);
-            }
-
-            var leftFloatingPoint = ToDouble(promotedLeft);
-            var rightFloatingPoint = ToDouble(promotedRight);
-            return PythonTruthValue.FromBoolean(
-                opCode switch
-                {
-                    PythonOpCode.CompareLessThan => leftFloatingPoint < rightFloatingPoint,
-                    PythonOpCode.CompareLessThanOrEqual => leftFloatingPoint <= rightFloatingPoint,
-                    PythonOpCode.CompareGreaterThan => leftFloatingPoint > rightFloatingPoint,
-                    PythonOpCode.CompareGreaterThanOrEqual => leftFloatingPoint
-                        >= rightFloatingPoint,
-                    _ => throw new ArgumentOutOfRangeException(nameof(opCode)),
-                }
-            );
+            return ManagedObjectProtocols.RichCompare(left, right, richComparison, span);
         }
 
         var comparison = CompareOrdered(left, right, span);
@@ -7814,17 +7788,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (IsNumeric(left) && IsNumeric(right))
         {
-            if (left is PythonComplexValue || right is PythonComplexValue)
-            {
-                return ToComplex(left) == ToComplex(right);
-            }
-
-            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
-            {
-                return ToDouble(left) == ToDouble(right);
-            }
-
-            return ((PythonWholeNumberValue)left).Value == ((PythonWholeNumberValue)right).Value;
+            return ManagedObjectProtocols.AreEqual(left, right);
         }
 
         return (left, right) switch

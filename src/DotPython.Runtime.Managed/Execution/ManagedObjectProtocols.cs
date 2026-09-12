@@ -2668,7 +2668,11 @@ internal static class ManagedObjectProtocols
         if (left is PythonSetValue leftSet && right is PythonSetValue rightSet)
             return PythonSetOperations.CompareOrdered(leftSet, rightSet, comparison, span);
 
-        if (HasUnorderedFloatingPointOperand(left, right))
+        if (
+            left is not PythonComplexValue
+            && right is not PythonComplexValue
+            && HasUnorderedFloatingPointOperand(left, right)
+        )
         {
             return PythonTruthValue.False;
         }
@@ -3352,17 +3356,17 @@ internal static class ManagedObjectProtocols
 
         if (IsNumeric(left) && IsNumeric(right))
         {
-            if (left is PythonComplexValue || right is PythonComplexValue)
+            if (left is PythonComplexValue leftComplex)
             {
-                return ToComplex(left) == ToComplex(right);
+                return ComplexEquals(leftComplex.Value, right);
             }
 
-            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
+            if (right is PythonComplexValue rightComplex)
             {
-                return ToDouble(left) == ToDouble(right);
+                return ComplexEquals(rightComplex.Value, left);
             }
 
-            return ((PythonWholeNumberValue)left).Value == ((PythonWholeNumberValue)right).Value;
+            return CompareRealNumbers(left, right) == 0;
         }
 
         return (left, right) switch
@@ -3461,16 +3465,17 @@ internal static class ManagedObjectProtocols
                 throw Fault("DPY4005", "Complex numbers cannot be ordered.", span, "TypeError");
             }
 
-            if (left is PythonFloatingPointValue || right is PythonFloatingPointValue)
-            {
-                var leftValue = ToDouble(left);
-                var rightValue = ToDouble(right);
-                return leftValue.CompareTo(rightValue);
-            }
-
-            return ((PythonWholeNumberValue)left).Value.CompareTo(
-                ((PythonWholeNumberValue)right).Value
-            );
+            // RichCompare handles unordered NaNs before reaching this total-order
+            // adapter, which is also used by existing sequence/sort consumers.
+            return CompareRealNumbers(left, right)
+                ?? (
+                    left is PythonFloatingPointValue { Value: var value } && double.IsNaN(value)
+                        ? right is PythonFloatingPointValue { Value: var other }
+                        && double.IsNaN(other)
+                            ? 0
+                            : -1
+                        : 1
+                );
         }
 
         return (left, right) switch
@@ -3591,22 +3596,49 @@ internal static class ManagedObjectProtocols
             ? PythonWholeNumberValue.Create(truth.Value ? BigInteger.One : BigInteger.Zero)
             : value;
 
-    private static double ToDouble(PythonValue value) =>
-        value switch
+    private static bool ComplexEquals(Complex value, PythonValue other) =>
+        other switch
         {
-            PythonWholeNumberValue whole => (double)whole.Value,
-            PythonFloatingPointValue floatingPoint => floatingPoint.Value,
-            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+            PythonComplexValue complex => value.Real == complex.Value.Real
+                && value.Imaginary == complex.Value.Imaginary,
+            PythonFloatingPointValue floating => value.Imaginary == 0
+                && value.Real == floating.Value,
+            PythonWholeNumberValue whole => value.Imaginary == 0
+                && CompareIntegerToFloat(whole.Value, value.Real) == 0,
+            _ => false,
         };
 
-    private static Complex ToComplex(PythonValue value) =>
-        value switch
+    private static int? CompareRealNumbers(PythonValue left, PythonValue right) =>
+        (left, right) switch
         {
-            PythonWholeNumberValue whole => new Complex((double)whole.Value, 0),
-            PythonFloatingPointValue floatingPoint => new Complex(floatingPoint.Value, 0),
-            PythonComplexValue complex => complex.Value,
-            _ => throw new ArgumentOutOfRangeException(nameof(value)),
+            (PythonWholeNumberValue leftWhole, PythonWholeNumberValue rightWhole) =>
+                leftWhole.Value.CompareTo(rightWhole.Value),
+            (PythonWholeNumberValue whole, PythonFloatingPointValue floating) =>
+                CompareIntegerToFloat(whole.Value, floating.Value),
+            (PythonFloatingPointValue floating, PythonWholeNumberValue whole) =>
+                -CompareIntegerToFloat(whole.Value, floating.Value),
+            (PythonFloatingPointValue leftFloat, PythonFloatingPointValue rightFloat) =>
+                double.IsNaN(leftFloat.Value) || double.IsNaN(rightFloat.Value)
+                    ? null
+                    : leftFloat.Value.CompareTo(rightFloat.Value),
+            _ => throw new ArgumentOutOfRangeException(nameof(left)),
         };
+
+    private static int? CompareIntegerToFloat(BigInteger integer, double floating)
+    {
+        if (double.IsNaN(floating))
+            return null;
+        if (double.IsPositiveInfinity(floating))
+            return -1;
+        if (double.IsNegativeInfinity(floating))
+            return 1;
+
+        // Convert the bounded float, never the arbitrary-precision integer. A finite
+        // binary64 integer part needs at most 1024 bits and is represented exactly.
+        var truncated = Math.Truncate(floating);
+        var comparison = integer.CompareTo(new BigInteger(truncated));
+        return comparison != 0 ? comparison : truncated.CompareTo(floating);
+    }
 
     internal static PythonRuntimeException MissingAttribute(
         string typeName,
