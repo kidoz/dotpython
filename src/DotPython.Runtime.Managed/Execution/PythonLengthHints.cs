@@ -17,7 +17,15 @@ internal static class PythonLengthHints
                     default
                 );
             return GetIteratorHint((PythonIteratorValue)receiver!, default);
-        }
+        },
+        (receiver, arguments, keywordNames, _) =>
+            keywordNames.Count == 0
+                ? IteratorMethod!.Invoke(receiver, arguments)
+                : throw Error(
+                    $"{PythonBuiltinTypes.GetRuntimeTypeName(receiver!)}.__length_hint__() takes no keyword arguments",
+                    "TypeError",
+                    default
+                )
     );
 
     internal static long GetLengthHint(PythonValue value, TextSpan span, long defaultValue = 8)
@@ -73,11 +81,16 @@ internal static class PythonLengthHints
             is PythonSequenceIteratorSourceValue
                 or PythonListValue
                 or PythonTupleValue
-                or PythonRangeValue;
+                or PythonRangeValue
+                or PythonTextValue
+                or PythonByteSequenceValue
+                or PythonDictionaryValue
+                or PythonDictionaryViewValue
+                or PythonSetValue;
 
     private static PythonValue GetIteratorHint(PythonIteratorValue iterator, TextSpan span)
     {
-        if (iterator.IsExhausted)
+        if (iterator.IsExhausted || iterator.IsInvalidated)
             return PythonWholeNumberValue.Create(0);
         return iterator.Iterable switch
         {
@@ -90,9 +103,29 @@ internal static class PythonLengthHints
             PythonRangeValue range => PythonWholeNumberValue.Create(
                 BigInteger.Max(0, range.Count - iterator.RangeIndex)
             ),
+            PythonTextValue text => PythonWholeNumberValue.Create(
+                Math.Max(0, ManagedObjectProtocols.GetLength(text, span) - iterator.Index)
+            ),
+            PythonByteSequenceValue bytes => PythonWholeNumberValue.Create(
+                Math.Max(0, bytes.Value.Length - iterator.Index)
+            ),
+            PythonDictionaryValue dictionary => GetCollectionHint(iterator, dictionary.Items.Count),
+            PythonDictionaryViewValue view => GetCollectionHint(
+                iterator,
+                view.Dictionary.Items.Count
+            ),
+            PythonSetValue set => GetCollectionHint(iterator, set.Elements.Count),
             _ => GetSequenceIteratorHint(iterator, span),
         };
     }
+
+    private static PythonWholeNumberValue GetCollectionHint(
+        PythonIteratorValue iterator,
+        int count
+    ) =>
+        PythonWholeNumberValue.Create(
+            count == iterator.ExpectedCollectionSize ? Math.Max(0, count - iterator.Index) : 0
+        );
 
     private static PythonValue GetSequenceIteratorHint(PythonIteratorValue iterator, TextSpan span)
     {

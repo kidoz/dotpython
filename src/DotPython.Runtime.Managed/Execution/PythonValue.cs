@@ -1263,12 +1263,15 @@ internal sealed record PythonDictionaryValue(List<PythonDictionaryItemValue> Ite
     }
 }
 
-internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedDictionarySizeVersion)
+internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCollectionSize)
     : PythonValue
 {
     internal PythonExceptionValue? StopIteration { get; set; }
 
     internal bool IsExhausted { get; set; }
+
+    // A size mismatch observed by next() remains an error even if the size is restored.
+    internal bool IsInvalidated { get; set; }
 
     internal int Index { get; set; }
 

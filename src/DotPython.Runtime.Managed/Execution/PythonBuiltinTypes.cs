@@ -179,6 +179,8 @@ internal static class PythonBuiltinTypes
             PythonIteratorValue { Iterable: PythonFilterSourceValue } => "filter",
             PythonIteratorValue { Iterable: PythonListValue } => "list_iterator",
             PythonIteratorValue { Iterable: PythonTupleValue } => "tuple_iterator",
+            PythonIteratorValue { Iterable: PythonByteSequenceValue } => "bytes_iterator",
+            PythonIteratorValue { Iterable: PythonSetValue } => "set_iterator",
             PythonIteratorValue { Iterable: PythonTextValue text }
                 when text.Value.All(character => character <= 127) => "str_ascii_iterator",
             PythonIteratorValue { Iterable: PythonTextValue } => "str_iterator",

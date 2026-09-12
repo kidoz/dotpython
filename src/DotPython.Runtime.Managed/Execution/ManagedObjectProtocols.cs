@@ -1603,7 +1603,7 @@ internal static class ManagedObjectProtocols
         }
         if (value is PythonDictionaryViewValue view)
         {
-            return new PythonIteratorValue(view, view.Dictionary.SizeVersion);
+            return new PythonIteratorValue(view, view.Dictionary.Items.Count);
         }
 
         if (value is PythonFileValue file)
@@ -1636,7 +1636,12 @@ internal static class ManagedObjectProtocols
 
         return new PythonIteratorValue(
             value,
-            value is PythonDictionaryValue dictionary ? dictionary.SizeVersion : -1
+            value switch
+            {
+                PythonDictionaryValue dictionary => dictionary.Items.Count,
+                PythonSetValue set => set.Elements.Count,
+                _ => -1,
+            }
         );
     }
 
@@ -1661,7 +1666,10 @@ internal static class ManagedObjectProtocols
             value = PythonNoneValue.Instance;
             return false;
         }
-        if (iterator.Iterable is PythonListValue or PythonTupleValue or PythonRangeValue)
+        if (
+            iterator.Iterable is not PythonSequenceIteratorSourceValue
+            && PythonLengthHints.SupportsIterator(iterator)
+        )
             UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
         switch (iterator.Iterable)
         {
@@ -1686,15 +1694,7 @@ internal static class ManagedObjectProtocols
                 iterator.IsExhausted = true;
                 break;
             case PythonDictionaryViewValue view:
-                if (view.Dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
-                {
-                    throw Fault(
-                        "DPY4016",
-                        "dictionary changed size during iteration",
-                        span,
-                        "RuntimeError"
-                    );
-                }
+                ValidateIteratorSize(iterator, view.Dictionary.Items.Count, "dictionary", span);
                 if (iterator.Index < view.Dictionary.Items.Count)
                 {
                     value = PythonMappingProxies.ViewItem(
@@ -1706,15 +1706,7 @@ internal static class ManagedObjectProtocols
                 iterator.IsExhausted = true;
                 break;
             case PythonDictionaryValue dictionary:
-                if (dictionary.SizeVersion != iterator.ExpectedDictionarySizeVersion)
-                {
-                    throw Fault(
-                        "DPY4016",
-                        "Dictionary size changed during iteration.",
-                        span,
-                        "RuntimeError"
-                    );
-                }
+                ValidateIteratorSize(iterator, dictionary.Items.Count, "dictionary", span);
 
                 if (iterator.Index < dictionary.Items.Count)
                 {
@@ -1733,14 +1725,24 @@ internal static class ManagedObjectProtocols
                     return true;
                 }
 
+                iterator.IsExhausted = true;
                 break;
             }
             case PythonByteSequenceValue bytes when iterator.Index < bytes.Value.Length:
                 value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
                 return true;
-            case PythonSetValue set when iterator.Index < set.Elements.Count:
-                value = set.Elements[iterator.Index++];
-                return true;
+            case PythonByteSequenceValue:
+                iterator.IsExhausted = true;
+                break;
+            case PythonSetValue set:
+                ValidateIteratorSize(iterator, set.Elements.Count, "Set", span);
+                if (iterator.Index < set.Elements.Count)
+                {
+                    value = set.Elements[iterator.Index++];
+                    return true;
+                }
+                iterator.IsExhausted = true;
+                break;
             case PythonRangeValue range:
             {
                 var current = range.Start + range.Step * iterator.RangeIndex;
@@ -1912,6 +1914,20 @@ internal static class ManagedObjectProtocols
 
         value = PythonNoneValue.Instance;
         return false;
+    }
+
+    private static void ValidateIteratorSize(
+        PythonIteratorValue iterator,
+        int count,
+        string kind,
+        TextSpan span
+    )
+    {
+        if (iterator.IsInvalidated || count != iterator.ExpectedCollectionSize)
+        {
+            iterator.IsInvalidated = true;
+            throw Fault("DPY4016", $"{kind} changed size during iteration", span, "RuntimeError");
+        }
     }
 
     internal static PythonValue GetItem(
