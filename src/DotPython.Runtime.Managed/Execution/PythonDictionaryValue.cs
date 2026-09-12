@@ -66,6 +66,33 @@ internal sealed record PythonDictionaryValue : PythonValue
         SizeVersion++;
     }
 
+    internal static PythonDictionaryValue CreatePresized(
+        int itemCount,
+        bool stringKeys,
+        TextSpan span
+    )
+    {
+        var dictionary = new PythonDictionaryValue([]);
+        // CPython's literal factory keeps tiny dictionaries fresh and caps its
+        // speculative allocation at 2**17 table slots, regardless of pair count.
+        if (itemCount > 5)
+        {
+            dictionary.Resize(Math.Min(1L << 17, ((long)itemCount * 3 + 1) / 2), span);
+            dictionary._stringKeys = stringKeys;
+        }
+        return dictionary;
+    }
+
+    internal PythonDictionaryValue CreateFromKeysStorage(TextSpan span)
+    {
+        var dictionary = new PythonDictionaryValue([]);
+        // Exact-dictionary fromkeys compacts and reserves from the live count;
+        // unlike a literal it retains the source key kind even when empty.
+        dictionary.Resize(((long)_items.Count * 3 + 1) / 2, span);
+        dictionary._stringKeys = _stringKeys;
+        return dictionary;
+    }
+
     internal PythonDictionaryValue ShallowCopy(TextSpan span = default)
     {
         var copy = new PythonDictionaryValue([]);

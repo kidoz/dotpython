@@ -1499,15 +1499,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         var keys = new PythonValue[itemCount];
         var values = new PythonValue[itemCount];
+        var stringKeys = true;
         for (var index = itemCount - 1; index >= 0; index--)
         {
+            CheckProtocolWork(span);
             values[index] = Pop(span);
             keys[index] = Pop(span);
+            stringKeys &= keys[index] is PythonTextValue;
         }
 
-        var dictionary = new PythonDictionaryValue([]);
+        var dictionary = PythonDictionaryValue.CreatePresized(itemCount, stringKeys, span);
         for (var index = 0; index < itemCount; index++)
         {
+            CheckProtocolWork(span);
             SetDictionaryItem(dictionary, keys[index], values[index], span);
         }
 

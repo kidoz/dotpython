@@ -327,6 +327,7 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue { MatchArguments: { Elements.Length: > 0 } matchArguments }
                 when name == "__match_args__":
                 return matchArguments;
+            case PythonDictionaryValue when name == "fromkeys":
             case PythonBuiltinTypeValue { Name: "dict" } when name == "fromkeys":
                 return new PythonBuiltinFunctionValue(
                     "fromkeys",
@@ -340,13 +341,7 @@ internal static class ManagedObjectProtocols
                             callSpan
                         );
                         var fill = arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
-                        var dictionary = new PythonDictionaryValue([]);
-                        foreach (var key in MaterializeValues(arguments[0], callSpan))
-                        {
-                            SetDictionaryItem(dictionary, key, fill, callSpan);
-                        }
-
-                        return dictionary;
+                        return DictionaryFromKeys(arguments[0], fill, callSpan);
                     }
                 );
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
@@ -3123,6 +3118,33 @@ internal static class ManagedObjectProtocols
         return (int)value;
     }
 
+    internal static PythonDictionaryValue DictionaryFromKeys(
+        PythonValue source,
+        PythonValue fill,
+        TextSpan span
+    )
+    {
+        if (source is PythonDictionaryValue sourceDictionary)
+        {
+            var dictionary = sourceDictionary.CreateFromKeysStorage(span);
+            for (var position = 0; position < sourceDictionary.EntryCount; position++)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                var item = sourceDictionary.GetEntry(position);
+                if (item is not null)
+                    SetDictionaryItemKnownHash(dictionary, item.Key, fill, item.KeyHash, span);
+            }
+            return dictionary;
+        }
+        var result = new PythonDictionaryValue([]);
+        var iterator = GetIterator(source, span);
+        // Insert before requesting the next key: hashing may change the iterable
+        // or fail, and fromkeys never requests a length hint.
+        while (TryGetNext(iterator, out var key, span))
+            SetDictionaryItem(result, key, fill, span);
+        return result;
+    }
+
     internal static void SetDictionaryItem(
         PythonDictionaryValue dictionary,
         PythonValue key,
@@ -3140,7 +3162,17 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        var keyHash = ComputePythonHash(key, span);
+        SetDictionaryItemKnownHash(dictionary, key, value, ComputePythonHash(key, span), span);
+    }
+
+    private static void SetDictionaryItemKnownHash(
+        PythonDictionaryValue dictionary,
+        PythonValue key,
+        PythonValue value,
+        BigInteger keyHash,
+        TextSpan span
+    )
+    {
         if (TryFindDictionaryItem(dictionary, key, keyHash, out var item))
         {
             item.Value = value;
@@ -3168,15 +3200,8 @@ internal static class ManagedObjectProtocols
             var item = source.GetEntry(position);
             if (item is null)
                 continue;
-            // Read the value before equality can call back into either dictionary.
-            var value = item.Value;
-            if (TryFindDictionaryItem(dictionary, item.Key, item.KeyHash, out var existing))
-                existing.Value = value;
-            else
-                dictionary.AddItem(
-                    new PythonDictionaryItemValue(item.Key, value, item.KeyHash),
-                    span
-                );
+            // Arguments capture the value before equality can call into either dictionary.
+            SetDictionaryItemKnownHash(dictionary, item.Key, item.Value, item.KeyHash, span);
             if (source.Items.Count != count)
                 throw Fault("DPY4016", "dict mutated during update", span, "RuntimeError");
         }
