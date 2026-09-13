@@ -77,6 +77,17 @@ internal static class PythonTextEncoding
                         : $"\\U{character:x8}";
                     WriteReplacement(escaped);
                     return;
+                case "namereplace":
+                    // CPython's codec name lookup includes its private alias
+                    // and named-sequence entries; unicodedata.name does not.
+                    var name = PythonUnicodeNames.GetName(
+                        character,
+                        includeAliasesAndSequences: true
+                    );
+                    if (name is null)
+                        goto case "backslashreplace";
+                    WriteReplacement("\\N{" + name + "}");
+                    return;
                 case "xmlcharrefreplace":
                     WriteReplacement("&#" + character.ToString(CultureInfo.InvariantCulture) + ";");
                     return;

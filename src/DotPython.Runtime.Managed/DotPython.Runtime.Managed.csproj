@@ -4,6 +4,18 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <EmbeddedResource
+            Include="Unicode/UnicodeNames16.bin"
+            LogicalName="DotPython.UnicodeNames16"
+        />
+        <None
+            Include="../../third_party/unicode/16.0.0/LICENSE.txt"
+            Link="licenses/Unicode-LICENSE.txt"
+            CopyToOutputDirectory="PreserveNewest"
+            CopyToPublishDirectory="PreserveNewest"
+            Pack="true"
+            PackagePath="licenses/"
+        />
         <None
             Include="../../third_party/licenses/CPython-LICENSE.txt"
             Link="licenses/CPython-LICENSE.txt"
