@@ -209,6 +209,53 @@ internal static class PythonBytesDecoding
         {
             switch (errors)
             {
+                case "surrogatepass":
+                    // Like CPython's handler, inspect one complete encoded
+                    // surrogate, even when it extends past the original error.
+                    if (
+                        codePage == 65001
+                        && bytes.Length - _position >= 3
+                        && bytes[_position] == 0xed
+                        && bytes[_position + 1] is >= 0xa0 and <= 0xbf
+                        && bytes[_position + 2] is >= 0x80 and <= 0xbf
+                    )
+                    {
+                        _text.Append(
+                            (char)(
+                                0xd000
+                                | ((bytes[_position + 1] & 0x3f) << 6)
+                                | (bytes[_position + 2] & 0x3f)
+                            )
+                        );
+                        _position += 3;
+                        return;
+                    }
+                    if (
+                        codePage is 1200 or 1201
+                        && bytes.Length - _position >= 2
+                        && ReadUtf16(_position) is >= 0xd800 and <= 0xdfff
+                    )
+                    {
+                        _text.Append((char)ReadUtf16(_position));
+                        _position += 2;
+                        return;
+                    }
+                    goto case "strict";
+                case "surrogateescape":
+                    var consumed = 0;
+                    while (
+                        consumed < 4
+                        && consumed < end - _position
+                        && bytes[_position + consumed] >= 128
+                    )
+                    {
+                        _text.Append((char)(0xdc00 + bytes[_position + consumed]));
+                        consumed++;
+                    }
+                    if (consumed == 0)
+                        goto case "strict";
+                    _position += consumed;
+                    return;
                 case "ignore":
                     break;
                 case "replace":
