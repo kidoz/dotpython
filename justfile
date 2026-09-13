@@ -36,8 +36,12 @@ parser-generate:
 parser-check:
     dotnet run --project src/DotPython.ParserGenerator.Tool -- check {{python_grammar}} {{generated_parser}}
 
+# Verify the generated CPython-compatible Unicode name resource against pinned data.
+unicode-names-check:
+    python3 tools/unicode_names/generate.py --check
+
 # Check formatting and compile with all configured analyzers and warnings as errors.
-lint: parser-check native-lint
+lint: parser-check unicode-names-check native-lint
     dotnet tool restore
     dotnet csharpier check .
     dotnet build DotPython.sln --configuration Release

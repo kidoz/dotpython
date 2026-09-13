@@ -1,0 +1,89 @@
+{
+  "unicode_version": "16.0.0",
+  "compatibility_reference": "CPython 3.14.7",
+  "retrieved_utc_date": "2026-09-13",
+  "sources": [
+    {
+      "file": "DerivedName.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/extracted/DerivedName.txt",
+      "bytes": 1875657,
+      "sha256": "0cc1469faa0c5518572ef93f4f457f93aa8a160ce320aad3793d85f4b435fd24"
+    },
+    {
+      "file": "NameAliases.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/NameAliases.txt",
+      "bytes": 16533,
+      "sha256": "9953f0fcebf5ea8091c5c581e4df0e43f20d2533c84ccca7987a9bb819a896a8"
+    },
+    {
+      "file": "NamedSequences.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/NamedSequences.txt",
+      "bytes": 20876,
+      "sha256": "4ff660cb922480cd5aab9a689b1a6905d0a54575baf9967d0f1e00ac866f04dd"
+    },
+    {
+      "file": "LICENSE.txt",
+      "url": "https://www.unicode.org/license.txt",
+      "bytes": 1995,
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+    }
+  ],
+  "compatibility_policy": {
+    "excluded_name_patterns": [
+      {
+        "start": "17000",
+        "end": "187F7",
+        "pattern": "TANGUT IDEOGRAPH-*"
+      },
+      {
+        "start": "18D00",
+        "end": "18D08",
+        "pattern": "TANGUT IDEOGRAPH-*"
+      }
+    ],
+    "alias_pseudo_start": "F0000",
+    "named_sequence_pseudo_start": "F0200",
+    "pseudo_entry_order": "original UCD file order",
+    "public_name_lookup": "hide PUA15 pseudo-entries",
+    "namereplace_name_lookup": "include PUA15 pseudo-entries",
+    "references": [
+      "https://github.com/python/cpython/blob/v3.14.7/Modules/unicodedata.c",
+      "https://github.com/python/cpython/blob/v3.14.7/Tools/unicode/makeunicodedata.py",
+      "https://github.com/python/cpython/blob/v3.14.7/Python/codecs.c"
+    ],
+    "alias_pseudo_end": "F01DC",
+    "alias_count": 477,
+    "named_sequence_pseudo_end": "F03CC",
+    "named_sequence_count": 461,
+    "unicode_named_codepoints": 154998,
+    "excluded_tangut_codepoints": 6145
+  },
+  "artifact": {
+    "file": "src/DotPython.Runtime.Managed/Unicode/UnicodeNames16.bin",
+    "format_magic_hex": "445059554e313600",
+    "bytes": 1673535,
+    "sha256": "18103b3507da09341e3d76db9ec7e96c1b006b0ee5df18e9c4f856fbd2dfda79",
+    "explicit_count": 46247,
+    "range_count": 17
+  },
+  "qualification": {
+    "python": "3.14.7",
+    "unicode_database": "16.0.0",
+    "codepoints_checked_per_surface": 1114112,
+    "surfaces": [
+      "unicodedata.name",
+      "ascii namereplace"
+    ],
+    "comparisons": 2228224,
+    "mismatches": 0,
+    "public_names": {
+      "count": 148853,
+      "sha256": "39e28ccf137c629e7170a32f6ec26a64f8c29b675df6186549a6b6d97a6df205"
+    },
+    "capi_names": {
+      "count": 149791,
+      "sha256": "c1052b79ac37dcc19b5e372bfe52b5961f1ce3c8eaebf6cfdfcd23d0448dbc9f"
+    },
+    "digest_record": "codepoint uint32 little-endian, ASCII name, NUL; named codepoints in ascending order"
+  }
+}

@@ -29,6 +29,9 @@ jobs:
         with:
           dotnet-version: 10.0.301
 
+      - name: Verify pinned Unicode name data
+        run: python tools/unicode_names/generate.py --check
+
       - name: Verify deterministic parser regeneration
         run: >
           dotnet run --project src/DotPython.ParserGenerator.Tool --
