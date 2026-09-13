@@ -230,13 +230,8 @@ internal static class PythonBuiltinTypes
     internal static readonly PythonBuiltinTypeValue Bool = new("bool", ConstructBool);
     internal static readonly PythonBuiltinTypeValue Bytes = new(
         "bytes",
-        ConstructBytes,
-        PythonKeywordArguments.Adapt(
-            "bytes",
-            ["source", "encoding", "errors"],
-            [null, null, null],
-            ConstructBytes
-        )
+        PythonBytesConstruction.Construct,
+        PythonBytesConstruction.ConstructWithKeywords
     );
     internal static readonly PythonBuiltinTypeValue Dict = new(
         "dict",
@@ -315,93 +310,6 @@ internal static class PythonBuiltinTypes
                     or PythonExceptionTypeValue,
             _ => false,
         };
-
-    private static PythonByteSequenceValue ConstructBytes(
-        IReadOnlyList<PythonValue> arguments,
-        TextSpan span
-    )
-    {
-        RequireArguments("bytes", arguments, 0, 3, span);
-        if (arguments.Count == 0)
-        {
-            return PythonByteSequenceValue.Create([]);
-        }
-
-        if (arguments.Count >= 2)
-        {
-            if (arguments[0] is not PythonTextValue source)
-            {
-                throw ManagedObjectProtocols.Fault(
-                    "DPY4003",
-                    "encoding without a string argument",
-                    span,
-                    "TypeError"
-                );
-            }
-
-            if (arguments[1] is not PythonTextValue encoding)
-            {
-                throw ManagedObjectProtocols.Fault(
-                    "DPY4003",
-                    $"bytes() argument 'encoding' must be str, not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
-                    span,
-                    "TypeError"
-                );
-            }
-
-            var errors =
-                arguments.Count == 3 && arguments[2] is PythonTextValue errorsText
-                    ? errorsText.Value
-                    : "strict";
-            return PythonByteSequenceValue.Create(
-                PythonTextCodecs.Encode(source.Value, encoding.Value, errors, span)
-            );
-        }
-
-        switch (arguments[0])
-        {
-            case PythonByteSequenceValue bytes:
-                return bytes;
-            case PythonWholeNumberValue { Value.Sign: >= 0 } size when size.Value <= 4096:
-                return size.Value.IsZero
-                    ? PythonByteSequenceValue.Empty
-                    : new PythonByteSequenceValue(new byte[(int)size.Value]);
-            case PythonTextValue:
-                throw ManagedObjectProtocols.Fault(
-                    "DPY4003",
-                    "string argument without an encoding",
-                    span,
-                    "TypeError"
-                );
-            default:
-            {
-                var values = ManagedObjectProtocols.MaterializeValues(arguments[0], span);
-                var buffer = new byte[values.Count];
-                for (var index = 0; index < values.Count; index++)
-                {
-                    if (
-                        values[index] is not PythonWholeNumberValue item
-                        || item.Value.Sign < 0
-                        || item.Value > byte.MaxValue
-                    )
-                    {
-                        throw ManagedObjectProtocols.Fault(
-                            "DPY4003",
-                            "bytes must be in range(0, 256)",
-                            span,
-                            "ValueError"
-                        );
-                    }
-
-                    buffer[index] = (byte)item.Value;
-                }
-
-                return buffer.Length == 0 || arguments[0] is PythonListValue
-                    ? PythonByteSequenceValue.Create(buffer)
-                    : new PythonByteSequenceValue(buffer);
-            }
-        }
-    }
 
     private static PythonTruthValue ConstructBool(
         IReadOnlyList<PythonValue> arguments,
