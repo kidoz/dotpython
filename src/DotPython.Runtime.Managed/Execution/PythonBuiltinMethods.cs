@@ -56,7 +56,7 @@ internal static class PythonBuiltinMethods
                 0,
                 2,
                 (text, arguments) =>
-                    new PythonByteSequenceValue(
+                    PythonByteSequenceValue.Create(
                         PythonTextCodecs.Encode(
                             text,
                             arguments.Count > 0 ? RequireText("encode", arguments[0]) : "utf-8",

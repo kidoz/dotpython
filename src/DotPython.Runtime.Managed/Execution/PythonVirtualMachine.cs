@@ -7939,8 +7939,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         if (opCode == PythonOpCode.BinaryMultiply)
         {
             var sequence =
-                left is PythonListValue or PythonTupleValue or PythonTextValue ? left
-                : right is PythonListValue or PythonTupleValue or PythonTextValue ? right
+                left
+                    is PythonListValue
+                        or PythonTupleValue
+                        or PythonTextValue
+                        or PythonByteSequenceValue
+                    ? left
+                : right
+                    is PythonListValue
+                        or PythonTupleValue
+                        or PythonTextValue
+                        or PythonByteSequenceValue
+                    ? right
                 : null;
             if (sequence is not null)
             {
@@ -7948,9 +7958,20 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     ReferenceEquals(sequence, left) ? right : left,
                     span
                 );
-                return sequence is PythonTextValue text
-                    ? Repeat(text, PythonWholeNumberValue.Create(count), span)
-                    : RepeatSequence(sequence, count, span);
+                return sequence switch
+                {
+                    PythonTextValue text => Repeat(
+                        text,
+                        PythonWholeNumberValue.Create(count),
+                        span
+                    ),
+                    PythonByteSequenceValue bytes => PythonBytesOperations.Repeat(
+                        bytes,
+                        count,
+                        span
+                    ),
+                    _ => RepeatSequence(sequence, count, span),
+                };
             }
         }
 

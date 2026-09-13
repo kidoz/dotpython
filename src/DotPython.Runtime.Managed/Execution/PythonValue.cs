@@ -214,6 +214,20 @@ internal sealed record PythonTextValue(string Value) : PythonValue
 
 internal sealed record PythonByteSequenceValue(byte[] Value) : PythonValue
 {
+    internal static readonly PythonByteSequenceValue Empty = new([]);
+    private static readonly PythonByteSequenceValue[] Singletons = Enumerable
+        .Range(0, 256)
+        .Select(value => new PythonByteSequenceValue([(byte)value]))
+        .ToArray();
+
+    internal static PythonByteSequenceValue Create(byte[] value) =>
+        value.Length switch
+        {
+            0 => Empty,
+            1 => Singletons[value[0]],
+            _ => new PythonByteSequenceValue(value),
+        };
+
     internal override string ToDisplayString()
     {
         var builder = new StringBuilder("b'");

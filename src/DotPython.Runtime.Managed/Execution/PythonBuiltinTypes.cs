@@ -324,7 +324,7 @@ internal static class PythonBuiltinTypes
         RequireArguments("bytes", arguments, 0, 3, span);
         if (arguments.Count == 0)
         {
-            return new PythonByteSequenceValue([]);
+            return PythonByteSequenceValue.Create([]);
         }
 
         if (arguments.Count >= 2)
@@ -353,7 +353,7 @@ internal static class PythonBuiltinTypes
                 arguments.Count == 3 && arguments[2] is PythonTextValue errorsText
                     ? errorsText.Value
                     : "strict";
-            return new PythonByteSequenceValue(
+            return PythonByteSequenceValue.Create(
                 PythonTextCodecs.Encode(source.Value, encoding.Value, errors, span)
             );
         }
@@ -361,9 +361,11 @@ internal static class PythonBuiltinTypes
         switch (arguments[0])
         {
             case PythonByteSequenceValue bytes:
-                return new PythonByteSequenceValue((byte[])bytes.Value.Clone());
+                return bytes;
             case PythonWholeNumberValue { Value.Sign: >= 0 } size when size.Value <= 4096:
-                return new PythonByteSequenceValue(new byte[(int)size.Value]);
+                return size.Value.IsZero
+                    ? PythonByteSequenceValue.Empty
+                    : new PythonByteSequenceValue(new byte[(int)size.Value]);
             case PythonTextValue:
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
@@ -394,7 +396,9 @@ internal static class PythonBuiltinTypes
                     buffer[index] = (byte)item.Value;
                 }
 
-                return new PythonByteSequenceValue(buffer);
+                return buffer.Length == 0 || arguments[0] is PythonListValue
+                    ? PythonByteSequenceValue.Create(buffer)
+                    : new PythonByteSequenceValue(buffer);
             }
         }
     }

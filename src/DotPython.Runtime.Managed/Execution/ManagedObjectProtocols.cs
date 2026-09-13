@@ -2024,9 +2024,7 @@ internal static class ManagedObjectProtocols
                 );
             }
             case PythonByteSequenceValue bytes:
-                return PythonWholeNumberValue.Create(
-                    bytes.Value[GetSequenceIndex(index, bytes.Value.Length, span)]
-                );
+                return PythonBytesOperations.GetItem(bytes, index, span);
             case PythonRangeValue range when index is PythonSliceValue slice:
             {
                 if (range.Count > int.MaxValue)

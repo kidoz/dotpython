@@ -390,7 +390,9 @@ internal sealed class PreparedPythonCode
             ),
             PythonConstantType.ComplexNumber => new PythonComplexValue((Complex)constant.Value!),
             PythonConstantType.TextValue => new PythonTextValue((string)constant.Value!),
-            PythonConstantType.ByteSequence => new PythonByteSequenceValue((byte[])constant.Value!),
+            PythonConstantType.ByteSequence => PythonByteSequenceValue.Create(
+                (byte[])constant.Value!
+            ),
             PythonConstantType.CodeObject => throw new InvalidOperationException(
                 "Code-object constants must be prepared as function code."
             ),

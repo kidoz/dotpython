@@ -285,8 +285,16 @@ internal static class UserObjectProtocols
         if (
             opCode == PythonOpCode.BinaryMultiply
             && (
-                left is PythonListValue or PythonTupleValue or PythonTextValue
-                || right is PythonListValue or PythonTupleValue or PythonTextValue
+                left
+                    is PythonListValue
+                        or PythonTupleValue
+                        or PythonTextValue
+                        or PythonByteSequenceValue
+                || right
+                    is PythonListValue
+                        or PythonTupleValue
+                        or PythonTextValue
+                        or PythonByteSequenceValue
             )
         )
             return false;
