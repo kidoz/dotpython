@@ -781,7 +781,9 @@ internal static class ManagedObjectProtocols
                                 ? dispatcher.StandardError
                                 : dispatcher.StandardOutput
                         ).Write(text.Value);
-                        return PythonWholeNumberValue.Create(text.Value.EnumerateRunes().Count());
+                        return PythonWholeNumberValue.Create(
+                            PythonTextTraversal.Count(text.Value, span)
+                        );
                     }
                 );
             case "flush":
@@ -1347,7 +1349,7 @@ internal static class ManagedObjectProtocols
     internal static int GetLength(PythonValue value, TextSpan span = default) =>
         value switch
         {
-            PythonTextValue text => text.Value.EnumerateRunes().Count(),
+            PythonTextValue text => PythonTextTraversal.Count(text.Value, span),
             PythonByteSequenceValue bytes => bytes.Value.Length,
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
@@ -1717,13 +1719,14 @@ internal static class ManagedObjectProtocols
                 return TryGetDictionaryNext(iterator, dictionary, "dict_keys", out value, span);
             case PythonTextValue text:
             {
-                var runes = text.Value.EnumerateRunes().ToArray();
-                if (iterator.Index < runes.Length)
+                if (iterator.TextOffset < text.Value.Length)
                 {
-                    value = new PythonTextValue(runes[iterator.Index++].ToString());
+                    var width = PythonTextTraversal.Width(text.Value, iterator.TextOffset);
+                    value = new PythonTextValue(text.Value.Substring(iterator.TextOffset, width));
+                    iterator.TextOffset += width;
+                    iterator.Index++;
                     return true;
                 }
-
                 iterator.IsExhausted = true;
                 break;
             }
@@ -2022,28 +2025,12 @@ internal static class ManagedObjectProtocols
 
                 return new PythonTupleValue([.. result]);
             }
-            case PythonTextValue text when index is PythonSliceValue slice:
-            {
-                var runes = text.Value.EnumerateRunes().ToArray();
-                var builder = new StringBuilder();
-                foreach (var elementIndex in EnumerateSliceIndices(slice, runes.Length, span))
-                {
-                    builder.Append(runes[elementIndex].ToString());
-                }
-
-                return new PythonTextValue(builder.ToString());
-            }
             case PythonListValue list:
                 return list.Elements[GetListIndex(list, index, span)];
             case PythonTupleValue tuple:
                 return tuple.Elements[GetSequenceIndex(index, tuple.Elements.Length, span)];
             case PythonTextValue text:
-            {
-                var runes = text.Value.EnumerateRunes().ToArray();
-                return new PythonTextValue(
-                    runes[GetSequenceIndex(index, runes.Length, span)].ToString()
-                );
-            }
+                return PythonTextTraversal.GetItem(text, index, span);
             case PythonByteSequenceValue bytes:
                 return PythonBytesOperations.GetItem(bytes, index, span);
             case PythonRangeValue range when index is PythonSliceValue slice:
@@ -2291,7 +2278,7 @@ internal static class ManagedObjectProtocols
         return AdjustSliceIndices(UnpackSlice(slice, span), length);
     }
 
-    private static (int Start, int Stop, int Step) UnpackSlice(
+    internal static (int Start, int Stop, int Step) UnpackSlice(
         PythonSliceValue slice,
         TextSpan span
     )
@@ -2315,7 +2302,7 @@ internal static class ManagedObjectProtocols
         return (start, stop, step);
     }
 
-    private static (int Start, int Stop, int Step) AdjustSliceIndices(
+    internal static (int Start, int Stop, int Step) AdjustSliceIndices(
         (int Start, int Stop, int Step) slice,
         int length
     )

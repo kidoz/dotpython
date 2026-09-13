@@ -154,7 +154,7 @@ internal sealed record PythonTextValue(string Value) : PythonValue
                 ? '"'
                 : '\'';
         var builder = new StringBuilder().Append(delimiter);
-        foreach (var rune in Value.EnumerateRunes())
+        foreach (var rune in PythonTextTraversal.Enumerate(Value))
         {
             switch (rune.Value)
             {
@@ -171,7 +171,7 @@ internal sealed record PythonTextValue(string Value) : PythonValue
                     builder.Append("\\t");
                     break;
                 case var value when value == delimiter:
-                    builder.Append('\\').Append(value);
+                    builder.Append('\\').Append((char)value);
                     break;
                 case var value when IsPythonPrintable(rune):
                     builder.Append(rune.ToString());
@@ -191,14 +191,14 @@ internal sealed record PythonTextValue(string Value) : PythonValue
         return builder.Append(delimiter).ToString();
     }
 
-    private static bool IsPythonPrintable(Rune rune)
+    private static bool IsPythonPrintable(PythonTextTraversal.Character rune)
     {
         if (rune.Value == ' ')
         {
             return true;
         }
 
-        return Rune.GetUnicodeCategory(rune)
+        return rune.Category
             is not (
                 UnicodeCategory.Control
                 or UnicodeCategory.Format
@@ -1036,6 +1036,7 @@ internal sealed record PythonSequenceIteratorSourceValue : PythonValue
     internal required PythonManagedObjectValue? Sequence { get; set; }
 
     internal long NextIndex { get; set; }
+    internal int TextOffset { get; set; }
 
     internal override string ToDisplayString() => "<iterator>";
 }
@@ -1236,6 +1237,7 @@ internal sealed record PythonReverseIteratorSourceValue : PythonValue
     internal required PythonValue? Sequence { get; set; }
     internal required string TypeName { get; init; }
     internal long NextIndex { get; set; }
+    internal int TextOffset { get; set; }
 
     internal override string ToDisplayString() => "<reverse iterator source>";
 }
@@ -1253,6 +1255,8 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
     internal int Index { get; set; }
 
     internal int DictionaryPosition { get; set; }
+
+    internal int TextOffset { get; set; }
 
     // Range cursors can advance beyond the managed collection index limit.
     internal BigInteger RangeIndex { get; set; }

@@ -7533,7 +7533,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         var text = conversion switch
         {
             1 => value.ToDisplayString(),
-            2 or 3 => value.ToRepresentationString(),
+            2 => value.ToRepresentationString(),
+            3 => PythonBuiltinFunctions.AsciiRepresentation(value, instruction.Span),
             // A bare `{x}` is format(x, '') so user `__format__` hooks still run.
             _ => specification is null
                 ? PythonValueFormatter.Format(value, string.Empty, instruction.Span)

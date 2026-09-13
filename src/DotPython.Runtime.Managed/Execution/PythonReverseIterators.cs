@@ -87,6 +87,7 @@ internal static class PythonReverseIterators
                     _ => count - 1,
                 },
                 TypeName = name,
+                TextOffset = sequence is PythonTextValue text ? text.Value.Length : 0,
             },
             sequence is PythonDictionaryValue or PythonDictionaryViewValue ? (int)count : -1
         );
@@ -158,6 +159,14 @@ internal static class PythonReverseIterators
         {
             Exhaust(iterator, source);
             return false;
+        }
+        if (sequence is PythonTextValue text)
+        {
+            var offset = PythonTextTraversal.PreviousOffset(text.Value, source.TextOffset);
+            value = new PythonTextValue(text.Value.Substring(offset, source.TextOffset - offset));
+            source.TextOffset = offset;
+            source.NextIndex--;
+            return true;
         }
         var index = source.NextIndex;
         try

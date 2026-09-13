@@ -162,7 +162,8 @@ internal static class PythonTextFormatting
             var text = conversion switch
             {
                 's' => value.ToDisplayString(),
-                'r' or 'a' => value.ToRepresentationString(),
+                'r' => value.ToRepresentationString(),
+                'a' => PythonBuiltinFunctions.AsciiRepresentation(value, span),
                 'c' => FormatCharacter(value, span),
                 'd' or 'i' or 'u' => FormatPercentInteger(
                     value,
@@ -602,7 +603,12 @@ internal static class PythonTextFormatting
             if (conversion is not null)
             {
                 value = new PythonTextValue(
-                    conversion == 's' ? value.ToDisplayString() : value.ToRepresentationString()
+                    conversion switch
+                    {
+                        's' => value.ToDisplayString(),
+                        'a' => PythonBuiltinFunctions.AsciiRepresentation(value, span),
+                        _ => value.ToRepresentationString(),
+                    }
                 );
             }
 

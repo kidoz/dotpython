@@ -166,7 +166,7 @@ internal static class PythonBuiltinMethods
             (text, arguments) =>
                 PythonWholeNumberValue.Create(
                     CountText(
-                        SliceRunes(text, arguments, 1, out _),
+                        SliceCharacters(text, arguments, 1, out _),
                         RequireText("count", arguments[0])
                     )
                 )
@@ -1064,20 +1064,20 @@ internal static class PythonBuiltinMethods
             ),
         };
 
-    /// <summary>Applies optional `start`/`end` slice bounds (as runes) to a text method's subject.</summary>
-    private static string SliceRunes(
+    /// <summary>Applies optional `start`/`end` slice bounds (as Python characters) to a text method's subject.</summary>
+    private static string SliceCharacters(
         string text,
         IReadOnlyList<PythonValue> arguments,
         int firstBoundIndex,
         out int offset
     )
     {
-        var runes = text.EnumerateRunes().ToArray();
+        var length = PythonTextTraversal.Count(text);
         var start = 0;
-        var end = runes.Length;
+        var end = length;
         if (arguments.Count > firstBoundIndex && arguments[firstBoundIndex] is not PythonNoneValue)
         {
-            start = ClampBound(RequireCount("index", arguments[firstBoundIndex]), runes.Length);
+            start = ClampBound(RequireCount("index", arguments[firstBoundIndex]), length);
         }
 
         if (
@@ -1085,7 +1085,7 @@ internal static class PythonBuiltinMethods
             && arguments[firstBoundIndex + 1] is not PythonNoneValue
         )
         {
-            end = ClampBound(RequireCount("index", arguments[firstBoundIndex + 1]), runes.Length);
+            end = ClampBound(RequireCount("index", arguments[firstBoundIndex + 1]), length);
         }
 
         offset = start;
@@ -1094,7 +1094,17 @@ internal static class PythonBuiltinMethods
             return string.Empty;
         }
 
-        return string.Concat(runes[start..end].Select(rune => rune.ToString()));
+        var builder = new StringBuilder();
+        var index = 0;
+        foreach (var character in PythonTextTraversal.Enumerate(text))
+        {
+            if (index >= end)
+                break;
+            if (index >= start)
+                builder.Append(character.ToString());
+            index++;
+        }
+        return builder.ToString();
     }
 
     private static int ClampBound(int bound, int length)
@@ -1114,7 +1124,7 @@ internal static class PythonBuiltinMethods
         bool prefix
     )
     {
-        var subject = SliceRunes(text, arguments, 1, out _);
+        var subject = SliceCharacters(text, arguments, 1, out _);
         IEnumerable<PythonValue> candidates = arguments[0] switch
         {
             PythonTextValue single => [single],
@@ -1151,8 +1161,8 @@ internal static class PythonBuiltinMethods
     private static int FindInRange(string name, string text, IReadOnlyList<PythonValue> arguments)
     {
         var needle = RequireText(name, arguments[0]);
-        var subject = SliceRunes(text, arguments, 1, out var offset);
-        var position = FindRuneIndex(subject, needle);
+        var subject = SliceCharacters(text, arguments, 1, out var offset);
+        var position = FindCharacterIndex(subject, needle);
         return position < 0 ? -1 : position + offset;
     }
 
@@ -1189,6 +1199,8 @@ internal static class PythonBuiltinMethods
         var replaced = 0;
         while (replaced < count)
         {
+            if ((replaced & 255) == 0)
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(default);
             var next =
                 oldValue.Length == 0
                     ? position
@@ -1203,10 +1215,12 @@ internal static class PythonBuiltinMethods
             {
                 if (next < text.Length)
                 {
-                    builder.Append(text[next]);
+                    var width = PythonTextTraversal.Width(text, next);
+                    builder.Append(text, next, width);
+                    position = next + width;
                 }
-
-                position = next + 1;
+                else
+                    position = next + 1;
             }
             else
             {
@@ -1237,7 +1251,7 @@ internal static class PythonBuiltinMethods
 
         var builder = new StringBuilder();
         builder.Append(newValue);
-        foreach (var rune in text.EnumerateRunes())
+        foreach (var rune in PythonTextTraversal.Enumerate(text))
         {
             builder.Append(rune.ToString());
             builder.Append(newValue);
@@ -1246,17 +1260,17 @@ internal static class PythonBuiltinMethods
         return builder.ToString();
     }
 
-    private static int FindRuneIndex(string text, string substring)
+    private static int FindCharacterIndex(string text, string substring)
     {
         var position = text.IndexOf(substring, StringComparison.Ordinal);
-        return position < 0 ? -1 : text[..position].EnumerateRunes().Count();
+        return position < 0 ? -1 : PythonTextTraversal.Enumerate(text[..position]).Count();
     }
 
     private static int CountText(string text, string substring)
     {
         if (substring.Length == 0)
         {
-            return text.EnumerateRunes().Count() + 1;
+            return PythonTextTraversal.Enumerate(text).Count() + 1;
         }
 
         var count = 0;
@@ -1281,12 +1295,16 @@ internal static class PythonBuiltinMethods
             return text;
         }
 
-        var runes = text.EnumerateRunes().ToArray();
         var builder = new StringBuilder();
-        builder.Append(runes[0].ToString().ToUpperInvariant());
-        for (var index = 1; index < runes.Length; index++)
+        var first = true;
+        foreach (var character in PythonTextTraversal.Enumerate(text))
         {
-            builder.Append(runes[index].ToString().ToLowerInvariant());
+            builder.Append(
+                first
+                    ? character.ToString().ToUpperInvariant()
+                    : character.ToString().ToLowerInvariant()
+            );
+            first = false;
         }
 
         return builder.ToString();

@@ -119,9 +119,14 @@ internal static class PythonBuiltinFunctions
     internal static PythonTextValue Ascii(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         RequireArgumentCount("ascii", arguments, 1, 1, span);
-        var representation = arguments[0].ToRepresentationString();
+        return new PythonTextValue(AsciiRepresentation(arguments[0], span));
+    }
+
+    internal static string AsciiRepresentation(PythonValue value, TextSpan span)
+    {
+        var representation = value.ToRepresentationString();
         var builder = new StringBuilder(representation.Length);
-        foreach (var rune in representation.EnumerateRunes())
+        foreach (var rune in PythonTextTraversal.Enumerate(representation, span))
         {
             if (rune.Value < 128)
             {
@@ -141,7 +146,7 @@ internal static class PythonBuiltinFunctions
             }
         }
 
-        return new PythonTextValue(builder.ToString());
+        return builder.ToString();
     }
 
     // ----------------------------------------------------------------------------
