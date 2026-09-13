@@ -38,16 +38,26 @@ internal sealed partial class PythonVirtualMachine
             return CreateExceptionGroupValue(arguments, type as PythonManagedTypeValue);
 
         var typeName = PythonTypeLayout.Name(type);
+        var unicodeEncode = IsSubclassOf(
+            type,
+            PythonBuiltinTypes.GetExceptionType("UnicodeEncodeError"),
+            span
+        );
+        var unicodeError =
+            unicodeEncode
+            || IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("UnicodeDecodeError"), span);
         var exception = new PythonExceptionValue(
             typeName,
-            arguments.Length == 1
-            && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
-                ? arguments[0].ToRepresentationString()
+            unicodeError ? string.Empty
+                : arguments.Length == 1
+                && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("KeyError"), span)
+                    ? arguments[0].ToRepresentationString()
                 : ComposeExceptionMessage(arguments)
         )
         {
             Arguments = [.. arguments],
             ManagedType = type as PythonManagedTypeValue,
+            UnicodeErrorState = unicodeError ? new() { IsEncode = unicodeEncode } : null,
         };
         // BaseException allocation initializes only args. The additional builtin
         // value/code fields are populated later by their own initializer slots.

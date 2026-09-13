@@ -346,7 +346,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     ) => InvokeCallableNested(callable, arguments, span);
 
-    TextSpan IUserObjectDispatcher.CurrentSpan => GetCurrentSpan(CurrentFrame);
+    TextSpan IUserObjectDispatcher.CurrentSpan =>
+        _frameCount == 0 ? default : GetCurrentSpan(CurrentFrame);
 
     TextWriter IUserObjectDispatcher.StandardOutput => _output;
 
@@ -3824,7 +3825,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             {
                 throw Fault(
                     "DPY4009",
-                    $"{exceptionType.Name}() takes no keyword arguments.",
+                    $"{exceptionType.Name}() takes no keyword arguments",
                     span,
                     "TypeError"
                 );
@@ -3927,7 +3928,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             }
         }
 
-        return Pop(span);
+        return baseFrameCount == 0 ? _result : Pop(span);
     }
 
     private void ApplyUnpackedCall(PythonInstruction instruction)
@@ -4017,6 +4018,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         switch (target)
         {
+            case PythonExceptionTypeValue exceptionType:
+                throw Fault(
+                    "DPY4009",
+                    $"{exceptionType.Name}() takes no keyword arguments",
+                    span,
+                    "TypeError"
+                );
             case PythonManagedTypeValue { Construct: null } type:
                 ConstructManagedInstanceWithKeywords(
                     type,
@@ -4680,13 +4688,24 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private PythonExceptionValue CreateExceptionValue(
         PythonExceptionTypeValue type,
         PythonValue[] arguments
-    ) =>
-        type.Name is "ExceptionGroup" or "BaseExceptionGroup"
-            ? CreateExceptionGroupValue(arguments)
-            : new(type.Name, ComposeExceptionMessage(type.Name, arguments))
+    )
+    {
+        if (type.Name is "ExceptionGroup" or "BaseExceptionGroup")
+            return CreateExceptionGroupValue(arguments);
+        if (type.Name is "UnicodeDecodeError" or "UnicodeEncodeError")
+        {
+            var exception = new PythonExceptionValue(type.Name, string.Empty)
             {
-                Arguments = [.. arguments],
+                UnicodeErrorState = new() { IsEncode = type.Name == "UnicodeEncodeError" },
             };
+            PythonUnicodeErrors.Initialize(exception, arguments, GetCurrentSpan(CurrentFrame));
+            return exception;
+        }
+        return new(type.Name, ComposeExceptionMessage(type.Name, arguments))
+        {
+            Arguments = [.. arguments],
+        };
+    }
 
     private string ComposeExceptionMessage(string typeName, PythonValue[] arguments) =>
         arguments.Length == 1 && IsExceptionSubclass(typeName, "KeyError")

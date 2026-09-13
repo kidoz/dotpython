@@ -43,7 +43,7 @@ internal sealed class PythonErrorIndicator
 
         SetRaisedException(
             new PythonRaisedException(
-                new PythonExceptionValue(exceptionTypeName, fault.Message),
+                fault.ExceptionValue ?? new PythonExceptionValue(exceptionTypeName, fault.Message),
                 fault
             )
         );

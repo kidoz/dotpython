@@ -6,6 +6,10 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Shared methods and construction slots for represented builtin exception types.</summary>
 internal static class PythonExceptionProtocols
 {
+    private static readonly ConcurrentDictionary<string, PythonValue> UnicodeStrMethods = new(
+        StringComparer.Ordinal
+    );
+
     private static readonly PythonProtocolFunctionValue AddNoteMethod = new(
         "add_note",
         (receiver, arguments) => AddNote(receiver, arguments, [], default),
@@ -20,6 +24,9 @@ internal static class PythonExceptionProtocols
     private static readonly ConcurrentDictionary<string, PythonValue> Initializers = new(
         StringComparer.Ordinal
     );
+    private static readonly ConcurrentDictionary<string, PythonValue> UnicodeMembers = new(
+        StringComparer.Ordinal
+    );
 
     internal static bool TryGetOwnAttribute(
         PythonExceptionTypeValue type,
@@ -27,6 +34,30 @@ internal static class PythonExceptionProtocols
         out PythonValue value
     )
     {
+        if (type.Name is "UnicodeDecodeError" or "UnicodeEncodeError" && name == "__str__")
+        {
+            value = UnicodeStrMethods.GetOrAdd(
+                type.Name,
+                owner => new PythonProtocolFunctionValue(
+                    "__str__",
+                    (receiver, arguments) => FormatUnicode(owner, receiver, arguments, [], default),
+                    (receiver, arguments, names, _) =>
+                        FormatUnicode(owner, receiver, arguments, names, default)
+                )
+            );
+            return true;
+        }
+        if (
+            type.Name is "UnicodeDecodeError" or "UnicodeEncodeError"
+            && name is "encoding" or "object" or "start" or "end" or "reason"
+        )
+        {
+            value = UnicodeMembers.GetOrAdd(
+                type.Name + "." + name,
+                _ => new PythonUnicodeErrorDescriptorValue(type.Name, name)
+            );
+            return true;
+        }
         if (type.Name == "BaseException" && name == "add_note")
         {
             value = AddNoteMethod;
@@ -65,6 +96,8 @@ internal static class PythonExceptionProtocols
                     or "BaseExceptionGroup"
                     or "StopIteration"
                     or "SystemExit"
+                    or "UnicodeDecodeError"
+                    or "UnicodeEncodeError"
         )
         {
             value = Initializers.GetOrAdd(
@@ -80,6 +113,38 @@ internal static class PythonExceptionProtocols
         }
         value = null!;
         return false;
+    }
+
+    private static PythonTextValue FormatUnicode(
+        string owner,
+        PythonValue? receiver,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywords,
+        TextSpan span
+    )
+    {
+        span = UserObjectProtocols.Dispatcher?.CurrentSpan ?? span;
+        if (receiver is null)
+        {
+            if (arguments.Count == 0)
+                throw Error($"descriptor '__str__' of '{owner}' object needs an argument", span);
+            receiver = arguments[0];
+            arguments = arguments.Skip(1).ToArray();
+        }
+        if (
+            receiver is not PythonExceptionValue exception
+            || !PythonUnicodeErrors.IsApplicable(exception)
+            || PythonUnicodeErrors.IsEncode(exception) != (owner == "UnicodeEncodeError")
+        )
+            throw Error(
+                $"descriptor '__str__' requires a '{owner}' object but received a '{ManagedObjectProtocols.GetTypeName(receiver)}'",
+                span
+            );
+        if (keywords.Count != 0)
+            throw Error("wrapper __str__() takes no keyword arguments", span);
+        if (arguments.Count != 0)
+            throw Error($"expected 0 arguments, got {arguments.Count}", span);
+        return new PythonTextValue(PythonUnicodeErrors.Format(exception, span));
     }
 
     private static PythonValue InvokeGroupMethod(
@@ -283,6 +348,15 @@ internal static class PythonExceptionProtocols
             );
         if (keywordNames.Count != 0)
             throw Error($"{exception.TypeName}() takes no keyword arguments", span);
+        if (owner is "UnicodeDecodeError" or "UnicodeEncodeError")
+        {
+            PythonUnicodeErrors.Initialize(
+                exception,
+                arguments,
+                UserObjectProtocols.Dispatcher?.CurrentSpan ?? span
+            );
+            return PythonNoneValue.Instance;
+        }
         ManagedObjectProtocols.ApplyBaseExceptionInit(exception, arguments);
         if (owner == "StopIteration" || owner == "SystemExit" && arguments.Count != 0)
             exception.InitializeSpecializedArguments(arguments);

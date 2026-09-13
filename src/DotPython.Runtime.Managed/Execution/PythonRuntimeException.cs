@@ -37,4 +37,6 @@ public sealed class PythonRuntimeException : Exception
     public TextSpan Span { get; }
 
     internal string? PythonExceptionTypeName { get; }
+
+    internal PythonExceptionValue? ExceptionValue { get; init; }
 }

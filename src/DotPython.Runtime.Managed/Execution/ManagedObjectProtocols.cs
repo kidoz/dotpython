@@ -255,6 +255,8 @@ internal static class ManagedObjectProtocols
                 return external.Protocol.GetAttribute(name, span);
             case PythonTypeMetadataDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
+            case PythonUnicodeErrorDescriptorValue descriptor:
+                return descriptor.GetAttribute(name, span);
             case PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor:
                 return PythonTypeMethodDescriptors.GetAttribute(descriptor, name, span);
             case PythonPropertyValue property:
@@ -351,6 +353,9 @@ internal static class ManagedObjectProtocols
                     return storedAttribute;
                 }
                 return BindDescriptor(classAttribute, exception, exceptionClass, span, name);
+            case PythonExceptionValue { ManagedType: null } unicodeException
+                when PythonUnicodeErrors.TryGet(unicodeException, name, out var unicodeMember):
+                return unicodeMember;
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
                 exceptionDictionary.HasInstanceDictionary = true;
                 return exceptionDictionary.Attributes.Dictionary;
@@ -393,6 +398,7 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue exceptionInstance
                 when name
                     is "__new__"
+                        or "__str__"
                         or "__init__"
                         or "derive"
                         or "split"
@@ -919,6 +925,9 @@ internal static class ManagedObjectProtocols
                 when TryGetTypeAttribute(exceptionClass, name, out var descriptor)
                     && TrySetDescriptor(descriptor, exception, name, value, span):
                 return;
+            case PythonExceptionValue { ManagedType: null } unicodeException
+                when PythonUnicodeErrors.TrySet(unicodeException, name, value, span):
+                return;
             case PythonExceptionValue exceptionInstance when name == "__dict__":
                 exceptionInstance.Attributes = new PythonAttributeDictionary(
                     RequireNamespaceDictionary(value, span)
@@ -930,7 +939,10 @@ internal static class ManagedObjectProtocols
                     value as PythonTupleValue
                     ?? new PythonTupleValue([.. MaterializeValues(value, span)]);
                 exceptionInstance.AssignArguments(arguments);
-                if (exceptionInstance.GroupExceptions is null)
+                if (
+                    exceptionInstance.GroupExceptions is null
+                    && exceptionInstance.UnicodeErrorState is null
+                )
                 {
                     exceptionInstance.Message = arguments.Elements.Length switch
                     {
@@ -1154,6 +1166,9 @@ internal static class ManagedObjectProtocols
             case PythonTypeMetadataDescriptorValue descriptor:
                 descriptor.Set(instance, value, span);
                 return true;
+            case PythonUnicodeErrorDescriptorValue descriptor:
+                descriptor.Set(instance, value, span);
+                return true;
             case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
                 throw Fault("DPY4023", $"Attribute '{name}' is read-only.", span, "AttributeError");
             case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
@@ -1189,6 +1204,9 @@ internal static class ManagedObjectProtocols
         switch (descriptorValue)
         {
             case PythonTypeMetadataDescriptorValue descriptor:
+                descriptor.Delete(instance, span);
+                return true;
+            case PythonUnicodeErrorDescriptorValue descriptor:
                 descriptor.Delete(instance, span);
                 return true;
             case PythonDescriptorValue { IsDataDescriptor: true }:
@@ -1279,6 +1297,9 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue { ManagedType: { } exceptionClass } exception
                 when TryGetTypeAttribute(exceptionClass, name, out var descriptor)
                     && TryDeleteDescriptor(descriptor, exception, name, span):
+                return;
+            case PythonExceptionValue { ManagedType: null } unicodeException
+                when PythonUnicodeErrors.TryDelete(unicodeException, name, span):
                 return;
             case PythonExceptionValue when name == "__dict__":
                 throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
@@ -1375,7 +1396,7 @@ internal static class ManagedObjectProtocols
     {
         exception.PreserveSpecializedArguments();
         exception.Arguments = [.. arguments];
-        if (exception.GroupExceptions is not null)
+        if (exception.GroupExceptions is not null || exception.UnicodeErrorState is not null)
             return;
         exception.Message = arguments.Count switch
         {
@@ -2926,6 +2947,7 @@ internal static class ManagedObjectProtocols
                 metaclass.Name,
             PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
+            PythonUnicodeErrorDescriptorValue => "member_descriptor",
             PythonTypeMetadataDescriptorValue { Name: "__base__" } => "member_descriptor",
             PythonTypeMetadataDescriptorValue => "getset_descriptor",
             PythonPropertyValue => "property",
@@ -3006,7 +3028,9 @@ internal static class ManagedObjectProtocols
         value switch
         {
             PythonDescriptorValue descriptor => descriptor.IsDataDescriptor,
-            PythonPropertyValue or PythonTypeMetadataDescriptorValue => true,
+            PythonPropertyValue
+            or PythonTypeMetadataDescriptorValue
+            or PythonUnicodeErrorDescriptorValue => true,
             _ => GetManagedType(value) is { } type
                 && (
                     TryGetTypeAttribute(type, "__set__", out _)
@@ -3019,6 +3043,7 @@ internal static class ManagedObjectProtocols
             is PythonDescriptorValue
                 or PythonPropertyValue
                 or PythonTypeMetadataDescriptorValue
+                or PythonUnicodeErrorDescriptorValue
                 or PythonProtocolFunctionValue { IsTypeMethodDescriptor: true }
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
 
@@ -3079,6 +3104,7 @@ internal static class ManagedObjectProtocols
         return value switch
         {
             PythonTypeMetadataDescriptorValue descriptor => descriptor.Get(instance, owner, span),
+            PythonUnicodeErrorDescriptorValue descriptor => descriptor.Get(instance, owner, span),
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor =>
                 PythonTypeMethodDescriptors.Bind(descriptor, instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),

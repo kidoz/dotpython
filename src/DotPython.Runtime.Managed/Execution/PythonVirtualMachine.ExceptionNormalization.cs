@@ -197,7 +197,8 @@ internal sealed partial class PythonVirtualMachine
     private static PythonExceptionValue ExceptionFromNormalizationFault(
         PythonRuntimeException fault
     ) =>
-        new(
+        fault.ExceptionValue
+        ?? new(
             fault.PythonExceptionTypeName
                 ?? PythonErrorIndicator.GetPythonExceptionTypeName(fault.Code)!,
             fault.Message

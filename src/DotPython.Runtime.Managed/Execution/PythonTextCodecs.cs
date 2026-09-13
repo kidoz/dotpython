@@ -123,39 +123,27 @@ internal static class PythonTextCodecs
         );
     }
 
-    internal static byte[] Encode(string text, string encoding, string errors, TextSpan span)
+    internal static byte[] Encode(
+        PythonTextValue source,
+        string encoding,
+        string errors,
+        TextSpan span
+    )
     {
         var codec = Resolve(encoding, span);
-        try
+        if (errors == "strict")
+            return PythonTextEncoding.EncodeStrict(source, codec, span);
+        return errors switch
         {
-            return errors switch
-            {
-                "strict" => codec.GetBytes(text),
-                "ignore" => ReplacementEncoder(codec, string.Empty).GetBytes(text),
-                "replace" => ReplacementEncoder(codec, "?").GetBytes(text),
-                _ => throw ManagedObjectProtocols.Fault(
-                    "DPY4003",
-                    $"unknown error handler name '{errors}'",
-                    span,
-                    "LookupError"
-                ),
-            };
-        }
-        catch (EncoderFallbackException exception)
-        {
-            var character = (int)exception.CharUnknown;
-            var escaped =
-                character <= byte.MaxValue ? $"\\x{character:x2}"
-                : character <= char.MaxValue ? $"\\u{character:x4}"
-                : $"\\U{character:x8}";
-            var range = codec.CodePage == Encoding.ASCII.CodePage ? 128 : 256;
-            throw ManagedObjectProtocols.Fault(
+            "ignore" => ReplacementEncoder(codec, string.Empty).GetBytes(source.Value),
+            "replace" => ReplacementEncoder(codec, "?").GetBytes(source.Value),
+            _ => throw ManagedObjectProtocols.Fault(
                 "DPY4003",
-                $"'{encoding}' codec can't encode character '{escaped}' in position {exception.Index}: ordinal not in range({range})",
+                $"unknown error handler name '{errors}'",
                 span,
-                "UnicodeEncodeError"
-            );
-        }
+                "LookupError"
+            ),
+        };
     }
 
     private static Encoding ReplacementEncoder(Encoding codec, string replacement) =>

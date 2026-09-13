@@ -51,21 +51,21 @@ internal static class PythonBuiltinMethods
         ),
         ["split"] = Text("split", 0, 2, SplitText)
             .WithSignature(["sep", "maxsplit"], [PythonNoneValue.Instance, null]),
-        ["encode"] = Text(
-                "encode",
-                0,
-                2,
-                (text, arguments) =>
-                    PythonByteSequenceValue.Create(
-                        PythonTextCodecs.Encode(
-                            text,
-                            arguments.Count > 0 ? RequireText("encode", arguments[0]) : "utf-8",
-                            arguments.Count > 1 ? RequireText("encode", arguments[1]) : "strict",
-                            default
-                        )
+        ["encode"] = new PythonProtocolFunctionValue(
+            "encode",
+            (target, arguments) =>
+            {
+                RequireArguments("encode", arguments, 0, 2);
+                return PythonByteSequenceValue.Create(
+                    PythonTextCodecs.Encode(
+                        (PythonTextValue)target!,
+                        arguments.Count > 0 ? RequireText("encode", arguments[0]) : "utf-8",
+                        arguments.Count > 1 ? RequireText("encode", arguments[1]) : "strict",
+                        UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
                     )
-            )
-            .WithSignature(["encoding", "errors"], [null, null]),
+                );
+            }
+        ).WithSignature(["encoding", "errors"], [null, null]),
         ["join"] = Text("join", 1, 1, JoinText),
         ["format"] = Text(
             "format",

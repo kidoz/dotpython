@@ -126,7 +126,7 @@ public sealed class ManagedPythonEngine
             }
             catch (PythonRaisedException raised)
             {
-                throw ToRuntimeFault(raised);
+                throw ToRuntimeFault(raised, virtualMachine);
             }
         }
     }
@@ -168,7 +168,7 @@ public sealed class ManagedPythonEngine
             }
             catch (PythonRaisedException raised)
             {
-                throw ToRuntimeFault(raised);
+                throw ToRuntimeFault(raised, virtualMachine);
             }
         }
     }
@@ -316,7 +316,7 @@ public sealed class ManagedPythonEngine
         }
         catch (PythonRaisedException raised)
         {
-            var fault = ToRuntimeFault(raised);
+            var fault = ToRuntimeFault(raised, virtualMachine);
             return new ManagedExecutionResult(
                 source,
                 [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
@@ -377,8 +377,29 @@ public sealed class ManagedPythonEngine
             importSpan
         );
 
-    private static PythonRuntimeException ToRuntimeFault(PythonRaisedException raised)
+    private static PythonRuntimeException ToRuntimeFault(
+        PythonRaisedException raised,
+        PythonVirtualMachine? virtualMachine
+    )
     {
+        string? unicodeMessage = null;
+        if (raised.Value.UnicodeErrorState is not null)
+        {
+            try
+            {
+                unicodeMessage = virtualMachine is null
+                    ? raised.Value.ToDisplayString()
+                    : virtualMachine.FormatExceptionMessage(raised.Value);
+            }
+            catch (PythonRuntimeException fault) when (fault.PythonExceptionTypeName is null)
+            {
+                return fault;
+            }
+            catch (Exception error) when (error is PythonRaisedException or PythonRuntimeException)
+            {
+                unicodeMessage = "<exception str() failed>";
+            }
+        }
         if (raised.OriginatingFault is { } originatingFault)
         {
             // Native invocation faults carry the Python exception type separately so managed
@@ -386,7 +407,7 @@ public sealed class ManagedPythonEngine
             var faultMessage = originatingFault
                 is { Code: "DPY8005", PythonExceptionTypeName: not null }
                 ? $"{raised.Value.TypeName}: {raised.Value.Message}"
-                : originatingFault.Message;
+                : unicodeMessage ?? originatingFault.Message;
             return new PythonRuntimeException(
                 originatingFault.Code,
                 faultMessage,
@@ -395,10 +416,11 @@ public sealed class ManagedPythonEngine
         }
 
         var span = raised.Traceback.Count == 0 ? new TextSpan(0, 0) : raised.Traceback[0].Span;
+        var display = raised.Value.UnicodeErrorState is null
+            ? raised.Value.Message
+            : unicodeMessage!;
         var message =
-            raised.Value.Message.Length == 0
-                ? raised.Value.TypeName
-                : $"{raised.Value.TypeName}: {raised.Value.Message}";
+            display.Length == 0 ? raised.Value.TypeName : $"{raised.Value.TypeName}: {display}";
         return new PythonRuntimeException("DPY4031", message, span);
     }
 }

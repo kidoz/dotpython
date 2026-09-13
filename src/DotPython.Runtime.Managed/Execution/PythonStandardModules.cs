@@ -1800,12 +1800,15 @@ internal static class PythonStandardModules
                 .MaterializeValues(arguments[1], span)
                 .Cast<PythonExceptionValue>()
                 .ToArray();
-        return new PythonExceptionValue(exception.TypeName, exception.Message)
+        var restored = new PythonExceptionValue(exception.TypeName, exception.Message)
         {
             ManagedType = exception.ManagedType,
             Arguments = arguments,
             GroupExceptions = nested,
         };
+        if (PythonUnicodeErrors.IsApplicable(exception))
+            PythonUnicodeErrors.Initialize(restored, arguments, span);
+        return restored;
     }
 
     private static void CopyAttributes(

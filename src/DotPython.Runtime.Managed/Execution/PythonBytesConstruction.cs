@@ -65,7 +65,7 @@ internal static class PythonBytesConstruction
             if (source is not PythonTextValue text)
                 throw Error("encoding without a string argument", "TypeError", span);
             return PythonByteSequenceValue.Create(
-                PythonTextCodecs.Encode(text.Value, encoding, errors ?? "strict", span)
+                PythonTextCodecs.Encode(text, encoding, errors ?? "strict", span)
             );
         }
         if (errors is not null)

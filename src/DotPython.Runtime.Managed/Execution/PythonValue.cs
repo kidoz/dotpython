@@ -654,6 +654,8 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal bool SuppressContext { get; set; }
 
+    internal PythonUnicodeErrors.State? UnicodeErrorState { get; set; }
+
     private IReadOnlyList<PythonExceptionValue>? _groupExceptions;
     private IReadOnlyList<PythonValue>? _groupArguments;
     private PythonTupleValue? _groupExceptionTuple;
@@ -739,10 +741,34 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
-    internal override string ToDisplayString() =>
-        GroupExceptions is { } group
+    internal override string ToDisplayString()
+    {
+        if (UnicodeErrorState is not null)
+        {
+            var dispatcher = UserObjectProtocols.Dispatcher;
+            var span = dispatcher?.CurrentSpan ?? default;
+            if (
+                dispatcher is not null
+                && ManagedType is not null
+                && ManagedObjectProtocols.TryGetSpecialMethod(this, "__str__", out var method)
+            )
+            {
+                var result = dispatcher.Invoke(method, [], span);
+                return result is PythonTextValue text
+                    ? text.Value
+                    : throw ManagedObjectProtocols.Fault(
+                        "DPY4003",
+                        $"__str__ returned non-string (type {ManagedObjectProtocols.GetTypeName(result)})",
+                        span,
+                        "TypeError"
+                    );
+            }
+            return PythonUnicodeErrors.Format(this, span);
+        }
+        return GroupExceptions is { } group
             ? $"{Message} ({group.Count} sub-exception{(group.Count == 1 ? "" : "s")})"
             : Message;
+    }
 
     internal override string ToRepresentationString()
     {

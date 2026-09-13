@@ -226,16 +226,37 @@ internal static class PythonBytesDecoding
                     }
                     break;
                 case "strict":
-                    var location =
-                        end == _position + 1
-                            ? $"byte 0x{bytes[_position]:x2} in position {_position}"
-                            : $"bytes in position {_position}-{end - 1}";
-                    throw ManagedObjectProtocols.Fault(
+                    // CPython snapshots the entire input for decoder-generated
+                    // errors. A directly called exception constructor retains it.
+                    var source = new byte[bytes.Length];
+                    for (var offset = 0; offset < bytes.Length; offset += 256)
+                    {
+                        UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                        bytes
+                            .AsSpan(offset, Math.Min(256, bytes.Length - offset))
+                            .CopyTo(source.AsSpan(offset));
+                    }
+                    var exception = new PythonExceptionValue("UnicodeDecodeError", string.Empty);
+                    PythonUnicodeErrors.Initialize(
+                        exception,
+                        [
+                            new PythonTextValue(_encoding),
+                            PythonByteSequenceValue.Create(source),
+                            PythonWholeNumberValue.Create(_position),
+                            PythonWholeNumberValue.Create(end),
+                            new PythonTextValue(reason),
+                        ],
+                        span
+                    );
+                    throw new PythonRuntimeException(
                         "DPY4003",
-                        $"'{_encoding}' codec can't decode {location}: {reason}",
+                        PythonUnicodeErrors.Format(exception, span),
                         span,
                         "UnicodeDecodeError"
-                    );
+                    )
+                    {
+                        ExceptionValue = exception,
+                    };
                 case "xmlcharrefreplace":
                 case "namereplace":
                     throw ManagedObjectProtocols.Fault(

@@ -21,7 +21,7 @@ internal sealed class PythonRaisedException : Exception
         PythonExceptionValue value,
         PythonRuntimeException? originatingFault = null
     )
-        : base(value.ToDisplayString())
+        : base(value.UnicodeErrorState is null ? value.ToDisplayString() : value.Message)
     {
         Value = value;
         OriginatingFault = originatingFault;
