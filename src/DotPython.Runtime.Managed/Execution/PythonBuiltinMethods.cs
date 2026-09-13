@@ -176,6 +176,13 @@ internal static class PythonBuiltinMethods
         ),
     };
 
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> BytesMethods = new(
+        StringComparer.Ordinal
+    )
+    {
+        ["decode"] = PythonBytesText.DecodeMethod,
+    };
+
     private static readonly Dictionary<string, PythonProtocolFunctionValue> ListMethods = new(
         StringComparer.Ordinal
     )
@@ -560,6 +567,7 @@ internal static class PythonBuiltinMethods
         var table = target switch
         {
             PythonTextValue => TextMethods,
+            PythonByteSequenceValue => BytesMethods,
             PythonListValue => ListMethods,
             PythonDictionaryValue => DictionaryMethods,
             PythonTupleValue => TupleMethods,
@@ -764,6 +772,7 @@ internal static class PythonBuiltinMethods
     internal static bool SupportsMethods(PythonValue target) =>
         target
             is PythonTextValue
+                or PythonByteSequenceValue
                 or PythonListValue
                 or PythonDictionaryValue
                 or PythonTupleValue

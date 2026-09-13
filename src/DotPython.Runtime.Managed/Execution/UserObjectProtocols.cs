@@ -10,6 +10,8 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </summary>
 internal interface IUserObjectDispatcher
 {
+    TextSpan CurrentSpan { get; }
+
     PythonManagedTypeValue ExceptionGroupType { get; }
 
     PythonValue InvokeExceptionGroupMethod(

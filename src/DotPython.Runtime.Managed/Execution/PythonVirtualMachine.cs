@@ -346,6 +346,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     ) => InvokeCallableNested(callable, arguments, span);
 
+    TextSpan IUserObjectDispatcher.CurrentSpan => GetCurrentSpan(CurrentFrame);
+
     TextWriter IUserObjectDispatcher.StandardOutput => _output;
 
     TextWriter IUserObjectDispatcher.StandardError => _standardError;

@@ -228,30 +228,7 @@ internal sealed record PythonByteSequenceValue(byte[] Value) : PythonValue
             _ => new PythonByteSequenceValue(value),
         };
 
-    internal override string ToDisplayString()
-    {
-        var builder = new StringBuilder("b'");
-        foreach (var item in Value)
-        {
-            switch (item)
-            {
-                case (byte)'\\':
-                    builder.Append("\\\\");
-                    break;
-                case (byte)'\'':
-                    builder.Append("\\'");
-                    break;
-                case >= 32 and < 127:
-                    builder.Append((char)item);
-                    break;
-                default:
-                    builder.Append(CultureInfo.InvariantCulture, $"\\x{item:x2}");
-                    break;
-            }
-        }
-
-        return builder.Append('\'').ToString();
-    }
+    internal override string ToDisplayString() => PythonBytesText.Represent(Value);
 
     public bool Equals(PythonByteSequenceValue? other) =>
         other is not null && Value.AsSpan().SequenceEqual(other.Value);
