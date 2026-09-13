@@ -292,63 +292,7 @@ internal static class PythonBuiltinMethods
                 return PythonNoneValue.Instance;
             }
         ),
-        ["sort"] = List(
-                "sort",
-                0,
-                2,
-                (list, arguments) =>
-                {
-                    var key = arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance;
-                    var reverse =
-                        arguments.Count > 1 && ManagedObjectProtocols.IsTrue(arguments[1]);
-                    var keys = new PythonValue[list.Elements.Count];
-                    for (var index = 0; index < keys.Length; index++)
-                    {
-                        keys[index] =
-                            key is PythonNoneValue ? list.Elements[index]
-                            : UserObjectProtocols.Dispatcher is { } dispatcher
-                                ? dispatcher.Invoke(key, [list.Elements[index]], default)
-                            : ManagedObjectProtocols.Call(key, [list.Elements[index]]);
-                    }
-
-                    List<PythonValue> sorted;
-                    try
-                    {
-                        var indexed = list.Elements.Select((element, index) => (element, index));
-                        sorted = (
-                            reverse
-                                ? indexed.OrderByDescending(
-                                    pair => keys[pair.index],
-                                    PythonOrderingComparer.Instance
-                                )
-                                : indexed.OrderBy(
-                                    pair => keys[pair.index],
-                                    PythonOrderingComparer.Instance
-                                )
-                        )
-                            .Select(pair => pair.element)
-                            .ToList();
-                    }
-                    catch (InvalidOperationException exception)
-                        when (exception.InnerException
-                                is PythonRuntimeException
-                                    or PythonRaisedException
-                        )
-                    {
-                        System
-                            .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(
-                                exception.InnerException
-                            )
-                            .Throw();
-                        throw;
-                    }
-
-                    list.Elements.Clear();
-                    list.Elements.AddRange(sorted);
-                    return PythonNoneValue.Instance;
-                }
-            )
-            .WithSignature(["key", "reverse"], [PythonNoneValue.Instance, PythonTruthValue.False]),
+        ["sort"] = PythonListSorting.Method,
         ["copy"] = List("copy", 0, 0, (list, _) => new PythonListValue([.. list.Elements])),
     };
 

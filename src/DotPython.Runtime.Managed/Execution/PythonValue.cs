@@ -1137,6 +1137,9 @@ internal sealed record PythonDictionaryViewValue(string Kind, PythonDictionaryVa
 
 internal sealed record PythonListValue(List<PythonValue> Elements) : PythonValue
 {
+    internal bool SortActive { get; set; }
+    internal bool SortAllocationObserved { get; set; }
+
     internal override string ToDisplayString()
     {
         if (!PythonRepresentationGuard.TryEnter(this))

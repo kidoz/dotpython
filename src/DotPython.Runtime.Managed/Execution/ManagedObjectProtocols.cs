@@ -5,14 +5,6 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
-internal sealed class PythonOrderingComparer : IComparer<PythonValue>
-{
-    internal static readonly PythonOrderingComparer Instance = new();
-
-    public int Compare(PythonValue? left, PythonValue? right) =>
-        ManagedObjectProtocols.CompareOrdered(left!, right!, default);
-}
-
 internal enum PythonRichComparison
 {
     Equal,
@@ -2509,7 +2501,10 @@ internal static class ManagedObjectProtocols
         }
         var iterator = GetIterator(iterable, span, userIteration);
         // Validate hints and run their callbacks; grow only as values actually arrive.
-        PythonLengthHints.GetLengthHint(iterable, span);
+        var hint = PythonLengthHints.GetLengthHint(iterable, span);
+        // CPython allocates for a positive hint even if the iterator yields nothing.
+        if (list.SortActive && hint > 0)
+            list.SortAllocationObserved = true;
         while (TryGetNext(iterator, out var value, span))
             list.Elements.Add(value);
     }

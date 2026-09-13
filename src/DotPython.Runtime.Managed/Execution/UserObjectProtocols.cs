@@ -389,6 +389,15 @@ internal static class UserObjectProtocols
     // Rich comparison
     // ----------------------------------------------------------------------------
 
+    internal static PythonValue InvokeSortRichCompare(
+        PythonManagedObjectValue left,
+        PythonValue right,
+        TextSpan span
+    ) =>
+        TryInvoke(left, "__lt__", [right], span, out var result, invokeNone: true)
+            ? result
+            : PythonNotImplementedValue.Instance;
+
     /// <summary>
     /// Rich comparison through `__eq__`/`__lt__`/…: forward, then reflected on the other
     /// operand; `==`/`!=` fall back to identity, ordering raises TypeError.
@@ -421,7 +430,7 @@ internal static class UserObjectProtocols
 
         if (
             reflectedFirst
-            && TryInvoke(right, reflectedNames.Forward, [left], span, out result)
+            && TryInvoke(right, reflectedNames.Forward, [left], span, out result, invokeNone: true)
             && result is not PythonNotImplementedValue
         )
         {
@@ -429,7 +438,7 @@ internal static class UserObjectProtocols
         }
 
         if (
-            TryInvoke(left, names.Forward, [right], span, out result)
+            TryInvoke(left, names.Forward, [right], span, out result, invokeNone: true)
             && result is not PythonNotImplementedValue
         )
         {
@@ -438,7 +447,7 @@ internal static class UserObjectProtocols
 
         if (
             !reflectedFirst
-            && TryInvoke(right, reflectedNames.Forward, [left], span, out result)
+            && TryInvoke(right, reflectedNames.Forward, [left], span, out result, invokeNone: true)
             && result is not PythonNotImplementedValue
         )
         {
@@ -453,9 +462,9 @@ internal static class UserObjectProtocols
             case PythonRichComparison.NotEqual:
                 // Default `__ne__` inverts `__eq__` unless that is also NotImplemented.
                 if (
-                    TryInvoke(left, "__eq__", [right], span, out var equal)
+                    TryInvoke(left, "__eq__", [right], span, out var equal, invokeNone: true)
                         && equal is not PythonNotImplementedValue
-                    || TryInvoke(right, "__eq__", [left], span, out equal)
+                    || TryInvoke(right, "__eq__", [left], span, out equal, invokeNone: true)
                         && equal is not PythonNotImplementedValue
                 )
                 {

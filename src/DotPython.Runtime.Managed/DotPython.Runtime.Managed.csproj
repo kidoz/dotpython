@@ -4,6 +4,17 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <None
+            Include="../../third_party/licenses/CPython-LICENSE.txt"
+            Link="licenses/CPython-LICENSE.txt"
+            CopyToOutputDirectory="PreserveNewest"
+            CopyToPublishDirectory="PreserveNewest"
+            Pack="true"
+            PackagePath="licenses/"
+        />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="../DotPython.Abstractions/DotPython.Abstractions.csproj" />
         <ProjectReference Include="../DotPython.Compiler/DotPython.Compiler.csproj" />
         <ProjectReference Include="../DotPython.Language/DotPython.Language.csproj" />

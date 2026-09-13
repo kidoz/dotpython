@@ -2139,25 +2139,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             case "sorted":
             {
-                PythonValue? key = null;
-                var reverse = false;
-                for (var index = 0; index < keywordNames.Length; index++)
-                {
-                    switch (keywordNames[index])
-                    {
-                        case "key":
-                            key = keywordValues[index];
-                            break;
-                        case "reverse":
-                            reverse = IsTruthy(keywordValues[index]);
-                            break;
-                        default:
-                            throw UnexpectedBuiltinKeyword(builtin, keywordNames[index], span);
-                    }
-                }
-
                 ValidateBuiltinArgumentCount("sorted", positional, span);
-                return SortedWithKeywords(positional[0], key, reverse, span);
+                var result = new PythonListValue(
+                    ManagedObjectProtocols.MaterializeValues(
+                        positional[0],
+                        span,
+                        _userIterationDispatcher,
+                        useLengthHint: true
+                    )
+                );
+                PythonListSorting.Invoke(result, [], keywordNames, keywordValues, span);
+                return result;
             }
             case "min":
             case "max":
@@ -2321,58 +2313,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             span,
             "TypeError"
         );
-
-    private PythonListValue SortedWithKeywords(
-        PythonValue iterable,
-        PythonValue? key,
-        bool reverse,
-        TextSpan span
-    )
-    {
-        var values = ManagedObjectProtocols.MaterializeValues(
-            iterable,
-            span,
-            _userIterationDispatcher
-        );
-        var sortKeys = new PythonValue[values.Count];
-        if (key is null or PythonNoneValue)
-        {
-            for (var index = 0; index < sortKeys.Length; index++)
-            {
-                sortKeys[index] = values[index];
-            }
-        }
-        else
-        {
-            for (var index = 0; index < sortKeys.Length; index++)
-            {
-                sortKeys[index] = InvokeCallableNested(key, [values[index]], span);
-            }
-        }
-
-        try
-        {
-            var ordered = reverse
-                ? values
-                    .Select((value, index) => (value, index))
-                    .OrderByDescending(
-                        pair => sortKeys[pair.index],
-                        PythonOrderingComparer.Instance
-                    )
-                : values
-                    .Select((value, index) => (value, index))
-                    .OrderBy(pair => sortKeys[pair.index], PythonOrderingComparer.Instance);
-            return new PythonListValue([.. ordered.Select(pair => pair.value)]);
-        }
-        catch (InvalidOperationException exception)
-            when (exception.InnerException is PythonRuntimeException or PythonRaisedException)
-        {
-            System
-                .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerException)
-                .Throw();
-            throw;
-        }
-    }
 
     private void ApplyExceptStarMatch(PythonInstruction instruction)
     {
@@ -7132,20 +7072,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             _userIterationDispatcher,
             useLengthHint: true
         );
-        try
-        {
-            return new PythonListValue([
-                .. values.OrderBy(value => value, PythonOrderingComparer.Instance),
-            ]);
-        }
-        catch (InvalidOperationException exception)
-            when (exception.InnerException is PythonRuntimeException or PythonRaisedException)
-        {
-            System
-                .Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerException)
-                .Throw();
-            throw;
-        }
+        var result = new PythonListValue(values);
+        PythonListSorting.Sort(result, PythonNoneValue.Instance, PythonTruthValue.False, span);
+        return result;
     }
 
     private static PythonValue Power(IReadOnlyList<PythonValue> arguments, TextSpan span)
