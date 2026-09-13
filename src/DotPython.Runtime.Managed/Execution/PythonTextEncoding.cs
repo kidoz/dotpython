@@ -1,117 +1,248 @@
+using System.Globalization;
 using System.Text;
 using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
-/// <summary>Strict encoder validation with Python character offsets and error ranges.</summary>
+/// <summary>Bounded text encoding with Python character offsets and error handlers.</summary>
 internal static class PythonTextEncoding
 {
     private const int MaximumBytes = 10_000_000;
 
-    internal static byte[] EncodeStrict(PythonTextValue source, Encoding codec, TextSpan span)
+    internal static byte[] Encode(
+        PythonTextValue source,
+        Encoding codec,
+        string errors,
+        TextSpan span
+    )
     {
-        var text = source.Value;
-        var codePage = codec.CodePage;
-        var preamble = codec.GetPreamble();
-        var encoding = codePage switch
+        var encoder = new Encoder(source, codec, errors, span);
+        // Count before allocating. The second pass follows exactly the same
+        // replacement and encoding path, checking current work in both passes.
+        var length = encoder.Run(null);
+        var result = new byte[length];
+        encoder.Run(result);
+        return result;
+    }
+
+    private sealed class Encoder(
+        PythonTextValue source,
+        Encoding codec,
+        string errors,
+        TextSpan span
+    )
+    {
+        private readonly int _codePage = codec.CodePage;
+        private readonly byte[] _preamble = codec.GetPreamble();
+        private byte[]? _output;
+        private int _length;
+
+        internal int Run(byte[]? output)
         {
-            20127 => "ascii",
-            28591 => "latin-1",
-            65001 => "utf-8",
-            1200 => preamble.Length == 0 ? "utf-16-le" : "utf-16",
-            1201 => "utf-16-be",
-            _ => throw new ArgumentOutOfRangeException(nameof(codec)),
-        };
-        var position = 0;
-        var offset = 0;
-        var byteCount = preamble.Length;
-        UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-        while (offset < text.Length)
-        {
-            if ((position & 127) == 0)
-                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-            var character = ReadCharacter(text, offset, out var width);
-            if (IsInvalid(character, codePage))
+            _output = output;
+            _length = 0;
+            CheckWork();
+            foreach (var value in _preamble)
+                WriteByte(value);
+            var text = source.Value;
+            var position = 0;
+            for (var offset = 0; offset < text.Length; ++position)
             {
-                var end = position + 1;
-                var next = offset + width;
-                // UTF-16 reports the first surrogate; UTF-8 and the ordinal
-                // encoders report the complete consecutive invalid run.
-                if (codePage is not (1200 or 1201))
-                {
-                    while (next < text.Length)
-                    {
-                        if (((end - position) & 127) == 0)
-                            UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-                        var following = ReadCharacter(text, next, out var nextWidth);
-                        if (!IsInvalid(following, codePage))
-                            break;
-                        next += nextWidth;
-                        ++end;
-                    }
-                }
-                var reason = codePage switch
-                {
-                    20127 => "ordinal not in range(128)",
-                    28591 => "ordinal not in range(256)",
-                    _ => "surrogates not allowed",
-                };
-                var exception = new PythonExceptionValue("UnicodeEncodeError", string.Empty);
-                PythonUnicodeErrors.Initialize(
-                    exception,
-                    [
-                        new PythonTextValue(encoding),
-                        source,
-                        PythonWholeNumberValue.Create(position),
-                        PythonWholeNumberValue.Create(end),
-                        new PythonTextValue(reason),
-                    ],
-                    span
-                );
-                throw new PythonRuntimeException(
-                    "DPY4003",
-                    PythonUnicodeErrors.Format(exception, span),
-                    span,
-                    "UnicodeEncodeError"
-                )
-                {
-                    ExceptionValue = exception,
-                };
+                if ((position & 127) == 0)
+                    CheckWork();
+                var character = ReadCharacter(text, offset, out var width);
+                if (!IsInvalid(character))
+                    WriteCharacter(character);
+                else
+                    HandleError(character, position, offset, width);
+                offset += width;
             }
-            byteCount += codePage switch
+            CheckWork();
+            return _length;
+        }
+
+        private void HandleError(int character, int position, int offset, int width)
+        {
+            switch (errors)
             {
-                20127 or 28591 => 1,
-                1200 or 1201 => width * 2,
-                _ => character < 0x80 ? 1
-                : character < 0x800 ? 2
-                : character < 0x10000 ? 3
-                : 4,
+                case "ignore":
+                    return;
+                case "replace":
+                    WriteCharacter('?');
+                    return;
+                case "backslashreplace":
+                    var escaped =
+                        character <= 0xff ? $"\\x{character:x2}"
+                        : character <= 0xffff ? $"\\u{character:x4}"
+                        : $"\\U{character:x8}";
+                    WriteReplacement(escaped);
+                    return;
+                case "xmlcharrefreplace":
+                    WriteReplacement("&#" + character.ToString(CultureInfo.InvariantCulture) + ";");
+                    return;
+                case "surrogatepass" when _codePage is 65001 or 1200 or 1201:
+                    WriteCharacter(character);
+                    return;
+                case "surrogateescape"
+                    when _codePage is not (1200 or 1201) && character is >= 0xdc80 and <= 0xdcff:
+                    WriteByte(character - 0xdc00);
+                    return;
+                case "strict":
+                case "surrogatepass":
+                case "surrogateescape":
+                    ThrowEncodingError(position, offset, width);
+                    return;
+                default:
+                    // Handler lookup is deferred until unencodable input needs it.
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4003",
+                        $"unknown error handler name '{errors}'",
+                        span,
+                        "LookupError"
+                    );
+            }
+        }
+
+        private void ThrowEncodingError(int position, int offset, int width)
+        {
+            var end = position + 1;
+            // UTF-16 reports the first surrogate. Other represented codecs
+            // include the remainder of the consecutive unencodable run.
+            if (_codePage is not (1200 or 1201))
+            {
+                var next = offset + width;
+                while (next < source.Value.Length)
+                {
+                    if (((end - position) & 127) == 0)
+                        CheckWork();
+                    var following = ReadCharacter(source.Value, next, out var nextWidth);
+                    if (!IsInvalid(following))
+                        break;
+                    next += nextWidth;
+                    ++end;
+                }
+            }
+            var encoding = _codePage switch
+            {
+                20127 => "ascii",
+                28591 => "latin-1",
+                65001 => "utf-8",
+                1200 => _preamble.Length == 0 ? "utf-16-le" : "utf-16",
+                1201 => "utf-16-be",
+                _ => throw new InvalidOperationException("Unsupported encoding code page."),
             };
-            if (byteCount > MaximumBytes)
+            var reason = _codePage switch
+            {
+                20127 => "ordinal not in range(128)",
+                28591 => "ordinal not in range(256)",
+                _ => "surrogates not allowed",
+            };
+            var exception = new PythonExceptionValue("UnicodeEncodeError", string.Empty);
+            PythonUnicodeErrors.Initialize(
+                exception,
+                [
+                    new PythonTextValue(encoding),
+                    source,
+                    PythonWholeNumberValue.Create(position),
+                    PythonWholeNumberValue.Create(end),
+                    new PythonTextValue(reason),
+                ],
+                span
+            );
+            throw new PythonRuntimeException(
+                "DPY4003",
+                PythonUnicodeErrors.Format(exception, span),
+                span,
+                "UnicodeEncodeError"
+            )
+            {
+                ExceptionValue = exception,
+            };
+        }
+
+        private void WriteReplacement(string replacement)
+        {
+            // Replacement text belongs to the target codec, including UTF-16
+            // byte order. The stream preamble has already been emitted once.
+            foreach (var character in replacement)
+                WriteCharacter(character);
+        }
+
+        private void WriteCharacter(int character)
+        {
+            if (_codePage is 20127 or 28591)
+                WriteByte(character);
+            else if (_codePage is 1200 or 1201)
+            {
+                if (character > 0xffff)
+                {
+                    var supplementary = character - 0x10000;
+                    WriteCodeUnit(0xd800 | (supplementary >> 10));
+                    WriteCodeUnit(0xdc00 | (supplementary & 0x3ff));
+                }
+                else
+                    WriteCodeUnit(character);
+            }
+            else if (character < 0x80)
+                WriteByte(character);
+            else if (character < 0x800)
+            {
+                WriteByte(0xc0 | (character >> 6));
+                WriteByte(0x80 | (character & 0x3f));
+            }
+            else if (character < 0x10000)
+            {
+                WriteByte(0xe0 | (character >> 12));
+                WriteByte(0x80 | ((character >> 6) & 0x3f));
+                WriteByte(0x80 | (character & 0x3f));
+            }
+            else
+            {
+                WriteByte(0xf0 | (character >> 18));
+                WriteByte(0x80 | ((character >> 12) & 0x3f));
+                WriteByte(0x80 | ((character >> 6) & 0x3f));
+                WriteByte(0x80 | (character & 0x3f));
+            }
+        }
+
+        private void WriteCodeUnit(int character)
+        {
+            if (_codePage == 1201)
+            {
+                WriteByte(character >> 8);
+                WriteByte(character & 0xff);
+            }
+            else
+            {
+                WriteByte(character & 0xff);
+                WriteByte(character >> 8);
+            }
+        }
+
+        private void WriteByte(int value)
+        {
+            if (_length == MaximumBytes)
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
                     "encoded bytes exceed the managed materialization limit",
                     span,
                     "OverflowError"
                 );
-            offset += width;
-            ++position;
+            if (_output is not null)
+                _output[_length] = (byte)value;
+            ++_length;
         }
-        UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-        var result = new byte[byteCount];
-        preamble.CopyTo(result, 0);
-        codec.GetBytes(text.AsSpan(), result.AsSpan(preamble.Length));
-        UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-        return result;
-    }
 
-    private static bool IsInvalid(int character, int codePage) =>
-        codePage switch
-        {
-            20127 => character >= 128,
-            28591 => character >= 256,
-            _ => character is >= 0xd800 and <= 0xdfff,
-        };
+        private bool IsInvalid(int character) =>
+            _codePage switch
+            {
+                20127 => character >= 128,
+                28591 => character >= 256,
+                _ => character is >= 0xd800 and <= 0xdfff,
+            };
+
+        private void CheckWork() => UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+    }
 
     private static int ReadCharacter(string text, int offset, out int width)
     {

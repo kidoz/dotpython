@@ -65,7 +65,10 @@ internal static class PythonBuiltinMethods
                     )
                 );
             }
-        ).WithSignature(["encoding", "errors"], [null, null]),
+        ).WithSignature(
+            ["encoding", "errors"],
+            [new PythonTextValue("utf-8"), new PythonTextValue("strict")]
+        ),
         ["join"] = Text("join", 1, 1, JoinText),
         ["format"] = Text(
             "format",

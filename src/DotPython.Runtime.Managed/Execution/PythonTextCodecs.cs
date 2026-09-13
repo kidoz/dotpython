@@ -130,26 +130,17 @@ internal static class PythonTextCodecs
         TextSpan span
     )
     {
-        var codec = Resolve(encoding, span);
-        if (errors == "strict")
-            return PythonTextEncoding.EncodeStrict(source, codec, span);
-        return errors switch
-        {
-            "ignore" => ReplacementEncoder(codec, string.Empty).GetBytes(source.Value),
-            "replace" => ReplacementEncoder(codec, "?").GetBytes(source.Value),
-            _ => throw ManagedObjectProtocols.Fault(
+        if (
+            encoding.Contains('\0', StringComparison.Ordinal)
+            || errors.Contains('\0', StringComparison.Ordinal)
+        )
+            throw ManagedObjectProtocols.Fault(
                 "DPY4003",
-                $"unknown error handler name '{errors}'",
+                "embedded null character",
                 span,
-                "LookupError"
-            ),
-        };
+                "ValueError"
+            );
+        var codec = Resolve(encoding, span);
+        return PythonTextEncoding.Encode(source, codec, errors, span);
     }
-
-    private static Encoding ReplacementEncoder(Encoding codec, string replacement) =>
-        Encoding.GetEncoding(
-            codec.CodePage,
-            new EncoderReplacementFallback(replacement),
-            codec.DecoderFallback
-        );
 }
