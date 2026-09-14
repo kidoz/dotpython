@@ -53,6 +53,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["UnicodeError"] = "ValueError",
             ["UnicodeDecodeError"] = "UnicodeError",
             ["UnicodeEncodeError"] = "UnicodeError",
+            ["UnicodeTranslateError"] = "UnicodeError",
             ["SystemExit"] = "BaseException",
             ["KeyboardInterrupt"] = "BaseException",
         };
@@ -4692,11 +4693,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (type.Name is "ExceptionGroup" or "BaseExceptionGroup")
             return CreateExceptionGroupValue(arguments);
-        if (type.Name is "UnicodeDecodeError" or "UnicodeEncodeError")
+        if (type.Name is "UnicodeDecodeError" or "UnicodeEncodeError" or "UnicodeTranslateError")
         {
             var exception = new PythonExceptionValue(type.Name, string.Empty)
             {
-                UnicodeErrorState = new() { IsEncode = type.Name == "UnicodeEncodeError" },
+                UnicodeErrorState = new()
+                {
+                    ErrorKind = PythonUnicodeErrors.KindForName(type.Name),
+                },
             };
             PythonUnicodeErrors.Initialize(exception, arguments, GetCurrentSpan(CurrentFrame));
             return exception;
@@ -5895,12 +5899,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             // Exception storage still follows the qualified single-parent representation.
             if (effectiveBases.Length != 1)
+            {
+                // Report incompatible physical layouts before the profile's
+                // restriction on otherwise-compatible exception inheritance.
+                _ = PythonTypeLayout.BestBase(effectiveBases, span);
                 throw Fault(
                     "DPY3114",
                     "Multiple inheritance with exception bases is not supported in this runtime slice.",
                     span,
                     "TypeError"
                 );
+            }
             type = effectiveBases[0] switch
             {
                 PythonManagedTypeValue managedBase => new PythonManagedTypeValue(

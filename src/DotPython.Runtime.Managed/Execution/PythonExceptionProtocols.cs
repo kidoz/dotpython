@@ -34,7 +34,10 @@ internal static class PythonExceptionProtocols
         out PythonValue value
     )
     {
-        if (type.Name is "UnicodeDecodeError" or "UnicodeEncodeError" && name == "__str__")
+        if (
+            type.Name is "UnicodeDecodeError" or "UnicodeEncodeError" or "UnicodeTranslateError"
+            && name == "__str__"
+        )
         {
             value = UnicodeStrMethods.GetOrAdd(
                 type.Name,
@@ -48,7 +51,7 @@ internal static class PythonExceptionProtocols
             return true;
         }
         if (
-            type.Name is "UnicodeDecodeError" or "UnicodeEncodeError"
+            type.Name is "UnicodeDecodeError" or "UnicodeEncodeError" or "UnicodeTranslateError"
             && name is "encoding" or "object" or "start" or "end" or "reason"
         )
         {
@@ -98,6 +101,7 @@ internal static class PythonExceptionProtocols
                     or "SystemExit"
                     or "UnicodeDecodeError"
                     or "UnicodeEncodeError"
+                    or "UnicodeTranslateError"
         )
         {
             value = Initializers.GetOrAdd(
@@ -134,7 +138,7 @@ internal static class PythonExceptionProtocols
         if (
             receiver is not PythonExceptionValue exception
             || !PythonUnicodeErrors.IsApplicable(exception)
-            || PythonUnicodeErrors.IsEncode(exception) != (owner == "UnicodeEncodeError")
+            || PythonUnicodeErrors.GetKind(exception) != PythonUnicodeErrors.KindForName(owner)
         )
             throw Error(
                 $"descriptor '__str__' requires a '{owner}' object but received a '{ManagedObjectProtocols.GetTypeName(receiver)}'",
@@ -283,6 +287,7 @@ internal static class PythonExceptionProtocols
                 or "OSError"
                 or "UnicodeDecodeError"
                 or "UnicodeEncodeError"
+                or "UnicodeTranslateError"
                 or "EOFError"
                 or "UnicodeError"
                 or "KeyboardInterrupt";
@@ -348,7 +353,7 @@ internal static class PythonExceptionProtocols
             );
         if (keywordNames.Count != 0)
             throw Error($"{exception.TypeName}() takes no keyword arguments", span);
-        if (owner is "UnicodeDecodeError" or "UnicodeEncodeError")
+        if (owner is "UnicodeDecodeError" or "UnicodeEncodeError" or "UnicodeTranslateError")
         {
             PythonUnicodeErrors.Initialize(
                 exception,

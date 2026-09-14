@@ -43,8 +43,14 @@ internal sealed partial class PythonVirtualMachine
             PythonBuiltinTypes.GetExceptionType("UnicodeEncodeError"),
             span
         );
+        var unicodeTranslate = IsSubclassOf(
+            type,
+            PythonBuiltinTypes.GetExceptionType("UnicodeTranslateError"),
+            span
+        );
         var unicodeError =
-            unicodeEncode
+            unicodeTranslate
+            || unicodeEncode
             || IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("UnicodeDecodeError"), span);
         var exception = new PythonExceptionValue(
             typeName,
@@ -57,7 +63,15 @@ internal sealed partial class PythonVirtualMachine
         {
             Arguments = [.. arguments],
             ManagedType = type as PythonManagedTypeValue,
-            UnicodeErrorState = unicodeError ? new() { IsEncode = unicodeEncode } : null,
+            UnicodeErrorState = unicodeError
+                ? new()
+                {
+                    ErrorKind =
+                        unicodeTranslate ? PythonUnicodeErrors.Kind.Translate
+                        : unicodeEncode ? PythonUnicodeErrors.Kind.Encode
+                        : PythonUnicodeErrors.Kind.Decode,
+                }
+                : null,
         };
         // BaseException allocation initializes only args. The additional builtin
         // value/code fields are populated later by their own initializer slots.

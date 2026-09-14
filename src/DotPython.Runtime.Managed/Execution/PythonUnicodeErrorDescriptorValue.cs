@@ -78,7 +78,7 @@ internal sealed record PythonUnicodeErrorDescriptorValue(string Owner, string Na
     private PythonExceptionValue RequireInstance(PythonValue value, TextSpan span) =>
         value is PythonExceptionValue exception
         && PythonUnicodeErrors.IsApplicable(exception)
-        && PythonUnicodeErrors.IsEncode(exception) == (Owner == "UnicodeEncodeError")
+        && PythonUnicodeErrors.GetKind(exception) == PythonUnicodeErrors.KindForName(Owner)
             ? exception
             : throw Error(
                 $"descriptor '{Name}' for '{Owner}' objects doesn't apply to a '{ManagedObjectProtocols.GetTypeName(value)}' object",

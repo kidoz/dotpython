@@ -4,7 +4,7 @@ using DotPython.Language.Text;
 namespace DotPython.Runtime.Managed.Execution;
 
 /// <summary>
-/// The independent member state of UnicodeEncodeError and UnicodeDecodeError. Initialization and
+/// The independent member state of the three Unicode error types. Initialization and
 /// formatting follow CPython 3.14.7 Objects/exceptions.c, including failed reinit.
 /// </summary>
 internal static class PythonUnicodeErrors
@@ -12,11 +12,18 @@ internal static class PythonUnicodeErrors
     [ThreadStatic]
     private static int _formatDepth;
 
+    internal enum Kind
+    {
+        Decode,
+        Encode,
+        Translate,
+    }
+
     internal sealed class State
     {
         // A null member models CPython's unset pointer, which is distinct from
         // an explicitly assigned Python None even though both read as None.
-        internal bool IsEncode { get; set; }
+        internal Kind ErrorKind { get; set; }
         internal PythonValue? Encoding { get; set; }
         internal PythonValue? Object { get; set; }
         internal long Start { get; set; }
@@ -27,20 +34,32 @@ internal static class PythonUnicodeErrors
     internal static bool IsApplicable(PythonExceptionValue exception) =>
         exception.UnicodeErrorState is not null || GetBuiltinKind(exception) is not null;
 
-    internal static bool IsEncode(PythonExceptionValue exception) =>
-        exception.UnicodeErrorState?.IsEncode ?? GetBuiltinKind(exception) == "UnicodeEncodeError";
+    internal static Kind GetKind(PythonExceptionValue exception) =>
+        exception.UnicodeErrorState?.ErrorKind ?? KindForName(GetBuiltinKind(exception));
+
+    internal static Kind KindForName(string? name) =>
+        name switch
+        {
+            "UnicodeEncodeError" => Kind.Encode,
+            "UnicodeTranslateError" => Kind.Translate,
+            _ => Kind.Decode,
+        };
 
     private static string? GetBuiltinKind(PythonExceptionValue exception)
     {
         if (exception.ManagedType is null)
-            return exception.TypeName is "UnicodeEncodeError" or "UnicodeDecodeError"
+            return
+                exception.TypeName
+                    is "UnicodeEncodeError"
+                        or "UnicodeDecodeError"
+                        or "UnicodeTranslateError"
                 ? exception.TypeName
                 : null;
         foreach (var type in PythonBuiltinTypes.GetMro(exception.ManagedType).Elements)
             if (
                 type is PythonExceptionTypeValue
                 {
-                    Name: "UnicodeEncodeError" or "UnicodeDecodeError"
+                    Name: "UnicodeEncodeError" or "UnicodeDecodeError" or "UnicodeTranslateError"
                 } builtin
             )
                 return builtin.Name;
@@ -56,31 +75,38 @@ internal static class PythonUnicodeErrors
         // BaseException.__init__ has already rejected keywords. Its args write
         // precedes all positional validation, and is retained if validation fails.
         exception.Arguments = [.. arguments];
-        if (arguments.Count != 5)
-            throw Error($"function takes exactly 5 arguments ({arguments.Count} given)", span);
+        var kind = GetKind(exception);
+        var translate = kind == Kind.Translate;
+        var count = translate ? 4 : 5;
+        if (arguments.Count != count)
+            throw Error(
+                $"function takes exactly {count} arguments ({arguments.Count} given)",
+                span
+            );
         if (arguments[0] is not PythonTextValue)
             throw Error(
                 $"argument 1 must be str, not {(arguments[0] is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(arguments[0]))}",
                 span
             );
-        var isEncode = IsEncode(exception);
+        var isEncode = kind == Kind.Encode;
+        var objectIndex = translate ? 0 : 1;
         if (isEncode && arguments[1] is not PythonTextValue)
             throw Error(
                 $"argument 2 must be str, not {(arguments[1] is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(arguments[1]))}",
                 span
             );
-        var start = ReadIndex(arguments[2], allowIndexProtocol: true, span);
-        var end = ReadIndex(arguments[3], allowIndexProtocol: true, span);
-        if (arguments[4] is not PythonTextValue)
+        var start = ReadIndex(arguments[objectIndex + 1], allowIndexProtocol: true, span);
+        var end = ReadIndex(arguments[objectIndex + 2], allowIndexProtocol: true, span);
+        if (arguments[^1] is not PythonTextValue)
             throw Error(
-                $"argument 5 must be str, not {(arguments[4] is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(arguments[4]))}",
+                $"argument {count} must be str, not {(arguments[^1] is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(arguments[^1]))}",
                 span
             );
 
         // Buffer acquisition comes after both index conversions and reason
         // validation. Exact bytes retain identity; additional Python buffer
         // exporters are outside the represented constructor's current surface.
-        if (!isEncode && arguments[1] is not PythonByteSequenceValue)
+        if (kind == Kind.Decode && arguments[1] is not PythonByteSequenceValue)
             throw Error(
                 $"a bytes-like object is required, not '{ManagedObjectProtocols.GetTypeName(arguments[1])}'",
                 span
@@ -89,13 +115,14 @@ internal static class PythonUnicodeErrors
         // Callbacks may have reinitialized this same exception. Publish to its
         // current state only after every conversion succeeds; never rebind args
         // again, since a callback's args assignment must survive this publication.
-        var state = exception.UnicodeErrorState ??= new State { IsEncode = IsEncode(exception) };
-        state.IsEncode = isEncode;
-        state.Encoding = arguments[0];
-        state.Object = arguments[1];
+        var state = exception.UnicodeErrorState ??= new State { ErrorKind = GetKind(exception) };
+        state.ErrorKind = kind;
+        if (!translate)
+            state.Encoding = arguments[0];
+        state.Object = arguments[objectIndex];
         state.Start = start;
         state.End = end;
-        state.Reason = arguments[4];
+        state.Reason = arguments[^1];
     }
 
     internal static string Format(PythonExceptionValue exception, TextSpan span = default)
@@ -116,13 +143,14 @@ internal static class PythonUnicodeErrors
             // callback can replace/delete object or change the numeric members.
             var reason = FormatMember(state.Reason, span);
             state = exception.UnicodeErrorState!;
-            var encoding = FormatMember(state.Encoding, span);
+            var translate = state.ErrorKind == Kind.Translate;
+            var encoding = translate ? string.Empty : FormatMember(state.Encoding, span);
             state = exception.UnicodeErrorState!;
             if (state.Object is null)
                 throw Error("UnicodeError 'object' attribute is not set", span);
             var start = state.Start;
             var end = state.End;
-            if (state.IsEncode)
+            if (state.ErrorKind != Kind.Decode)
             {
                 if (state.Object is not PythonTextValue text)
                     throw Error("UnicodeError 'object' attribute must be a string", span);
@@ -137,7 +165,9 @@ internal static class PythonUnicodeErrors
                         scalar <= 0xff ? $"\\x{scalar:x2}"
                         : scalar <= 0xffff ? $"\\u{scalar:x4}"
                         : $"\\U{scalar:x8}";
-                    return $"'{encoding}' codec can't encode character '{escaped}' in position {start}: {reason}";
+                    return translate
+                        ? $"can't translate character '{escaped}' in position {start}: {reason}"
+                        : $"'{encoding}' codec can't encode character '{escaped}' in position {start}: {reason}";
                 }
             }
             else
@@ -154,7 +184,9 @@ internal static class PythonUnicodeErrors
                     return $"'{encoding}' codec can't decode byte 0x{bytes.Value[(int)start]:x2} in position {start}: {reason}";
             }
             var last = IntPtr.Size == sizeof(int) ? unchecked((int)end - 1) : unchecked(end - 1);
-            var operation = state.IsEncode ? "encode characters" : "decode bytes";
+            if (translate)
+                return $"can't translate characters in position {start}-{last}: {reason}";
+            var operation = state.ErrorKind == Kind.Encode ? "encode characters" : "decode bytes";
             return $"'{encoding}' codec can't {operation} in position {start}-{last}: {reason}";
         }
         finally
@@ -251,7 +283,7 @@ internal static class PythonUnicodeErrors
     {
         if (!IsApplicable(exception) || !IsMember(name))
             return false;
-        var state = exception.UnicodeErrorState ??= new State { IsEncode = IsEncode(exception) };
+        var state = exception.UnicodeErrorState ??= new State { ErrorKind = GetKind(exception) };
         switch (name)
         {
             case "encoding":
@@ -279,7 +311,7 @@ internal static class PythonUnicodeErrors
             return false;
         if (name is "start" or "end")
             throw Error("can't delete numeric/char attribute", span);
-        var state = exception.UnicodeErrorState ??= new State { IsEncode = IsEncode(exception) };
+        var state = exception.UnicodeErrorState ??= new State { ErrorKind = GetKind(exception) };
         switch (name)
         {
             case "encoding":

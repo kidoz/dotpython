@@ -68,6 +68,7 @@ internal static class PythonBuiltinSubclassInventory
         "UnicodeError",
         "UnicodeDecodeError",
         "UnicodeEncodeError",
+        "UnicodeTranslateError",
     ];
 
     internal static IEnumerable<PythonValue> GetStartupTypes(
