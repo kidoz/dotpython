@@ -18,6 +18,8 @@ internal sealed class PythonModuleRegistry
     private readonly Dictionary<string, PythonModuleDefinition> _definitions;
     private int _initializingCount;
 
+    internal PythonCodecErrorRegistry CodecErrors { get; } = new();
+
     internal PythonTypeHierarchy TypeHierarchy { get; } = new();
 
     internal PythonManagedTypeValue ExceptionGroupType { get; }

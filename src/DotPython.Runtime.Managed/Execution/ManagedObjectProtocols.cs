@@ -29,6 +29,26 @@ internal delegate PythonIteratorValue UserIterationDispatcher(
 /// </summary>
 internal static class ManagedObjectProtocols
 {
+    internal static bool IsCallable(PythonValue value) =>
+        value switch
+        {
+            PythonFunctionValue
+            or PythonBuiltinFunctionValue
+            or PythonBuiltinTypeValue
+            or PythonExceptionTypeValue
+            or PythonManagedTypeValue
+            or PythonProtocolFunctionValue
+            or PythonBoundMethodValue
+            or PythonBoundUserMethodValue
+            or PythonStaticMethodValue => true,
+            PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetTypeAttribute(
+                instance.Type,
+                "__call__",
+                out _
+            ),
+            _ => false,
+        };
+
     [ThreadStatic]
     private static int _sequenceComparisonDepth;
 

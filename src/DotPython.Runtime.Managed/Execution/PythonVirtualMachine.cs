@@ -296,6 +296,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         _modules.TypeHierarchy.Initialize(_builtins);
     }
 
+    PythonCodecErrorRegistry IUserObjectDispatcher.CodecErrors => _modules.CodecErrors;
+
     PythonManagedTypeValue IUserObjectDispatcher.ExceptionGroupType => _modules.ExceptionGroupType;
 
     PythonValue IUserObjectDispatcher.GetSubclasses(PythonValue type, TextSpan span) =>
@@ -4827,27 +4829,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private static PythonTruthValue Callable(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         ValidateBuiltinArgumentCount("callable", arguments, span);
-        return PythonTruthValue.FromBoolean(
-            arguments[0] switch
-            {
-                PythonFunctionValue
-                or PythonBuiltinFunctionValue
-                or PythonBuiltinTypeValue
-                or PythonExceptionTypeValue
-                or PythonManagedTypeValue
-                or PythonProtocolFunctionValue
-                or PythonBoundMethodValue
-                or PythonBoundUserMethodValue
-                or PythonStaticMethodValue
-                or PythonClassMethodValue => true,
-                PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetTypeAttribute(
-                    instance.Type,
-                    "__call__",
-                    out _
-                ),
-                _ => false,
-            }
-        );
+        return PythonTruthValue.FromBoolean(ManagedObjectProtocols.IsCallable(arguments[0]));
     }
 
     private static PythonNoneValue DeleteAttributeBuiltin(

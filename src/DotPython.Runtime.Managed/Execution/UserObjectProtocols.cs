@@ -12,6 +12,8 @@ internal interface IUserObjectDispatcher
 {
     TextSpan CurrentSpan { get; }
 
+    PythonCodecErrorRegistry CodecErrors { get; }
+
     PythonManagedTypeValue ExceptionGroupType { get; }
 
     PythonValue InvokeExceptionGroupMethod(

@@ -361,6 +361,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializeMath
         );
+        modules["codecs"] = PythonModuleDefinition.Native(
+            "<dotpython codecs>",
+            isPackage: false,
+            PythonCodecs.Initialize
+        );
         modules["copy"] = PythonModuleDefinition.Native(
             "<dotpython copy>",
             isPackage: false,
