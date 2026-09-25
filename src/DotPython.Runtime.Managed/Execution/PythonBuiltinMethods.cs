@@ -10,6 +10,15 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Bound-method tables for the built-in str, list, dict, and tuple values.</summary>
 internal static class PythonBuiltinMethods
 {
+    private static string CodecArgument(PythonValue value)
+    {
+        _ = RequireText("encode", value);
+        return PythonCodecs.ConvertName(
+            (PythonTextValue)value,
+            UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
+        );
+    }
+
     private static readonly Dictionary<string, PythonProtocolFunctionValue> TextMethods = new(
         StringComparer.Ordinal
     )
@@ -59,8 +68,8 @@ internal static class PythonBuiltinMethods
                 return PythonByteSequenceValue.Create(
                     PythonTextCodecs.Encode(
                         (PythonTextValue)target!,
-                        arguments.Count > 0 ? RequireText("encode", arguments[0]) : "utf-8",
-                        arguments.Count > 1 ? RequireText("encode", arguments[1]) : "strict",
+                        arguments.Count > 0 ? CodecArgument(arguments[0]) : "utf-8",
+                        arguments.Count > 1 ? CodecArgument(arguments[1]) : "strict",
                         UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
                     )
                 );

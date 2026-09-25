@@ -1,3 +1,10 @@
+// Codec recovery semantics adapted from CPython 3.14.7 Objects/unicodeobject.c
+// and Objects/stringlib/codecs.h:
+// https://github.com/python/cpython/tree/v3.14.7/Objects
+// Copyright (c) 2001-2026 Python Software Foundation. All rights reserved.
+// Used under the Python Software Foundation License Version 2:
+// https://docs.python.org/3/license.html#psf-license-agreement-for-python-release
+
 using System.Text;
 using DotPython.Language.Text;
 
@@ -24,14 +31,19 @@ internal static class PythonBytesDecoding
     }
 
     private sealed class Decoder(
-        byte[] bytes,
+        byte[] initialBytes,
         int codePage,
         bool detectByteOrderMark,
         string errors,
         TextSpan span
     )
     {
-        private readonly StringBuilder _text = new(Math.Min(bytes.Length, MaximumTextLength));
+        private byte[] bytes = initialBytes;
+        private readonly PythonCodecCallback _callback = new(errors, span);
+        private PythonByteSequenceValue? _errorSource;
+        private readonly StringBuilder _text = new(
+            Math.Min(initialBytes.Length, MaximumTextLength)
+        );
         private int _position;
         private int _nextWork;
         private string _encoding = string.Empty;
@@ -207,6 +219,18 @@ internal static class PythonBytesDecoding
 
         private void HandleError(int end, string reason)
         {
+            // ASCII/UTF-8 inline only these handlers. UTF-16 consults the
+            // registry for every handler; unchanged builtins keep the fast scan.
+            if (
+                (
+                    codePage is 1200 or 1201
+                    || errors is not ("ignore" or "replace" or "surrogateescape")
+                ) && !_callback.IsBuiltin()
+            )
+            {
+                HandleCallback(end, reason);
+                return;
+            }
             switch (errors)
             {
                 case "surrogatepass":
@@ -273,37 +297,7 @@ internal static class PythonBytesDecoding
                     }
                     break;
                 case "strict":
-                    // CPython snapshots the entire input for decoder-generated
-                    // errors. A directly called exception constructor retains it.
-                    var source = new byte[bytes.Length];
-                    for (var offset = 0; offset < bytes.Length; offset += 256)
-                    {
-                        UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
-                        bytes
-                            .AsSpan(offset, Math.Min(256, bytes.Length - offset))
-                            .CopyTo(source.AsSpan(offset));
-                    }
-                    var exception = new PythonExceptionValue("UnicodeDecodeError", string.Empty);
-                    PythonUnicodeErrors.Initialize(
-                        exception,
-                        [
-                            new PythonTextValue(_encoding),
-                            PythonByteSequenceValue.Create(source),
-                            PythonWholeNumberValue.Create(_position),
-                            PythonWholeNumberValue.Create(end),
-                            new PythonTextValue(reason),
-                        ],
-                        span
-                    );
-                    throw new PythonRuntimeException(
-                        "DPY4003",
-                        PythonUnicodeErrors.Format(exception, span),
-                        span,
-                        "UnicodeDecodeError"
-                    )
-                    {
-                        ExceptionValue = exception,
-                    };
+                    throw new PythonRaisedException(CreateError(end, reason));
                 case "xmlcharrefreplace":
                 case "namereplace":
                     throw ManagedObjectProtocols.Fault(
@@ -313,16 +307,59 @@ internal static class PythonBytesDecoding
                         "TypeError"
                     );
                 default:
-                    // CPython looks handlers up only when malformed input actually
-                    // needs one. Valid data accepts even an unregistered name.
-                    throw ManagedObjectProtocols.Fault(
-                        "DPY4003",
-                        $"unknown error handler name '{errors}'",
-                        span,
-                        "LookupError"
-                    );
+                    throw PythonCodecs.UnknownHandler(errors, span);
             }
             _position = end;
+        }
+
+        private PythonExceptionValue CreateError(int end, string reason)
+        {
+            if (_errorSource is null)
+            {
+                // Decoder errors own a snapshot, unlike encoder errors.
+                var copy = new byte[bytes.Length];
+                for (var i = 0; i < bytes.Length; i += 256)
+                {
+                    UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                    bytes.AsSpan(i, Math.Min(256, bytes.Length - i)).CopyTo(copy.AsSpan(i));
+                }
+                _errorSource = PythonByteSequenceValue.Create(copy);
+            }
+            return _callback.Error(_encoding, _errorSource, _position, end, reason);
+        }
+
+        private void HandleCallback(int end, string reason)
+        {
+            var error = CreateError(end, reason);
+            var (replacement, next) = _callback.Invoke(error, decode: true);
+            var source = error.UnicodeErrorState!.Object;
+            if (source is not PythonByteSequenceValue changed)
+                throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    source is null
+                        ? "UnicodeError 'object' attribute is not set"
+                        : "UnicodeError 'object' attribute must be a bytes",
+                    span,
+                    "TypeError"
+                );
+            var position = _callback.NormalizePosition(next, changed.Value.Length);
+            var text = ((PythonTextValue)replacement).Value;
+            if (text.Length > MaximumTextLength - _text.Length)
+                throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    "The decoded text exceeds the supported size.",
+                    span,
+                    "OverflowError"
+                );
+            for (var i = 0; i < text.Length; i += 256)
+            {
+                UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
+                _text.Append(text, i, Math.Min(256, text.Length - i));
+            }
+            bytes = changed.Value;
+            _position = position;
+            // Rewinds must not bypass work accounting or reprocess the BOM.
+            _nextWork = position;
         }
     }
 }

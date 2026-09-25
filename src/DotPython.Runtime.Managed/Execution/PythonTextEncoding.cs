@@ -1,3 +1,10 @@
+// Codec recovery semantics adapted from CPython 3.14.7 Objects/unicodeobject.c
+// and Objects/stringlib/codecs.h:
+// https://github.com/python/cpython/tree/v3.14.7/Objects
+// Copyright (c) 2001-2026 Python Software Foundation. All rights reserved.
+// Used under the Python Software Foundation License Version 2:
+// https://docs.python.org/3/license.html#psf-license-agreement-for-python-release
+
 using System.Globalization;
 using System.Text;
 using DotPython.Language.Text;
@@ -16,13 +23,9 @@ internal static class PythonTextEncoding
         TextSpan span
     )
     {
-        var encoder = new Encoder(source, codec, errors, span);
-        // Count before allocating. The second pass follows exactly the same
-        // replacement and encoding path, checking current work in both passes.
-        var length = encoder.Run(null);
-        var result = new byte[length];
-        encoder.Run(result);
-        return result;
+        // User callbacks must run once. A bounded builder replaces the previous
+        // count/write replay, which is only valid for side-effect-free handlers.
+        return new Encoder(source, codec, errors, span).Run();
     }
 
     private sealed class Encoder(
@@ -34,13 +37,12 @@ internal static class PythonTextEncoding
     {
         private readonly int _codePage = codec.CodePage;
         private readonly byte[] _preamble = codec.GetPreamble();
-        private byte[]? _output;
-        private int _length;
+        private readonly List<byte> _output = [];
+        private readonly PythonCodecCallback _callback = new(errors, span);
+        private int? _sourceCount;
 
-        internal int Run(byte[]? output)
+        internal byte[] Run()
         {
-            _output = output;
-            _length = 0;
             CheckWork();
             foreach (var value in _preamble)
                 WriteByte(value);
@@ -54,11 +56,90 @@ internal static class PythonTextEncoding
                 if (!IsInvalid(character))
                     WriteCharacter(character);
                 else
+                {
+                    if (NeedsRegistry(character) && !_callback.IsBuiltin())
+                    {
+                        (position, offset) = HandleCallback(position, offset, width);
+                        // The loop's increment belongs to the ordinary scan only.
+                        position--;
+                        continue;
+                    }
                     HandleError(character, position, offset, width);
+                }
                 offset += width;
             }
             CheckWork();
-            return _length;
+            return _output.ToArray();
+        }
+
+        private bool NeedsRegistry(int character) =>
+            (
+                _codePage is 1200 or 1201
+                || errors switch
+                {
+                    "ignore" or "replace" or "backslashreplace" or "xmlcharrefreplace" => false,
+                    "strict" => _codePage == 65001,
+                    "surrogatepass" => _codePage != 65001,
+                    "surrogateescape" => character is < 0xdc80 or > 0xdcff,
+                    _ => true,
+                }
+            );
+
+        private (int Position, int Offset) HandleCallback(int position, int offset, int width)
+        {
+            var end = ErrorEnd(position, offset, width);
+            var error = _callback.Error(EncodingName, source, position, end, Reason);
+            var (replacement, next) = _callback.Invoke(error, decode: false);
+            var newPosition = _callback.NormalizePosition(
+                next,
+                _sourceCount ??= PythonTextTraversal.Count(source.Value, span)
+            );
+            if (replacement is PythonByteSequenceValue raw)
+            {
+                if (_codePage is 1200 or 1201 && (raw.Value.Length & 1) != 0)
+                    throw new PythonRaisedException(
+                        _callback.Error(EncodingName, source, position, end, Reason)
+                    );
+                for (var i = 0; i < raw.Value.Length; i++)
+                {
+                    if ((i & 255) == 0)
+                        CheckWork();
+                    WriteByte(raw.Value[i]);
+                }
+            }
+            else
+            {
+                // CPython's represented UTF encoders require ASCII callback text;
+                // arbitrary encoded replacements can instead be returned as bytes.
+                foreach (
+                    var ch in PythonTextTraversal.Enumerate(
+                        ((PythonTextValue)replacement).Value,
+                        span
+                    )
+                )
+                {
+                    if (ch.Value >= (_codePage == 28591 ? 256 : 128))
+                        throw new PythonRaisedException(
+                            _callback.Error(EncodingName, source, position, end, Reason)
+                        );
+                    WriteCharacter(ch.Value);
+                }
+            }
+            while (position < newPosition)
+            {
+                if ((position & 127) == 0)
+                    CheckWork();
+                offset += PythonTextTraversal.Width(source.Value, offset);
+                position++;
+            }
+            while (position > newPosition)
+            {
+                if ((position & 127) == 0)
+                    CheckWork();
+                offset = PythonTextTraversal.PreviousOffset(source.Value, offset);
+                position--;
+            }
+            return (position, offset);
         }
 
         private void HandleError(int character, int position, int offset, int width)
@@ -114,7 +195,7 @@ internal static class PythonTextEncoding
             }
         }
 
-        private void ThrowEncodingError(int position, int offset, int width)
+        private int ErrorEnd(int position, int offset, int width)
         {
             var end = position + 1;
             // UTF-16 reports the first surrogate. Other represented codecs
@@ -133,7 +214,11 @@ internal static class PythonTextEncoding
                     ++end;
                 }
             }
-            var encoding = _codePage switch
+            return end;
+        }
+
+        private string EncodingName =>
+            _codePage switch
             {
                 20127 => "ascii",
                 28591 => "latin-1",
@@ -142,34 +227,25 @@ internal static class PythonTextEncoding
                 1201 => "utf-16-be",
                 _ => throw new InvalidOperationException("Unsupported encoding code page."),
             };
-            var reason = _codePage switch
+
+        private string Reason =>
+            _codePage switch
             {
                 20127 => "ordinal not in range(128)",
                 28591 => "ordinal not in range(256)",
                 _ => "surrogates not allowed",
             };
-            var exception = new PythonExceptionValue("UnicodeEncodeError", string.Empty);
-            PythonUnicodeErrors.Initialize(
-                exception,
-                [
-                    new PythonTextValue(encoding),
+
+        private void ThrowEncodingError(int position, int offset, int width) =>
+            throw new PythonRaisedException(
+                _callback.Error(
+                    EncodingName,
                     source,
-                    PythonWholeNumberValue.Create(position),
-                    PythonWholeNumberValue.Create(end),
-                    new PythonTextValue(reason),
-                ],
-                span
+                    position,
+                    ErrorEnd(position, offset, width),
+                    Reason
+                )
             );
-            throw new PythonRuntimeException(
-                "DPY4003",
-                PythonUnicodeErrors.Format(exception, span),
-                span,
-                "UnicodeEncodeError"
-            )
-            {
-                ExceptionValue = exception,
-            };
-        }
 
         private void WriteReplacement(string replacement)
         {
@@ -232,16 +308,14 @@ internal static class PythonTextEncoding
 
         private void WriteByte(int value)
         {
-            if (_length == MaximumBytes)
+            if (_output.Count == MaximumBytes)
                 throw ManagedObjectProtocols.Fault(
                     "DPY4003",
                     "encoded bytes exceed the managed materialization limit",
                     span,
                     "OverflowError"
                 );
-            if (_output is not null)
-                _output[_length] = (byte)value;
-            ++_length;
+            _output.Add((byte)value);
         }
 
         private bool IsInvalid(int character) =>

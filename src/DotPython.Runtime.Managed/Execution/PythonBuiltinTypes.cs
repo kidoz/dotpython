@@ -619,21 +619,15 @@ internal static class PythonBuiltinTypes
             );
         }
 
+        var encoding = RequireCodecText("encoding", arguments[1], span);
         var errors =
             arguments.Count == 3 ? RequireCodecText("errors", arguments[2], span) : "strict";
-        return new PythonTextValue(
-            PythonTextCodecs.Decode(
-                bytes.Value,
-                RequireCodecText("encoding", arguments[1], span),
-                errors,
-                span
-            )
-        );
+        return new PythonTextValue(PythonTextCodecs.Decode(bytes.Value, encoding, errors, span));
     }
 
     private static string RequireCodecText(string name, PythonValue value, TextSpan span) =>
         value is PythonTextValue text
-            ? text.Value
+            ? PythonCodecs.ConvertName(text, span)
             : throw Fault(
                 $"str() argument '{name}' must be str, not {ManagedObjectProtocols.GetTypeName(value)}",
                 "TypeError",

@@ -64,9 +64,10 @@ internal static class PythonBytesText
                 $"decode() argument '{name}' must be str, not {(value is PythonNoneValue ? "None" : ManagedObjectProtocols.GetTypeName(value))}",
                 "TypeError"
             );
-        if (text.Value.Contains('\0', StringComparison.Ordinal))
-            throw Error("embedded null character", "ValueError");
-        return text.Value;
+        return PythonCodecs.ConvertName(
+            text,
+            UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
+        );
     }
 
     internal static string Represent(byte[] bytes)

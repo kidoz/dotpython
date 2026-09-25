@@ -219,9 +219,7 @@ internal static class PythonBytesConstruction
                 "TypeError",
                 span
             );
-        if (text.Value.Contains('\0', StringComparison.Ordinal))
-            throw Error("embedded null character", "ValueError", span);
-        return text.Value;
+        return PythonCodecs.ConvertName(text, span);
     }
 
     private static void CheckSize(BigInteger size, TextSpan span)
