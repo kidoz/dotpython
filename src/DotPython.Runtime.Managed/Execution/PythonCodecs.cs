@@ -50,6 +50,8 @@ internal static class PythonCodecs
 
     internal static void Initialize(PythonGlobalNamespace globals)
     {
+        globals.SetValue("encode", PythonCodecOperations.Create(decode: false));
+        globals.SetValue("decode", PythonCodecOperations.Create(decode: true));
         var registry =
             UserObjectProtocols.Dispatcher?.CodecErrors ?? new PythonCodecErrorRegistry();
         foreach (

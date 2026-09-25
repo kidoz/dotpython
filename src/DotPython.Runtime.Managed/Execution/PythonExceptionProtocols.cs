@@ -186,6 +186,9 @@ internal static class PythonExceptionProtocols
         );
     }
 
+    internal static void AddNote(PythonExceptionValue exception, string note, TextSpan span) =>
+        AddNote(exception, [new PythonTextValue(note)], [], span);
+
     private static PythonNoneValue AddNote(
         PythonValue? receiver,
         IReadOnlyList<PythonValue> arguments,
