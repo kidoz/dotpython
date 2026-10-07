@@ -1,4 +1,6 @@
-# DotPython
+<h1 align="center">
+  <img src="assets/dotpython-logo.png" alt="DotPython" width="560">
+</h1>
 
 [![Language: C#](https://img.shields.io/badge/language-C%23%2014-239120?logo=csharp&logoColor=white)](https://learn.microsoft.com/dotnet/csharp/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
