@@ -26,6 +26,30 @@
       "url": "https://www.unicode.org/license.txt",
       "bytes": 1995,
       "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+    },
+    {
+      "file": "UnicodeData.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+      "bytes": 2175362,
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f"
+    },
+    {
+      "file": "SpecialCasing.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/SpecialCasing.txt",
+      "bytes": 16809,
+      "sha256": "8d5de354eef79f2395a54c9c7dcebbaf3d30fc962d0f85611ea97aa973a0c451"
+    },
+    {
+      "file": "CaseFolding.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/CaseFolding.txt",
+      "bytes": 86092,
+      "sha256": "6f1f9c588eb4a5c718d9e8f93b782685e5c7fec872cf05e8e6878053599e09bb"
+    },
+    {
+      "file": "DerivedCoreProperties.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/DerivedCoreProperties.txt",
+      "bytes": 1115959,
+      "sha256": "39d35161f2954497f69e08bdb9e701493f476a3d30222de20028feda36c1dabd"
     }
   ],
   "compatibility_policy": {

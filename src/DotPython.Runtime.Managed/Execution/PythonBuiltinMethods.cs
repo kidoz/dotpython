@@ -23,8 +23,36 @@ internal static class PythonBuiltinMethods
         StringComparer.Ordinal
     )
     {
-        ["upper"] = Text("upper", 0, 0, (text, _) => new PythonTextValue(text.ToUpperInvariant())),
-        ["lower"] = Text("lower", 0, 0, (text, _) => new PythonTextValue(text.ToLowerInvariant())),
+        ["upper"] = Text(
+            "upper",
+            0,
+            0,
+            (text, _) => new PythonTextValue(PythonUnicodeCase.ToUpper(text))
+        ),
+        ["lower"] = Text(
+            "lower",
+            0,
+            0,
+            (text, _) => new PythonTextValue(PythonUnicodeCase.ToLower(text))
+        ),
+        ["casefold"] = Text(
+            "casefold",
+            0,
+            0,
+            (text, _) => new PythonTextValue(PythonUnicodeCase.ToCaseFold(text))
+        ),
+        ["title"] = Text(
+            "title",
+            0,
+            0,
+            (text, _) => new PythonTextValue(PythonUnicodeCase.ToTitle(text))
+        ),
+        ["swapcase"] = Text(
+            "swapcase",
+            0,
+            0,
+            (text, _) => new PythonTextValue(PythonUnicodeCase.SwapCase(text))
+        ),
         ["strip"] = Text(
             "strip",
             0,
@@ -184,7 +212,7 @@ internal static class PythonBuiltinMethods
             "capitalize",
             0,
             0,
-            (text, _) => new PythonTextValue(Capitalize(text))
+            (text, _) => new PythonTextValue(PythonUnicodeCase.Capitalize(text))
         ),
     };
 

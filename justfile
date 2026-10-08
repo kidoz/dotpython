@@ -40,8 +40,12 @@ parser-check:
 unicode-names-check:
     python3 tools/unicode_names/generate.py --check
 
+# Verify the generated Unicode 16.0.0 case-mapping resource against pinned data.
+unicode-case-check:
+    python3 tools/unicode_case/generate.py --check
+
 # Check formatting and compile with all configured analyzers and warnings as errors.
-lint: parser-check unicode-names-check native-lint
+lint: parser-check unicode-names-check unicode-case-check native-lint
     dotnet tool restore
     dotnet csharpier check .
     dotnet build DotPython.sln --configuration Release
