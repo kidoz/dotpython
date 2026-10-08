@@ -189,6 +189,7 @@ internal static class PythonBuiltinMethods
     };
 
     private static readonly Dictionary<string, PythonProtocolFunctionValue> BytesMethods = new(
+        PythonBytesMethods.CreateTable(),
         StringComparer.Ordinal
     )
     {
