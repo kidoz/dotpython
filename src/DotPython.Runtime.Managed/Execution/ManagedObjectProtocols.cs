@@ -1102,7 +1102,7 @@ internal static class ManagedObjectProtocols
     /// on first access and cached. Bases are never consulted, so a subclass that
     /// declares no annotations reports an empty mapping.
     /// </summary>
-    private static PythonDictionaryValue GetTypeAnnotations(
+    internal static PythonDictionaryValue GetTypeAnnotations(
         PythonManagedTypeValue type,
         TextSpan span
     )
@@ -1141,7 +1141,7 @@ internal static class ManagedObjectProtocols
     /// access. The module dictionary is the global namespace, so the result becomes an
     /// ordinary module attribute once computed.
     /// </summary>
-    private static PythonDictionaryValue GetModuleAnnotations(
+    internal static PythonDictionaryValue GetModuleAnnotations(
         PythonModuleValue module,
         TextSpan span
     )
@@ -1171,7 +1171,7 @@ internal static class ManagedObjectProtocols
     /// definition with no annotations reports an empty mapping, never a missing
     /// attribute. A failure during evaluation propagates and is not cached.
     /// </summary>
-    private static PythonDictionaryValue GetFunctionAnnotations(
+    internal static PythonDictionaryValue GetFunctionAnnotations(
         PythonFunctionValue function,
         TextSpan span
     )

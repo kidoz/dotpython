@@ -396,6 +396,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializeFuture
         );
+        modules["annotationlib"] = PythonModuleDefinition.Native(
+            "<dotpython annotationlib>",
+            isPackage: false,
+            InitializeAnnotationLib
+        );
         // Only the template-string API is provided; the rest of string's API is
         // not part of the managed standard-library slice yet.
         modules["string"] = PythonModuleDefinition.Native(
@@ -1331,6 +1336,260 @@ internal static class PythonStandardModules
         value is PythonTruthValue truth
             ? PythonWholeNumberValue.Create(truth.Value ? BigInteger.One : BigInteger.Zero)
             : value;
+
+    /// <summary>The value format, whose annotations evaluate to objects.</summary>
+    private const int AnnotationValueFormat = 1;
+
+    /// <summary>The internal-only format that evaluates against fabricated globals.</summary>
+    private const int AnnotationFakeGlobalsFormat = 2;
+
+    private static void InitializeAnnotationLib(PythonGlobalNamespace globals)
+    {
+        // `Format` carries class-level constants, so it has to be a managed type: a
+        // builtin type value has nowhere to put them.
+        var formatType = new PythonManagedTypeValue("Format") { Module = "annotationlib" };
+        formatType.Attributes["VALUE"] = PythonWholeNumberValue.Create(AnnotationValueFormat);
+        formatType.Attributes["VALUE_WITH_FAKE_GLOBALS"] = PythonWholeNumberValue.Create(
+            AnnotationFakeGlobalsFormat
+        );
+        formatType.Attributes["FORWARDREF"] = PythonWholeNumberValue.Create(3);
+        formatType.Attributes["STRING"] = PythonWholeNumberValue.Create(4);
+        globals.SetValue("Format", formatType);
+
+        globals.SetValue(
+            "get_annotations",
+            new PythonBuiltinFunctionValue("get_annotations", GetAnnotations).WithSignature(
+                ["obj", "globals", "locals", "eval_str", "format"],
+                [
+                    null,
+                    PythonNoneValue.Instance,
+                    PythonNoneValue.Instance,
+                    PythonTruthValue.False,
+                    PythonWholeNumberValue.Create(AnnotationValueFormat),
+                ],
+                positionalOnly: 1
+            )
+        );
+        globals.SetValue(
+            "call_annotate_function",
+            new PythonBuiltinFunctionValue(
+                "call_annotate_function",
+                CallAnnotateFunction
+            ).WithSignature(
+                ["annotate", "format", "owner"],
+                [null, null, PythonNoneValue.Instance],
+                positionalOnly: 2
+            )
+        );
+        globals.SetValue(
+            "annotations_to_string",
+            new PythonBuiltinFunctionValue("annotations_to_string", AnnotationsToString)
+        );
+        globals.SetValue("type_repr", new PythonBuiltinFunctionValue("type_repr", TypeRepr));
+        globals.SetValue(
+            "get_annotate_from_class_namespace",
+            new PythonBuiltinFunctionValue(
+                "get_annotate_from_class_namespace",
+                GetAnnotateFromClassNamespace
+            )
+        );
+    }
+
+    /// <summary>
+    /// `get_annotations(obj, ...)`: the object's annotations in the requested format.
+    /// Only the value format is implemented; the others forward to the object's own
+    /// annotate callable, which rejects them the way CPython's compiled bodies do.
+    /// </summary>
+    private static PythonValue GetAnnotations(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        var target = arguments[0];
+        // The binder drops trailing omitted defaults, so `format` may be absent.
+        var format =
+            arguments.Count > 4
+                ? RequireAnnotationFormat(arguments[4], span)
+                : AnnotationValueFormat;
+        if (format == AnnotationFakeGlobalsFormat)
+        {
+            throw new PythonRuntimeException(
+                "DPY4038",
+                "The VALUE_WITH_FAKE_GLOBALS format is for internal use only",
+                span,
+                "ValueError"
+            );
+        }
+
+        if (format != AnnotationValueFormat)
+        {
+            return ResolveAnnotate(target) is { } annotate
+                ? InvokeAnnotate(annotate, format, span)
+                : new PythonDictionaryValue([]);
+        }
+
+        return target switch
+        {
+            PythonFunctionValue function => ManagedObjectProtocols.GetFunctionAnnotations(
+                function,
+                span
+            ),
+            PythonManagedTypeValue type => ManagedObjectProtocols.GetTypeAnnotations(type, span),
+            PythonModuleValue module => ManagedObjectProtocols.GetModuleAnnotations(module, span),
+            _ => throw new PythonRuntimeException(
+                "DPY4038",
+                $"'{ManagedObjectProtocols.GetTypeName(target)}' object does not support annotations.",
+                span,
+                "TypeError"
+            ),
+        };
+    }
+
+    /// <summary>`call_annotate_function(annotate, format, owner=None)`.</summary>
+    private static PythonValue CallAnnotateFunction(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        var format = RequireAnnotationFormat(arguments[1], span);
+        if (format == AnnotationFakeGlobalsFormat)
+        {
+            throw new PythonRuntimeException(
+                "DPY4038",
+                "The VALUE_WITH_FAKE_GLOBALS format is for internal use only",
+                span,
+                "ValueError"
+            );
+        }
+
+        return InvokeAnnotate(arguments[0], format, span);
+    }
+
+    /// <summary>`annotations_to_string(annotations)`: each value rendered for display.</summary>
+    private static PythonDictionaryValue AnnotationsToString(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments[0] is not PythonDictionaryValue annotations)
+        {
+            throw new PythonRuntimeException(
+                "DPY4038",
+                $"annotations_to_string() argument must be a dict, not '{ManagedObjectProtocols.GetTypeName(arguments[0])}'",
+                span,
+                "TypeError"
+            );
+        }
+
+        var result = new PythonDictionaryValue([]);
+        foreach (var item in annotations.Items)
+        {
+            ManagedObjectProtocols.SetDictionaryItem(
+                result,
+                item.Key,
+                new PythonTextValue(TypeReprText(item.Value)),
+                span
+            );
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// `type_repr(value)`: a type's name, or the value's representation. Unlike
+    /// `annotations_to_string`, a string comes back quoted.
+    /// </summary>
+    private static PythonTextValue TypeRepr(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        new(
+            arguments[0] switch
+            {
+                PythonManagedTypeValue type => type.Name,
+                PythonBuiltinTypeValue type => type.Name,
+                _ => arguments[0].ToRepresentationString(),
+            }
+        );
+
+    /// <summary>`get_annotate_from_class_namespace(namespace)`.</summary>
+    private static PythonValue GetAnnotateFromClassNamespace(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        var @namespace = arguments[0] switch
+        {
+            PythonDictionaryValue dictionary => dictionary,
+            PythonMappingProxyValue { Mapping: PythonDictionaryValue mapped } => mapped,
+            _ => throw new PythonRuntimeException(
+                "DPY4038",
+                $"get_annotate_from_class_namespace() argument must be a mapping, not '{ManagedObjectProtocols.GetTypeName(arguments[0])}'",
+                span,
+                "TypeError"
+            ),
+        };
+
+        foreach (var item in @namespace.Items)
+        {
+            if (item.Key is PythonTextValue { Value: "__annotate_func__" })
+            {
+                return item.Value;
+            }
+        }
+
+        return PythonNoneValue.Instance;
+    }
+
+    /// <summary>The annotate callable an object carries, or null when it has none.</summary>
+    private static PythonValue? ResolveAnnotate(PythonValue target) =>
+        target switch
+        {
+            PythonFunctionValue function => function.Annotate,
+            PythonManagedTypeValue type
+                when type.Attributes.TryGetValue("__annotate_func__", out var typeAnnotate) =>
+                typeAnnotate,
+            PythonModuleValue module
+                when module.Globals.TryGetValue("__annotate__", out var moduleAnnotate)
+                    && moduleAnnotate is not PythonNoneValue => moduleAnnotate,
+            _ => null,
+        };
+
+    private static PythonValue InvokeAnnotate(PythonValue annotate, int format, TextSpan span) =>
+        UserObjectProtocols.Dispatcher is { } dispatcher
+            ? dispatcher.Invoke(annotate, [PythonWholeNumberValue.Create(format)], span)
+            : new PythonDictionaryValue([]);
+
+    private static int RequireAnnotationFormat(PythonValue value, TextSpan span)
+    {
+        if (
+            value is PythonWholeNumberValue number
+            && number.Value >= 0
+            && number.Value <= int.MaxValue
+        )
+        {
+            return (int)number.Value;
+        }
+
+        if (
+            UserObjectProtocols.TryConvertToIndex(value, span, out var index)
+            && index >= 0
+            && index <= int.MaxValue
+        )
+        {
+            return (int)index;
+        }
+
+        throw new PythonRuntimeException(
+            "DPY4038",
+            $"format must be an annotationlib.Format member, not '{ManagedObjectProtocols.GetTypeName(value)}'",
+            span,
+            "ValueError"
+        );
+    }
+
+    private static string TypeReprText(PythonValue value) =>
+        value switch
+        {
+            PythonManagedTypeValue type => type.Name,
+            PythonBuiltinTypeValue type => type.Name,
+            PythonNoneValue => "None",
+            _ => value.ToDisplayString(),
+        };
 
     private static void InitializeCopy(PythonGlobalNamespace globals)
     {
