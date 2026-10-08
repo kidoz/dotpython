@@ -406,6 +406,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonTyping.Initialize
         );
+        modules["json"] = PythonModuleDefinition.Native(
+            "<dotpython json>",
+            isPackage: false,
+            InitializeJson
+        );
         // Only the template-string API is provided; the rest of string's API is
         // not part of the managed standard-library slice yet.
         modules["string"] = PythonModuleDefinition.Native(
@@ -1347,6 +1352,10 @@ internal static class PythonStandardModules
 
     /// <summary>The internal-only format that evaluates against fabricated globals.</summary>
     private const int AnnotationFakeGlobalsFormat = 2;
+
+    /// <summary>`json`, whose encoder, decoder and exception live in one file.</summary>
+    private static void InitializeJson(PythonGlobalNamespace globals) =>
+        PythonJson.Initialize(globals);
 
     private static void InitializeAnnotationLib(PythonGlobalNamespace globals)
     {
