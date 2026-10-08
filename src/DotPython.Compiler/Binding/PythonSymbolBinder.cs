@@ -178,6 +178,24 @@ public static class PythonSymbolBinder
                 : (ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName)
         );
         var childAncestors = ancestors.Append(scope).ToArray();
+        // A module or class body records its own annotated assignments. The scope is
+        // added to the body it belongs to, so a name the annotations use resolves the
+        // way the body's own code would resolve it.
+        if (kind is PythonScopeKind.Module or PythonScopeKind.Class)
+        {
+            var bodyAnnotations = BodyAnnotationExpressions(statements);
+            if (bodyAnnotations.Count > 0)
+            {
+                scope.AddAnnotationScope(
+                    CreateAnnotateScope(
+                        definition ?? scope.Definition!,
+                        bodyAnnotations,
+                        childAncestors
+                    )
+                );
+            }
+        }
+
         foreach (var definitionNode in EnumerateScopeDefinitions(statements))
         {
             children.Add(
@@ -260,6 +278,27 @@ public static class PythonSymbolBinder
         if (function.ReturnAnnotation is not null)
         {
             annotations.Add(function.ReturnAnnotation);
+        }
+
+        return annotations;
+    }
+
+    /// <summary>
+    /// The annotation expressions a module or class body records for itself. Only
+    /// annotated assignments in the body's own statement list count; nested
+    /// definitions collect their own.
+    /// </summary>
+    private static List<PythonExpression> BodyAnnotationExpressions(
+        IReadOnlyList<PythonStatement> statements
+    )
+    {
+        var annotations = new List<PythonExpression>();
+        foreach (var statement in statements)
+        {
+            if (statement is PythonAnnotatedAssignmentStatement annotated)
+            {
+                annotations.Add(annotated.Annotation);
+            }
         }
 
         return annotations;

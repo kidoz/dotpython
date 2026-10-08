@@ -4559,6 +4559,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             function.Code.Definition.VariableNames.Count,
             cells,
             hasReturnLocalContinuation,
+            classNamespace: function.ClassNamespace,
             returnOverride: returnOverride,
             requireNoneReturn: requireNoneReturn
         );
@@ -5113,6 +5114,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             function.Code.Definition.VariableNames.Count,
             cells,
             hasReturnLocalContinuation,
+            classNamespace: function.ClassNamespace,
             returnOverride: returnOverride,
             requireNoneReturn: requireNoneReturn
         );
@@ -5721,6 +5723,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         )
         {
             QualName = GetDefinedCodeQualifiedName(code),
+            // A method's annotations resolve against the class body it sits in, so
+            // names defined later in that body are visible to them.
+            ClassNamespace = CurrentFrame.ClassNamespace,
         };
     }
 

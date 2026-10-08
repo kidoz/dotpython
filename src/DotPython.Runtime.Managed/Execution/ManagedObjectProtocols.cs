@@ -209,6 +209,14 @@ internal static class ManagedObjectProtocols
         {
             case PythonModuleValue module when name == "__dict__":
                 return module.Globals.Dictionary;
+            case PythonModuleValue module when name == "__annotate__":
+                // A module with no annotations reports None rather than failing, and
+                // the callable itself is an ordinary global once the body has run.
+                return module.Globals.TryGetValue(name, out var moduleAnnotate)
+                    ? moduleAnnotate
+                    : PythonNoneValue.Instance;
+            case PythonModuleValue module when name == "__annotations__":
+                return GetModuleAnnotations(module, span);
             case PythonModuleValue module
                 when module.Globals.TryGetValue(name, out var moduleValue):
                 return moduleValue;
@@ -252,6 +260,15 @@ internal static class ManagedObjectProtocols
                 );
             case PythonMappingProxyValue proxy:
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
+            case PythonManagedTypeValue type when name == "__annotate__":
+                // Deliberately the class's own dictionary, never the MRO: an
+                // unannotated subclass reports None and an empty mapping rather than
+                // inheriting its base's annotations.
+                return type.Attributes.TryGetValue(AnnotateClassDictName, out var typeAnnotate)
+                    ? typeAnnotate
+                    : PythonNoneValue.Instance;
+            case PythonManagedTypeValue type when name == "__annotations__":
+                return GetTypeAnnotations(type, span);
             case PythonManagedTypeValue type when TryGetTypeAttribute(type, name, out var value):
                 return BindDescriptor(value, null, type, span, name);
             case PythonManagedTypeValue { IsMetaclass: false } objectClass
@@ -1071,6 +1088,83 @@ internal static class ManagedObjectProtocols
     /// The default attribute lookup for a managed instance (data descriptors, the
     /// instance dictionary, then bound type attributes) without `__getattr__` hooks.
     /// </summary>
+    /// <summary>The class dictionary entry a class body stores its annotate callable in.</summary>
+    private const string AnnotateClassDictName = "__annotate_func__";
+
+    /// <summary>The class dictionary entry holding the evaluated annotations.</summary>
+    private const string AnnotationsCacheName = "__annotations_cache__";
+
+    /// <summary>The value formats the compiled annotation bodies accept.</summary>
+    private const int ValueAnnotationFormat = 1;
+
+    /// <summary>
+    /// A class's `__annotations__`, evaluated from the class's own annotate callable
+    /// on first access and cached. Bases are never consulted, so a subclass that
+    /// declares no annotations reports an empty mapping.
+    /// </summary>
+    private static PythonDictionaryValue GetTypeAnnotations(
+        PythonManagedTypeValue type,
+        TextSpan span
+    )
+    {
+        if (
+            type.Attributes.TryGetValue(AnnotationsCacheName, out var cached)
+            && cached is PythonDictionaryValue cache
+        )
+        {
+            return cache;
+        }
+
+        var evaluated = null as PythonValue;
+        if (type.Attributes.TryGetValue(AnnotateClassDictName, out var annotate))
+        {
+            // The class body's own annotations resolve against the class dictionary,
+            // which is the namespace object the body built.
+            if (annotate is PythonFunctionValue annotateFunction)
+            {
+                annotateFunction.ClassNamespace ??= type.Attributes.Dictionary;
+            }
+
+            evaluated = UserObjectProtocols.Dispatcher?.Invoke(
+                annotate,
+                [PythonWholeNumberValue.Create(ValueAnnotationFormat)],
+                span
+            );
+        }
+        var annotations = evaluated as PythonDictionaryValue ?? new PythonDictionaryValue([]);
+        type.Attributes[AnnotationsCacheName] = annotations;
+        return annotations;
+    }
+
+    /// <summary>
+    /// A module's `__annotations__`, evaluated from its `__annotate__` global on first
+    /// access. The module dictionary is the global namespace, so the result becomes an
+    /// ordinary module attribute once computed.
+    /// </summary>
+    private static PythonDictionaryValue GetModuleAnnotations(
+        PythonModuleValue module,
+        TextSpan span
+    )
+    {
+        if (module.Globals.TryGetValue("__annotations__", out var existing))
+        {
+            return existing as PythonDictionaryValue ?? new PythonDictionaryValue([]);
+        }
+
+        var evaluated =
+            module.Globals.TryGetValue("__annotate__", out var annotate)
+            && annotate is not PythonNoneValue
+                ? UserObjectProtocols.Dispatcher?.Invoke(
+                    annotate,
+                    [PythonWholeNumberValue.Create(ValueAnnotationFormat)],
+                    span
+                )
+                : null;
+        var annotations = evaluated as PythonDictionaryValue ?? new PythonDictionaryValue([]);
+        module.Globals.SetValue("__annotations__", annotations);
+        return annotations;
+    }
+
     /// <summary>
     /// The function's `__annotations__`: evaluated on first access from the annotate
     /// callable and then cached, so later reads hand back the same mapping. A
@@ -1090,7 +1184,7 @@ internal static class ManagedObjectProtocols
         var evaluated = function.Annotate is { } annotate
             ? UserObjectProtocols.Dispatcher?.Invoke(
                 annotate,
-                [PythonWholeNumberValue.Create(BigInteger.One)],
+                [PythonWholeNumberValue.Create(ValueAnnotationFormat)],
                 span
             )
             : null;
@@ -1419,6 +1513,11 @@ internal static class ManagedObjectProtocols
                 }
 
                 DeleteInstanceAttribute(instance, name, span);
+                return;
+            case PythonManagedTypeValue type when name == "__annotations__":
+                // Deleting clears the mapping rather than restoring the computed one:
+                // a later read reports an empty mapping.
+                type.Attributes[AnnotationsCacheName] = new PythonDictionaryValue([]);
                 return;
             case PythonManagedTypeValue type when type.Attributes.Remove(name):
                 return;

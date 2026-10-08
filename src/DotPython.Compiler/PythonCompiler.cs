@@ -84,9 +84,78 @@ public static class PythonCompiler
 
         internal PythonCompilationResult Compile(PythonModule module)
         {
+            EmitBodyAnnotate(module.Statements, AnnotateGlobalName, module.Span.End);
             var code = CompileCode(module.Statements, module.Span.End);
             return new PythonCompilationResult(code, _diagnostics);
         }
+
+        /// <summary>
+        /// Records a module or class body's own annotations as a callable stored under
+        /// `name`, so a reader can evaluate them later against the body's names. The
+        /// name is the one CPython uses: a module global for a module, and the class
+        /// dictionary entry `__annotate_func__` for a class.
+        /// </summary>
+        private void EmitBodyAnnotate(
+            IReadOnlyList<PythonStatement> statements,
+            string name,
+            int endPosition
+        )
+        {
+            var annotateScope = _scope.AnnotationScopes.FirstOrDefault();
+            var annotations = BodyAnnotations(statements, _scope);
+            if (annotations.Count == 0 || annotateScope is null)
+            {
+                return;
+            }
+
+            var span = new TextSpan(endPosition, 0);
+            var annotateCode = new Compiler(
+                "<annotate>",
+                annotateScope,
+                _diagnostics,
+                _enableReturnLocal,
+                _enableCallLocal
+            ).CompileAnnotateCode(annotations, endPosition);
+            Emit(
+                PythonOpCode.MakeFunction,
+                AddConstant(new PythonConstant(PythonConstantType.CodeObject, annotateCode)),
+                span
+            );
+            Emit(PythonOpCode.StoreName, GetNameIndex(name), span);
+        }
+
+        /// <summary>
+        /// The annotations a module or class body records for itself, in statement
+        /// order. Only the body's own annotated assignments count; nested definitions
+        /// collect their own.
+        /// </summary>
+        private static List<(string Key, PythonExpression Annotation)> BodyAnnotations(
+            IReadOnlyList<PythonStatement> statements,
+            PythonBoundScope scope
+        )
+        {
+            var annotations = new List<(string Key, PythonExpression Annotation)>();
+            foreach (var statement in statements)
+            {
+                if (
+                    statement is PythonAnnotatedAssignmentStatement
+                    {
+                        Target: PythonNameExpression name
+                    } annotated
+                )
+                {
+                    annotations.Add((scope.MangleName(name.Name), annotated.Annotation));
+                }
+            }
+
+            return annotations;
+        }
+
+        /// <summary>The module global holding a module body's annotation callable.</summary>
+        private const string AnnotateGlobalName = "__annotate__";
+
+        /// <summary>The class dictionary entry holding a class body's annotation callable.</summary>
+        private const string AnnotateClassDictName = "__annotate_func__";
 
         private PythonCodeObject CompileCode(
             IReadOnlyList<PythonStatement> statements,
@@ -2034,6 +2103,7 @@ public static class PythonCompiler
                 _enableReturnLocal,
                 _enableCallLocal
             );
+            childCompiler.EmitBodyAnnotate(@class.Body, AnnotateClassDictName, @class.Span.End);
             var childCode = childCompiler.CompileCode(@class.Body, @class.Span.End);
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)

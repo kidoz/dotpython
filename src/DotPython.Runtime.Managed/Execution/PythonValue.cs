@@ -834,6 +834,13 @@ internal sealed record PythonFunctionValue(
     /// <summary>The cached `__annotations__` mapping, discarded when `__annotate__` changes.</summary>
     internal PythonDictionaryValue? Annotations { get; set; }
 
+    /// <summary>
+    /// The class namespace an annotation body resolves against, or null when the
+    /// definition sits outside a class body. Only annotation bodies carry it: an
+    /// ordinary method's body must not see class-scope names.
+    /// </summary>
+    internal PythonValue? ClassNamespace { get; set; }
+
     internal override string ToDisplayString() => $"<function {Name}>";
 }
 
