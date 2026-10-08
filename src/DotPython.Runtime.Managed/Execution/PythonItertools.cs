@@ -6,6 +6,7 @@
 
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Text;
 using DotPython.Compiler.Bytecode;
 using DotPython.Language.Text;
 
@@ -78,10 +79,7 @@ internal static class PythonItertools
         globals.SetValue("product", CreateProduct());
         globals.SetValue("combinations", CreateCombinations());
         globals.SetValue("permutations", CreatePermutations());
-        globals.SetValue(
-            "combinations_with_replacement",
-            CreateCombinationsWithReplacement()
-        );
+        globals.SetValue("combinations_with_replacement", CreateCombinationsWithReplacement());
         globals.SetValue("zip_longest", CreateZipLongest());
         globals.SetValue("groupby", CreateGroupBy());
         globals.SetValue("takewhile", CreateTakeWhile());
@@ -236,10 +234,7 @@ internal static class PythonItertools
         {
             if (positionalCount > arity.TotalMax)
             {
-                throw Error(
-                    $"{arity.TotalMessage} ({positionalCount} given)",
-                    span
-                );
+                throw Error($"{arity.TotalMessage} ({positionalCount} given)", span);
             }
 
             if (keywordCount > arity.TotalMax)
@@ -250,10 +245,7 @@ internal static class PythonItertools
                 );
             }
 
-            throw Error(
-                $"{arity.TotalMessage} ({positionalCount + keywordCount} given)",
-                span
-            );
+            throw Error($"{arity.TotalMessage} ({positionalCount + keywordCount} given)", span);
         }
 
         if (positionalCount > arity.PositionalMax && arity.PositionalMessage is { } tooMany)
@@ -313,55 +305,168 @@ internal static class PythonItertools
     }
 
     /// <summary>
-    /// CPython's "Did you mean" hint: the closest parameter, when twice the edit distance
-    /// does not exceed the length of what was typed.
+    /// CPython's "Did you mean" hint, a port of <c>_Py_CalculateSuggestions</c>: the
+    /// closest parameter under the cost model of <c>Objects/suggestions.c</c>, when no
+    /// more than a third of the involved characters need changing.
     /// </summary>
     private static string Suggestion(string keyword, string[] parameters)
     {
-        var best = string.Empty;
+        var name = Encoding.UTF8.GetBytes(keyword);
+        if (parameters.Length >= SuggestionCandidateLimit)
+        {
+            return string.Empty;
+        }
+
+        byte[]? best = null;
         var bestDistance = int.MaxValue;
+        var buffer = new int[MaxSuggestionStringSize];
         foreach (var parameter in parameters)
         {
-            var distance = EditDistance(keyword, parameter);
-            if (distance < bestDistance)
+            var item = Encoding.UTF8.GetBytes(parameter);
+            if (item.AsSpan().SequenceEqual(name))
             {
+                continue;
+            }
+
+            var maxDistance = (name.Length + item.Length + 3) * MoveCost / 6;
+            if (best is not null)
+            {
+                maxDistance = Math.Min(maxDistance, bestDistance - 1);
+            }
+
+            if (maxDistance < 0)
+            {
+                continue;
+            }
+
+            var distance = SuggestionDistance(name, item, maxDistance, buffer);
+            if (distance > maxDistance)
+            {
+                continue;
+            }
+
+            if (best is null || distance < bestDistance)
+            {
+                best = item;
                 bestDistance = distance;
-                best = parameter;
             }
         }
 
-        return best.Length != 0 && bestDistance * 2 <= keyword.Length
-            ? $". Did you mean '{best}'?"
-            : string.Empty;
+        return best is null ? string.Empty : $". Did you mean '{Encoding.UTF8.GetString(best)}'?";
     }
 
-    private static int EditDistance(string left, string right)
+    private const int MoveCost = 2;
+    private const int CaseCost = 1;
+    private const int MaxSuggestionStringSize = 40;
+    private const int SuggestionCandidateLimit = 750;
+
+    /// <summary>Editing a character costs less when only its case changes.</summary>
+    private static int SubstitutionCost(byte left, byte right)
     {
-        var previous = new int[right.Length + 1];
-        var current = new int[right.Length + 1];
-        for (var index = 0; index <= right.Length; index++)
+        if ((left & 31) != (right & 31))
         {
-            previous[index] = index;
+            return MoveCost;
         }
 
-        for (var leftIndex = 1; leftIndex <= left.Length; leftIndex++)
+        if (left == right)
         {
-            current[0] = leftIndex;
-            for (var rightIndex = 1; rightIndex <= right.Length; rightIndex++)
+            return 0;
+        }
+
+        if (left is >= (byte)'A' and <= (byte)'Z')
+        {
+            left += (byte)('a' - 'A');
+        }
+
+        if (right is >= (byte)'A' and <= (byte)'Z')
+        {
+            right += (byte)('a' - 'A');
+        }
+
+        return left == right ? CaseCost : MoveCost;
+    }
+
+    /// <summary>CPython's <c>levenshtein_distance</c> over UTF-8 bytes.</summary>
+    private static int SuggestionDistance(byte[] a, byte[] b, int maxCost, int[] buffer)
+    {
+        var aSize = a.Length;
+        var bSize = b.Length;
+
+        // Trim away common affixes.
+        var aStart = 0;
+        var bStart = 0;
+        while (aSize > 0 && bSize > 0 && a[aStart] == b[bStart])
+        {
+            aStart++;
+            aSize--;
+            bStart++;
+            bSize--;
+        }
+
+        while (aSize > 0 && bSize > 0 && a[aStart + aSize - 1] == b[bStart + bSize - 1])
+        {
+            aSize--;
+            bSize--;
+        }
+
+        if (aSize == 0 || bSize == 0)
+        {
+            return (aSize + bSize) * MoveCost;
+        }
+
+        if (aSize > MaxSuggestionStringSize || bSize > MaxSuggestionStringSize)
+        {
+            return maxCost + 1;
+        }
+
+        // Prefer the shorter buffer.
+        if (bSize < aSize)
+        {
+            (a, b) = (b, a);
+            (aSize, bSize) = (bSize, aSize);
+            (aStart, bStart) = (bStart, aStart);
+        }
+
+        if ((bSize - aSize) * MoveCost > maxCost)
+        {
+            return maxCost + 1;
+        }
+
+        var tmp = MoveCost;
+        for (var index = 0; index < aSize; index++)
+        {
+            buffer[index] = tmp;
+            tmp += MoveCost;
+        }
+
+        var result = 0;
+        for (var bIndex = 0; bIndex < bSize; bIndex++)
+        {
+            var code = b[bStart + bIndex];
+            var distance = bIndex * MoveCost;
+            result = distance;
+            var minimum = int.MaxValue;
+            for (var index = 0; index < aSize; index++)
             {
-                var substitution =
-                    previous[rightIndex - 1]
-                    + (left[leftIndex - 1] == right[rightIndex - 1] ? 0 : 1);
-                current[rightIndex] = Math.Min(
-                    Math.Min(previous[rightIndex] + 1, current[rightIndex - 1] + 1),
-                    substitution
-                );
+                var substitute = distance + SubstitutionCost(code, a[aStart + index]);
+                distance = buffer[index];
+                var insertDelete = Math.Min(result, distance) + MoveCost;
+                result = Math.Min(insertDelete, substitute);
+                buffer[index] = result;
+                if (result < minimum)
+                {
+                    minimum = result;
+                }
             }
 
-            (previous, current) = (current, previous);
+            if (minimum > maxCost)
+            {
+                // Everything in this row is too big, so bail early.
+                return maxCost + 1;
+            }
         }
 
-        return previous[right.Length];
+        return result;
     }
 
     private static void RejectKeywords(
@@ -398,12 +503,18 @@ internal static class PythonItertools
     {
         if (count < minimum)
         {
-            throw Error($"{name} expected at least {minimum} argument{Plural(minimum)}, got {count}", span);
+            throw Error(
+                $"{name} expected at least {minimum} argument{Plural(minimum)}, got {count}",
+                span
+            );
         }
 
         if (count > maximum)
         {
-            throw Error($"{name} expected at most {maximum} argument{Plural(maximum)}, got {count}", span);
+            throw Error(
+                $"{name} expected at most {maximum} argument{Plural(maximum)}, got {count}",
+                span
+            );
         }
     }
 
@@ -416,37 +527,45 @@ internal static class PythonItertools
         };
 
     /// <summary>CPython's <c>PyNumber_AsSsize_t</c>: an index, or a TypeError naming the type.</summary>
-    private static long RequireIndex(PythonValue value, TextSpan span)
+    private static long RequireIndex(PythonValue value, TextSpan span, string? notInteger = null)
     {
+        BigInteger index;
         if (value is PythonTruthValue truth)
         {
-            return truth.Value ? 1 : 0;
+            index = truth.Value ? BigInteger.One : BigInteger.Zero;
         }
-
-        if (value is PythonWholeNumberValue whole)
+        else if (value is PythonWholeNumberValue whole)
         {
-            return whole.Value > long.MaxValue ? long.MaxValue
-                : whole.Value < long.MinValue ? long.MinValue
-                : (long)whole.Value;
+            index = whole.Value;
         }
-
-        if (UserObjectProtocols.TryConvertToIndex(value, span, out var index))
+        else if (UserObjectProtocols.TryConvertToIndex(value, span, out var converted))
         {
-            return index > long.MaxValue ? long.MaxValue
-                : index < long.MinValue ? long.MinValue
-                : (long)index;
+            index = converted;
+        }
+        else
+        {
+            throw Error(
+                notInteger
+                    ?? $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted as an integer",
+                span
+            );
         }
 
-        throw Error(
-            $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted as an integer",
-            span
-        );
+        if (index > long.MaxValue || index < long.MinValue)
+        {
+            throw OverflowError("Python int too large to convert to C ssize_t", span);
+        }
+
+        return (long)index;
     }
 
-    /// <summary>`r` and `n` are counts: an index that cannot exceed the machine's range.</summary>
-    private static int RequireR(PythonValue value, TextSpan span)
+    /// <summary>
+    /// `r` and `n` are counts: an index that cannot exceed the machine's range.
+    /// `permutations` reports a bad `r` with its own message.
+    /// </summary>
+    private static int RequireR(PythonValue value, TextSpan span, string? notInteger = null)
     {
-        var index = RequireIndex(value, span);
+        var index = RequireIndex(value, span, notInteger);
         return index > int.MaxValue ? int.MaxValue
             : index < int.MinValue ? int.MinValue
             : (int)index;
@@ -547,7 +666,8 @@ internal static class PythonItertools
 
     // ---- cycle -------------------------------------------------------------------------
 
-    private static PythonManagedTypeValue CreateCycle() => FunctionType("cycle", CycleDoc, CoreCycle);
+    private static PythonManagedTypeValue CreateCycle() =>
+        FunctionType("cycle", CycleDoc, CoreCycle);
 
     private static PythonManagedObjectValue CoreCycle(
         IReadOnlyList<PythonValue> positional,
@@ -916,7 +1036,9 @@ internal static class PythonItertools
         var pool = Materialize(slots[0]!, span);
         var n = pool.Count;
         // `r=None` is documented as "the whole iterable", unlike combinations.
-        var r = slots[1] is null or PythonNoneValue ? n : RequireR(slots[1]!, span);
+        var r = slots[1] is null or PythonNoneValue
+            ? n
+            : RequireR(slots[1]!, span, "Expected int as r");
         if (r < 0)
         {
             throw ValueError("r must be non-negative", span);
@@ -1187,7 +1309,10 @@ internal static class PythonItertools
                         key = state.KeyOf(value);
                     }
 
-                    if (state.HasCurrentKey && ManagedObjectProtocols.AreEqual(key, state.CurrentKey))
+                    if (
+                        state.HasCurrentKey
+                        && ManagedObjectProtocols.AreEqual(key, state.CurrentKey)
+                    )
                     {
                         // A leftover value of the group that was just handed out: it is
                         // dropped, which is what makes advancing groupby skip a group.
@@ -1306,9 +1431,7 @@ internal static class PythonItertools
             {
                 if (!dropping)
                 {
-                    return TryNext(source, out var value, span)
-                        ? (true, value)
-                        : (false, None);
+                    return TryNext(source, out var value, span) ? (true, value) : (false, None);
                 }
 
                 while (TryNext(source, out var candidate, span))
@@ -1443,15 +1566,14 @@ internal static class PythonItertools
                 }
                 else
                 {
-                    total =
-                        function is null
-                            ? PythonVirtualMachine.ApplyBinaryOperator(
-                                PythonOpCode.BinaryAdd,
-                                total,
-                                value,
-                                span
-                            )
-                            : Call(function, [total, value], span);
+                    total = function is null
+                        ? PythonVirtualMachine.ApplyBinaryOperator(
+                            PythonOpCode.BinaryAdd,
+                            total,
+                            value,
+                            span
+                        )
+                        : Call(function, [total, value], span);
                 }
 
                 return (true, total);
@@ -1890,11 +2012,8 @@ internal static class PythonItertools
     ) => ManagedObjectProtocols.TryGetNext(iterator, out value, span);
 
     /// <summary>Calls a callable through the interpreter's own call path.</summary>
-    private static PythonValue Call(
-        PythonValue callable,
-        PythonValue[] arguments,
-        TextSpan span
-    ) => UserObjectProtocols.Dispatcher!.Invoke(callable, arguments, span);
+    private static PythonValue Call(PythonValue callable, PythonValue[] arguments, TextSpan span) =>
+        UserObjectProtocols.Dispatcher!.Invoke(callable, arguments, span);
 
     private static PythonRuntimeException OverflowError(string message, TextSpan span) =>
         ManagedObjectProtocols.Fault("DPY4003", message, span, "OverflowError");
