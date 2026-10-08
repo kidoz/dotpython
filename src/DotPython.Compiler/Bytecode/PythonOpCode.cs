@@ -124,4 +124,5 @@ public enum PythonOpCode
     LoadGlobal = 119,
     StoreGlobal = 120,
     DeleteGlobal = 121,
+    MakeTypeAlias = 122,
 }

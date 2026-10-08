@@ -392,6 +392,18 @@ internal sealed record PythonGenericAliasValue : PythonValue
     }
 }
 
+/// <summary>
+/// A PEP 695 `type X = value` alias. It names a value rather than being one: it reads
+/// as its own name, is not callable, and exposes the value it was defined with.
+/// </summary>
+internal sealed record PythonTypeAliasValue(string Name, string Module, PythonValue Value)
+    : PythonValue
+{
+    internal override string ToDisplayString() => Name;
+
+    internal override string ToRepresentationString() => Name;
+}
+
 internal sealed record PythonTypeUnionValue : PythonValue
 {
     private PythonTypeUnionValue(IReadOnlyList<PythonValue> members)

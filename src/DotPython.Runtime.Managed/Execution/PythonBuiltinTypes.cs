@@ -159,6 +159,7 @@ internal static class PythonBuiltinTypes
             PythonSetValue => Set,
             PythonTypeUnionValue => Union,
             PythonGenericAliasValue => GenericAlias,
+            PythonTypeAliasValue => TypeAliasType,
             PythonManagedObjectValue instance
                 when ReferenceEquals(instance.Type, PythonBuiltinFunctions.ObjectType) =>
                 PythonBuiltinFunctions.Object,
@@ -310,6 +311,24 @@ internal static class PythonBuiltinTypes
     )
     {
         ModuleName = "types",
+    };
+
+    /// <summary>
+    /// `type(Pair)` for a PEP 695 alias. CPython builds aliases with `typing.TypeAliasType`,
+    /// which cannot be instantiated directly from Python.
+    /// </summary>
+    internal static readonly PythonBuiltinTypeValue TypeAliasType = new(
+        "TypeAliasType",
+        (_, span) =>
+            throw ManagedObjectProtocols.Fault(
+                "DPY4009",
+                "cannot create 'typing.TypeAliasType' instances",
+                span,
+                "TypeError"
+            )
+    )
+    {
+        ModuleName = "typing",
     };
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>

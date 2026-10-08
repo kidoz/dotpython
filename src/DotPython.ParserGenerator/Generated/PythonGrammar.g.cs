@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "8181ba66fd0b95bc564347164751733ad33263ec06bc50e34caa22466ce87be2";
-    internal const int RuleCount = 93;
+    internal const string SourceSha256 = "28b569c8f55fc6c146f06d17c865d2315c950809601271d23711ac9aa73dc867";
+    internal const int RuleCount = 96;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -16,10 +16,13 @@ internal static class GeneratedPythonGrammar
         decorated: decorators (function_def | async_function_def | class_def)
         decorators: ('@' primary NEWLINE)+
         simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-        simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
+        simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | type_alias | expression_list
         assignment: (expression_list '=')+ expression_list
         annotated_assignment: primary ':' expression ['=' expression_list]
         augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=' | '@=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression_list
+        type_alias: 'type' NAME [type_params] '=' expression
+        type_params: '[' ','.type_param+ [','] ']'
+        type_param: NAME [':' expression] | '*' NAME | '**' NAME
         return_stmt: 'return' [expression_list]
         break_stmt: 'break'
         continue_stmt: 'continue'

@@ -263,12 +263,32 @@ internal static class ManagedObjectProtocols
                 );
             case PythonMappingProxyValue proxy:
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
+            case PythonTypeAliasValue alias when name == "__name__":
+                return new PythonTextValue(alias.Name);
+            case PythonTypeAliasValue alias when name == "__module__":
+                return new PythonTextValue(alias.Module);
+            case PythonTypeAliasValue alias when name == "__value__":
+                return alias.Value;
+            case PythonTypeAliasValue when name == "__type_params__":
+                // Type parameters are not implemented in this slice, so every alias
+                // reports an empty parameter list.
+                return new PythonTupleValue([]);
+            case PythonTypeAliasValue alias:
+                throw MissingAttribute(alias.Name, name, span);
             case PythonGenericAliasValue alias when name == "__origin__":
                 return alias.Origin;
             case PythonGenericAliasValue alias when name == "__args__":
                 return new PythonTupleValue([.. alias.Arguments]);
             case PythonGenericAliasValue when name == "__parameters__":
                 return new PythonTupleValue([]);
+            case PythonTypeUnionValue when name == "__origin__":
+                return PythonBuiltinTypes.Union;
+            case PythonTypeUnionValue union when name == "__args__":
+                return new PythonTupleValue([.. union.Members]);
+            case PythonTypeUnionValue when name == "__parameters__":
+                return new PythonTupleValue([]);
+            case PythonTypeUnionValue when name == "__name__":
+                return new PythonTextValue(PythonBuiltinTypes.Union.Name);
             case PythonManagedTypeValue type when name == "__annotate__":
                 // Deliberately the class's own dictionary, never the MRO: an
                 // unannotated subclass reports None and an empty mapping rather than
@@ -3173,6 +3193,7 @@ internal static class ManagedObjectProtocols
             PythonInterpolationValue => "Interpolation",
             // CPython's `tp_name` for a PEP 604 union, as it appears in error messages.
             PythonTypeUnionValue => "typing.Union",
+            PythonTypeAliasValue => "typing.TypeAliasType",
             // Not a builtin name, so `type()` falls through to the alias's own type.
             PythonGenericAliasValue => "types.GenericAlias",
             PythonIteratorValue => "iterator",

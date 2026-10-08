@@ -281,6 +281,32 @@ public static class PythonCompiler
             );
         }
 
+        /// <summary>
+        /// `type X = value`: evaluate the value where the statement runs, wrap it in an
+        /// alias, and bind the name. Type parameters are not implemented, so a
+        /// parameterized alias is reported rather than bound with unresolvable names.
+        /// </summary>
+        private void CompileTypeAlias(PythonTypeAliasStatement alias)
+        {
+            if (alias.TypeParameters.Count > 0)
+            {
+                Report(
+                    "DPY3123",
+                    "PEP 695 type parameters are not supported in this runtime slice.",
+                    alias.TypeParameters[0].Span
+                );
+            }
+
+            Emit(
+                PythonOpCode.LoadConstant,
+                AddConstant(new PythonConstant(PythonConstantType.TextValue, alias.Name.Name)),
+                alias.Name.Span
+            );
+            CompileExpression(alias.Value);
+            Emit(PythonOpCode.MakeTypeAlias, 0, alias.Span);
+            EmitStoreName(alias.Name);
+        }
+
         private void CompileStatement(PythonStatement statement)
         {
             switch (statement)
@@ -309,6 +335,9 @@ public static class PythonCompiler
                     break;
                 case PythonAugmentedAssignmentStatement augmented:
                     CompileAugmentedAssignment(augmented);
+                    break;
+                case PythonTypeAliasStatement alias:
+                    CompileTypeAlias(alias);
                     break;
                 case PythonAnnotatedAssignmentStatement annotated:
                     // Annotation expressions are deferred; non-simple targets never

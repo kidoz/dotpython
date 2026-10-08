@@ -864,6 +864,9 @@ public static class PythonSymbolBinder
                     }
 
                     break;
+                case PythonTypeAliasStatement alias:
+                    AddLocal(alias.Name.Name, localNames, localNameSet, excludedNames);
+                    break;
                 case PythonAnnotatedAssignmentStatement annotated:
                     if (annotated.Value is not null)
                     {
@@ -1024,6 +1027,17 @@ public static class PythonSymbolBinder
         {
             switch (statement)
             {
+                case PythonTypeAliasStatement alias:
+                    CollectReferences(alias.Value, references);
+                    foreach (var parameter in alias.TypeParameters)
+                    {
+                        if (parameter.Bound is not null)
+                        {
+                            CollectReferences(parameter.Bound, references);
+                        }
+                    }
+
+                    break;
                 case PythonAnnotatedAssignmentStatement annotated:
                     if (annotated.Value is not null)
                     {

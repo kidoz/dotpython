@@ -13,6 +13,8 @@ public static class PythonAstTraversal
             PythonAugmentedAssignmentStatement n => [n.Target, n.Value],
             PythonExpressionStatement n => [n.Expression],
             PythonAnnotatedAssignmentStatement n => [n.Target, n.Annotation, n.Value],
+            PythonTypeAliasStatement n => [n.Name, .. n.TypeParameters, n.Value],
+            PythonTypeParameter n => [n.Bound],
             PythonFunctionDefinitionStatement n =>
             [
                 .. n.Decorators,

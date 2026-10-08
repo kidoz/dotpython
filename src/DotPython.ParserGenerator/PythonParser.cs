@@ -1458,8 +1458,84 @@ public static class PythonParser
             }
         }
 
+        /// <summary>
+        /// Whether `type` opens a PEP 695 alias rather than naming a variable. `type` is a
+        /// soft keyword, so `type = 5` and `type(x)` stay ordinary expressions.
+        /// </summary>
+        private bool IsTypeAliasStart() =>
+            Current.Kind == SyntaxTokenKind.Identifier
+            && Current.Text == "type"
+            && Peek(1).Kind == SyntaxTokenKind.Identifier
+            && Peek(2).Kind is SyntaxTokenKind.Equal or SyntaxTokenKind.LeftBracket;
+
+        private PythonTypeAliasStatement ParseTypeAliasStatement()
+        {
+            var start = Advance().Span.Start;
+            var nameToken = Expect(SyntaxTokenKind.Identifier, "a name after 'type'");
+            var name = new PythonNameExpression(nameToken.Text, nameToken.Span);
+            var typeParameters = ParseTypeParameters();
+            Expect(SyntaxTokenKind.Equal, "'=' after the type alias name");
+            var value = ParseRequiredExpression("a value after '='");
+            return new PythonTypeAliasStatement(
+                name,
+                typeParameters,
+                value,
+                TextSpan.FromBounds(start, value.Span.End)
+            );
+        }
+
+        private List<PythonTypeParameter> ParseTypeParameters()
+        {
+            var parameters = new List<PythonTypeParameter>();
+            if (!Match(SyntaxTokenKind.LeftBracket, out var leftBracket))
+            {
+                return parameters;
+            }
+
+            while (true)
+            {
+                var kind =
+                    Match(SyntaxTokenKind.DoubleStar, out _)
+                        ? PythonTypeParameterKind.VariadicKeywords
+                    : Match(SyntaxTokenKind.Star, out _) ? PythonTypeParameterKind.Variadic
+                    : PythonTypeParameterKind.Ordinary;
+                var token = Expect(SyntaxTokenKind.Identifier, "a type parameter name");
+                PythonExpression? bound = null;
+                if (Match(SyntaxTokenKind.Colon, out _))
+                {
+                    bound = ParseRequiredExpression("a bound after ':'");
+                }
+
+                parameters.Add(
+                    new PythonTypeParameter(
+                        token.Text,
+                        bound,
+                        kind,
+                        TextSpan.FromBounds(token.Span.Start, bound?.Span.End ?? token.Span.End)
+                    )
+                );
+                if (!Match(SyntaxTokenKind.Comma, out _))
+                {
+                    break;
+                }
+
+                if (Current.Kind == SyntaxTokenKind.RightBracket)
+                {
+                    break;
+                }
+            }
+
+            ExpectClosingDelimiter(SyntaxTokenKind.RightBracket, "']'", leftBracket.Span.End);
+            return parameters;
+        }
+
         private PythonStatement? ParseSimpleStatement()
         {
+            if (IsTypeAliasStart())
+            {
+                return ParseTypeAliasStatement();
+            }
+
             if (IsKeyword("return"))
             {
                 return ParseReturnStatement();

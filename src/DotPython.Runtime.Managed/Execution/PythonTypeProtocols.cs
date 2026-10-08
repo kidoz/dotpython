@@ -10,10 +10,10 @@ internal static class PythonTypeProtocols
 
     /// <summary>
     /// Whether `value` can be an operand of a PEP 604 union: a type object, an existing
-    /// union, or `None`, which contributes `NoneType`.
+    /// union, a PEP 695 type alias, or `None`, which contributes `NoneType`.
     /// </summary>
     internal static bool IsTypeUnionOperand(PythonValue value) =>
-        value is PythonTypeUnionValue or PythonNoneValue || IsType(value);
+        value is PythonTypeUnionValue or PythonNoneValue or PythonTypeAliasValue || IsType(value);
 
     /// <summary>
     /// Builds `left | right` as a union, or returns null when this `|` is not union

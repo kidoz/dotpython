@@ -39,6 +39,32 @@ public sealed record PythonAnnotatedAssignmentStatement(
     TextSpan Span
 ) : PythonStatement(Span);
 
+/// <summary>
+/// A PEP 695 `type X = value` alias. The value is evaluated where the statement runs;
+/// the alias itself is a `TypeAliasType` that names it.
+/// </summary>
+public sealed record PythonTypeAliasStatement(
+    PythonNameExpression Name,
+    IReadOnlyList<PythonTypeParameter> TypeParameters,
+    PythonExpression Value,
+    TextSpan Span
+) : PythonStatement(Span);
+
+public enum PythonTypeParameterKind
+{
+    Ordinary,
+    Variadic,
+    VariadicKeywords,
+}
+
+/// <summary>One name in a PEP 695 `[...]` type-parameter list.</summary>
+public sealed record PythonTypeParameter(
+    string Name,
+    PythonExpression? Bound,
+    PythonTypeParameterKind Kind,
+    TextSpan Span
+) : PythonNode(Span);
+
 public sealed record PythonFunctionDefinitionStatement(
     IReadOnlyList<PythonExpression> Decorators,
     PythonNameExpression Name,

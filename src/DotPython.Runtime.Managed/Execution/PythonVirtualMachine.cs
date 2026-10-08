@@ -795,6 +795,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             case PythonOpCode.MakeClass:
                 MakeClass(instruction);
                 break;
+            case PythonOpCode.MakeTypeAlias:
+                MakeTypeAlias(instruction);
+                break;
             case PythonOpCode.MakeClassWithKeywords:
             {
                 var keywords = Pop(instruction.Span);
@@ -5806,6 +5809,32 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         _evaluationStack.Push(new PythonTemplateValue(strings, interpolations));
+    }
+
+    /// <summary>
+    /// Builds a PEP 695 type alias from the name and value the compiler pushed. The
+    /// value is whatever the `= ...` expression evaluated to where the statement ran.
+    /// </summary>
+    private void MakeTypeAlias(PythonInstruction instruction)
+    {
+        var value = Pop(instruction.Span);
+        var name = Pop(instruction.Span);
+        if (name is not PythonTextValue text)
+        {
+            throw Fault(
+                "DPY4003",
+                $"a type alias name must be str, not '{ManagedObjectProtocols.GetTypeName(name)}'",
+                instruction.Span,
+                "TypeError"
+            );
+        }
+
+        var module =
+            CurrentFrame.Globals.TryGetValue("__name__", out var owner)
+            && owner is PythonTextValue moduleName
+                ? moduleName.Value
+                : string.Empty;
+        _evaluationStack.Push(new PythonTypeAliasValue(text.Value, module, value));
     }
 
     private void MakeClass(

@@ -78,7 +78,7 @@ public sealed class ClassHeaderCompilationTests
             instruction => instruction.OpCode == PythonOpCode.MakeClassWithKeywords
         );
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
-        Assert.Equal(34, restored.Code.FormatVersion);
+        Assert.Equal(35, restored.Code.FormatVersion);
     }
 
     [Theory]

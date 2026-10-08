@@ -8,6 +8,6 @@ public sealed class BytecodeFormatTests
     [Fact]
     public void CurrentVersion_TracksImplicitClassCellProtocol()
     {
-        Assert.Equal(34, DotPythonBytecodeFormat.CurrentVersion);
+        Assert.Equal(35, DotPythonBytecodeFormat.CurrentVersion);
     }
 }

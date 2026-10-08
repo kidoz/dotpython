@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 40.
+# DotPython executable PEG subset, version 41.
 # Upstream tag: CPython v3.14.7.
 # Upstream commit: 823f0323ee6ec1402088b73bce1a38473cac36dc.
 # Provenance: https://github.com/python/cpython/blob/823f0323ee6ec1402088b73bce1a38473cac36dc/Grammar/python.gram
@@ -12,10 +12,13 @@ compound_stmt: if_stmt | while_stmt | for_stmt | with_stmt | try_stmt | decorate
 decorated: decorators (function_def | async_function_def | class_def)
 decorators: ('@' primary NEWLINE)+
 simple_stmts: ';'.simple_stmt+ [';'] NEWLINE
-simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | expression_list
+simple_stmt: assignment | annotated_assignment | augmented_assignment | return_stmt | break_stmt | continue_stmt | pass_stmt | assert_stmt | del_stmt | global_stmt | nonlocal_stmt | raise_stmt | import_stmt | from_import_stmt | type_alias | expression_list
 assignment: (expression_list '=')+ expression_list
 annotated_assignment: primary ':' expression ['=' expression_list]
 augmented_assignment: primary ('+=' | '-=' | '*=' | '/=' | '//=' | '%=' | '**=' | '@=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression_list
+type_alias: 'type' NAME [type_params] '=' expression
+type_params: '[' ','.type_param+ [','] ']'
+type_param: NAME [':' expression] | '*' NAME | '**' NAME
 return_stmt: 'return' [expression_list]
 break_stmt: 'break'
 continue_stmt: 'continue'
