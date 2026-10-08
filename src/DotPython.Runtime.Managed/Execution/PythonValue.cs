@@ -108,14 +108,37 @@ internal sealed record PythonFloatingPointValue(double Value) : PythonValue
             return "-inf";
         }
 
-        var text = Value
-            .ToString("R", CultureInfo.InvariantCulture)
-            .Replace("E", "e", StringComparison.Ordinal);
+        var text = ShortestRoundTrip(Value);
         return
             text.Contains('.', StringComparison.Ordinal)
             || text.Contains('e', StringComparison.Ordinal)
             ? text
             : $"{text}.0";
+    }
+
+    /// <summary>
+    /// CPython's `repr` switch to scientific notation is one decade earlier than the
+    /// round-trip format's: it goes scientific once the decimal point lands past the
+    /// sixteenth digit (`decpt > 16`), so the whole `[1e16, 1e17)` band is respelled here.
+    /// </summary>
+    private static string ShortestRoundTrip(double value)
+    {
+        var text = value
+            .ToString("R", CultureInfo.InvariantCulture)
+            .Replace("E", "e", StringComparison.Ordinal);
+        if (text.Contains('e', StringComparison.Ordinal))
+            return text;
+
+        var negative = text.StartsWith('-');
+        var unsigned = negative ? text[1..] : text;
+        var point = unsigned.IndexOf('.', StringComparison.Ordinal);
+        var decpt = point < 0 ? unsigned.Length : point;
+        if (decpt <= 16)
+            return text;
+
+        var digits = unsigned.Replace(".", string.Empty, StringComparison.Ordinal).TrimEnd('0');
+        var mantissa = digits.Length == 1 ? digits : $"{digits[..1]}.{digits[1..]}";
+        return $"{(negative ? "-" : string.Empty)}{mantissa}e+{decpt - 1:00}";
     }
 }
 
@@ -833,7 +856,9 @@ internal sealed record PythonManagedObjectValue : PythonValue
     /// heap address.
     /// </summary>
     internal string DefaultRepresentation =>
-        $"<{Type.QualifiedDisplayName} object at 0x{RuntimeHelpers.GetHashCode(this):x}>";
+        PythonCodecInfo.InstanceName(this) is { } codecName
+            ? $"<codecs.CodecInfo object for encoding {codecName} at 0x{RuntimeHelpers.GetHashCode(this):x}>"
+            : $"<{Type.QualifiedDisplayName} object at 0x{RuntimeHelpers.GetHashCode(this):x}>";
 }
 
 internal enum PythonStreamKind
