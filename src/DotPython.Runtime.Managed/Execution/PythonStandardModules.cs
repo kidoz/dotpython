@@ -765,9 +765,7 @@ internal static class PythonStandardModules
 
                     var snapshot = DeepCopy(
                         arguments[0],
-                        new Dictionary<PythonValue, PythonValue>(
-                            ReferenceEqualityComparer.Instance
-                        ),
+                        PythonDeepCopyMemo.Create(),
                         span,
                         mode: DeepCopyMode.PickleSnapshot
                     );
@@ -818,9 +816,7 @@ internal static class PythonStandardModules
 
                     return DeepCopy(
                         value,
-                        new Dictionary<PythonValue, PythonValue>(
-                            ReferenceEqualityComparer.Instance
-                        ),
+                        PythonDeepCopyMemo.Create(),
                         span,
                         mode: DeepCopyMode.PickleRestore
                     );
@@ -1355,14 +1351,8 @@ internal static class PythonStandardModules
                 "deepcopy",
                 (arguments, span) =>
                 {
-                    RequireCopyArguments("deepcopy", arguments, span);
-                    return DeepCopy(
-                        arguments[0],
-                        new Dictionary<PythonValue, PythonValue>(
-                            ReferenceEqualityComparer.Instance
-                        ),
-                        span
-                    );
+                    RequireDeepCopyArguments(arguments, span);
+                    return DeepCopy(arguments[0], RequireDeepCopyMemo(arguments, span), span);
                 }
             )
         );
@@ -1385,8 +1375,112 @@ internal static class PythonStandardModules
         }
     }
 
-    private static PythonValue ShallowCopy(PythonValue value, TextSpan span) =>
-        value switch
+    private static void RequireDeepCopyArguments(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count is 0 or > 2)
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                $"copy.deepcopy() takes 1 or 2 arguments ({arguments.Count} given).",
+                span,
+                "TypeError"
+            );
+        }
+    }
+
+    /// <summary>
+    /// The memo for a `copy.deepcopy` call: an existing memo dictionary when one is
+    /// supplied (so repeated calls share copies), otherwise a fresh one.
+    /// </summary>
+    private static PythonDeepCopyMemo RequireDeepCopyMemo(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count < 2 || arguments[1] is PythonNoneValue)
+        {
+            return PythonDeepCopyMemo.Create();
+        }
+
+        if (arguments[1] is not PythonDictionaryValue dictionary)
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                $"copy.deepcopy() memo must be a dict, not '{ManagedObjectProtocols.GetTypeName(arguments[1])}'.",
+                span,
+                "TypeError"
+            );
+        }
+
+        return new PythonDeepCopyMemo(dictionary);
+    }
+
+    /// <summary>
+    /// Calls a user-defined copy hook, returning false when none applies. CPython
+    /// resolves `__copy__` on the type but `__deepcopy__` through an ordinary
+    /// `getattr` on the instance, so the two lookups differ. A hook bound to None is
+    /// treated as absent; built-in values never define either hook.
+    /// </summary>
+    private static bool TryInvokeCopyHook(
+        PythonValue value,
+        string name,
+        bool instanceLookup,
+        PythonValue[] arguments,
+        TextSpan span,
+        out PythonValue result
+    )
+    {
+        result = null!;
+        if (UserObjectProtocols.Dispatcher is null)
+        {
+            return false;
+        }
+
+        if (instanceLookup)
+        {
+            if (
+                value is not PythonManagedObjectValue instance
+                || !ManagedObjectProtocols.TryGetInstanceAttribute(
+                    instance,
+                    name,
+                    span,
+                    out var method
+                )
+                || method is PythonNoneValue
+            )
+            {
+                return false;
+            }
+
+            result = UserObjectProtocols.Dispatcher.Invoke(method, arguments, span);
+            return true;
+        }
+
+        if (
+            !UserObjectProtocols.TryGetSpecialMethod(value, name, out var typeMethod, out _)
+            || typeMethod is PythonNoneValue
+        )
+        {
+            return false;
+        }
+
+        result = UserObjectProtocols.Dispatcher.Invoke(typeMethod, arguments, span);
+        return true;
+    }
+
+    private static PythonValue ShallowCopy(PythonValue value, TextSpan span)
+    {
+        // `copy.copy` resolves `__copy__` on the type, so an instance-dictionary
+        // entry never stands in for a real hook.
+        if (TryInvokeCopyHook(value, "__copy__", instanceLookup: false, [], span, out var hooked))
+        {
+            return hooked;
+        }
+
+        return value switch
         {
             PythonListValue list => new PythonListValue([.. list.Elements]),
             PythonDictionaryValue dictionary => dictionary.ShallowCopy(span),
@@ -1401,10 +1495,11 @@ internal static class PythonStandardModules
             PythonExternalObjectValue external => ReconstructExternal(external, null, span),
             _ => value,
         };
+    }
 
     private static PythonValue DeepCopy(
         PythonValue value,
-        Dictionary<PythonValue, PythonValue> memo,
+        PythonDeepCopyMemo memo,
         TextSpan span,
         DeepCopyMode mode = DeepCopyMode.Copy
     )
@@ -1429,7 +1524,7 @@ internal static class PythonStandardModules
             case PythonListValue list:
             {
                 var copy = new PythonListValue([]);
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 foreach (var element in list.Elements)
                 {
                     copy.Elements.Add(DeepCopy(element, memo, span, mode));
@@ -1440,7 +1535,7 @@ internal static class PythonStandardModules
             case PythonDictionaryValue dictionary:
             {
                 var copy = new PythonDictionaryValue([]);
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 foreach (var item in dictionary.Items)
                 {
                     copy.AddItem(
@@ -1456,7 +1551,7 @@ internal static class PythonStandardModules
             case PythonSetValue set:
             {
                 var copy = new PythonSetValue([]) { IsFrozen = set.IsFrozen };
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 foreach (var element in set.Elements)
                 {
                     ManagedObjectProtocols.AddToSet(
@@ -1491,7 +1586,7 @@ internal static class PythonStandardModules
                 }
 
                 var copy = new PythonTupleValue(elements);
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 return copy;
             }
             case PythonManagedObjectValue instance:
@@ -1507,7 +1602,7 @@ internal static class PythonStandardModules
                 }
 
                 var copy = interpolation with { Value = copiedValue };
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 return copy;
             }
             case PythonTemplateValue template:
@@ -1523,14 +1618,14 @@ internal static class PythonStandardModules
                 }
 
                 var copy = new PythonTemplateValue(template.Strings, interpolations);
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 return copy;
             }
             case PythonExternalObjectValue external when mode == DeepCopyMode.PickleSnapshot:
             {
                 var (factory, arguments) = GetExternalReduction(external, span);
                 var snapshot = new PythonPickleReductionValue(factory);
-                memo[value] = snapshot;
+                memo.Set(value, snapshot, span);
                 snapshot.Arguments = arguments
                     .Elements.Select(argument =>
                         DeepCopy(argument, memo, span, mode: DeepCopyMode.PickleSnapshot)
@@ -1542,18 +1637,18 @@ internal static class PythonStandardModules
             {
                 // Mark an in-progress constructor so cycles through its arguments
                 // fail explicitly: there is no instance to memoize before the call.
-                memo[value] = reduction;
+                memo.Set(value, reduction, span);
                 var arguments = reduction
                     .Arguments.Select(argument => DeepCopy(argument, memo, span, mode))
                     .ToArray();
                 var restored = ManagedObjectProtocols.Call(reduction.Factory, arguments, span);
-                memo[value] = restored;
+                memo.Set(value, restored, span);
                 return restored;
             }
             case PythonExternalObjectValue external:
             {
                 var copy = ReconstructExternal(external, memo, span);
-                memo[value] = copy;
+                memo.Set(value, copy, span);
                 return copy;
             }
             default:
@@ -1561,18 +1656,36 @@ internal static class PythonStandardModules
         }
     }
 
-    private static PythonManagedObjectValue CopyInstance(
+    private static PythonValue CopyInstance(
         PythonManagedObjectValue instance,
         bool deep,
-        Dictionary<PythonValue, PythonValue>? memo,
+        PythonDeepCopyMemo? memo,
         TextSpan span,
         DeepCopyMode mode = DeepCopyMode.Copy
     )
     {
+        // `copy.deepcopy` resolves `__deepcopy__` on the instance, unlike `copy.copy`,
+        // which resolves `__copy__` on the type. A hook owns its own memo entry.
+        if (
+            deep
+            && mode == DeepCopyMode.Copy
+            && TryInvokeCopyHook(
+                instance,
+                "__deepcopy__",
+                instanceLookup: true,
+                [memo!.Dictionary],
+                span,
+                out var hooked
+            )
+        )
+        {
+            return hooked;
+        }
+
         var copy = new PythonManagedObjectValue(instance.Type);
         if (deep)
         {
-            memo![instance] = copy;
+            memo!.Set(instance, copy, span);
         }
 
         CopyAttributes(
@@ -1590,7 +1703,7 @@ internal static class PythonStandardModules
     private static PythonValue CopyException(
         PythonExceptionValue exception,
         bool deep,
-        Dictionary<PythonValue, PythonValue>? memo,
+        PythonDeepCopyMemo? memo,
         TextSpan span,
         DeepCopyMode mode = DeepCopyMode.Copy
     )
@@ -1614,15 +1727,15 @@ internal static class PythonStandardModules
                 HasInstanceDictionary = exception.HasInstanceDictionary,
             };
             copy = snapshot;
-            memo![exception] = copy;
+            memo!.Set(exception, copy, span);
             snapshot.Arguments = GetExceptionArguments(exception)
-                .Select(argument => DeepCopy(argument, memo, span, mode))
+                .Select(argument => DeepCopy(argument, memo!, span, mode))
                 .ToArray();
             if (nested is not null)
             {
                 foreach (var child in exception.GroupExceptions!)
                 {
-                    nested.Add((PythonExceptionValue)DeepCopy(child, memo, span, mode));
+                    nested.Add((PythonExceptionValue)DeepCopy(child, memo!, span, mode));
                 }
             }
         }
@@ -1644,7 +1757,7 @@ internal static class PythonStandardModules
             copy = ReconstructException(exception, arguments, span);
             if (deep)
             {
-                memo![exception] = copy;
+                memo!.Set(exception, copy, span);
             }
         }
 
@@ -1684,7 +1797,7 @@ internal static class PythonStandardModules
         PythonDictionaryValue source,
         PythonValue target,
         bool deep,
-        Dictionary<PythonValue, PythonValue>? memo,
+        PythonDeepCopyMemo? memo,
         TextSpan span,
         DeepCopyMode mode
     )
@@ -1820,7 +1933,7 @@ internal static class PythonStandardModules
         PythonDictionaryValue source,
         PythonDictionaryValue target,
         bool deep,
-        Dictionary<PythonValue, PythonValue>? memo,
+        PythonDeepCopyMemo? memo,
         TextSpan span,
         DeepCopyMode mode,
         bool exceptionState = false
@@ -1851,7 +1964,7 @@ internal static class PythonStandardModules
 
     private static PythonValue ReconstructExternal(
         PythonExternalObjectValue external,
-        Dictionary<PythonValue, PythonValue>? memo,
+        PythonDeepCopyMemo? memo,
         TextSpan span
     )
     {

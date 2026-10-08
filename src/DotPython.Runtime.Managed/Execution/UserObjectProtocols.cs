@@ -80,6 +80,9 @@ internal interface IUserObjectDispatcher
 
     PythonBuiltinFunctionValue GetBuiltinConstructor(string name);
 
+    /// <summary>The stable identity token for a value, as `id()` returns it.</summary>
+    PythonValue GetIdentity(PythonValue value);
+
     /// <summary>The executing VM's standard output (`sys.stdout`).</summary>
     TextWriter StandardOutput { get; }
 

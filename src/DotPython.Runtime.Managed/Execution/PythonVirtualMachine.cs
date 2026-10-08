@@ -309,6 +309,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     PythonBuiltinFunctionValue IUserObjectDispatcher.GetBuiltinConstructor(string name) =>
         _builtinConstructors[name];
 
+    PythonValue IUserObjectDispatcher.GetIdentity(PythonValue value) => GetIdentityToken(value);
+
     PythonValue IUserObjectDispatcher.ConstructType(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
@@ -2993,12 +2995,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
-        var token = _identityTokens.GetValue(
-            arguments[0],
-            _ => PythonWholeNumberValue.Create(_nextIdentityToken += 16)
-        );
-        return (PythonValue)token;
+        return GetIdentityToken(arguments[0]);
     }
+
+    /// <summary>
+    /// The stable identity token for a value. The token is assigned on first use and
+    /// held for the value's lifetime, so `id()` and identity-keyed structures agree.
+    /// </summary>
+    private PythonValue GetIdentityToken(PythonValue value) =>
+        (PythonValue)
+            _identityTokens.GetValue(
+                value,
+                _ => PythonWholeNumberValue.Create(_nextIdentityToken += 16)
+            );
 
     private void ApplyAsyncWithSetup(PythonInstruction instruction)
     {
