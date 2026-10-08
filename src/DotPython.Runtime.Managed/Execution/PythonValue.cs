@@ -309,6 +309,89 @@ internal sealed record PythonBuiltinTypeValue(
 /// surviving member back to that member, so `int | int` is `int`. `None` contributes
 /// `NoneType`, matching `type.__or__`.
 /// </summary>
+/// <summary>
+/// A parameterized generic such as `list[int]`, produced by subscripting a builtin
+/// container type. It is a value in its own right: it renders, compares and hashes by
+/// its origin and arguments, calls through to its origin, and is refused by
+/// `isinstance` and `issubclass` the way CPython refuses a parameterized generic.
+/// </summary>
+internal sealed record PythonGenericAliasValue : PythonValue
+{
+    private PythonGenericAliasValue(PythonValue origin, IReadOnlyList<PythonValue> arguments)
+    {
+        Origin = origin;
+        Arguments = arguments;
+        _displayString = Render(origin, arguments);
+    }
+
+    /// <summary>The unsubscripted type.</summary>
+    internal PythonValue Origin { get; }
+
+    /// <summary>The subscription arguments, in source order.</summary>
+    internal IReadOnlyList<PythonValue> Arguments { get; }
+
+    private readonly string _displayString;
+
+    internal override string ToDisplayString() => _displayString;
+
+    internal override string ToRepresentationString() => _displayString;
+
+    /// <summary>
+    /// Builds the alias for `origin[index]`. A tuple index supplies one argument per
+    /// item, so `list[()]` parameterizes with nothing and `list[int, str]` with two.
+    /// </summary>
+    internal static PythonGenericAliasValue Create(PythonValue origin, PythonValue index)
+    {
+        PythonValue[] arguments = index is PythonTupleValue tuple ? [.. tuple.Elements] : [index];
+        return new PythonGenericAliasValue(origin, arguments);
+    }
+
+    /// <summary>`list[int]`, and `tuple[()]` when the alias carries no arguments.</summary>
+    private static string Render(PythonValue origin, IReadOnlyList<PythonValue> arguments)
+    {
+        var name = origin switch
+        {
+            PythonBuiltinTypeValue builtin => builtin.Name,
+            PythonManagedTypeValue managed => managed.Name,
+            _ => origin.ToDisplayString(),
+        };
+        return arguments.Count == 0
+            ? $"{name}[()]"
+            : $"{name}[{string.Join(", ", arguments.Select(RenderArgument))}]";
+    }
+
+    /// <summary>
+    /// One argument as it reads inside the brackets. A type shows its module-qualified
+    /// name rather than its `<class ...>` repr, while everything else shows its repr,
+    /// so `list[U]` reads `list[__main__.U]` and `list["x"]` reads `list['x']`.
+    /// </summary>
+    private static string RenderArgument(PythonValue argument) =>
+        argument switch
+        {
+            PythonBuiltinTypeValue type => type.Name,
+            PythonManagedTypeValue type => QualifyTypeName(type),
+            // `tuple[int, ...]` writes the ellipsis as three dots, not `Ellipsis`.
+            PythonEllipsisValue => "...",
+            _ => argument.ToRepresentationString(),
+        };
+
+    private static string QualifyTypeName(PythonManagedTypeValue type)
+    {
+        var qualName =
+            type.Attributes.TryGetValue("__qualname__", out var declared)
+            && declared is PythonTextValue text
+                ? text.Value
+                : type.Name;
+        return
+            type.Attributes.TryGetValue("__module__", out var owner)
+            && owner is PythonTextValue module
+            && module.Value.Length != 0
+            && module.Value != "builtins"
+            ? $"{module.Value}.{qualName}"
+            : qualName;
+    }
+}
+
 internal sealed record PythonTypeUnionValue : PythonValue
 {
     private PythonTypeUnionValue(IReadOnlyList<PythonValue> members)

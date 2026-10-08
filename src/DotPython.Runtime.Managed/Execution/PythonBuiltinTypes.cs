@@ -158,6 +158,7 @@ internal static class PythonBuiltinTypes
             PythonSetValue { IsFrozen: true } => Frozenset,
             PythonSetValue => Set,
             PythonTypeUnionValue => Union,
+            PythonGenericAliasValue => GenericAlias,
             PythonManagedObjectValue instance
                 when ReferenceEquals(instance.Type, PythonBuiltinFunctions.ObjectType) =>
                 PythonBuiltinFunctions.Object,
@@ -291,6 +292,24 @@ internal static class PythonBuiltinTypes
     )
     {
         ModuleName = "typing",
+    };
+
+    /// <summary>
+    /// `type(list[int])`. A parameterized generic is an instance of `types.GenericAlias`,
+    /// which cannot be instantiated directly from Python.
+    /// </summary>
+    internal static readonly PythonBuiltinTypeValue GenericAlias = new(
+        "GenericAlias",
+        (_, span) =>
+            throw ManagedObjectProtocols.Fault(
+                "DPY4009",
+                "cannot create 'types.GenericAlias' instances",
+                span,
+                "TypeError"
+            )
+    )
+    {
+        ModuleName = "types",
     };
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>

@@ -2057,6 +2057,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             is PythonProtocolFunctionValue
                 or PythonBoundMethodValue
                 or PythonManagedTypeValue
+                or PythonGenericAliasValue
                 or PythonExternalObjectValue
                 or PythonStaticMethodValue
                 or PythonClassMethodValue
@@ -4636,6 +4637,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             is PythonProtocolFunctionValue
                 or PythonBoundMethodValue
                 or PythonManagedTypeValue
+                or PythonGenericAliasValue
                 or PythonExternalObjectValue
         )
         {
@@ -6414,6 +6416,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return IsSubclassOf(cls.Metaclass, meta, span);
         switch (classInfo)
         {
+            // A parameterized generic is not a class, and CPython refuses it here
+            // rather than silently matching its origin.
+            case PythonGenericAliasValue:
+                throw Fault(
+                    "DPY4003",
+                    "isinstance() argument 2 cannot be a parameterized generic",
+                    span,
+                    "TypeError"
+                );
             case PythonTupleValue tuple:
                 return tuple.Elements.Any(element => MatchesClassInfo(value, element, span));
             case PythonTypeUnionValue union:
@@ -7255,6 +7266,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     private bool MatchesSubclassInfo(PythonValue cls, PythonValue classInfo, TextSpan span)
     {
+        if (classInfo is PythonGenericAliasValue)
+        {
+            throw Fault(
+                "DPY4003",
+                "issubclass() argument 2 cannot be a parameterized generic",
+                span,
+                "TypeError"
+            );
+        }
+
         if (classInfo is PythonTupleValue tuple)
             return tuple.Elements.Any(element => MatchesSubclassInfo(cls, element, span));
         if (classInfo is PythonTypeUnionValue union)
@@ -7811,6 +7832,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             || right is PythonSetValue
             || left is PythonManagedObjectValue
             || right is PythonManagedObjectValue
+            // A parameterized generic compares by origin and arguments, which the
+            // shared protocol layer decides.
+            || left is PythonGenericAliasValue
+            || right is PythonGenericAliasValue
         )
         {
             return ManagedObjectProtocols.AreEqual(left, right);

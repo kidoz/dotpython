@@ -64,6 +64,9 @@ internal static class ManagedObjectProtocols
         return callable switch
         {
             PythonBuiltinFunctionValue builtin => builtin.Invoke(arguments, span),
+            // A parameterized generic constructs its origin, so `list[int]([1, 2])` is
+            // `list([1, 2])`.
+            PythonGenericAliasValue alias => Call(alias.Origin, arguments, span),
             PythonBuiltinTypeValue builtinType => builtinType.Construct(arguments, span),
             PythonProtocolFunctionValue function => function.Invoke(null, arguments),
             PythonBoundMethodValue
@@ -260,6 +263,12 @@ internal static class ManagedObjectProtocols
                 );
             case PythonMappingProxyValue proxy:
                 return PythonMappingProxies.GetAttribute(proxy, name, span);
+            case PythonGenericAliasValue alias when name == "__origin__":
+                return alias.Origin;
+            case PythonGenericAliasValue alias when name == "__args__":
+                return new PythonTupleValue([.. alias.Arguments]);
+            case PythonGenericAliasValue when name == "__parameters__":
+                return new PythonTupleValue([]);
             case PythonManagedTypeValue type when name == "__annotate__":
                 // Deliberately the class's own dictionary, never the MRO: an
                 // unannotated subclass reports None and an empty mapping rather than
@@ -2276,10 +2285,34 @@ internal static class ManagedObjectProtocols
                 throw MissingKey(index);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetItem(index, span);
+            case PythonBuiltinTypeValue type when IsGenericSubscribable(type.Name):
+                return PythonGenericAliasValue.Create(type, index);
+            case PythonBuiltinTypeValue type:
+                throw Fault(
+                    "DPY4011",
+                    $"type '{type.Name}' is not subscriptable",
+                    span,
+                    "TypeError"
+                );
+            case PythonManagedTypeValue type:
+                throw Fault(
+                    "DPY4011",
+                    $"type '{type.Name}' is not subscriptable",
+                    span,
+                    "TypeError"
+                );
             default:
                 throw Fault("DPY4011", "This value is not subscriptable.", span, "TypeError");
         }
     }
+
+    /// <summary>
+    /// The builtin container types that accept a subscription. CPython gives these a
+    /// `__class_getitem__`; every other builtin type, and any class without one, is
+    /// not subscriptable.
+    /// </summary>
+    private static bool IsGenericSubscribable(string name) =>
+        name is "list" or "dict" or "set" or "frozenset" or "tuple" or "type";
 
     internal static void SetItem(
         PythonValue target,
@@ -3039,6 +3072,7 @@ internal static class ManagedObjectProtocols
                 .GetHashCode(),
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonTypeUnionValue union => GetTypeUnionHash(union),
+            PythonGenericAliasValue alias => GetGenericAliasHash(alias, span),
             PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
                 "DPY4014",
                 $"unhashable type: '{GetTypeName(value)}'",
@@ -3047,6 +3081,18 @@ internal static class ManagedObjectProtocols
             ),
             _ => RuntimeHelpers.GetHashCode(value),
         };
+    }
+
+    /// <summary>`list[int]` hashes by its origin and arguments.</summary>
+    private static int GetGenericAliasHash(PythonGenericAliasValue alias, TextSpan span)
+    {
+        var hash = RuntimeHelpers.GetHashCode(alias.Origin);
+        foreach (var argument in alias.Arguments)
+        {
+            hash = HashCode.Combine(hash, GetPythonHash(argument, span));
+        }
+
+        return hash;
     }
 
     /// <summary>Member order is not part of a union's identity, so it is not part of its hash.</summary>
@@ -3127,6 +3173,8 @@ internal static class ManagedObjectProtocols
             PythonInterpolationValue => "Interpolation",
             // CPython's `tp_name` for a PEP 604 union, as it appears in error messages.
             PythonTypeUnionValue => "typing.Union",
+            // Not a builtin name, so `type()` falls through to the alias's own type.
+            PythonGenericAliasValue => "types.GenericAlias",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass } =>
@@ -3767,6 +3815,11 @@ internal static class ManagedObjectProtocols
             // Union order is not part of identity: `int | str` equals `str | int`.
             (PythonTypeUnionValue leftUnion, PythonTypeUnionValue rightUnion) =>
                 leftUnion.SetEquals(rightUnion),
+            // `list[int]` equals `list[int]`: same origin, same arguments in order.
+            (PythonGenericAliasValue leftAlias, PythonGenericAliasValue rightAlias) =>
+                ReferenceEquals(leftAlias.Origin, rightAlias.Origin)
+                    && leftAlias.Arguments.Count == rightAlias.Arguments.Count
+                    && leftAlias.Arguments.SequenceEqual(rightAlias.Arguments),
             _ => ReferenceEquals(left, right),
         };
     }
