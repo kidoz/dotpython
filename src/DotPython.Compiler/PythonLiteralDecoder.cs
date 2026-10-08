@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Numerics;
 using System.Text;
@@ -6,6 +7,22 @@ using DotPython.Language.Ast;
 using DotPython.Language.Diagnostics;
 
 namespace DotPython.Compiler;
+
+/// <summary>
+/// A literal escape failure whose message is specific enough to report verbatim.
+/// The generic decoder failures keep the terse diagnostics they already had.
+/// </summary>
+[SuppressMessage(
+    "Design",
+    "CA1032:Implement standard exception constructors",
+    Justification = "Internal signal from DecodeEscapes to Decode; it is always built with the one message that is reported and is never serialized or rethrown."
+)]
+[SuppressMessage(
+    "Design",
+    "CA1064:Exceptions should be public",
+    Justification = "It never crosses the assembly boundary; making it public would add compiler surface for an implementation detail."
+)]
+internal sealed class PythonLiteralDecodeException(string message) : Exception(message);
 
 internal static class PythonLiteralDecoder
 {
@@ -61,6 +78,20 @@ internal static class PythonLiteralDecoder
                 ),
                 _ => throw new ArgumentOutOfRangeException(nameof(expression)),
             };
+        }
+        catch (PythonLiteralDecodeException exception)
+        {
+            // A specific escape failure reports what CPython reports, so a named
+            // escape that is misspelled reads the same in both engines.
+            diagnostics.Add(
+                new Diagnostic(
+                    "DPY3003",
+                    exception.Message,
+                    DiagnosticSeverity.Error,
+                    expression.Span
+                )
+            );
+            return new PythonConstant(PythonConstantType.NoneValue, null);
         }
         catch (FormatException)
         {
@@ -201,9 +232,13 @@ internal static class PythonLiteralDecoder
                 continue;
             }
 
+            var escapeStart = index;
             var escaped = content[++index];
             switch (escaped)
             {
+                case 'N':
+                    builder.Append(DecodeNamed(content, ref index, escapeStart));
+                    break;
                 case '\n':
                     break;
                 case '\r' when index + 1 < content.Length && content[index + 1] == '\n':
@@ -255,6 +290,51 @@ internal static class PythonLiteralDecoder
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Decodes `\N{NAME}`. `index` addresses the `N` and is advanced to the closing
+    /// brace. The reported range counts the characters the decoder consumed, matching
+    /// CPython, so a malformed escape ends where the name stopped being one.
+    /// </summary>
+    private static string DecodeNamed(string content, ref int index, int start)
+    {
+        var cursor = index + 1;
+        if (cursor >= content.Length || content[cursor] != '{')
+        {
+            throw MalformedNamedEscape(start, cursor);
+        }
+
+        var nameStart = ++cursor;
+        while (cursor < content.Length && content[cursor] != '}')
+        {
+            cursor++;
+        }
+
+        if (cursor == nameStart || cursor >= content.Length)
+        {
+            throw MalformedNamedEscape(start, cursor == nameStart ? nameStart : cursor);
+        }
+
+        if (!PythonUnicodeNameIndex.TryGetCodePoint(content[nameStart..cursor], out var codePoint))
+        {
+            throw NamedEscapeError(start, cursor, "unknown Unicode character name");
+        }
+
+        index = cursor;
+        return char.ConvertFromUtf32(codePoint);
+    }
+
+    private static PythonLiteralDecodeException MalformedNamedEscape(int start, int end) =>
+        NamedEscapeError(start, end - 1, "malformed \\N character escape");
+
+    private static PythonLiteralDecodeException NamedEscapeError(
+        int start,
+        int end,
+        string reason
+    ) =>
+        new(
+            $"(unicode error) 'unicodeescape' codec can't decode bytes in position {start}-{end}: {reason}"
+        );
 
     private static int DecodeHex(string content, ref int index, int length)
     {

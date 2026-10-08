@@ -685,7 +685,7 @@ public static class PythonCompiler
                         current.Append(
                             template.IsRaw
                                 ? literal.RawText
-                                : PythonLiteralDecoder.DecodeEscapes(literal.RawText)
+                                : DecodePartEscapes(literal.RawText, literal.Span)
                         );
                         break;
                     case PythonFormattedStringInterpolationPart interpolation:
@@ -747,6 +747,24 @@ public static class PythonCompiler
             Emit(PythonOpCode.MakeTemplate, interpolations.Count, template.Span);
         }
 
+        /// <summary>
+        /// Decodes an f-string or template literal part. A named escape that cannot be
+        /// resolved is reported as a diagnostic rather than thrown, because these call
+        /// sites sit outside the constant decoder's own error handling.
+        /// </summary>
+        private string DecodePartEscapes(string rawText, TextSpan span)
+        {
+            try
+            {
+                return PythonLiteralDecoder.DecodeEscapes(rawText);
+            }
+            catch (PythonLiteralDecodeException exception)
+            {
+                Report("DPY3003", exception.Message, span);
+                return rawText;
+            }
+        }
+
         private void CompileFormattedString(PythonFormattedStringExpression formatted)
         {
             var partCount = 0;
@@ -757,7 +775,7 @@ public static class PythonCompiler
                     case PythonFormattedStringLiteralPart literal:
                         var decoded = formatted.IsRaw
                             ? literal.RawText
-                            : PythonLiteralDecoder.DecodeEscapes(literal.RawText);
+                            : DecodePartEscapes(literal.RawText, literal.Span);
                         Emit(
                             PythonOpCode.LoadConstant,
                             AddConstant(new PythonConstant(PythonConstantType.TextValue, decoded)),

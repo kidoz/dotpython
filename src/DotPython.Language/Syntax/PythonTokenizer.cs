@@ -260,7 +260,7 @@ public static class PythonTokenizer
                     or SyntaxTokenKind.TemplateStringLiteral
             )
             {
-                ReadInterpolatedString(start);
+                ReadInterpolatedString(start, prefix.IndexOfAny('r', 'R') >= 0);
             }
             else
             {
@@ -315,7 +315,7 @@ public static class PythonTokenizer
             ReportUnterminatedString(tokenStart);
         }
 
-        private void ReadInterpolatedString(int tokenStart)
+        private void ReadInterpolatedString(int tokenStart, bool isRaw)
         {
             var quote = Current;
             var quoteLength = HasRepeatedQuote(_position, quote) ? 3 : 1;
@@ -332,6 +332,16 @@ public static class PythonTokenizer
 
                 if (replacementDepth == 0)
                 {
+                    if (!isRaw && Current == '\\' && Peek(1) == 'N' && Peek(2) == '{')
+                    {
+                        // A `\N{NAME}` escape owns its braces; they do not open a
+                        // replacement field. In a raw string the backslash is literal,
+                        // so the braces do open one.
+                        var closing = _text.IndexOf('}', _position + 3);
+                        _position = closing < 0 ? _position + 3 : closing + 1;
+                        continue;
+                    }
+
                     if (Current == '{')
                     {
                         if (Peek(1) == '{')
@@ -405,14 +415,15 @@ public static class PythonTokenizer
             }
 
             _position = quotePosition;
-            var nestedKind = GetStringKind(_text.AsSpan(start, prefixLength));
+            var nestedPrefix = _text.AsSpan(start, prefixLength);
+            var nestedKind = GetStringKind(nestedPrefix);
             if (
                 nestedKind
                 is SyntaxTokenKind.FormattedStringLiteral
                     or SyntaxTokenKind.TemplateStringLiteral
             )
             {
-                ReadInterpolatedString(start);
+                ReadInterpolatedString(start, nestedPrefix.IndexOfAny('r', 'R') >= 0);
             }
             else
             {

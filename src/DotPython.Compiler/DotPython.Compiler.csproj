@@ -6,4 +6,11 @@
     <ItemGroup>
         <ProjectReference Include="../DotPython.Language/DotPython.Language.csproj" />
     </ItemGroup>
+
+    <ItemGroup>
+        <EmbeddedResource
+            Include="Unicode/UnicodeNameIndex16.bin"
+            LogicalName="DotPython.UnicodeNameIndex16"
+        />
+    </ItemGroup>
 </Project>

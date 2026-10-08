@@ -3021,6 +3021,24 @@ public static class PythonParser
             while (position < content.Length)
             {
                 var current = content[position];
+                if (
+                    current == '\\'
+                    && !isRaw
+                    && position + 2 < content.Length
+                    && content[position + 1] == 'N'
+                    && content[position + 2] == '{'
+                )
+                {
+                    // A `\N{NAME}` escape owns its braces; they do not open a
+                    // replacement field. An unterminated one is left for the decoder
+                    // to report.
+                    var closing = content.IndexOf('}', position + 3);
+                    var escapeEnd = closing < 0 ? content.Length : closing + 1;
+                    literal.Append(content, position, escapeEnd - position);
+                    position = escapeEnd;
+                    continue;
+                }
+
                 if (current == '{' && position + 1 < content.Length && content[position + 1] == '{')
                 {
                     literal.Append('{');
