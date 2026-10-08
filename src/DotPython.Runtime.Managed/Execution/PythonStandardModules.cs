@@ -416,6 +416,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonDataclasses.Initialize
         );
+        modules["itertools"] = PythonModuleDefinition.Native(
+            "<dotpython itertools>",
+            isPackage: false,
+            PythonItertools.Initialize
+        );
         modules["pathlib"] = PythonModuleDefinition.Native(
             "<dotpython pathlib>",
             isPackage: true,

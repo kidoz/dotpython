@@ -7986,6 +7986,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span) =>
         ManagedObjectProtocols.CompareOrdered(left, right, span);
 
+    /// <summary>
+    /// `left op right` with the interpreter's full rules, for the native modules that
+    /// implement a Python-level operation themselves (`itertools.count`, `accumulate`).
+    /// </summary>
+    internal static PythonValue ApplyBinaryOperator(
+        PythonOpCode opCode,
+        PythonValue left,
+        PythonValue right,
+        TextSpan span
+    ) => ApplyBinary(opCode, left, right, span);
+
     private static PythonValue ApplyBinary(
         PythonOpCode opCode,
         PythonValue left,
