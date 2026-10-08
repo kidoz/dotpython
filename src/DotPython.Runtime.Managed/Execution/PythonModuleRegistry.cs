@@ -174,11 +174,18 @@ internal sealed class PythonModuleRegistry
 
         if (!_definitions.TryGetValue(name, out var definition))
         {
-            throw new PythonRuntimeException(
-                "DPY4020",
-                $"No managed module named '{name}' is registered.",
-                span
-            );
+            // A dotted name whose parent is a known non-package says so, as CPython does.
+            var message = $"No module named '{name}'";
+            var lastDot = name.LastIndexOf('.');
+            if (
+                lastDot > 0
+                && _definitions.TryGetValue(name[..lastDot], out var parentDefinition)
+                && !parentDefinition.IsPackage
+            )
+            {
+                message += $"; '{name[..lastDot]}' is not a package";
+            }
+            throw new PythonRuntimeException("DPY4020", message, span);
         }
 
         if (definition.IsNativeExtension)

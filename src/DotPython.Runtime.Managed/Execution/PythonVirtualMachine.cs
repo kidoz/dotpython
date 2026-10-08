@@ -1460,7 +1460,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             throw Fault(
                 "DPY4022",
-                $"Module '{module.Name}' has no attribute '{name}'.",
+                $"cannot import name '{name}' from '{module.Name}' (unknown location)",
                 span,
                 "ImportError"
             );

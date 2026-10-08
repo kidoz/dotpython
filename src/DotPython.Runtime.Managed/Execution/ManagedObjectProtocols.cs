@@ -226,7 +226,7 @@ internal static class ManagedObjectProtocols
             case PythonModuleValue module:
                 throw Fault(
                     "DPY4022",
-                    $"Module '{module.Name}' has no attribute '{name}'.",
+                    $"module '{module.Name}' has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -1533,7 +1533,7 @@ internal static class ManagedObjectProtocols
             case PythonModuleValue module:
                 throw Fault(
                     "DPY4022",
-                    $"Module '{module.Name}' has no attribute '{name}'.",
+                    $"'module' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
