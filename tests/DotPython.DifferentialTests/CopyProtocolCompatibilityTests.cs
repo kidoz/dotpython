@@ -113,4 +113,65 @@ public sealed class CopyProtocolCompatibilityTests
             print(copied_box[0].name)
             """
         );
+
+    [Fact]
+    public Task CopyErrorIsAnExceptionAliasedUnderTheLowercaseName() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import copy
+            from copy import Error, error
+            print(copy.Error is copy.error, Error is error, Error is copy.Error)
+            print(copy.Error.__name__, copy.Error.__qualname__, copy.Error.__module__)
+            print(repr(copy.Error.__doc__))
+            print([base.__name__ for base in copy.Error.__mro__])
+            print(copy.Error.__bases__[0] is Exception)
+            print(issubclass(copy.Error, Exception), issubclass(copy.Error, BaseException))
+            print(isinstance(copy.Error('x'), Exception))
+            """
+        );
+
+    [Fact]
+    public Task CopyErrorInstancesAreCaughtByTheirOwnNameAndByException() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import copy
+            error = copy.Error('boom')
+            print(type(error).__name__, error.args, str(error), repr(error))
+            print(type(copy.Error()) is copy.Error, copy.Error().args, type(copy.Error))
+            try:
+                raise copy.Error('boom')
+            except copy.Error as caught:
+                print(type(caught) is copy.Error, str(caught), caught.args)
+            try:
+                raise copy.error('via alias')
+            except Exception as caught:
+                print(isinstance(caught, copy.Error), type(caught).__name__)
+            try:
+                raise copy.Error('boom')
+            except ValueError:
+                print('wrong handler')
+            except copy.Error:
+                print('not a ValueError')
+            try:
+                raise copy.Error('multi', 'args')
+            except Exception as caught:
+                print(str(caught), caught.args)
+            """
+        );
+
+    [Fact]
+    public Task CopyErrorSubclassesRaiseAndStayCatchableAsCopyError() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import copy
+            class Mine(copy.Error):
+                pass
+            print([cls.__name__ for cls in Mine.__mro__])
+            print(issubclass(Mine, copy.Error), issubclass(copy.Error, Mine))
+            try:
+                raise Mine('nested')
+            except copy.Error as caught:
+                print(type(caught).__name__, str(caught), isinstance(caught, Exception))
+            """
+        );
 }

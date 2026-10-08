@@ -155,6 +155,97 @@ public sealed class CopyProtocolExecutionTests
         Assert.Equal(string.Join(Environment.NewLine, "True False", "True True", ""), output);
     }
 
+    [Fact]
+    public void CopyErrorIsTheModuleExceptionWithTheLowercaseAlias()
+    {
+        var output = Run(
+            """
+            import copy
+            print(copy.Error is copy.error)
+            print(copy.Error.__name__, copy.Error.__module__, repr(copy.Error.__doc__))
+            print([base.__name__ for base in copy.Error.__mro__])
+            print(copy.Error.__bases__[0] is Exception, issubclass(copy.Error, Exception))
+            """
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "True",
+                "Error copy None",
+                "['Error', 'Exception', 'BaseException', 'object']",
+                "True True",
+                ""
+            ),
+            output
+        );
+    }
+
+    [Fact]
+    public void CopyErrorInstancesAreCaughtByTheirOwnNameAndByException()
+    {
+        var output = Run(
+            """
+            import copy
+            error = copy.Error("boom")
+            print(type(error).__name__, error.args, str(error))
+            try:
+                raise copy.Error("boom")
+            except copy.Error as caught:
+                print(type(caught) is copy.Error, str(caught))
+            try:
+                raise copy.error("via alias")
+            except Exception as caught:
+                print(isinstance(caught, copy.Error), type(caught).__name__)
+            try:
+                raise copy.Error("boom")
+            except ValueError:
+                print("wrong handler")
+            except copy.Error:
+                print("not a ValueError")
+            """
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "Error ('boom',) boom",
+                "True boom",
+                "True Error",
+                "not a ValueError",
+                ""
+            ),
+            output
+        );
+    }
+
+    [Fact]
+    public void CopyErrorIsSubclassableLikeAnyOtherException()
+    {
+        var output = Run(
+            """
+            import copy
+            class Mine(copy.Error):
+                pass
+            try:
+                raise Mine("nested")
+            except copy.Error as caught:
+                print(type(caught).__name__, str(caught), isinstance(caught, Exception))
+            print([cls.__name__ for cls in Mine.__mro__])
+            """
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "Mine nested True",
+                "['Mine', 'Error', 'Exception', 'BaseException', 'object']",
+                ""
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         var engine = new ManagedPythonEngine();

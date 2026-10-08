@@ -1593,6 +1593,10 @@ internal static class PythonStandardModules
 
     private static void InitializeCopy(PythonGlobalNamespace globals)
     {
+        var errorType = CreateCopyErrorType();
+        globals.SetValue("Error", errorType);
+        // `error` is the historical spelling of the same class object, not a copy of it.
+        globals.SetValue("error", errorType);
         globals.SetValue(
             "copy",
             new PythonBuiltinFunctionValue(
@@ -1615,6 +1619,34 @@ internal static class PythonStandardModules
                 }
             )
         );
+    }
+
+    /// <summary>
+    /// `copy.Error`, the exception class the module raises. A native module initializer
+    /// runs without a class-body frame, so the equivalent of `class Error(Exception): pass`
+    /// is built directly: the base, the installed resolution order, and the `__module__`/
+    /// `__doc__` entries that class creation would place in the namespace.
+    /// </summary>
+    private static PythonManagedTypeValue CreateCopyErrorType()
+    {
+        var exceptionBase = PythonBuiltinTypes.GetExceptionType("Exception");
+        var type = new PythonManagedTypeValue("Error", exceptionBaseName: "Exception")
+        {
+            Module = "copy",
+            LayoutBase = exceptionBase,
+        };
+        type.Attributes["__module__"] = new PythonTextValue("copy");
+        type.Attributes["__doc__"] = PythonNoneValue.Instance;
+        type.SetDeclaredBases(new PythonTupleValue([exceptionBase]));
+        type.SetResolutionOrder(
+            new PythonTupleValue([
+                type,
+                exceptionBase,
+                PythonBuiltinTypes.GetExceptionType("BaseException"),
+                PythonBuiltinFunctions.Object,
+            ])
+        );
+        return type;
     }
 
     private static void RequireCopyArguments(
