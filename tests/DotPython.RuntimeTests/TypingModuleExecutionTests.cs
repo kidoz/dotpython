@@ -30,7 +30,7 @@ public sealed class TypingModuleExecutionTests
             string.Join(
                 Environment.NewLine,
                 "False True",
-                "typing.Optional typing.Union typing.List typing.Dict",
+                "typing.Optional <class 'typing.Union'> typing.List typing.Dict",
                 "typing.Tuple typing.Type typing.Callable",
                 "typing.Final typing.ClassVar typing.Literal",
                 "typing.NoReturn typing.Never typing.Self",

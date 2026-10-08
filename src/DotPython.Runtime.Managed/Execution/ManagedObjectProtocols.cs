@@ -2305,6 +2305,9 @@ internal static class ManagedObjectProtocols
                 throw MissingKey(index);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetItem(index, span);
+            case PythonBuiltinTypeValue unionType
+                when ReferenceEquals(unionType, PythonBuiltinTypes.Union):
+                return PythonTypeProtocols.BuildTypeUnion(index, span);
             case PythonBuiltinTypeValue type when IsGenericSubscribable(type.Name):
                 return PythonGenericAliasValue.Create(type, index);
             case PythonBuiltinTypeValue type:

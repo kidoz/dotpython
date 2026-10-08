@@ -34,6 +34,30 @@ internal static class PythonTypeProtocols
     private static PythonValue AsTypeUnionMember(PythonValue value) =>
         value is PythonNoneValue ? PythonBuiltinTypes.NoneType : value;
 
+    /// <summary>
+    /// Subscripting the union type itself, as `typing.Union[int, str]` does: a tuple index
+    /// supplies the members one by one and any other index is the sole member. An empty
+    /// subscription is refused. Members are neither validated nor resolved, matching the
+    /// union the `|` operator builds.
+    /// </summary>
+    internal static PythonValue BuildTypeUnion(PythonValue index, TextSpan span)
+    {
+        PythonValue[] members = index is PythonTupleValue tuple ? tuple.Elements : [index];
+        if (members.Length == 0)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "Cannot take a Union of no types.",
+                span,
+                "TypeError"
+            );
+        }
+        var combined = AsTypeUnionMember(members[0]);
+        for (var position = 1; position < members.Length; position++)
+            combined = PythonTypeUnionValue.Combine(combined, AsTypeUnionMember(members[position]));
+        return combined;
+    }
+
     internal static bool IsMetaclass(PythonValue value) =>
         ReferenceEquals(value, PythonBuiltinTypes.Type)
         || value is PythonManagedTypeValue { IsMetaclass: true };

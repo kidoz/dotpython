@@ -21,12 +21,12 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <para>
 /// Known divergences from CPython, all deliberate: a parameterized container renders as
 /// its builtin (<c>list[int]</c>, not <c>typing.List[int]</c>) because it is the shared
-/// <c>GenericAlias</c>; <c>Any</c> renders as a class and is an accepted <c>isinstance</c>
-/// operand, where CPython prints <c>typing.Any</c> and raises; <c>repr(typing.Union)</c> is
-/// <c>typing.Union</c> rather than <c>&lt;class 'typing.Union'&gt;</c>; <c>get_origin</c> of
+/// <c>GenericAlias</c>, and it compares equal to the builtin spelling where CPython keeps
+/// them distinct; <c>Any</c> renders as a class and is an accepted <c>isinstance</c>
+/// operand, where CPython prints <c>typing.Any</c> and raises; <c>get_origin</c> of
 /// <c>Callable</c> reports <c>typing.Callable</c> because <c>collections.abc.Callable</c> is
-/// not built; and a union still exposes no <c>__origin__</c> or <c>__args__</c>, which
-/// <c>get_origin</c> and <c>get_args</c> answer instead.
+/// not built; and <c>Union['X']</c> is <c>'X'</c> rather than <c>ForwardRef('X')</c>, since
+/// the runtime has no <c>ForwardRef</c>.
 /// </para>
 /// </remarks>
 internal static class PythonTyping
@@ -49,8 +49,9 @@ internal static class PythonTyping
         // `typing.Text` is a plain alias for `str`, so it re-exports the builtin itself.
         globals.SetValue("Text", PythonBuiltinTypes.Str);
 
-        var union = CreateForm(TypingFormKind.Union);
-        globals.SetValue("Union", union);
+        // `typing.Union` is the union type itself, exactly as in CPython, so
+        // `typing.Union is type(int | str)` holds and its repr is `<class 'typing.Union'>`.
+        globals.SetValue("Union", PythonBuiltinTypes.Union);
         globals.SetValue("Optional", CreateForm(TypingFormKind.Optional));
         globals.SetValue("Final", CreateForm(TypingFormKind.Final));
         globals.SetValue("ClassVar", CreateForm(TypingFormKind.ClassVar));
@@ -262,9 +263,6 @@ internal static class PythonTyping
         /// <summary>`Optional[X]`, which is `X | None`.</summary>
         Optional,
 
-        /// <summary>`Union[...]`, which is the members joined by `|`.</summary>
-        Union,
-
         /// <summary>`Final` and `Final[X]`.</summary>
         Final,
 
@@ -327,7 +325,6 @@ internal static class PythonTyping
             Error(
                 kind switch
                 {
-                    TypingFormKind.Union => "cannot create 'typing.Union' instances",
                     TypingFormKind.Container =>
                         $"Type {name} cannot be instantiated; use {originName}() instead",
                     _ => $"Cannot instantiate typing.{name}",
@@ -361,8 +358,6 @@ internal static class PythonTyping
                     $"typing.Optional requires a single type. Got {Describe(members)}.",
                     span
                 ),
-                TypingFormKind.Union when members.Length != 0 => Union(members),
-                TypingFormKind.Union => throw Error("Cannot take a Union of no types.", span),
                 TypingFormKind.Final when members.Length == 1 => Alias(index),
                 TypingFormKind.Final => throw Error(
                     $"typing.Final accepts only single type. Got {Describe(members)}.",
@@ -405,17 +400,6 @@ internal static class PythonTyping
         private PythonGenericAliasValue Alias(PythonValue index) =>
             PythonGenericAliasValue.Create(Origin ?? Self, index);
 
-        private static PythonValue Union(IReadOnlyList<PythonValue> members)
-        {
-            var combined = (PythonValue?)null;
-            foreach (var member in members)
-            {
-                var next = Member(member);
-                combined = combined is null ? next : PythonTypeUnionValue.Combine(combined, next);
-            }
-            return combined!;
-        }
-
         /// <summary>`None` is written as `None` in a subscription but contributes `NoneType`.</summary>
         private static PythonValue Member(PythonValue member) =>
             member is PythonNoneValue ? PythonBuiltinTypes.NoneType : member;
@@ -450,15 +434,13 @@ internal static class PythonTyping
             };
 
         /// <summary>
-        /// A container re-export answers a class check against the builtin it stands for, the
-        /// union class answers `False` the way any other class does, and the remaining special
-        /// forms are refused the way CPython refuses them.
+        /// A container re-export answers a class check against the builtin it stands for, and
+        /// the remaining special forms are refused the way CPython refuses them.
         /// </summary>
         bool PythonExternalObjectProtocol.IsInstanceOf(PythonValue value, TextSpan span) =>
             kind switch
             {
                 _ when origin is not null => PythonBuiltinTypes.IsInstance(value, origin),
-                TypingFormKind.Union => false,
                 _ => throw Error($"typing.{name} cannot be used with isinstance()", span),
             };
 
