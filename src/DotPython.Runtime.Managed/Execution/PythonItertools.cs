@@ -625,15 +625,7 @@ internal static class PythonItertools
 
         // A missing or `None` stop is unbounded and only ends when the source does.
         var hasStop = stopArgument is not null and not PythonNoneValue;
-        var stop = 0L;
-        if (hasStop)
-        {
-            stop = RequireIndex(stopArgument!, span);
-            if (stop < 0)
-            {
-                throw ValueError(IsliceStopMessage, span);
-            }
-        }
+        var stop = IsliceBound(stopArgument, IsliceStopMessage, long.MaxValue, span);
 
         var source = Source(positional[0], span);
         var next = start;
@@ -671,7 +663,9 @@ internal static class PythonItertools
 
     /// <summary>
     /// One `islice` bound: `None` (or an argument that was not passed) takes the fallback,
-    /// anything else must be a non-negative index.
+    /// anything else must be a non-negative index that fits a machine word. CPython's
+    /// `islice_convert_int` reports every failure as the bound's own ValueError, hiding
+    /// the conversion error rather than naming the offending type.
     /// </summary>
     private static long IsliceBound(
         PythonValue? argument,
@@ -685,13 +679,32 @@ internal static class PythonItertools
             return fallback;
         }
 
-        var index = RequireIndex(argument, span);
-        if (index < 0)
+        if (argument is PythonTruthValue truth)
         {
-            throw ValueError(message, span);
+            return truth.Value ? 1 : 0;
         }
 
-        return index;
+        if (argument is PythonWholeNumberValue whole)
+        {
+            if (whole.Value < 0 || whole.Value > long.MaxValue)
+            {
+                throw ValueError(message, span);
+            }
+
+            return (long)whole.Value;
+        }
+
+        if (UserObjectProtocols.TryConvertToIndex(argument, span, out var index))
+        {
+            if (index < 0 || index > long.MaxValue)
+            {
+                throw ValueError(message, span);
+            }
+
+            return (long)index;
+        }
+
+        throw ValueError(message, span);
     }
 
     // ---- product -----------------------------------------------------------------------
