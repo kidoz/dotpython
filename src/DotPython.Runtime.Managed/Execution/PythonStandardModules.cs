@@ -20,7 +20,7 @@ internal static class PythonStandardModules
     }
 
     private const int MaximumFactorialInput = 100_000;
-    private const int MaximumOpenFileLength = 8 * 1024 * 1024;
+    internal const int MaximumOpenFileLength = 8 * 1024 * 1024;
 
     internal static readonly PythonBuiltinTypeValue TemplateType = new(
         "Template",
@@ -191,7 +191,7 @@ internal static class PythonStandardModules
     private static PythonRuntimeException TemplateArgumentError(string message, TextSpan span) =>
         new("DPY4028", message, span, "TypeError");
 
-    private static bool IsWithinSearchRoots(string fullPath, IReadOnlyList<string> searchRoots) =>
+    internal static bool IsWithinSearchRoots(string fullPath, IReadOnlyList<string> searchRoots) =>
         searchRoots.Any(root =>
         {
             var fullRoot = Path.GetFullPath(root);
@@ -233,7 +233,7 @@ internal static class PythonStandardModules
                     );
                 }
 
-                if (arguments[0] is not PythonTextValue pathText)
+                if (!PythonPathlib.TryConvertPathArgument(arguments[0], span, out var path))
                 {
                     throw new PythonRuntimeException(
                         "DPY4037",
@@ -260,7 +260,7 @@ internal static class PythonStandardModules
                 }
 
                 ValidateOpenMode(mode, span);
-                var fullPath = Path.GetFullPath(pathText.Value);
+                var fullPath = Path.GetFullPath(path);
                 if (!IsWithinSearchRoots(fullPath, searchRoots))
                 {
                     throw new PythonRuntimeException(
@@ -275,7 +275,7 @@ internal static class PythonStandardModules
                 {
                     throw new PythonRuntimeException(
                         "DPY4037",
-                        $"[Errno 21] Is a directory: '{pathText.Value}'",
+                        $"[Errno 21] Is a directory: '{path}'",
                         span,
                         "IsADirectoryError"
                     );
@@ -285,7 +285,7 @@ internal static class PythonStandardModules
                 {
                     throw new PythonRuntimeException(
                         "DPY4037",
-                        $"[Errno 2] No such file or directory: '{pathText.Value}'",
+                        $"[Errno 2] No such file or directory: '{path}'",
                         span,
                         "FileNotFoundError"
                     );
@@ -314,7 +314,7 @@ internal static class PythonStandardModules
                 content = content
                     .Replace("\r\n", "\n", StringComparison.Ordinal)
                     .Replace('\r', '\n');
-                return new PythonFileValue(pathText.Value, mode, content);
+                return new PythonFileValue(path, mode, content);
             }
         );
 
@@ -415,6 +415,11 @@ internal static class PythonStandardModules
             "<dotpython dataclasses>",
             isPackage: false,
             PythonDataclasses.Initialize
+        );
+        modules["pathlib"] = PythonModuleDefinition.Native(
+            "<dotpython pathlib>",
+            isPackage: true,
+            globals => PythonPathlib.Initialize(globals, searchRoots)
         );
         // Only the template-string API is provided; the rest of string's API is
         // not part of the managed standard-library slice yet.
@@ -610,6 +615,13 @@ internal static class PythonStandardModules
         InitializeOsPath(pathGlobals, searchRoots);
         globals.SetValue("path", new PythonModuleValue("os.path", pathGlobals));
         globals.SetValue("sep", new PythonTextValue("/"));
+        globals.SetValue(
+            "fspath",
+            new PythonBuiltinFunctionValue(
+                "fspath",
+                (arguments, span) => PythonPathlib.Fspath(arguments, span)
+            )
+        );
     }
 
     private static void InitializeOsPath(

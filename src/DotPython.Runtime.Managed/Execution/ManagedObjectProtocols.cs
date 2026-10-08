@@ -1853,6 +1853,11 @@ internal static class ManagedObjectProtocols
             return new PythonIteratorValue(file, -1);
         }
 
+        if (value is PythonExternalObjectValue { Protocol: IPythonExternalIterable iterable })
+        {
+            return new PythonIteratorValue(new PythonListValue([.. iterable.IterationItems]), -1);
+        }
+
         if (
             value
             is not (
@@ -2456,6 +2461,16 @@ internal static class ManagedObjectProtocols
             throw Fault(
                 "DPY4015",
                 $"argument of type '{instance.Type.Name}' is not a container or iterable",
+                span,
+                "TypeError"
+            );
+        }
+
+        if (container is PythonExternalObjectValue { Protocol: not IPythonExternalIterable })
+        {
+            throw Fault(
+                "DPY4015",
+                $"argument of type '{GetTypeName(container)}' is not a container or iterable",
                 span,
                 "TypeError"
             );
@@ -3260,6 +3275,8 @@ internal static class ManagedObjectProtocols
             PythonStaticMethodValue => "staticmethod",
             PythonClassMethodValue => "classmethod",
             PythonManagedObjectValue instance => instance.Type.Name,
+            PythonExternalObjectValue { Protocol: IPythonNamedExternalValue named } =>
+                named.TypeName,
             PythonExternalObjectValue => "object",
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } => "method_descriptor",
             PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } =>

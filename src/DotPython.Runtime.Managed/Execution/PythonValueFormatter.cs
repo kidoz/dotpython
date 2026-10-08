@@ -24,6 +24,18 @@ internal static class PythonValueFormatter
             return value.ToDisplayString();
         }
 
+        // External types are opaque builtins: object.__format__ rejects a non-empty spec.
+        if (value is PythonExternalObjectValue)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "unsupported format string passed to "
+                    + $"{ManagedObjectProtocols.GetTypeName(value)}.__format__",
+                span,
+                "TypeError"
+            );
+        }
+
         var spec = ParseSpecification(specification, span);
         var text = spec.Type switch
         {

@@ -254,6 +254,15 @@ internal static class UserObjectProtocols
     )
     {
         result = null!;
+        // pathlib paths are external objects with a native `__truediv__`/`__rtruediv__`.
+        if (
+            opCode == PythonOpCode.BinaryTrueDivide
+            && PythonPathlib.TryApplyTrueDivide(left, right, span, out result)
+        )
+        {
+            return true;
+        }
+
         if (
             _dispatcher is null
             || left is not PythonManagedObjectValue && right is not PythonManagedObjectValue
