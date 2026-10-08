@@ -411,6 +411,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializeJson
         );
+        modules["dataclasses"] = PythonModuleDefinition.Native(
+            "<dotpython dataclasses>",
+            isPackage: false,
+            PythonDataclasses.Initialize
+        );
         // Only the template-string API is provided; the rest of string's API is
         // not part of the managed standard-library slice yet.
         modules["string"] = PythonModuleDefinition.Native(

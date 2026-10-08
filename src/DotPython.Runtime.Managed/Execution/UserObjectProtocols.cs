@@ -45,6 +45,18 @@ internal interface IUserObjectDispatcher
 
     PythonValue Invoke(PythonValue callable, PythonValue[] arguments, TextSpan span);
 
+    /// <summary>
+    /// Calls a user-defined callable with keyword arguments, for native code that must
+    /// honour the same calling convention Python source uses.
+    /// </summary>
+    PythonValue InvokeWithKeywords(
+        PythonValue callable,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    );
+
     (bool HasValue, PythonValue Value) StepUserIterator(PythonValue nextMethod, TextSpan span);
 
     PythonIteratorValue GetUserIterator(PythonManagedObjectValue instance, TextSpan span);

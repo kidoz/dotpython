@@ -352,6 +352,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     ) => InvokeCallableNested(callable, arguments, span);
 
+    PythonValue IUserObjectDispatcher.InvokeWithKeywords(
+        PythonValue callable,
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    ) =>
+        InvokeCallableNested(callable, [.. arguments], span, [.. keywordNames], [.. keywordValues]);
+
     TextSpan IUserObjectDispatcher.CurrentSpan =>
         _frameCount == 0 ? default : GetCurrentSpan(CurrentFrame);
 
@@ -5186,12 +5195,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (initializer is not PythonFunctionValue function)
         {
-            throw Fault(
-                "DPY4009",
-                $"'{ManagedObjectProtocols.GetTypeName(initializer)}' object is not callable.",
-                span,
-                "TypeError"
-            );
+            // __init__ that is not a compiled function (native, bound or descriptor).
+            // Bind and invoke it through the reflective path, which validates the
+            // None return the same way the frame path below does.
+            _evaluationStack.Push(InvokeDefaultClassCall(type, arguments, [], [], span));
+            return;
         }
 
         PushFunctionFrame(
@@ -5252,12 +5260,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (initializer is not PythonFunctionValue function)
         {
-            throw Fault(
-                "DPY4009",
-                $"'{ManagedObjectProtocols.GetTypeName(initializer)}' object is not callable.",
-                span,
-                "TypeError"
+            // See ConstructManagedInstance: native or bound initializers take the
+            // reflective path, which binds the descriptor and checks the None return.
+            _evaluationStack.Push(
+                InvokeDefaultClassCall(type, positional, keywordNames, keywordValues, span)
             );
+            return;
         }
 
         var arguments = BindFunctionArguments(
