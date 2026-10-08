@@ -438,6 +438,258 @@ public sealed class FunctoolsExecutionTests
         );
     }
 
+    // -------------------------------------------------------------------------
+    // lru_cache / cache
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void LruCacheCachesOnArgumentsAndCountsHits()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+            calls = []
+
+            @ft.lru_cache
+            def f(x):
+                calls.append(x)
+                return x * 2
+
+            print(f(1), f(2), f(1))
+            print(f.cache_info())
+            print(calls)
+            print(f.cache_parameters())
+
+            @ft.lru_cache(maxsize=2)
+            def g(x):
+                return x
+
+            g(1)
+            g(2)
+            g(3)
+            g(2)
+            print(g.cache_info())
+
+            @ft.lru_cache(maxsize=0)
+            def z(x):
+                return x
+
+            z(1)
+            z(1)
+            print(z.cache_info())
+
+            @ft.lru_cache(typed=True)
+            def t(x):
+                return x
+
+            t(1)
+            t(1.0)
+            t(True)
+            print(t.cache_info())
+
+            @ft.lru_cache
+            def m(x, y=0):
+                return x
+
+            m(1)
+            m(1, 1)
+            m(1, y=1)
+            m(x=1)
+            print(m.cache_info())
+
+            @ft.cache
+            def c(x):
+                return x
+
+            c(1)
+            c(1)
+            print(c.cache_info(), c.cache_parameters())
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "2 4 2",
+                "CacheInfo(hits=1, misses=2, maxsize=128, currsize=2)",
+                "[1, 2]",
+                "{'maxsize': 128, 'typed': False}",
+                "CacheInfo(hits=1, misses=3, maxsize=2, currsize=2)",
+                "CacheInfo(hits=0, misses=2, maxsize=0, currsize=0)",
+                "CacheInfo(hits=0, misses=3, maxsize=128, currsize=3)",
+                "CacheInfo(hits=0, misses=4, maxsize=128, currsize=4)",
+                "CacheInfo(hits=1, misses=1, maxsize=None, currsize=1)"
+                    + " {'maxsize': None, 'typed': False}"
+            ),
+            output
+        );
+    }
+
+    [Fact]
+    public void LruCacheExposesTheWrapperAndCacheInfoSurface()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+            def plain(x):
+                return x * 3
+
+            wrapped = ft.lru_cache(maxsize=4, typed=True)(plain)
+            print(wrapped(2), wrapped.cache_info())
+            wrapped.custom = "tag"
+            print(wrapped.custom, wrapped.__wrapped__ is plain)
+            print(wrapped.__name__, wrapped.__qualname__, wrapped.__module__)
+            print(type(wrapped).__name__)
+            print(sorted(wrapped.__dict__))
+            print(ft.lru_cache.__name__)
+
+            info = wrapped.cache_info()
+            print(info, type(info) is ft._CacheInfo, ft._CacheInfo._fields)
+            print(len(info), info[0], info[-1], list(info))
+            print(info == wrapped.cache_info(), info == (0, 1, 4, 1))
+            print(info._asdict())
+            print(info._replace(hits=9))
+            print(info.count(1), info.index(1, 0))
+            print(wrapped.cache_clear(), wrapped.cache_info())
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "6 CacheInfo(hits=0, misses=1, maxsize=4, currsize=1)",
+                "tag True",
+                "plain plain __main__",
+                "_lru_cache_wrapper",
+                "['__annotate__', '__doc__', '__module__', '__name__', '__qualname__',"
+                    + " '__type_params__', '__wrapped__', 'cache_parameters', 'custom']",
+                "lru_cache",
+                "CacheInfo(hits=0, misses=1, maxsize=4, currsize=1) True"
+                    + " ('hits', 'misses', 'maxsize', 'currsize')",
+                "4 0 1 [0, 1, 4, 1]",
+                "True True",
+                "{'hits': 0, 'misses': 1, 'maxsize': 4, 'currsize': 1}",
+                "CacheInfo(hits=9, misses=1, maxsize=4, currsize=1)",
+                "2 1",
+                "None CacheInfo(hits=0, misses=0, maxsize=4, currsize=0)"
+            ),
+            output
+        );
+    }
+
+    [Fact]
+    public void LruCacheDecoratesMethodsAndReportsItsErrors()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+            class Widget:
+                @ft.lru_cache(maxsize=2)
+                def compute(self, x):
+                    return ("computed", x)
+
+            first = Widget()
+            second = Widget()
+            print(type(first.compute).__name__)
+            print(first.compute(1), first.compute(1), second.compute(1))
+            print(Widget.compute.cache_info())
+            print(Widget.compute.__wrapped__(first, 2))
+
+            @ft.lru_cache()
+            def plain(x):
+                return x * 3
+
+            print(plain(2))
+
+            def attempt(action):
+                try:
+                    action()
+                except TypeError as error:
+                    print(type(error).__name__ + ":", error)
+
+            attempt(lambda: ft.lru_cache("x"))
+            attempt(lambda: ft.lru_cache()())
+            attempt(lambda: plain([]))
+            attempt(lambda: Widget.compute.cache_info(1))
+            attempt(lambda: Widget.compute.cache_clear(1))
+            attempt(lambda: Widget.compute.cache_info().count(1, 2))
+            attempt(lambda: ft._CacheInfo(1))
+            attempt(lambda: Widget.compute.cache_info()._replace(bogus=1))
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "method",
+                "('computed', 1) ('computed', 1) ('computed', 1)",
+                "CacheInfo(hits=1, misses=2, maxsize=2, currsize=2)",
+                "('computed', 2)",
+                "6",
+                "TypeError: Expected first argument to be an integer, a callable, or None",
+                "TypeError: lru_cache.<locals>.decorating_function() missing 1 required"
+                    + " positional argument: 'user_function'",
+                "TypeError: unhashable type: 'list'",
+                "TypeError: _lru_cache_wrapper.cache_info() takes no arguments (1 given)",
+                "TypeError: _lru_cache_wrapper.cache_clear() takes no arguments (1 given)",
+                "TypeError: tuple.count() takes exactly one argument (2 given)",
+                "TypeError: CacheInfo.__new__() missing 3 required positional arguments:"
+                    + " 'misses', 'maxsize', and 'currsize'",
+                "TypeError: Got unexpected field names: ['bogus']"
+            ),
+            output
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // cached_property
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void CachedPropertyComputesOnceAndStaysWritable()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+            class Box:
+                def __init__(self):
+                    self.calls = 0
+
+                @ft.cached_property
+                def value(self):
+                    self.calls += 1
+                    return self.calls * 10
+
+            box = Box()
+            print(box.value, box.value, box.calls)
+            print(Box.__dict__["value"].attrname)
+            print(Box.__dict__["value"].func.__name__)
+            print(type(Box.value).__name__)
+            print(type(Box.__dict__["value"]).__name__)
+            del box.value
+            print(box.value, box.calls)
+            box.value = 99
+            print(box.value, box.calls)
+            print(ft.cached_property(len).attrname)
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "10 10 1",
+                "value",
+                "value",
+                "cached_property",
+                "cached_property",
+                "20 2",
+                "99 2",
+                "None"
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         using var output = new StringWriter();
