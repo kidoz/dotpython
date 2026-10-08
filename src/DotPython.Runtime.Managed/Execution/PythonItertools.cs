@@ -640,7 +640,7 @@ internal static class PythonItertools
     {
         var slots = Unpack(RepeatArity, positional, keywordNames, keywordValues, span);
         var subject = slots[0]!;
-        var remaining = slots[1] is null or PythonNoneValue ? -1L : RequireTimes(slots[1]!, span);
+        var remaining = slots[1] is null ? -1L : RequireTimes(slots[1]!, span);
         return Iterator(
             "repeat",
             () =>
