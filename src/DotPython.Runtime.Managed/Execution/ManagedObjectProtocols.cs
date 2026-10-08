@@ -2461,13 +2461,18 @@ internal static class ManagedObjectProtocols
             {
                 throw Fault(
                     "DPY4011",
-                    "A string membership test requires a string operand.",
+                    $"'in <string>' requires string as left operand, not {GetTypeName(item)}",
                     span,
                     "TypeError"
                 );
             }
 
             return text.Value.Contains(substring.Value, StringComparison.Ordinal);
+        }
+
+        if (container is PythonByteSequenceValue bytes)
+        {
+            return BytesContains(bytes, item, span);
         }
 
         if (container is PythonMappingProxyValue proxy)
@@ -2491,6 +2496,43 @@ internal static class ManagedObjectProtocols
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// `x in b"..."`: an integer is a byte value and must be in range, a bytes-like object is
+    /// a subsequence, and anything else is refused. Iterating the bytes would answer the
+    /// integer case only, so the whole test is spelled out here.
+    /// </summary>
+    private static bool BytesContains(
+        PythonByteSequenceValue bytes,
+        PythonValue item,
+        TextSpan span
+    )
+    {
+        if (item is PythonByteSequenceValue subsequence)
+        {
+            return bytes.Value.AsSpan().IndexOf(subsequence.Value) >= 0;
+        }
+
+        var byteValue = item switch
+        {
+            PythonWholeNumberValue whole => whole.Value,
+            PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+            _ => (BigInteger?)null,
+        };
+        if (byteValue is { } value)
+        {
+            if (value < 0 || value > 255)
+                throw Fault("DPY4003", "byte must be in range(0, 256)", span, "ValueError");
+            return bytes.Value.AsSpan().IndexOf((byte)value) >= 0;
+        }
+
+        throw Fault(
+            "DPY4003",
+            $"a bytes-like object is required, not '{GetTypeName(item)}'",
+            span,
+            "TypeError"
+        );
     }
 
     internal static IEnumerable<int> EnumerateSliceIndices(
