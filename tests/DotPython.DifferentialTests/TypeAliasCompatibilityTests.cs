@@ -87,6 +87,30 @@ public sealed class TypeAliasCompatibilityTests
         );
 
     [Fact]
+    public Task AliasesResolveInsideDeferredAnnotations() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            type Pair = tuple[int, int]
+
+            def f(x: Pair) -> Pair:
+                pass
+
+            print(f.__annotations__)
+            print(f.__annotations__['x'] is Pair)
+
+            class C:
+                field: Pair
+
+            print(C.__annotations__)
+            print(C.__annotations__['field'] is Pair)
+
+            import annotationlib
+            print(annotationlib.get_annotations(f))
+            print(annotationlib.get_annotations(C))
+            """
+        );
+
+    [Fact]
     public Task AliasesAreRefusedWhereAClassIsRequired() =>
         CompatibilityOracle.AssertMatchesAsync(
             """
