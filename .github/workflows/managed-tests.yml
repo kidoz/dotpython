@@ -22,7 +22,7 @@ jobs:
       - name: Install the reference CPython
         uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
+          python-version: '3.14.7'
 
       - name: Install the .NET SDK
         uses: actions/setup-dotnet@v5
@@ -53,7 +53,7 @@ jobs:
       - name: Run the CPython differential suite without skips
         env:
           DOTPYTHON_REFERENCE_PYTHON: python3.14
-          DOTPYTHON_REFERENCE_PYTHON_VERSION: '3.14'
+          DOTPYTHON_REFERENCE_PYTHON_VERSION: '3.14.7'
         run: >
           dotnet run --project tests/DotPython.DifferentialTests
           --configuration Release --no-build -- -failSkips

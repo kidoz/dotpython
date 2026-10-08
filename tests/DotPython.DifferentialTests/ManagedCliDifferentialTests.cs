@@ -1087,9 +1087,9 @@ public sealed class ManagedCliDifferentialTests
     }
 
     /// <summary>
-    /// The oracle's major.minor version: the targeted language version, or the
-    /// `DOTPYTHON_REFERENCE_PYTHON_VERSION` override used to detect semantic drift against
-    /// a newer release candidate ahead of an ADR-015 re-pin.
+    /// The oracle's requested release: the targeted language version, or the
+    /// `DOTPYTHON_REFERENCE_PYTHON_VERSION` override, which may pin an exact patch release so the
+    /// suite exercises a recorded semantic baseline instead of floating across patch releases.
     /// </summary>
     private static string ReferenceVersion =>
         Environment.GetEnvironmentVariable("DOTPYTHON_REFERENCE_PYTHON_VERSION")
@@ -1137,7 +1137,7 @@ public sealed class ManagedCliDifferentialTests
             var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
             process.WaitForExit();
             return process.ExitCode == 0
-                && output.StartsWith($"Python {ReferenceVersion}.", StringComparison.Ordinal);
+                && CompatibilityOracle.VersionBannerMatches(output, ReferenceVersion);
         }
         catch (Win32Exception)
         {
