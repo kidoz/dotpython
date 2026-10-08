@@ -153,6 +153,12 @@ public static class DotPythonModuleArtifactSerializer
                 | (code.IsGenerator ? 4 : 0)
                 | (code.IsCoroutine ? 8 : 0)
         );
+        writer.WriteByte(code.AnnotateCode is null ? (byte)0 : (byte)1);
+        if (code.AnnotateCode is { } annotateCode)
+        {
+            WriteCodeObject(writer, annotateCode, depth + 1);
+        }
+
         writer.WriteStrings(code.Names);
         writer.WriteStrings(code.VariableNames);
         writer.WriteStrings(code.CellVariableNames);
@@ -197,6 +203,14 @@ public static class DotPythonModuleArtifactSerializer
         {
             throw new InvalidDataException($"Signature flags {signatureFlags} are invalid.");
         }
+
+        var annotateFlag = reader.ReadByte();
+        if (annotateFlag > 1)
+        {
+            throw new InvalidDataException($"Annotation flag {annotateFlag} is invalid.");
+        }
+
+        var annotateCode = annotateFlag == 1 ? ReadCodeObject(ref reader, depth + 1) : null;
 
         var names = reader.ReadStrings();
         var variableNames = reader.ReadStrings();
@@ -245,7 +259,8 @@ public static class DotPythonModuleArtifactSerializer
             hasVariadicPositional: (signatureFlags & 1) != 0,
             hasVariadicKeywords: (signatureFlags & 2) != 0,
             isGenerator: (signatureFlags & 4) != 0,
-            isCoroutine: (signatureFlags & 8) != 0
+            isCoroutine: (signatureFlags & 8) != 0,
+            annotateCode: annotateCode
         );
         ValidateCodeObject(code);
         return code;

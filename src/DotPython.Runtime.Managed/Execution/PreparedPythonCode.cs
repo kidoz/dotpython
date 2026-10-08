@@ -22,6 +22,7 @@ internal sealed class PreparedPythonCode
     private PreparedPythonCode(PythonCodeObject definition)
     {
         Definition = definition;
+        AnnotateCode = definition.AnnotateCode is { } annotate ? Create(annotate) : null;
         _binaryAddCacheIndexes = new int[definition.Instructions.Count];
         _binaryAddCaches = new AdaptiveNumericCache[
             definition.Instructions.Count(instruction =>
@@ -134,6 +135,13 @@ internal sealed class PreparedPythonCode
     }
 
     internal PythonCodeObject Definition { get; }
+
+    /// <summary>
+    /// The body that evaluates this definition's annotations, or null when it has
+    /// none. It runs on the first read of `__annotations__`, not when the definition
+    /// is created.
+    /// </summary>
+    internal PreparedPythonCode? AnnotateCode { get; }
 
     internal static PreparedPythonCode Create(PythonCodeObject definition)
     {

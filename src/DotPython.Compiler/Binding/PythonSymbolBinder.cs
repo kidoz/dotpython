@@ -219,9 +219,92 @@ public static class PythonSymbolBinder
                     ),
                 }
             );
+
+            // PEP 649 leaves annotations unevaluated until something reads
+            // `__annotations__`, so each annotated definition gets a scope holding the
+            // body that evaluates them. It stays out of `Children`: it shares the
+            // definition node and produces no code object of its own.
+            if (definitionNode is PythonFunctionDefinitionStatement annotatedFunction)
+            {
+                var annotations = FunctionAnnotationExpressions(annotatedFunction);
+                if (annotations.Count > 0)
+                {
+                    scope.AddAnnotationScope(
+                        CreateAnnotateScope(definitionNode, annotations, childAncestors)
+                    );
+                }
+            }
         }
 
         return scope;
+    }
+
+    /// <summary>
+    /// The annotation expressions a `def` carries: every parameter annotation in
+    /// source order, then the return annotation. Decorators and defaults are not
+    /// included because they already evaluate in the enclosing scope.
+    /// </summary>
+    private static List<PythonExpression> FunctionAnnotationExpressions(
+        PythonFunctionDefinitionStatement function
+    )
+    {
+        var annotations = new List<PythonExpression>();
+        foreach (var parameter in function.Parameters)
+        {
+            if (parameter.Annotation is not null)
+            {
+                annotations.Add(parameter.Annotation);
+            }
+        }
+
+        if (function.ReturnAnnotation is not null)
+        {
+            annotations.Add(function.ReturnAnnotation);
+        }
+
+        return annotations;
+    }
+
+    /// <summary>
+    /// The name of the single parameter an annotation body takes, mirroring the
+    /// `format` argument CPython's `__annotate__` accepts.
+    /// </summary>
+    internal const string AnnotateFormatParameter = "format";
+
+    /// <summary>
+    /// The scope holding a definition's annotation body. It binds only its `format`
+    /// parameter, so every name the annotations use is resolved against the enclosing
+    /// scope's cells and globals when the body runs, not when it is built.
+    /// </summary>
+    private static PythonBoundScope CreateAnnotateScope(
+        PythonNode definition,
+        List<PythonExpression> annotations,
+        PythonBoundScope[] ancestors
+    )
+    {
+        var references = new List<NameReference>();
+        foreach (var annotation in annotations)
+        {
+            CollectReferences(annotation, references);
+        }
+
+        return new PythonBoundScope(
+            PythonScopeKind.Function,
+            "<annotate>",
+            definition,
+            [AnnotateFormatParameter],
+            [AnnotateFormatParameter],
+            references
+                .Select(reference => reference.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToList(),
+            [],
+            [],
+            [],
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            new Dictionary<string, TextSpan>(StringComparer.Ordinal),
+            ancestors.Length == 0 ? null : ancestors[^1].PrivateClassName
+        );
     }
 
     /// <summary>Whether a scope was created for a comprehension rather than a `def`.</summary>
@@ -670,12 +753,19 @@ public static class PythonSymbolBinder
             ResolveClosureVariables(child, childEnclosingFunctions, diagnostics);
         }
 
+        // An annotation body closes over the scope it sits in exactly as a nested
+        // function does, so it takes part in closure resolution without being a child.
+        foreach (var annotate in scope.AnnotationScopes)
+        {
+            ResolveClosureVariables(annotate, childEnclosingFunctions, diagnostics);
+        }
+
         if (scope.Kind is not (PythonScopeKind.Function or PythonScopeKind.Class))
         {
             return;
         }
 
-        foreach (var child in scope.Children)
+        foreach (var child in scope.Children.Concat(scope.AnnotationScopes))
         {
             foreach (var name in child.FreeVariableNames)
             {

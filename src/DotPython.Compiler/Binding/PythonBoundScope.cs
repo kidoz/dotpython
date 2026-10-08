@@ -109,6 +109,16 @@ public sealed class PythonBoundScope
 
     internal PythonNode? Definition { get; }
 
+    /// <summary>
+    /// The bodies that evaluate this scope's annotations, one per annotated
+    /// definition it owns. They are kept out of <see cref="Children"/> because they
+    /// share a definition node with the scope they belong to and produce no code
+    /// object of their own; only closure resolution and the compiler consult them.
+    /// </summary>
+    internal IList<PythonBoundScope> AnnotationScopes { get; } = [];
+
+    internal void AddAnnotationScope(PythonBoundScope scope) => AnnotationScopes.Add(scope);
+
     internal string? PrivateClassName { get; }
 
     internal bool HasExplicitClassNameBinding { get; }

@@ -825,6 +825,15 @@ internal sealed record PythonFunctionValue(
 
     internal PythonAttributeDictionary Attributes { get; set; } = new();
 
+    /// <summary>
+    /// The callable that evaluates this function's annotations, or null when it has
+    /// none. `__annotations__` calls it once and caches the mapping it returns.
+    /// </summary>
+    internal PythonValue? Annotate { get; set; }
+
+    /// <summary>The cached `__annotations__` mapping, discarded when `__annotate__` changes.</summary>
+    internal PythonDictionaryValue? Annotations { get; set; }
+
     internal override string ToDisplayString() => $"<function {Name}>";
 }
 

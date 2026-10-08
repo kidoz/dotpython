@@ -315,6 +315,10 @@ internal static class ManagedObjectProtocols
                     : PythonNoneValue.Instance;
             case PythonFunctionValue function when name == "__dict__":
                 return function.Attributes.Dictionary;
+            case PythonFunctionValue function when name == "__annotate__":
+                return function.Annotate ?? PythonNoneValue.Instance;
+            case PythonFunctionValue function when name == "__annotations__":
+                return GetFunctionAnnotations(function, span);
             case PythonFunctionValue function
                 when !IsFunctionMetadataName(name)
                     && function.Attributes.TryGetValue(name, out var functionAttribute):
@@ -1067,6 +1071,33 @@ internal static class ManagedObjectProtocols
     /// The default attribute lookup for a managed instance (data descriptors, the
     /// instance dictionary, then bound type attributes) without `__getattr__` hooks.
     /// </summary>
+    /// <summary>
+    /// The function's `__annotations__`: evaluated on first access from the annotate
+    /// callable and then cached, so later reads hand back the same mapping. A
+    /// definition with no annotations reports an empty mapping, never a missing
+    /// attribute. A failure during evaluation propagates and is not cached.
+    /// </summary>
+    private static PythonDictionaryValue GetFunctionAnnotations(
+        PythonFunctionValue function,
+        TextSpan span
+    )
+    {
+        if (function.Annotations is { } cached)
+        {
+            return cached;
+        }
+
+        var evaluated = function.Annotate is { } annotate
+            ? UserObjectProtocols.Dispatcher?.Invoke(
+                annotate,
+                [PythonWholeNumberValue.Create(BigInteger.One)],
+                span
+            )
+            : null;
+        function.Annotations = evaluated as PythonDictionaryValue ?? new PythonDictionaryValue([]);
+        return function.Annotations;
+    }
+
     /// <summary>
     /// Whether an instance exposes a `__dict__`. False only for a class whose
     /// `__slots__` declaration omits it and whose bases provide none.

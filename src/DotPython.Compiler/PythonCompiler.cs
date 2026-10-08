@@ -93,20 +93,81 @@ public static class PythonCompiler
             int endPosition,
             IReadOnlyList<PythonParameter>? signature = null,
             bool isGenerator = false,
-            bool isCoroutine = false
+            bool isCoroutine = false,
+            PythonCodeObject? annotateCode = null
         )
         {
             _isCoroutine = isCoroutine;
             _isAsyncGenerator = isGenerator && isCoroutine;
             CompileStatements(statements);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
-            return CreateCodeObject(signature, isGenerator, isCoroutine);
+            return CreateCodeObject(signature, isGenerator, isCoroutine, annotateCode);
+        }
+
+        /// <summary>
+        /// Compiles a definition's annotation body: it evaluates each annotation and
+        /// returns them as a mapping keyed by parameter name, with the return
+        /// annotation under `return`. It is not run until something reads
+        /// `__annotations__`, so a name that is undefined at definition time only
+        /// fails on that access.
+        /// </summary>
+        private PythonCodeObject CompileAnnotateCode(
+            List<(string Key, PythonExpression Annotation)> annotations,
+            int endPosition
+        )
+        {
+            var span = new TextSpan(endPosition, 0);
+            foreach (var (key, annotation) in annotations)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.TextValue, key)),
+                    annotation.Span
+                );
+                CompileExpression(annotation);
+            }
+
+            Emit(PythonOpCode.BuildDictionary, annotations.Count, span);
+
+            // Only the two value formats are supported, matching what CPython's own
+            // compiled annotate functions accept; the others raise NotImplementedError.
+            var valueJumps = new List<int>();
+            foreach (
+                var supported in (System.Numerics.BigInteger[])
+                    [System.Numerics.BigInteger.One, new(2)]
+            )
+            {
+                Emit(PythonOpCode.LoadLocal, 0, span);
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.WholeNumber, supported)),
+                    span
+                );
+                Emit(PythonOpCode.CompareEqual, 0, span);
+                var notEqual = Emit(PythonOpCode.JumpIfFalse, 0, span);
+                valueJumps.Add(Emit(PythonOpCode.Jump, 0, span));
+                PatchJump(notEqual, _instructions.Count);
+            }
+
+            Emit(PythonOpCode.PopTop, 0, span);
+            Emit(PythonOpCode.LoadName, GetNameIndex("NotImplementedError"), span);
+            Emit(PythonOpCode.Call, 0, span);
+            Emit(PythonOpCode.Raise, 1, span);
+
+            foreach (var jump in valueJumps)
+            {
+                PatchJump(jump, _instructions.Count);
+            }
+
+            Emit(PythonOpCode.ReturnValue, 0, span);
+            return CreateCodeObject(null);
         }
 
         private PythonCodeObject CreateCodeObject(
             IReadOnlyList<PythonParameter>? signature,
             bool isGenerator = false,
-            bool isCoroutine = false
+            bool isCoroutine = false,
+            PythonCodeObject? annotateCode = null
         )
         {
             var keywordOnlyCount = 0;
@@ -146,7 +207,8 @@ public static class PythonCompiler
                 hasVariadicPositional,
                 hasVariadicKeywords,
                 isGenerator,
-                isCoroutine
+                isCoroutine,
+                annotateCode
             );
         }
 
@@ -1863,6 +1925,45 @@ public static class PythonCompiler
             }
         }
 
+        /// <summary>
+        /// The annotation mapping keys for a `def`, in the order CPython records them:
+        /// positional-or-keyword parameters first, then positional-only ones, then the
+        /// variadic and keyword-only slots, and the return annotation last.
+        /// </summary>
+        private static List<(string Key, PythonExpression Annotation)> FunctionAnnotations(
+            PythonFunctionDefinitionStatement function,
+            PythonBoundScope scope
+        )
+        {
+            var annotations = new List<(string Key, PythonExpression Annotation)>();
+            foreach (
+                var kind in (PythonParameterKind[])
+                    [
+                        PythonParameterKind.Positional,
+                        PythonParameterKind.PositionalOnly,
+                        PythonParameterKind.VariadicPositional,
+                        PythonParameterKind.KeywordOnly,
+                        PythonParameterKind.VariadicKeywords,
+                    ]
+            )
+            {
+                foreach (var parameter in function.Parameters)
+                {
+                    if (parameter.Kind == kind && parameter.Annotation is not null)
+                    {
+                        annotations.Add((scope.MangleName(parameter.Name), parameter.Annotation));
+                    }
+                }
+            }
+
+            if (function.ReturnAnnotation is not null)
+            {
+                annotations.Add(("return", function.ReturnAnnotation));
+            }
+
+            return annotations;
+        }
+
         private void CompileFunctionDefinition(PythonFunctionDefinitionStatement function)
         {
             foreach (var decorator in function.Decorators)
@@ -1873,6 +1974,9 @@ public static class PythonCompiler
             var childScope = _scope.Children.Single(scope =>
                 ReferenceEquals(scope.Definition, function)
             );
+            var annotateScope = _scope.AnnotationScopes.FirstOrDefault(scope =>
+                ReferenceEquals(scope.Definition, function)
+            );
             var childCompiler = new Compiler(
                 function.Name.Name,
                 childScope,
@@ -1880,12 +1984,25 @@ public static class PythonCompiler
                 _enableReturnLocal,
                 _enableCallLocal
             );
+            var annotateCode = annotateScope is null
+                ? null
+                : new Compiler(
+                    "<annotate>",
+                    annotateScope,
+                    _diagnostics,
+                    _enableReturnLocal,
+                    _enableCallLocal
+                ).CompileAnnotateCode(
+                    FunctionAnnotations(function, annotateScope),
+                    function.Span.End
+                );
             var childCode = childCompiler.CompileCode(
                 function.Body,
                 function.Span.End,
                 function.Parameters,
                 function.IsGenerator,
-                function.IsCoroutine
+                function.IsCoroutine,
+                annotateCode
             );
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)

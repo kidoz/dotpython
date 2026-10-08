@@ -32,6 +32,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["ExceptionGroup"] = "BaseExceptionGroup",
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
+            ["NotImplementedError"] = "RuntimeError",
             ["TypeError"] = "Exception",
             ["ValueError"] = "Exception",
             ["NameError"] = "Exception",
@@ -5667,19 +5668,60 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             closure[index] = CurrentFrame.Cells[cellIndex];
         }
 
-        _evaluationStack.Push(
-            new PythonFunctionValue(
-                code.Definition.Name,
-                code,
-                CurrentFrame.Globals,
-                closure,
-                defaults,
-                keywordDefaults
-            )
+        var function = new PythonFunctionValue(
+            code.Definition.Name,
+            code,
+            CurrentFrame.Globals,
+            closure,
+            defaults,
+            keywordDefaults
+        )
+        {
+            QualName = GetDefinedCodeQualifiedName(code),
+        };
+        if (code.AnnotateCode is { } annotateCode)
+        {
+            function.Annotate = CreateAnnotateFunction(annotateCode, instruction.Span);
+        }
+
+        _evaluationStack.Push(function);
+    }
+
+    /// <summary>
+    /// Builds the callable behind `__annotate__`. It shares the definition's globals
+    /// and closure, so every name the annotations use resolves the way the surrounding
+    /// code sees it when the annotations are read, not when the definition was made.
+    /// </summary>
+    private PythonFunctionValue CreateAnnotateFunction(PreparedPythonCode code, TextSpan span)
+    {
+        var closure = new PythonCell[code.Definition.FreeVariableNames.Count];
+        for (var index = 0; index < closure.Length; index++)
+        {
+            var name = code.Definition.FreeVariableNames[index];
+            var cellIndex = CurrentFrame.Code.GetClosureCellIndex(name);
+            if ((uint)cellIndex >= (uint)CurrentFrame.Cells.Length)
             {
-                QualName = GetDefinedCodeQualifiedName(code),
+                throw Fault(
+                    "DPY4007",
+                    $"Closure variable '{name}' cannot be resolved in the enclosing frame.",
+                    span
+                );
             }
-        );
+
+            closure[index] = CurrentFrame.Cells[cellIndex];
+        }
+
+        return new PythonFunctionValue(
+            code.Definition.Name,
+            code,
+            CurrentFrame.Globals,
+            closure,
+            [],
+            null
+        )
+        {
+            QualName = GetDefinedCodeQualifiedName(code),
+        };
     }
 
     private string GetDefinedCodeQualifiedName(PreparedPythonCode code)

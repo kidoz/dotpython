@@ -18,7 +18,8 @@ public sealed class PythonCodeObject
         bool hasVariadicPositional = false,
         bool hasVariadicKeywords = false,
         bool isGenerator = false,
-        bool isCoroutine = false
+        bool isCoroutine = false,
+        PythonCodeObject? annotateCode = null
     )
     {
         ArgumentOutOfRangeException.ThrowIfNegative(keywordOnlyArgumentCount);
@@ -40,6 +41,7 @@ public sealed class PythonCodeObject
         HasVariadicKeywords = hasVariadicKeywords;
         IsGenerator = isGenerator;
         IsCoroutine = isCoroutine;
+        AnnotateCode = annotateCode;
         Instructions = new ReadOnlyCollection<PythonInstruction>(instructions);
         Constants = new ReadOnlyCollection<PythonConstant>(constants);
         Names = new ReadOnlyCollection<string>(names);
@@ -81,6 +83,14 @@ public sealed class PythonCodeObject
 
     /// <summary>Whether calling this code creates a suspendable frame object (generator or coroutine) instead of running it.</summary>
     public bool IsSuspendable => IsGenerator || IsCoroutine;
+
+    /// <summary>
+    /// The body that evaluates this definition's annotations and returns them as a
+    /// mapping, or null when the definition has none. PEP 649 keeps annotations
+    /// unevaluated until something asks for them, so this body runs on first access
+    /// to `__annotations__` in the globals and closure captured at the def site.
+    /// </summary>
+    public PythonCodeObject? AnnotateCode { get; }
 
     /// <summary>Whether the signature has no variadic or keyword-only parameters.</summary>
     public bool HasSimpleSignature =>
