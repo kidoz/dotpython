@@ -401,6 +401,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializeAnnotationLib
         );
+        modules["typing"] = PythonModuleDefinition.Native(
+            "<dotpython typing>",
+            isPackage: false,
+            PythonTyping.Initialize
+        );
         // Only the template-string API is provided; the rest of string's API is
         // not part of the managed standard-library slice yet.
         modules["string"] = PythonModuleDefinition.Native(

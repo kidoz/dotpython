@@ -372,6 +372,9 @@ internal sealed record PythonGenericAliasValue : PythonValue
             PythonManagedTypeValue type => QualifyTypeName(type),
             // `tuple[int, ...]` writes the ellipsis as three dots, not `Ellipsis`.
             PythonEllipsisValue => "...",
+            // A nested parameter list reads by the same rules, so a callable alias keeps
+            // `typing.Callable[[int], str]` rather than spelling out the parameter's repr.
+            PythonListValue list => $"[{string.Join(", ", list.Elements.Select(RenderArgument))}]",
             _ => argument.ToRepresentationString(),
         };
 
