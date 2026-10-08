@@ -157,6 +157,7 @@ internal static class PythonBuiltinTypes
             PythonMappingProxyValue => PythonMappingProxies.Type,
             PythonSetValue { IsFrozen: true } => Frozenset,
             PythonSetValue => Set,
+            PythonTypeUnionValue => Union,
             PythonManagedObjectValue instance
                 when ReferenceEquals(instance.Type, PythonBuiltinFunctions.ObjectType) =>
                 PythonBuiltinFunctions.Object,
@@ -267,6 +268,30 @@ internal static class PythonBuiltinTypes
         )
     );
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
+
+    /// <summary>
+    /// `type(None)`. `None` contributes this member to a PEP 604 union, and the union
+    /// renders it back as `None` because that is how the union was written.
+    /// </summary>
+    internal static readonly PythonBuiltinTypeValue NoneType = CreateOpaque("NoneType");
+
+    /// <summary>
+    /// `type(int | str)`. CPython 3.14 unified PEP 604 unions with `typing.Union`, so the
+    /// class of a union is named `Union` in module `typing` and cannot be instantiated.
+    /// </summary>
+    internal static readonly PythonBuiltinTypeValue Union = new(
+        "Union",
+        (_, span) =>
+            throw ManagedObjectProtocols.Fault(
+                "DPY4009",
+                "cannot create 'typing.Union' instances",
+                span,
+                "TypeError"
+            )
+    )
+    {
+        ModuleName = "typing",
+    };
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
         [Bool, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];

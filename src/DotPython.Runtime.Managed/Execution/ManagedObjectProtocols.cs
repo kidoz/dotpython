@@ -3038,6 +3038,7 @@ internal static class ManagedObjectProtocols
             PythonSetValue { IsFrozen: true } frozen => GetFrozenSetHash(frozen, span)
                 .GetHashCode(),
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
+            PythonTypeUnionValue union => GetTypeUnionHash(union),
             PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
                 "DPY4014",
                 $"unhashable type: '{GetTypeName(value)}'",
@@ -3046,6 +3047,15 @@ internal static class ManagedObjectProtocols
             ),
             _ => RuntimeHelpers.GetHashCode(value),
         };
+    }
+
+    /// <summary>Member order is not part of a union's identity, so it is not part of its hash.</summary>
+    private static int GetTypeUnionHash(PythonTypeUnionValue union)
+    {
+        var hash = 0;
+        foreach (var member in union.Members)
+            hash ^= GetPythonHash(member);
+        return hash;
     }
 
     private static BigInteger GetFrozenSetHash(PythonSetValue frozen, TextSpan span)
@@ -3115,6 +3125,8 @@ internal static class ManagedObjectProtocols
             PythonStreamValue => "TextIOWrapper",
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",
+            // CPython's `tp_name` for a PEP 604 union, as it appears in error messages.
+            PythonTypeUnionValue => "typing.Union",
             PythonIteratorValue => "iterator",
             PythonModuleValue => "module",
             PythonManagedTypeValue { Metaclass: PythonManagedTypeValue metaclass } =>
@@ -3752,6 +3764,9 @@ internal static class ManagedObjectProtocols
             ),
             (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
                 AreDictionariesEqual(leftDictionary, rightDictionary),
+            // Union order is not part of identity: `int | str` equals `str | int`.
+            (PythonTypeUnionValue leftUnion, PythonTypeUnionValue rightUnion) =>
+                leftUnion.SetEquals(rightUnion),
             _ => ReferenceEquals(left, right),
         };
     }

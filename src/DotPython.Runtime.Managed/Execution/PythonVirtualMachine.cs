@@ -6416,6 +6416,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             case PythonTupleValue tuple:
                 return tuple.Elements.Any(element => MatchesClassInfo(value, element, span));
+            case PythonTypeUnionValue union:
+                return union.Members.Any(member => MatchesClassInfo(value, member, span));
             case PythonBuiltinTypeValue { Name: "object" }:
                 return PythonBuiltinTypes
                     .GetMro(PythonBuiltinTypes.GetRuntimeType(value))
@@ -6441,7 +6443,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             default:
                 throw Fault(
                     "DPY4003",
-                    "isinstance() arg 2 must be a type or tuple of types.",
+                    "isinstance() arg 2 must be a type, a tuple of types, or a union",
                     span,
                     "TypeError"
                 );
@@ -7255,6 +7257,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (classInfo is PythonTupleValue tuple)
             return tuple.Elements.Any(element => MatchesSubclassInfo(cls, element, span));
+        if (classInfo is PythonTypeUnionValue union)
+            return union.Members.Any(member => MatchesSubclassInfo(cls, member, span));
         if (
             classInfo is PythonManagedTypeValue
             && ManagedObjectProtocols.TryGetSpecialMethod(
@@ -7272,6 +7276,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             PythonTupleValue tuple => tuple.Elements.Any(element =>
                 IsSubclassOf(cls, element, span)
+            ),
+            PythonTypeUnionValue union => union.Members.Any(member =>
+                IsSubclassOf(cls, member, span)
             ),
             _ when PythonTypeProtocols.IsType(classInfo) => ReferenceEquals(cls, classInfo)
                 || PythonBuiltinTypes
@@ -7873,6 +7880,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             (PythonBuiltinTypeValue, PythonBuiltinTypeValue) => ReferenceEquals(left, right),
             (PythonManagedTypeValue, PythonManagedTypeValue) => ReferenceEquals(left, right),
             (PythonExceptionTypeValue, PythonExceptionTypeValue) => ReferenceEquals(left, right),
+            // Union order is not part of identity: `int | str` equals `str | int`.
+            (PythonTypeUnionValue leftUnion, PythonTypeUnionValue rightUnion) =>
+                leftUnion.SetEquals(rightUnion),
             (PythonBuiltinFunctionValue leftFunction, PythonBuiltinFunctionValue rightFunction) =>
                 ReferenceEquals(leftFunction, rightFunction),
             (PythonFunctionValue leftFunction, PythonFunctionValue rightFunction) =>
@@ -7929,6 +7939,26 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         if (UserObjectProtocols.TryApplyBinary(opCode, left, right, span, out var userResult))
         {
             return userResult;
+        }
+
+        // `X | Y` over types builds a PEP 604 union; a type paired with anything else is
+        // the operand-type error CPython reports, not a bitwise, set, or mapping operation.
+        if (opCode == PythonOpCode.BinaryOr)
+        {
+            if (PythonTypeProtocols.CombineTypeUnion(left, right) is { } typeUnion)
+                return typeUnion;
+            if (
+                PythonTypeProtocols.IsTypeUnionOperand(left)
+                || PythonTypeProtocols.IsTypeUnionOperand(right)
+            )
+            {
+                throw Fault(
+                    "DPY4005",
+                    $"unsupported operand type(s) for |: '{ManagedObjectProtocols.GetTypeName(left)}' and '{ManagedObjectProtocols.GetTypeName(right)}'",
+                    span,
+                    "TypeError"
+                );
+            }
         }
 
         if (opCode == PythonOpCode.BinaryModulo && left is PythonTextValue formatTemplate)

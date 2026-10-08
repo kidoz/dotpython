@@ -303,6 +303,137 @@ internal sealed record PythonBuiltinTypeValue(
         $"<class '{(ModuleName == "builtins" ? Name : ModuleName + "." + Name)}'>";
 }
 
+/// <summary>
+/// A PEP 604 union of type objects (`int | str`): the members in source order with
+/// duplicates removed. <see cref="Combine"/> flattens nested unions and collapses a single
+/// surviving member back to that member, so `int | int` is `int`. `None` contributes
+/// `NoneType`, matching `type.__or__`.
+/// </summary>
+internal sealed record PythonTypeUnionValue : PythonValue
+{
+    private PythonTypeUnionValue(IReadOnlyList<PythonValue> members)
+    {
+        Members = members;
+        _displayString = Render(members);
+    }
+
+    /// <summary>The member types, in source order and without duplicates.</summary>
+    internal IReadOnlyList<PythonValue> Members { get; }
+
+    private readonly string _displayString;
+
+    internal override string ToDisplayString() => _displayString;
+
+    /// <summary>
+    /// Builds `left | right` from operands that are already known to be union members.
+    /// Members of nested unions are flattened in, duplicates are dropped by identity, and
+    /// a union left holding one member is that member.
+    /// </summary>
+    internal static PythonValue Combine(PythonValue left, PythonValue right)
+    {
+        List<PythonValue> members = [];
+        Flatten(left, members);
+        Flatten(right, members);
+        return members.Count == 1 ? members[0] : new PythonTypeUnionValue(members);
+    }
+
+    /// <summary>Set equality: `int | str` and `str | int` are the same union.</summary>
+    internal bool SetEquals(PythonTypeUnionValue other)
+    {
+        if (other.Members.Count != Members.Count)
+            return false;
+        foreach (var member in Members)
+        {
+            if (!other.Contains(member))
+                return false;
+        }
+        return true;
+    }
+
+    public bool Equals(PythonTypeUnionValue? other) => other is not null && SetEquals(other);
+
+    public override int GetHashCode()
+    {
+        // Member order is not part of a union's identity, so it is not part of its hash either.
+        var hash = 0;
+        foreach (var member in Members)
+            hash ^= RuntimeHelpers.GetHashCode(member);
+        return hash;
+    }
+
+    private bool Contains(PythonValue member)
+    {
+        foreach (var candidate in Members)
+        {
+            if (ReferenceEquals(candidate, member))
+                return true;
+        }
+        return false;
+    }
+
+    private static void Flatten(PythonValue value, List<PythonValue> members)
+    {
+        if (value is PythonTypeUnionValue union)
+        {
+            foreach (var member in union.Members)
+                Flatten(member, members);
+            return;
+        }
+
+        foreach (var member in members)
+        {
+            if (ReferenceEquals(member, value))
+                return;
+        }
+        members.Add(value);
+    }
+
+    private static string Render(IReadOnlyList<PythonValue> members)
+    {
+        var builder = new StringBuilder();
+        for (var index = 0; index < members.Count; index++)
+        {
+            if (index != 0)
+                builder.Append(" | ");
+            AppendMember(builder, members[index]);
+        }
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// CPython names a member by its `__module__`-qualified type name, and renders the
+    /// `NoneType` member of `int | None` as `None`, the way the union was written.
+    /// </summary>
+    private static void AppendMember(StringBuilder builder, PythonValue member)
+    {
+        if (ReferenceEquals(member, PythonBuiltinTypes.NoneType))
+        {
+            builder.Append("None");
+            return;
+        }
+
+        switch (member)
+        {
+            case PythonManagedTypeValue managed:
+                builder.Append(managed.QualifiedDisplayName);
+                break;
+            case PythonBuiltinTypeValue builtin:
+                builder.Append(
+                    builtin.ModuleName == "builtins"
+                        ? builtin.Name
+                        : $"{builtin.ModuleName}.{builtin.Name}"
+                );
+                break;
+            case PythonExceptionTypeValue exception:
+                builder.Append(exception.Name);
+                break;
+            default:
+                builder.Append(member.ToDisplayString());
+                break;
+        }
+    }
+}
+
 internal interface PythonExternalObjectProtocol
 {
     PythonValue Call(IReadOnlyList<PythonValue> arguments, TextSpan span);

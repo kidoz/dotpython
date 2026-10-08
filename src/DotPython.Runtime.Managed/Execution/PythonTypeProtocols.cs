@@ -8,6 +8,32 @@ internal static class PythonTypeProtocols
     internal static bool IsType(PythonValue value) =>
         value is PythonManagedTypeValue or PythonBuiltinTypeValue or PythonExceptionTypeValue;
 
+    /// <summary>
+    /// Whether `value` can be an operand of a PEP 604 union: a type object, an existing
+    /// union, or `None`, which contributes `NoneType`.
+    /// </summary>
+    internal static bool IsTypeUnionOperand(PythonValue value) =>
+        value is PythonTypeUnionValue or PythonNoneValue || IsType(value);
+
+    /// <summary>
+    /// Builds `left | right` as a union, or returns null when this `|` is not union
+    /// building. Both operands must be a type, an existing union, or `None`, and at least
+    /// one must be a type or a union: CPython rejects `None | None` because neither
+    /// operand is a type.
+    /// </summary>
+    internal static PythonValue? CombineTypeUnion(PythonValue left, PythonValue right)
+    {
+        if (!IsTypeUnionOperand(left) || !IsTypeUnionOperand(right))
+            return null;
+        if (left is PythonNoneValue && right is PythonNoneValue)
+            return null;
+        return PythonTypeUnionValue.Combine(AsTypeUnionMember(left), AsTypeUnionMember(right));
+    }
+
+    /// <summary>`None` contributes `NoneType` to a union; every other operand is itself.</summary>
+    private static PythonValue AsTypeUnionMember(PythonValue value) =>
+        value is PythonNoneValue ? PythonBuiltinTypes.NoneType : value;
+
     internal static bool IsMetaclass(PythonValue value) =>
         ReferenceEquals(value, PythonBuiltinTypes.Type)
         || value is PythonManagedTypeValue { IsMetaclass: true };
