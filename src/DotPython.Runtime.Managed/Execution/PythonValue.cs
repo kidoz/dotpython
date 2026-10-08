@@ -1080,6 +1080,16 @@ internal sealed record PythonFunctionValue(
     internal PythonAttributeDictionary Attributes { get; set; } = new();
 
     /// <summary>
+    /// Metadata names (<c>__name__</c>, <c>__qualname__</c>, <c>__module__</c>,
+    /// <c>__doc__</c>, <c>__type_params__</c>) installed by
+    /// <c>functools.update_wrapper</c> so that a wrapper reports the wrapped
+    /// function's identity. CPython writes these to the function's real attribute
+    /// slots, so they shadow the built-in values and stay out of <c>__dict__</c>;
+    /// this dictionary is the managed equivalent, and null until a wrapper is built.
+    /// </summary>
+    internal PythonAttributeDictionary? ShadowAttributes { get; set; }
+
+    /// <summary>
     /// The callable that evaluates this function's annotations, or null when it has
     /// none. `__annotations__` calls it once and caches the mapping it returns.
     /// </summary>

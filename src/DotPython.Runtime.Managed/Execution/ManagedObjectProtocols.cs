@@ -351,8 +351,18 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue { Name: "object" }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectMember):
                 return objectMember;
+            case PythonFunctionValue function
+                when function.ShadowAttributes is { } shadowed
+                    && shadowed.TryGetValue(name, out var shadowedValue):
+                return shadowedValue;
             case PythonFunctionValue function when name == "__name__":
                 return new PythonTextValue(function.Name);
+            // No docstring is retained for a compilation-unit function, so its
+            // `__doc__` is None, as for an undecorated CPython function.
+            case PythonFunctionValue when name == "__doc__":
+                return PythonNoneValue.Instance;
+            case PythonFunctionValue when name == "__type_params__":
+                return new PythonTupleValue([]);
             case PythonFunctionValue function when name == "__qualname__":
                 return new PythonTextValue(function.QualName ?? function.Name);
             case PythonFunctionValue function when name == "__module__":
@@ -988,6 +998,13 @@ internal static class ManagedObjectProtocols
                     RequireNamespaceDictionary(value, span)
                 );
                 return;
+            // `functools.update_wrapper` copies the wrapped callable's identity onto
+            // the wrapper; CPython assigns the real slots, so the copy shadows the
+            // wrapper's own metadata and never lands in its `__dict__`.
+            case PythonFunctionValue function when IsFunctionShadowableName(name):
+                function.ShadowAttributes ??= new PythonAttributeDictionary();
+                function.ShadowAttributes[name] = value;
+                return;
             case PythonFunctionValue function when !IsFunctionMetadataName(name):
                 function.Attributes[name] = value;
                 return;
@@ -1099,6 +1116,18 @@ internal static class ManagedObjectProtocols
             span,
             "TypeError"
         );
+
+    // The metadata names `functools.update_wrapper` assigns by default. CPython
+    // writes each one to a writable function slot, so the assignment shadows the
+    // value the function would otherwise report.
+    private static bool IsFunctionShadowableName(string name) =>
+        name
+            is "__name__"
+                or "__qualname__"
+                or "__module__"
+                or "__doc__"
+                or "__type_params__"
+                or "__annotate__";
 
     // Function runtime metadata keeps its existing dedicated attribute behavior;
     // arbitrary user state belongs to the function dictionary instead.
