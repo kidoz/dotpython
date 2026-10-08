@@ -6504,7 +6504,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 new PythonDictionaryItemValue(item.Key, item.Value, item.KeyHash)
             );
         }
-        type.HasDeclaredSlots = type.Attributes.TryGetValue("__slots__", out _);
+        type.HasDeclaredSlots = type.Attributes.TryGetValue("__slots__", out var slotsValue);
+        if (type.HasDeclaredSlots)
+        {
+            // Validate before the type joins the hierarchy so a rejected declaration
+            // leaves no partially registered class behind.
+            type.Slots = PythonSlotLayout.Create(type, slotsValue!, span);
+        }
         if (!type.Attributes.TryGetValue("__module__", out _))
         {
             type.Attributes["__module__"] = new PythonTextValue(CurrentModuleName() ?? "__main__");

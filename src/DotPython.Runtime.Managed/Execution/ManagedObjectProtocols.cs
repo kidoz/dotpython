@@ -1067,6 +1067,13 @@ internal static class ManagedObjectProtocols
     /// The default attribute lookup for a managed instance (data descriptors, the
     /// instance dictionary, then bound type attributes) without `__getattr__` hooks.
     /// </summary>
+    /// <summary>
+    /// Whether an instance exposes a `__dict__`. False only for a class whose
+    /// `__slots__` declaration omits it and whose bases provide none.
+    /// </summary>
+    private static bool AllowsInstanceDictionary(PythonManagedObjectValue instance) =>
+        instance.Type.Slots is not { } layout || layout.AllowsInstanceDictionary;
+
     internal static bool TryGetInstanceAttribute(
         PythonManagedObjectValue instance,
         string name,
@@ -1081,7 +1088,7 @@ internal static class ManagedObjectProtocols
             return true;
         }
 
-        if (name == "__dict__" && !hasTypeValue)
+        if (name == "__dict__" && !hasTypeValue && AllowsInstanceDictionary(instance))
         {
             value = instance.Attributes.Dictionary;
             return true;
@@ -1132,6 +1139,18 @@ internal static class ManagedObjectProtocols
             return;
         }
 
+        // A class that declares `__slots__` without `'__dict__'` accepts only its
+        // declared members, which also rules out assigning `__dict__` itself.
+        if (instance.Type.Slots is { } layout && !layout.Accepts(name))
+        {
+            throw Fault(
+                "DPY4022",
+                $"'{instance.Type.Name}' object has no attribute '{name}' and no __dict__ for setting new attributes",
+                span,
+                "AttributeError"
+            );
+        }
+
         if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
         {
             instance.Attributes = new PythonAttributeDictionary(
@@ -1158,7 +1177,11 @@ internal static class ManagedObjectProtocols
             return;
         }
 
-        if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
+        if (
+            name == "__dict__"
+            && !TryGetTypeAttribute(instance.Type, name, out _)
+            && AllowsInstanceDictionary(instance)
+        )
         {
             instance.Attributes = new PythonAttributeDictionary();
             return;
@@ -1166,6 +1189,20 @@ internal static class ManagedObjectProtocols
 
         if (!instance.Attributes.Remove(name))
         {
+            if (instance.Type.Slots is { AllowsInstanceDictionary: false } layout)
+            {
+                // A declared member that was never assigned reports the bare name,
+                // while anything else reports the missing dictionary.
+                throw layout.MemberNames.Contains(name)
+                    ? Fault("DPY4022", name, span, "AttributeError")
+                    : Fault(
+                        "DPY4022",
+                        $"'{instance.Type.Name}' object has no attribute '{name}' and no __dict__ for setting new attributes",
+                        span,
+                        "AttributeError"
+                    );
+            }
+
             throw MissingAttribute(instance.Type.Name, name, span);
         }
     }

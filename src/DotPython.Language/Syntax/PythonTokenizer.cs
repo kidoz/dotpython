@@ -912,40 +912,9 @@ public static class PythonTokenizer
             return false;
         }
 
-        private static bool IsIdentifierStart(Rune rune)
-        {
-            if (rune.Value == '_')
-            {
-                return true;
-            }
+        private static bool IsIdentifierStart(Rune rune) => PythonIdentifier.IsStart(rune);
 
-            var category = Rune.GetUnicodeCategory(rune);
-            return category
-                    is UnicodeCategory.UppercaseLetter
-                        or UnicodeCategory.LowercaseLetter
-                        or UnicodeCategory.TitlecaseLetter
-                        or UnicodeCategory.ModifierLetter
-                        or UnicodeCategory.OtherLetter
-                        or UnicodeCategory.LetterNumber
-                || rune.Value is 0x1885 or 0x1886 or 0x2118 or 0x212E or 0x309B or 0x309C;
-        }
-
-        private static bool IsIdentifierContinue(Rune rune)
-        {
-            if (IsIdentifierStart(rune))
-            {
-                return true;
-            }
-
-            var category = Rune.GetUnicodeCategory(rune);
-            return category
-                    is UnicodeCategory.NonSpacingMark
-                        or UnicodeCategory.SpacingCombiningMark
-                        or UnicodeCategory.DecimalDigitNumber
-                        or UnicodeCategory.ConnectorPunctuation
-                || rune.Value is 0x00B7 or 0x0387 or 0x19DA
-                || rune.Value is >= 0x1369 and <= 0x1371;
-        }
+        private static bool IsIdentifierContinue(Rune rune) => PythonIdentifier.IsContinue(rune);
 
         private static bool IsValidOneCharacterStringPrefix(char value) =>
             char.ToLowerInvariant(value) is 'b' or 'f' or 'r' or 't' or 'u';

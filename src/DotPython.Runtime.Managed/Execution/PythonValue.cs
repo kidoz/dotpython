@@ -493,6 +493,13 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     internal bool HasDeclaredSlots { get; set; }
 
+    /// <summary>
+    /// The storage instances of this class accept, or null when the class declares no
+    /// `__slots__` and therefore allows any attribute name. Types built directly by the
+    /// runtime, rather than by class creation, also leave this null.
+    /// </summary>
+    internal PythonSlotLayout? Slots { get; set; }
+
     /// <summary>The declared base classes, in source order.</summary>
     internal IReadOnlyList<PythonManagedTypeValue> Bases { get; private set; }
 
