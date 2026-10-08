@@ -52,6 +52,7 @@ internal static class PythonCodecs
     {
         globals.SetValue("encode", PythonCodecOperations.Create(decode: false));
         globals.SetValue("decode", PythonCodecOperations.Create(decode: true));
+        PythonCodecInfo.Initialize(globals);
         var registry =
             UserObjectProtocols.Dispatcher?.CodecErrors ?? new PythonCodecErrorRegistry();
         foreach (
