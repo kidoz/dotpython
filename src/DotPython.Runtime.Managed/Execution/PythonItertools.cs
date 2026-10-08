@@ -1131,6 +1131,13 @@ internal static class PythonItertools
         /// <summary>The value read ahead of the group being handed out, if any.</summary>
         internal PythonValue? Pending { get; set; }
 
+        /// <summary>
+        /// The key of <see cref="Pending"/> when the grouper already computed it. CPython
+        /// runs the key function once per element, so a read-ahead value must carry its key
+        /// into the next group instead of being keyed a second time.
+        /// </summary>
+        internal PythonValue? PendingKey { get; set; }
+
         internal PythonValue CurrentKey { get; set; } = None;
 
         internal bool HasCurrentKey { get; set; }
@@ -1163,17 +1170,23 @@ internal static class PythonItertools
                 while (true)
                 {
                     PythonValue value;
+                    PythonValue key;
                     if (state.Pending is { } pending)
                     {
                         state.Pending = null;
                         value = pending;
+                        key = state.PendingKey ?? state.KeyOf(value);
+                        state.PendingKey = null;
                     }
                     else if (!TryNext(state.Source, out value, span))
                     {
                         return (false, None);
                     }
+                    else
+                    {
+                        key = state.KeyOf(value);
+                    }
 
-                    var key = state.KeyOf(value);
                     if (state.HasCurrentKey && ManagedObjectProtocols.AreEqual(key, state.CurrentKey))
                     {
                         // A leftover value of the group that was just handed out: it is
@@ -1214,18 +1227,16 @@ internal static class PythonItertools
 
                 while (TryNext(state.Source, out var value, state.Span))
                 {
-                    if (
-                        ManagedObjectProtocols.AreEqual(
-                            state.KeyOf(value),
-                            state.CurrentKey
-                        )
-                    )
+                    var key = state.KeyOf(value);
+                    if (ManagedObjectProtocols.AreEqual(key, state.CurrentKey))
                     {
                         return (true, value);
                     }
 
-                    // The value starts the next group: hand it back to groupby.
+                    // The value starts the next group: hand it, with the key already
+                    // computed, back to groupby.
                     state.Pending = value;
+                    state.PendingKey = key;
                     finished = true;
                     return (false, None);
                 }
