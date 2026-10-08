@@ -320,7 +320,58 @@ public static class PythonParser
                 );
             }
 
-            return new PythonNameExpression(targetToken.Text, targetToken.Span);
+            PythonExpression target = new PythonNameExpression(targetToken.Text, targetToken.Span);
+            while (true)
+            {
+                if (Match(SyntaxTokenKind.Dot, out _))
+                {
+                    var attribute = Expect(
+                        SyntaxTokenKind.Identifier,
+                        "an attribute name after '.'"
+                    );
+                    if (attribute.Text.Length != 0 && IsReservedKeyword(attribute.Text))
+                    {
+                        Report(
+                            "DPY2010",
+                            $"The keyword '{attribute.Text}' cannot be used as an attribute name.",
+                            attribute.Span
+                        );
+                    }
+
+                    target = new PythonAttributeExpression(
+                        target,
+                        attribute.Text,
+                        TextSpan.FromBounds(target.Span.Start, attribute.Span.End)
+                    );
+                    continue;
+                }
+
+                // `for seq[i] in ...` binds through the same subscript path as an
+                // assignment target.
+                if (!Match(SyntaxTokenKind.LeftBracket, out var leftBracket))
+                {
+                    break;
+                }
+
+                var index = ParseSubscript(leftBracket);
+                if (index is null)
+                {
+                    break;
+                }
+
+                var subscriptionEnd = ExpectClosingDelimiter(
+                    SyntaxTokenKind.RightBracket,
+                    "']'",
+                    index.Span.End
+                );
+                target = new PythonSubscriptionExpression(
+                    target,
+                    index,
+                    TextSpan.FromBounds(target.Span.Start, subscriptionEnd)
+                );
+            }
+
+            return target;
         }
 
         /// <summary>
@@ -837,42 +888,113 @@ public static class PythonParser
             return new PythonCapturePattern(null, Current.Span);
         }
 
+        /// <summary>
+        /// One `context [as target]` clause of a `with` statement.
+        /// </summary>
+        private PythonWithItem ParseWithItem()
+        {
+            var context = ParseRequiredExpression("a context manager after 'with'");
+            PythonExpression? target = null;
+            if (MatchKeyword("as", out _))
+            {
+                target = ParseExpression();
+                if (target is null)
+                {
+                    ReportExpected("a target after 'as'", Current.Span);
+                }
+                else if (!IsAssignableTarget(target))
+                {
+                    Report("DPY2005", "This expression cannot be assigned to.", target.Span);
+                    target = null;
+                }
+            }
+
+            return new PythonWithItem(
+                context,
+                target,
+                TextSpan.FromBounds(context.Span.Start, target?.Span.End ?? context.Span.End)
+            );
+        }
+
+        /// <summary>
+        /// Whether the `with` clause opens a parenthesized list of context managers
+        /// rather than a parenthesized expression. A comma or `as` at the group's own
+        /// depth means a list, which is how CPython reads `with (a, b):` as two
+        /// managers while `with (a):` stays one.
+        /// </summary>
+        private bool IsParenthesizedWithItemList()
+        {
+            if (Current.Kind != SyntaxTokenKind.LeftParenthesis)
+            {
+                return false;
+            }
+
+            var depth = 0;
+            for (var offset = 0; ; offset++)
+            {
+                var token = Peek(offset);
+                switch (token.Kind)
+                {
+                    case SyntaxTokenKind.LeftParenthesis:
+                    case SyntaxTokenKind.LeftBracket:
+                    case SyntaxTokenKind.LeftBrace:
+                        depth++;
+                        break;
+                    case SyntaxTokenKind.RightParenthesis:
+                    case SyntaxTokenKind.RightBracket:
+                    case SyntaxTokenKind.RightBrace:
+                        depth--;
+                        if (depth == 0)
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case SyntaxTokenKind.Comma when depth == 1:
+                        return true;
+                    case SyntaxTokenKind.Identifier when depth == 1 && token.Text == "as":
+                        return true;
+                    case SyntaxTokenKind.EndOfFile:
+                        return false;
+                }
+            }
+        }
+
         private PythonWithStatement ParseWithStatement(int? asyncStart = null)
         {
             var start = asyncStart ?? Current.Span.Start;
             Advance();
             var items = new List<PythonWithItem>();
-            while (true)
+            if (IsParenthesizedWithItemList())
             {
-                var context = ParseRequiredExpression("a context manager after 'with'");
-                PythonExpression? target = null;
-                if (MatchKeyword("as", out _))
+                Advance();
+                while (true)
                 {
-                    target = ParseExpression();
-                    if (target is null)
+                    items.Add(ParseWithItem());
+                    if (!Match(SyntaxTokenKind.Comma))
                     {
-                        ReportExpected("a target after 'as'", Current.Span);
+                        break;
                     }
-                    else if (!IsAssignableTarget(target))
+
+                    // A trailing comma may close the group instead of opening another
+                    // item.
+                    if (Current.Kind == SyntaxTokenKind.RightParenthesis)
                     {
-                        Report("DPY2005", "This expression cannot be assigned to.", target.Span);
-                        target = null;
+                        break;
                     }
                 }
 
-                items.Add(
-                    new PythonWithItem(
-                        context,
-                        target,
-                        TextSpan.FromBounds(
-                            context.Span.Start,
-                            target?.Span.End ?? context.Span.End
-                        )
-                    )
-                );
-                if (!Match(SyntaxTokenKind.Comma))
+                Expect(SyntaxTokenKind.RightParenthesis, "')' after the context managers");
+            }
+            else
+            {
+                while (true)
                 {
-                    break;
+                    items.Add(ParseWithItem());
+                    if (!Match(SyntaxTokenKind.Comma))
+                    {
+                        break;
+                    }
                 }
             }
 

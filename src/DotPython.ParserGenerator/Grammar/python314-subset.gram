@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 39.
+# DotPython executable PEG subset, version 40.
 # Upstream tag: CPython v3.14.7.
 # Upstream commit: 823f0323ee6ec1402088b73bce1a38473cac36dc.
 # Provenance: https://github.com/python/cpython/blob/823f0323ee6ec1402088b73bce1a38473cac36dc/Grammar/python.gram
@@ -38,8 +38,8 @@ if_stmt: 'if' expression ':' block ('elif' expression ':' block)* ['else' ':' bl
 while_stmt: 'while' expression ':' block ['else' ':' block]
 for_stmt: 'for' for_targets 'in' expression_list ':' block ['else' ':' block]
 for_targets: ','.for_target+ [',']
-for_target: '*' for_target | '(' for_targets ')' | NAME
-with_stmt: 'with' ','.with_item+ ':' block
+for_target: '*' for_target | '(' for_targets ')' | primary
+with_stmt: 'with' (','.with_item+ | '(' ','.with_item+ [','] ')') ':' block
 with_item: expression ['as' primary]
 try_stmt: 'try' ':' block (except_block+ ['else' ':' block] ['finally' ':' block] | 'finally' ':' block)
 except_block: 'except' ['*'] [expression 'as' NAME | expression (',' expression)* [',']] ':' block
