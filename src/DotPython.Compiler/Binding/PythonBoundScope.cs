@@ -164,6 +164,26 @@ public sealed class PythonBoundScope
         AddCellVariable("__class__");
     }
 
+    /// <summary>
+    /// Adds a local this scope's own statements never bind, such as the target of an
+    /// assignment expression written inside a nested comprehension. A name the scope
+    /// declares `global` or `nonlocal` keeps its own routing.
+    /// </summary>
+    internal void AddImplicitLocal(string name)
+    {
+        var mangled = MangleName(name);
+        if (DeclaredGlobalNames.ContainsKey(mangled) || DeclaredNonlocalNames.ContainsKey(mangled))
+        {
+            return;
+        }
+
+        if (_localNameSet.Add(mangled))
+        {
+            _localNameIndexes.Add(mangled, _localNames.Count);
+            _localNames.Add(mangled);
+        }
+    }
+
     internal void AddCellVariable(string name)
     {
         if (_cellVariableNameSet.Add(name))

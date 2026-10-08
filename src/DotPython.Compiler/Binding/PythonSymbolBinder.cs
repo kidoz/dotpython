@@ -26,6 +26,7 @@ public static class PythonSymbolBinder
         ArgumentNullException.ThrowIfNull(module);
 
         var diagnostics = new List<Diagnostic>();
+        PythonWalrusValidator.Validate(module, diagnostics);
         var moduleScope = BindScope(
             PythonScopeKind.Module,
             "<module>",
@@ -223,6 +224,31 @@ public static class PythonSymbolBinder
         return scope;
     }
 
+    /// <summary>Whether a scope was created for a comprehension rather than a `def`.</summary>
+    private static bool IsComprehensionExpression(PythonNode? definition) =>
+        definition
+            is PythonListComprehensionExpression
+                or PythonSetComprehensionExpression
+                or PythonDictionaryComprehensionExpression
+                or PythonGeneratorExpression;
+
+    /// <summary>
+    /// The scope an assignment expression written inside a comprehension binds to: the
+    /// nearest enclosing scope that is not itself a comprehension.
+    /// </summary>
+    private static PythonBoundScope FindWalrusOwnerScope(PythonBoundScope[] ancestors)
+    {
+        for (var index = ancestors.Length - 1; index >= 0; index--)
+        {
+            if (!IsComprehensionExpression(ancestors[index].Definition))
+            {
+                return ancestors[index];
+            }
+        }
+
+        return ancestors[^1];
+    }
+
     private static PythonBoundScope BindComprehensionScope(
         PythonExpression comprehension,
         PythonBoundScope[] ancestors,
@@ -297,11 +323,31 @@ public static class PythonSymbolBinder
             }
         }
 
+        // Everything bound so far is the synthetic `.0` and the `for` targets. Any
+        // other binding reference below is an assignment-expression target.
+        var comprehensionTargetNames = new HashSet<string>(localNameSet, StringComparer.Ordinal);
+        var walrusOwner = FindWalrusOwnerScope(ancestors);
         foreach (var reference in references)
         {
-            if (reference.IsBinding)
+            if (!reference.IsBinding)
+            {
+                continue;
+            }
+
+            if (comprehensionTargetNames.Contains(reference.Name))
             {
                 AddLocal(reference.Name, localNames, localNameSet, excludedNames);
+                continue;
+            }
+
+            // CPython binds a walrus target in the nearest enclosing scope that is not
+            // itself a comprehension, so the name becomes a free variable here and a
+            // cell in the owner. A class body is refused by the walrus validator; do
+            // not route it silently, because a class-owned name would compile to a
+            // global write.
+            if (walrusOwner.Kind != PythonScopeKind.Class)
+            {
+                walrusOwner.AddImplicitLocal(reference.Name);
             }
         }
 
