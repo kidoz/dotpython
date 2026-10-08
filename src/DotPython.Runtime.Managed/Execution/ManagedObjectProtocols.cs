@@ -411,6 +411,8 @@ internal static class ManagedObjectProtocols
                         return DictionaryFromKeys(arguments[0], fill, callSpan);
                     }
                 );
+            case PythonBuiltinTypeValue { Name: "str" } when name == "maketrans":
+                return PythonTextMethods.CreateMakeTrans();
             case PythonBuiltinTypeValue { Name: "bytes" } when name == "fromhex":
                 return PythonBytesMethods.CreateFromHex();
             case PythonBuiltinTypeValue { Name: "bytes" } when name == "maketrans":

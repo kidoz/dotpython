@@ -20,6 +20,7 @@ internal static class PythonBuiltinMethods
     }
 
     private static readonly Dictionary<string, PythonProtocolFunctionValue> TextMethods = new(
+        PythonTextMethods.CreateTable(),
         StringComparer.Ordinal
     )
     {

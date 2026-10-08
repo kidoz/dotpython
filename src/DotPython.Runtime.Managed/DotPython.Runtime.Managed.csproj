@@ -12,6 +12,10 @@
             Include="Unicode/UnicodeCase16.bin"
             LogicalName="DotPython.UnicodeCase16"
         />
+        <EmbeddedResource
+            Include="Unicode/UnicodePredicates16.bin"
+            LogicalName="DotPython.UnicodePredicates16"
+        />
         <None
             Include="../../third_party/unicode/16.0.0/LICENSE.txt"
             Link="licenses/Unicode-LICENSE.txt"

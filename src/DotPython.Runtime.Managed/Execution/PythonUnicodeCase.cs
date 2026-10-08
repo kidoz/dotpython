@@ -132,10 +132,10 @@ internal static class PythonUnicodeCase
     /// Whether `str.swapcase` treats the character as lowercase: the `Ll` category plus the
     /// `Other_Lowercase` additions, which have an uppercase mapping but no lowercase one.
     /// </summary>
-    private static bool IsLower(int codePoint) => Mappings.Value.IsLower(codePoint);
+    internal static bool IsLower(int codePoint) => Mappings.Value.IsLower(codePoint);
 
     /// <summary>The `Lu` category plus `Other_Uppercase`, the counterpart of <see cref="IsLower"/>.</summary>
-    private static bool IsUpper(int codePoint) => Mappings.Value.IsUpper(codePoint);
+    internal static bool IsUpper(int codePoint) => Mappings.Value.IsUpper(codePoint);
 
     private static bool IsFinalSigma(int[] codes, int index)
     {
@@ -166,7 +166,7 @@ internal static class PythonUnicodeCase
     /// cannot answer it: `Other_Lowercase` characters such as the modifier letters are not
     /// `Ll`, and a mapping table does not carry them either.
     /// </summary>
-    private static bool IsCased(int codePoint) => Mappings.Value.IsCased(codePoint);
+    internal static bool IsCased(int codePoint) => Mappings.Value.IsCased(codePoint);
 
     /// <summary>The Unicode `Case_Ignorable` property, which the sigma rule skips over.</summary>
     private static bool IsCaseIgnorable(int codePoint) => Mappings.Value.IsCaseIgnorable(codePoint);
