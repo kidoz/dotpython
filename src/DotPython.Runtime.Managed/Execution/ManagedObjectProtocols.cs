@@ -861,6 +861,16 @@ internal static class ManagedObjectProtocols
                         span,
                         "AttributeError"
                     );
+            // An unhashable type answers `__hash__` with the value None.
+            case PythonBuiltinTypeValue builtinType
+                when name == "__hash__" && PythonSlotMethods.HasNoneHash(builtinType.Name):
+                return PythonNoneValue.Instance;
+            case PythonBuiltinTypeValue builtinType
+                when PythonSlotMethods.GetDescriptor(builtinType.Name, name) is { } slot:
+                return slot;
+            case PythonBuiltinTypeValue builtinType
+                when PythonMemberDescriptors.Get(builtinType.Name, name) is { } numericMember:
+                return numericMember;
             case PythonBuiltinTypeValue builtinType
                 when PythonBuiltinMethods.GetTypeMemberDescriptor(builtinType.Name, name)
                     is { } descriptor:
@@ -869,6 +879,8 @@ internal static class ManagedObjectProtocols
                 throw MissingTypeAttribute(builtinType.Name, name, span);
             case PythonMethodDescriptorValue methodDescriptor:
                 return methodDescriptor.GetAttribute(name, span);
+            case PythonMemberDescriptorValue memberDescriptor:
+                return memberDescriptor.GetAttribute(name, span);
             default:
                 throw Fault(
                     "DPY4023",
@@ -3435,6 +3447,8 @@ internal static class ManagedObjectProtocols
                 named.TypeName,
             PythonExternalObjectValue => "object",
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } => "method_descriptor",
+            PythonMemberDescriptorValue => "getset_descriptor",
+            PythonMethodDescriptorValue { IsWrapper: true } => "wrapper_descriptor",
             PythonMethodDescriptorValue => "method_descriptor",
             PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } =>
                 "builtin_function_or_method",

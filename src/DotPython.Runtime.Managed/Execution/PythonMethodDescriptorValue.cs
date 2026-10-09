@@ -26,9 +26,18 @@ internal sealed record PythonMethodDescriptorValue(
     PythonProtocolFunctionValue Function
 ) : PythonValue
 {
+    /// <summary>
+    /// A slot wrapper rather than a method descriptor: the same binding, but it reports
+    /// itself as a wrapper and phrases its own argument errors without naming anything.
+    /// </summary>
+    internal bool IsWrapper { get; init; }
+
     internal string OwnerName => Owner.Name;
 
-    internal override string ToDisplayString() => $"<method '{Name}' of '{OwnerName}' objects>";
+    internal override string ToDisplayString() =>
+        IsWrapper
+            ? $"<slot wrapper '{Name}' of '{OwnerName}' objects>"
+            : $"<method '{Name}' of '{OwnerName}' objects>";
 
     internal PythonValue GetAttribute(string name, TextSpan span) =>
         name switch
@@ -52,6 +61,12 @@ internal sealed record PythonMethodDescriptorValue(
             ),
         };
 
+    /// <summary>The keyword refusal, which a wrapper words differently.</summary>
+    internal string KeywordRefusal =>
+        IsWrapper
+            ? $"wrapper {Name}() takes no keyword arguments"
+            : $"{OwnerName}.{Name}() takes no keyword arguments";
+
     /// <summary>The callable form: the first positional argument is the receiver.</summary>
     internal PythonValue Invoke(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
@@ -69,14 +84,25 @@ internal sealed record PythonMethodDescriptorValue(
     )
     {
         if (arguments.Count == 0)
-            throw Fault($"unbound method {OwnerName}.{Name}() needs an argument", span);
-        var receiver = arguments[0];
-        if (!AppliesTo(receiver))
             throw Fault(
-                $"descriptor '{Name}' for '{OwnerName}' objects doesn't apply to a "
-                    + $"'{ManagedObjectProtocols.GetTypeName(receiver)}' object",
+                IsWrapper
+                    ? $"descriptor '{Name}' of '{OwnerName}' object needs an argument"
+                    : $"unbound method {OwnerName}.{Name}() needs an argument",
                 span
             );
+        var receiver = arguments[0];
+        if (!AppliesTo(receiver))
+        {
+            var received = ManagedObjectProtocols.GetTypeName(receiver);
+            throw Fault(
+                IsWrapper
+                    ? $"descriptor '{Name}' requires a '{OwnerName}' object but received a "
+                        + $"'{received}'"
+                    : $"descriptor '{Name}' for '{OwnerName}' objects doesn't apply to a "
+                        + $"'{received}' object",
+                span
+            );
+        }
         var rest = new PythonValue[arguments.Count - 1];
         for (var index = 1; index < arguments.Count; index++)
             rest[index - 1] = arguments[index];
@@ -100,6 +126,8 @@ internal sealed record PythonMethodDescriptorValue(
             "frozenset" => receiver is PythonSetValue { IsFrozen: true },
             "int" => receiver is PythonWholeNumberValue or PythonTruthValue,
             "float" => receiver is PythonFloatingPointValue,
+            // `object`'s own members answer for anything.
+            "object" => true,
             _ => false,
         };
 
@@ -130,6 +158,7 @@ internal sealed record PythonMethodDescriptorValue(
                     + $"'{ManagedObjectProtocols.GetTypeName(instance)}' object",
                 span
             );
+
         return new PythonBoundMethodValue(Name, instance, Function);
     }
 

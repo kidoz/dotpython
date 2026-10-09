@@ -4154,12 +4154,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     _evaluationStack.Push(underlying(receiver, rest, keywordNames, keywordValues));
                     return;
                 }
-                throw Fault(
-                    "DPY4009",
-                    $"{descriptor.OwnerName}.{descriptor.Name}() takes no keyword arguments",
-                    span,
-                    "TypeError"
-                );
+                throw Fault("DPY4009", descriptor.KeywordRefusal, span, "TypeError");
             }
             case PythonBoundMethodValue bound:
                 throw Fault(
@@ -7929,6 +7924,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A bytearray compares by content against bytes and bytearray alike.
             || left is PythonByteArrayValue
             || right is PythonByteArrayValue
+            // A descriptor is interned, so equality is its identity.
+            || left is PythonMethodDescriptorValue
+            || right is PythonMethodDescriptorValue
+            || left is PythonMemberDescriptorValue
+            || right is PythonMemberDescriptorValue
         )
         {
             return ManagedObjectProtocols.AreEqual(left, right);
