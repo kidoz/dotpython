@@ -23,6 +23,12 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </remarks>
 internal static class PythonSlotMethods
 {
+    private static void AddName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
     internal readonly record struct Slot(bool IsWrapper, PythonProtocolFunctionValue Function);
 
     /// <summary>
@@ -34,6 +40,22 @@ internal static class PythonSlotMethods
 
     internal static bool TryGet(string typeName, string name, out Slot slot) =>
         Slots.TryGetValue((typeName, name), out slot);
+
+    /// <summary>Every slot name a type exposes, for `dir` and `__dir__`.</summary>
+    internal static void AddSlotNames(string typeName, List<string> names)
+    {
+        // A bool answers the int slots.
+        var ownerName = typeName == "bool" ? "int" : typeName;
+        foreach (var (owner, name) in Slots.Keys)
+        {
+            if (owner == ownerName)
+                AddName(names, name);
+        }
+        if (HasNoneHash(typeName))
+            AddName(names, "__hash__");
+        if (PythonIntrospection.HasSize(typeName))
+            AddName(names, "__sizeof__");
+    }
 
     /// <summary>
     /// The slot a *value* of this type answers, which is the same function the type object

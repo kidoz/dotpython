@@ -21,6 +21,12 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </remarks>
 internal static class PythonIntMethods
 {
+    private static void AddName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
     private static readonly string[] ToBytesParameters = ["length", "byteorder", "signed"];
     private static readonly string[] FromBytesParameters = ["bytes", "byteorder", "signed"];
 
@@ -59,6 +65,15 @@ internal static class PythonIntMethods
             _ => null!,
         };
         return member is not null;
+    }
+
+    /// <summary>The member names an int or bool answers, for `dir` and `__dir__`.</summary>
+    internal static void AddMemberNames(PythonValue value, List<string> names)
+    {
+        if (value is not (PythonWholeNumberValue or PythonTruthValue))
+            return;
+        foreach (var name in new[] { "real", "imag", "numerator", "denominator" })
+            AddName(names, name);
     }
 
     /// <summary>The name CPython reports when one of those members is assigned to.</summary>

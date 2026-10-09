@@ -10,6 +10,12 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Bound-method tables for the built-in str, list, dict, and tuple values.</summary>
 internal static class PythonBuiltinMethods
 {
+    private static void AddName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
     private static string CodecArgument(PythonValue value, string parameter)
     {
         _ = RequireText("encode", value, $"encode() argument '{parameter}' must be str, not {{1}}");
@@ -148,7 +154,7 @@ internal static class PythonBuiltinMethods
                 {
                     if (item.Key is PythonTextValue keyText)
                     {
-                        names.Add(keyText.Value);
+                        AddName(names, keyText.Value);
                         values.Add(item.Value);
                     }
                 }
@@ -687,22 +693,38 @@ internal static class PythonBuiltinMethods
 
         method = null!;
         return false;
+    }
 
-        static Dictionary<string, PythonProtocolFunctionValue>? TableFor(string name) =>
-            name switch
-            {
-                "str" => TextMethods,
-                "bytes" => BytesMethods,
-                "bytearray" => ByteArrayMethods,
-                "list" => ListMethods,
-                "dict" => DictionaryMethods,
-                "tuple" => TupleMethods,
-                "set" => SetMethods,
-                "frozenset" => FrozenSetMethods,
-                "int" => NumberMethods,
-                "float" => FloatMethods,
-                _ => null,
-            };
+    /// <summary>The method table a type name belongs to, or null for a type without one.</summary>
+    private static Dictionary<string, PythonProtocolFunctionValue>? TableFor(string name) =>
+        name switch
+        {
+            "str" => TextMethods,
+            "bytes" => BytesMethods,
+            "bytearray" => ByteArrayMethods,
+            "list" => ListMethods,
+            "dict" => DictionaryMethods,
+            "tuple" => TupleMethods,
+            "set" => SetMethods,
+            "frozenset" => FrozenSetMethods,
+            "int" => NumberMethods,
+            "float" => FloatMethods,
+            _ => null,
+        };
+
+    /// <summary>Every method name a type exposes, for `dir` and `__dir__`.</summary>
+    internal static void AddMethodNames(string typeName, List<string> names)
+    {
+        if (TableFor(typeName) is { } table)
+        {
+            foreach (var name in table.Keys)
+                AddName(names, name);
+        }
+        if (typeName is "set" or "frozenset")
+        {
+            foreach (var name in SetAlgebraMethods.Keys)
+                AddName(names, name);
+        }
     }
 
     /// <summary>

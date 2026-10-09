@@ -914,6 +914,20 @@ internal static class ManagedObjectProtocols
             case PythonMemberDescriptorValue memberDescriptor:
                 return memberDescriptor.GetAttribute(name, span);
             default:
+                // `object`'s members answer for any value, including the ones without a
+                // method table of their own.
+                if (
+                    PythonObjectMembers.TryGetValueMember(
+                        target,
+                        PythonBuiltinTypes.GetRuntimeTypeName(target),
+                        name,
+                        out var objectMemberForValue
+                    )
+                )
+                {
+                    return new PythonBoundMethodValue(name, target, objectMemberForValue);
+                }
+
                 throw Fault(
                     "DPY4023",
                     $"'{GetTypeName(target)}' object has no attribute '{name}'",

@@ -16,6 +16,12 @@ namespace DotPython.Runtime.Managed.Execution;
 /// </summary>
 internal static class PythonFloatMethods
 {
+    private static void AddName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
     internal static Dictionary<string, PythonProtocolFunctionValue> CreateTable() =>
         new(StringComparer.Ordinal)
         {
@@ -54,6 +60,15 @@ internal static class PythonFloatMethods
     }
 
     internal static bool IsReadOnlyMember(string name) => name is "real" or "imag";
+
+    /// <summary>The member names a float answers, for `dir` and `__dir__`.</summary>
+    internal static void AddMemberNames(PythonValue value, List<string> names)
+    {
+        if (value is not PythonFloatingPointValue)
+            return;
+        foreach (var name in new[] { "real", "imag" })
+            AddName(names, name);
+    }
 
     /// <summary>
     /// `float.fromhex`: an exact hexadecimal reading, so a text wider than a double rounds

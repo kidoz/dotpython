@@ -50,6 +50,17 @@ internal static class PythonObjectMembers
             case "__getstate__":
                 member = GetState();
                 return true;
+            case "__dir__":
+                member = Dir(SizeOwner(typeName));
+                return true;
+            case "__sizeof__":
+                if (!PythonIntrospection.HasSize(typeName))
+                {
+                    member = null!;
+                    return false;
+                }
+                member = Size(SizeOwner(typeName));
+                return true;
             default:
                 member = null!;
                 return false;
@@ -57,13 +68,22 @@ internal static class PythonObjectMembers
     }
 
     /// <summary>The member as a descriptor on the type object, or null when it has none.</summary>
+    /// <summary>`int` publishes its own `__sizeof__`; a bool answers that one.</summary>
+    private static bool OwnsSize(string typeName, string name) =>
+        name == "__sizeof__" && typeName is "int" or "bool";
+
+    /// <summary>Which type's name a size or directory report uses for its owner.</summary>
+    private static string SizeOwner(string typeName) => typeName == "int" ? "int" : "object";
+
     /// <summary>The members `object` contributes when a type defines no own one.</summary>
     private static readonly string[] Names =
     [
+        "__dir__",
         "__format__",
         "__getattribute__",
         "__getstate__",
         "__init__",
+        "__sizeof__",
     ];
 
     /// <summary>The types that format their own way, so object's member is not theirs.</summary>
@@ -75,6 +95,9 @@ internal static class PythonObjectMembers
             return null;
         if (name == "__format__" && Array.IndexOf(OwnFormats, typeName) >= 0)
             return null;
+        // `__sizeof__` is only published where the size itself is modelled.
+        if (name == "__sizeof__" && !PythonIntrospection.HasSize(typeName))
+            return null;
         // `object` itself is where that member's own argument rules live, which this does
         // not model; a type with a constructor of its own answers first.
         if (
@@ -84,19 +107,24 @@ internal static class PythonObjectMembers
         {
             return null;
         }
+        // `int` publishes its own size and a bool answers that one; everything else sees
+        // `object`'s.
+        var owner = OwnsSize(typeName, name) ? "int" : "object";
         lock (Descriptors)
         {
-            if (!Descriptors.TryGetValue(name, out var descriptor))
+            if (!Descriptors.TryGetValue((owner, name), out var descriptor))
             {
                 var member = name switch
                 {
+                    "__dir__" => Dir(owner),
                     "__format__" => Format(),
                     "__getattribute__" => GetAttribute(),
                     "__getstate__" => GetState(),
+                    "__sizeof__" => Size(owner),
                     _ => Initialize(),
                 };
                 descriptor = new PythonMethodDescriptorValue(
-                    PythonBuiltinTypes.ForName("object"),
+                    PythonBuiltinTypes.ForName(owner),
                     name,
                     member
                 )
@@ -105,7 +133,7 @@ internal static class PythonObjectMembers
                     // `__getstate__` are methods.
                     IsWrapper = name is "__getattribute__" or "__init__",
                 };
-                Descriptors[name] = descriptor;
+                Descriptors[(owner, name)] = descriptor;
             }
             return descriptor;
         }
@@ -249,6 +277,31 @@ internal static class PythonObjectMembers
     private static PythonProtocolFunctionValue Initialize() =>
         new("__init__", (_, _) => PythonNoneValue.Instance);
 
+    /// <summary>The size of the value behind the name, refused with its owner's wording.</summary>
+    private static PythonProtocolFunctionValue Dir(string owner = "object") =>
+        new(
+            "__dir__",
+            (receiver, arguments) =>
+                arguments.Count == 0
+                    ? PythonIntrospection.Names(receiver!)
+                    : throw Fault($"{owner}.__dir__() takes no arguments ({arguments.Count} given)")
+        );
+
+    private static PythonProtocolFunctionValue Size(string owner = "object") =>
+        new(
+            "__sizeof__",
+            (receiver, arguments) =>
+            {
+                if (arguments.Count != 0)
+                    throw Fault(
+                        $"{owner}.__sizeof__() takes no arguments ({arguments.Count} given)"
+                    );
+                return PythonIntrospection.TryGetSize(receiver!, out var size)
+                    ? PythonWholeNumberValue.Create(size)
+                    : throw Fault($"'{ManagedObjectProtocols.GetTypeName(receiver!)}' has no size");
+            }
+        );
+
     private static PythonProtocolFunctionValue GetState() =>
         new(
             "__getstate__",
@@ -260,7 +313,10 @@ internal static class PythonObjectMembers
                     )
         );
 
-    private static readonly Dictionary<string, PythonMethodDescriptorValue> Descriptors = new();
+    private static readonly Dictionary<
+        (string Owner, string Name),
+        PythonMethodDescriptorValue
+    > Descriptors = new();
 
     private static PythonRuntimeException Fault(string message, TextSpan span = default) =>
         ManagedObjectProtocols.Fault("DPY4003", message, span, "TypeError");

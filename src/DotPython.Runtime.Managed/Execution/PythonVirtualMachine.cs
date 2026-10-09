@@ -144,6 +144,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["chr"] = new PythonBuiltinFunctionValue("chr", CharacterFromOrdinal),
             ["ord"] = new PythonBuiltinFunctionValue("ord", OrdinalFromCharacter),
             ["divmod"] = new PythonBuiltinFunctionValue("divmod", DivideModulo),
+            ["dir"] = new PythonBuiltinFunctionValue(
+                "dir",
+                (arguments, span) => Dir(arguments, span),
+                (_, names, _, span) =>
+                    names.Count == 0
+                        ? Dir([], span)
+                        : throw Fault(
+                            "DPY4003",
+                            "dir() takes no keyword arguments",
+                            span,
+                            "TypeError"
+                        )
+            ),
             ["round"] = new PythonBuiltinFunctionValue("round", Round).WithSignature(
                 ["number", "ndigits"],
                 [null, PythonNoneValue.Instance]
@@ -2895,6 +2908,30 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         name = text.Value;
+    }
+
+    /// <summary>
+    /// `dir()` reports the names in scope; `dir(value)` the names that value answers, both
+    /// sorted.
+    /// </summary>
+    private PythonListValue Dir(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count == 0)
+        {
+            // The names in scope, which is what the frame's locals hold.
+            var scoped = PythonIntrospection.NamesOf(
+                (PythonDictionaryValue)CurrentFrameLocals(span)
+            );
+            return new PythonListValue([.. scoped.Select(name => new PythonTextValue(name))]);
+        }
+        if (arguments.Count > 1)
+            throw Fault(
+                "DPY4003",
+                $"dir expected at most 1 argument, got {arguments.Count}",
+                span,
+                "TypeError"
+            );
+        return PythonIntrospection.Sorted(arguments[0]);
     }
 
     private PythonValue NamespaceBuiltin(
