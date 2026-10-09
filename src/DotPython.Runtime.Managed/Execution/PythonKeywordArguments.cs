@@ -102,7 +102,11 @@ internal static class PythonKeywordArguments
         {
             var keyword = keywordNames[index];
             var slot = Array.IndexOf(parameters, keyword);
-            if (slot >= 0 && slot < positionalOnly)
+            // A positional-only parameter refuses its keyword this way, and so does a name
+            // that matches nothing when the positional-only parameters are still unfilled —
+            // which is what CPython's parser reports first.
+            var shortOfPositionalOnly = slot < 0 && positional.Count < positionalOnly;
+            if (slot >= 0 && slot < positionalOnly || shortOfPositionalOnly)
             {
                 throw ManagedObjectProtocols.Fault(
                     "DPY4009",

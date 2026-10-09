@@ -3246,7 +3246,7 @@ internal static class ManagedObjectProtocols
             return PythonTruthValue.False;
         }
 
-        var ordered = CompareOrdered(left, right, span);
+        var ordered = CompareOrdered(left, right, span, ComparisonSymbol(comparison));
         return PythonTruthValue.FromBoolean(
             comparison switch
             {
@@ -4189,7 +4189,24 @@ internal static class ManagedObjectProtocols
         return true;
     }
 
-    internal static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span)
+    /// <summary>The operator a comparison refusal names.</summary>
+    internal static string ComparisonSymbol(PythonRichComparison comparison) =>
+        comparison switch
+        {
+            PythonRichComparison.LessThan => "<",
+            PythonRichComparison.LessThanOrEqual => "<=",
+            PythonRichComparison.GreaterThan => ">",
+            PythonRichComparison.GreaterThanOrEqual => ">=",
+            PythonRichComparison.Equal => "==",
+            _ => "!=",
+        };
+
+    internal static int CompareOrdered(
+        PythonValue left,
+        PythonValue right,
+        TextSpan span,
+        string symbol = "<"
+    )
     {
         if (left is PythonMappingProxyValue leftProxy)
         {
@@ -4266,7 +4283,8 @@ internal static class ManagedObjectProtocols
             ),
             _ => throw Fault(
                 "DPY4005",
-                "Values of these types cannot be ordered.",
+                $"'{symbol}' not supported between instances of "
+                    + $"'{GetTypeName(left)}' and '{GetTypeName(right)}'",
                 span,
                 "TypeError"
             ),

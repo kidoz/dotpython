@@ -989,12 +989,7 @@ internal static class PythonBytesMethods
     {
         if (arguments.Count >= minimum && arguments.Count <= maximum)
             return;
-        var expectation = minimum == maximum ? $"{maximum}" : $"between {minimum} and {maximum}";
-        throw Fault(
-            $"Method '{name}' expected {expectation} argument(s), "
-                + $"but received {arguments.Count}.",
-            "TypeError"
-        );
+        throw Fault(PythonMethodWording.Arity("bytes", name, arguments.Count), "TypeError");
     }
 
     private static PythonByteSequenceValue Wrap(byte[] value) =>

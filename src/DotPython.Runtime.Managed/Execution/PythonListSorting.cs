@@ -23,7 +23,9 @@ internal static class PythonListSorting
         if (positional.Count != 0)
             throw ManagedObjectProtocols.Fault(
                 "DPY4003",
-                "sort() takes no positional arguments",
+                positional.Count > 2
+                    ? $"sort() takes at most 2 arguments ({positional.Count} given)"
+                    : "sort() takes no positional arguments",
                 span,
                 "TypeError"
             );

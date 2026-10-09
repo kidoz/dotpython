@@ -10,9 +10,9 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Bound-method tables for the built-in str, list, dict, and tuple values.</summary>
 internal static class PythonBuiltinMethods
 {
-    private static string CodecArgument(PythonValue value)
+    private static string CodecArgument(PythonValue value, string parameter)
     {
-        _ = RequireText("encode", value);
+        _ = RequireText("encode", value, $"encode() argument '{parameter}' must be str, not {{1}}");
         return PythonCodecs.ConvertName(
             (PythonTextValue)value,
             UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
@@ -102,12 +102,12 @@ internal static class PythonBuiltinMethods
             "encode",
             (target, arguments) =>
             {
-                RequireArguments("encode", arguments, 0, 2);
+                RequireArguments("str", "encode", arguments, 0, 2);
                 return PythonByteSequenceValue.Create(
                     PythonTextCodecs.Encode(
                         (PythonTextValue)target!,
-                        arguments.Count > 0 ? CodecArgument(arguments[0]) : "utf-8",
-                        arguments.Count > 1 ? CodecArgument(arguments[1]) : "strict",
+                        arguments.Count > 0 ? CodecArgument(arguments[0], "encoding") : "utf-8",
+                        arguments.Count > 1 ? CodecArgument(arguments[1], "errors") : "strict",
                         UserObjectProtocols.Dispatcher?.CurrentSpan ?? default
                     )
                 );
@@ -436,7 +436,7 @@ internal static class PythonBuiltinMethods
             "update",
             (target, arguments) =>
             {
-                RequireArguments("update", arguments, 0, 1);
+                RequireArguments("dict", "update", arguments, 0, 1);
                 if (arguments.Count == 1)
                 {
                     MergeInto((PythonDictionaryValue)target!, arguments[0]);
@@ -446,7 +446,7 @@ internal static class PythonBuiltinMethods
             },
             (target, positional, keywordNames, keywordValues) =>
             {
-                RequireArguments("update", positional, 0, 1);
+                RequireArguments("dict", "update", positional, 0, 1);
                 var dictionary = (PythonDictionaryValue)target!;
                 if (positional.Count == 1)
                 {
@@ -817,7 +817,7 @@ internal static class PythonBuiltinMethods
             (target, arguments) =>
             {
                 if (exactlyOne)
-                    RequireArguments(name, arguments, 1, 1);
+                    RequireArguments("set", name, arguments, 1, 1);
                 return combine((PythonSetValue)target!, arguments);
             }
         );
@@ -831,7 +831,7 @@ internal static class PythonBuiltinMethods
             (target, arguments) =>
             {
                 if (operation == PythonSetOperations.Operation.SymmetricDifference)
-                    RequireArguments(name, arguments, 1, 1);
+                    RequireArguments("set", name, arguments, 1, 1);
                 var set = (PythonSetValue)target!;
                 if (operation == PythonSetOperations.Operation.Intersection)
                 {
@@ -939,7 +939,7 @@ internal static class PythonBuiltinMethods
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, minimumArguments, maximumArguments);
+                RequireArguments("str", name, arguments, minimumArguments, maximumArguments);
                 return implementation(((PythonTextValue)target!).Value, arguments);
             }
         );
@@ -954,7 +954,7 @@ internal static class PythonBuiltinMethods
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, minimumArguments, maximumArguments);
+                RequireArguments("list", name, arguments, minimumArguments, maximumArguments);
                 return implementation((PythonListValue)target!, arguments);
             }
         );
@@ -969,7 +969,7 @@ internal static class PythonBuiltinMethods
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, minimumArguments, maximumArguments);
+                RequireArguments("dict", name, arguments, minimumArguments, maximumArguments);
                 return implementation((PythonDictionaryValue)target!, arguments);
             }
         );
@@ -984,7 +984,7 @@ internal static class PythonBuiltinMethods
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, minimumArguments, maximumArguments);
+                RequireArguments("set", name, arguments, minimumArguments, maximumArguments);
                 return implementation((PythonSetValue)target!, arguments);
             }
         );
@@ -998,12 +998,13 @@ internal static class PythonBuiltinMethods
             name,
             (target, arguments) =>
             {
-                RequireArguments(name, arguments, 1, maximumArguments);
+                RequireArguments("tuple", name, arguments, 1, maximumArguments);
                 return implementation((PythonTupleValue)target!, arguments);
             }
         );
 
     private static void RequireArguments(
+        string owner,
         string name,
         IReadOnlyList<PythonValue> arguments,
         int minimum,
@@ -1015,12 +1016,7 @@ internal static class PythonBuiltinMethods
             return;
         }
 
-        var expectation = minimum == maximum ? $"{maximum}" : $"between {minimum} and {maximum}";
-        throw Fault(
-            $"Method '{name}' expected {expectation} argument(s), "
-                + $"but received {arguments.Count}.",
-            "TypeError"
-        );
+        throw Fault(PythonMethodWording.Arity(owner, name, arguments.Count), "TypeError");
     }
 
     /// <summary>

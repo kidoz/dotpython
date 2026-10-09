@@ -274,12 +274,7 @@ internal static class PythonByteArrayMethods
     {
         if (arguments.Count >= minimum && arguments.Count <= maximum)
             return;
-        var expectation = minimum == maximum ? $"{maximum}" : $"between {minimum} and {maximum}";
-        throw Fault(
-            $"Method '{name}' expected {expectation} argument(s), "
-                + $"but received {arguments.Count}.",
-            "TypeError"
-        );
+        throw Fault(PythonMethodWording.Arity("bytearray", name, arguments.Count), "TypeError");
     }
 
     private static PythonRuntimeException Fault(string message, string pythonType) =>

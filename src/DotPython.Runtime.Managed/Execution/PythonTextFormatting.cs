@@ -223,7 +223,7 @@ internal static class PythonTextFormatting
 
         if (mapping is null && argumentIndex < arguments.Length)
         {
-            throw Fault("Not all arguments converted during string formatting.", span, "TypeError");
+            throw Fault("not all arguments converted during string formatting", span, "TypeError");
         }
 
         return builder.ToString();

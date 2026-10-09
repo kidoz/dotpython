@@ -4686,7 +4686,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (target is not PythonFunctionValue function)
         {
-            throw Fault("DPY4003", "The selected value is not callable.", span);
+            throw Fault(
+                "DPY4003",
+                $"'{ManagedObjectProtocols.GetTypeName(target)}' object is not callable",
+                span,
+                "TypeError"
+            );
         }
 
         if (!function.Code.Definition.HasSimpleSignature || function.Code.Definition.IsSuspendable)
@@ -5361,7 +5366,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private static PythonRuntimeException NotCallable(PythonValue target, TextSpan span) =>
         target is PythonManagedObjectValue instance
             ? Fault("DPY4003", $"'{instance.Type.Name}' object is not callable", span, "TypeError")
-            : Fault("DPY4003", "The selected value is not callable.", span);
+            : Fault(
+                "DPY4003",
+                $"'{ManagedObjectProtocols.GetTypeName(target)}' object is not callable",
+                span,
+                "TypeError"
+            );
 
     /// <summary>
     /// `type(...)` for classes defining `__new__`: calls it with the class first (it is
@@ -7893,7 +7903,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return ManagedObjectProtocols.RichCompare(left, right, richComparison, span);
         }
 
-        var comparison = CompareOrdered(left, right, span);
+        var comparison = CompareOrdered(left, right, span, richComparison);
         return PythonTruthValue.FromBoolean(
             opCode switch
             {
@@ -8039,8 +8049,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         return true;
     }
 
-    private static int CompareOrdered(PythonValue left, PythonValue right, TextSpan span) =>
-        ManagedObjectProtocols.CompareOrdered(left, right, span);
+    private static int CompareOrdered(
+        PythonValue left,
+        PythonValue right,
+        TextSpan span,
+        PythonRichComparison comparison
+    ) =>
+        ManagedObjectProtocols.CompareOrdered(
+            left,
+            right,
+            span,
+            ManagedObjectProtocols.ComparisonSymbol(comparison)
+        );
 
     /// <summary>
     /// `left op right` with the interpreter's full rules, for the native modules that
@@ -8052,6 +8072,58 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         PythonValue right,
         TextSpan span
     ) => ApplyBinary(opCode, left, right, span);
+
+    /// <summary>Whether a value concatenates with `+` at all.</summary>
+    private static bool IsConcatenable(PythonValue value) =>
+        value
+            is PythonListValue
+                or PythonTupleValue
+                or PythonTextValue
+                or PythonByteSequenceValue
+                or PythonByteArrayValue;
+
+    /// <summary>Whether both values are of the one type `+` joins.</summary>
+    private static bool IsSameConcatenationFamily(PythonValue left, PythonValue right) =>
+        (left, right) switch
+        {
+            (PythonListValue, PythonListValue) => true,
+            (PythonTupleValue, PythonTupleValue) => true,
+            (PythonTextValue, PythonTextValue) => true,
+            _ => ManagedObjectProtocols.TryGetByteContent(left, out _)
+                && ManagedObjectProtocols.TryGetByteContent(right, out _),
+        };
+
+    /// <summary>
+    /// The refusal CPython gives when no operator applies: it names the operator and both
+    /// operand types.
+    /// </summary>
+    private static string UnsupportedOperand(
+        PythonOpCode opCode,
+        PythonValue left,
+        PythonValue right
+    )
+    {
+        var symbol = opCode switch
+        {
+            PythonOpCode.BinaryAdd => "+",
+            PythonOpCode.BinarySubtract => "-",
+            PythonOpCode.BinaryMultiply => "*",
+            PythonOpCode.BinaryTrueDivide => "/",
+            PythonOpCode.BinaryFloorDivide => "//",
+            PythonOpCode.BinaryModulo => "%",
+            PythonOpCode.BinaryPower => "** or pow()",
+            PythonOpCode.BinaryLeftShift => "<<",
+            PythonOpCode.BinaryRightShift => ">>",
+            PythonOpCode.BinaryAnd => "&",
+            PythonOpCode.BinaryOr => "|",
+            PythonOpCode.BinaryXor => "^",
+            PythonOpCode.BinaryMatrixMultiply => "@",
+            _ => "?",
+        };
+        return $"unsupported operand type(s) for {symbol}: "
+            + $"'{ManagedObjectProtocols.GetTypeName(left)}' and "
+            + $"'{ManagedObjectProtocols.GetTypeName(right)}'";
+    }
 
     private static PythonValue ApplyBinary(
         PythonOpCode opCode,
@@ -8171,6 +8243,21 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     return leftTuple;
                 return new PythonTupleValue([.. leftTuple.Elements, .. rightTuple.Elements]);
             }
+
+            // Nothing concatenated, so the refusal names the type that has to change.
+            if (IsConcatenable(left) && !IsSameConcatenationFamily(left, right))
+            {
+                var leftName = ManagedObjectProtocols.GetTypeName(left);
+                var rightName = ManagedObjectProtocols.GetTypeName(right);
+                throw Fault(
+                    "DPY4005",
+                    left is PythonByteSequenceValue or PythonByteArrayValue
+                        ? $"can't concat {rightName} to {leftName}"
+                        : $"can only concatenate {leftName} (not \"{rightName}\") to {leftName}",
+                    span,
+                    "TypeError"
+                );
+            }
         }
 
         if (opCode == PythonOpCode.BinaryMultiply)
@@ -8242,7 +8329,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (!IsNumeric(left) || !IsNumeric(right))
         {
-            throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
+            throw Fault("DPY4005", UnsupportedOperand(opCode, left, right), span, "TypeError");
         }
 
         if (IsBitwiseOperator(opCode))
@@ -8250,12 +8337,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // Bitwise operators are integer-only; floats and complex numbers reject them.
             if (left is not PythonWholeNumberValue || right is not PythonWholeNumberValue)
             {
-                throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
+                throw Fault("DPY4005", UnsupportedOperand(opCode, left, right), span, "TypeError");
             }
         }
         else if (opCode == PythonOpCode.BinaryMatrixMultiply)
         {
-            throw Fault("DPY4005", "Unsupported operands for binary operator.", span);
+            throw Fault("DPY4005", UnsupportedOperand(opCode, left, right), span, "TypeError");
         }
 
         if (left is PythonComplexValue || right is PythonComplexValue)
