@@ -61,8 +61,11 @@ internal static class PythonBuiltinMethods
             (text, arguments) =>
                 new PythonTextValue(
                     arguments.Count == 0
-                        ? text.Trim()
-                        : text.Trim(RequireText("strip", arguments[0]).ToCharArray())
+                        ? TrimSpace(text, leading: true, trailing: true)
+                        : text.Trim(
+                            RequireText("strip", arguments[0], "strip arg must be None or str")
+                                .ToCharArray()
+                        )
                 )
         ),
         ["lstrip"] = Text(
@@ -72,8 +75,11 @@ internal static class PythonBuiltinMethods
             (text, arguments) =>
                 new PythonTextValue(
                     arguments.Count == 0
-                        ? text.TrimStart()
-                        : text.TrimStart(RequireText("lstrip", arguments[0]).ToCharArray())
+                        ? TrimSpace(text, leading: true, trailing: false)
+                        : text.TrimStart(
+                            RequireText("lstrip", arguments[0], "lstrip arg must be None or str")
+                                .ToCharArray()
+                        )
                 )
         ),
         ["rstrip"] = Text(
@@ -83,8 +89,11 @@ internal static class PythonBuiltinMethods
             (text, arguments) =>
                 new PythonTextValue(
                     arguments.Count == 0
-                        ? text.TrimEnd()
-                        : text.TrimEnd(RequireText("rstrip", arguments[0]).ToCharArray())
+                        ? TrimSpace(text, leading: false, trailing: true)
+                        : text.TrimEnd(
+                            RequireText("rstrip", arguments[0], "rstrip arg must be None or str")
+                                .ToCharArray()
+                        )
                 )
         ),
         ["split"] = Text("split", 0, 2, SplitText)
@@ -157,8 +166,16 @@ internal static class PythonBuiltinMethods
                     new PythonTextValue(
                         ReplaceText(
                             text,
-                            RequireText("replace", arguments[0]),
-                            RequireText("replace", arguments[1]),
+                            RequireText(
+                                "replace",
+                                arguments[0],
+                                "replace() argument 1 must be str, not {1}"
+                            ),
+                            RequireText(
+                                "replace",
+                                arguments[1],
+                                "replace() argument 2 must be str, not {1}"
+                            ),
                             arguments.Count == 3 ? RequireCount("replace", arguments[2]) : -1
                         )
                     )
@@ -914,12 +931,24 @@ internal static class PythonBuiltinMethods
         );
     }
 
-    private static string RequireText(string name, PythonValue value) =>
+    /// <summary>
+    /// A string argument, refused with the wording the calling method uses. CPython names the
+    /// method and the argument position for some methods and only the expected type for others.
+    /// </summary>
+    private static string RequireText(string name, PythonValue value, string? wording = null) =>
         value is PythonTextValue text
             ? text.Value
             : throw Fault(
-                $"Method '{name}' expected a string argument, "
-                    + $"but received {ManagedObjectProtocols.GetTypeName(value)}.",
+                wording is null
+                    ? $"{name}() argument 1 must be str, "
+                        + $"not {ManagedObjectProtocols.GetTypeName(value)}"
+                    : wording
+                        .Replace("{0}", name, StringComparison.Ordinal)
+                        .Replace(
+                            "{1}",
+                            ManagedObjectProtocols.GetTypeName(value),
+                            StringComparison.Ordinal
+                        ),
                 "TypeError"
             );
 
@@ -1041,7 +1070,7 @@ internal static class PythonBuiltinMethods
         }
         else
         {
-            var separator = RequireText("split", arguments[0]);
+            var separator = RequireText("split", arguments[0], "must be str or None, not {1}");
             if (separator.Length == 0)
             {
                 throw Fault("empty separator", "ValueError");
@@ -1055,6 +1084,27 @@ internal static class PythonBuiltinMethods
         ]);
     }
 
+    /// <summary>
+    /// Trimming by CPython's whitespace set rather than the platform's: the two differ on
+    /// the file, group, record and unit separators, which `str.isspace` accepts.
+    /// </summary>
+    private static string TrimSpace(string text, bool leading, bool trailing)
+    {
+        var start = 0;
+        var end = text.Length;
+        if (leading)
+        {
+            while (start < end && PythonTextPredicates.IsSpace(text[start]))
+                start++;
+        }
+        if (trailing)
+        {
+            while (end > start && PythonTextPredicates.IsSpace(text[end - 1]))
+                end--;
+        }
+        return text[start..end];
+    }
+
     /// <summary>CPython's whitespace split: runs of whitespace separate, `maxsplit` keeps the tail intact.</summary>
     private static string[] SplitOnWhitespace(string text, int limit)
     {
@@ -1062,7 +1112,7 @@ internal static class PythonBuiltinMethods
         var position = 0;
         while (position < text.Length)
         {
-            while (position < text.Length && char.IsWhiteSpace(text[position]))
+            while (position < text.Length && PythonTextPredicates.IsSpace(text[position]))
             {
                 position++;
             }
@@ -1080,7 +1130,7 @@ internal static class PythonBuiltinMethods
             }
 
             var start = position;
-            while (position < text.Length && !char.IsWhiteSpace(text[position]))
+            while (position < text.Length && !PythonTextPredicates.IsSpace(text[position]))
             {
                 position++;
             }
@@ -1116,7 +1166,7 @@ internal static class PythonBuiltinMethods
         var end = length;
         if (arguments.Count > firstBoundIndex && arguments[firstBoundIndex] is not PythonNoneValue)
         {
-            start = ClampBound(RequireCount("index", arguments[firstBoundIndex]), length);
+            start = ClampBound(RequireBound(arguments[firstBoundIndex]), length);
         }
 
         if (
@@ -1124,7 +1174,7 @@ internal static class PythonBuiltinMethods
             && arguments[firstBoundIndex + 1] is not PythonNoneValue
         )
         {
-            end = ClampBound(RequireCount("index", arguments[firstBoundIndex + 1]), length);
+            end = ClampBound(RequireBound(arguments[firstBoundIndex + 1]), length);
         }
 
         offset = start;
@@ -1144,6 +1194,23 @@ internal static class PythonBuiltinMethods
             index++;
         }
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// A search bound, which CPython words as a slice index rather than as a count.
+    /// </summary>
+    private static int RequireBound(PythonValue value)
+    {
+        if (value is PythonWholeNumberValue whole)
+            return whole.Value > int.MaxValue ? int.MaxValue
+                : whole.Value < int.MinValue ? int.MinValue
+                : (int)whole.Value;
+        if (value is PythonTruthValue truth)
+            return truth.Value ? 1 : 0;
+        throw Fault(
+            "slice indices must be integers or None or have an __index__ method",
+            "TypeError"
+        );
     }
 
     private static int ClampBound(int bound, int length)
@@ -1199,7 +1266,30 @@ internal static class PythonBuiltinMethods
 
     private static int FindInRange(string name, string text, IReadOnlyList<PythonValue> arguments)
     {
-        var needle = RequireText(name, arguments[0]);
+        var needle = RequireText(name, arguments[0], "{0}() argument 1 must be str, not {1}");
+        var length = PythonTextTraversal.Count(text);
+        if (needle.Length == 0)
+        {
+            // An empty needle sits at the start bound, but a start past the end finds
+            // nothing — CPython does not slide it back onto the last character.
+            var start = 0;
+            if (arguments.Count > 1 && arguments[1] is not PythonNoneValue)
+            {
+                start = RequireBound(arguments[1]);
+                if (start < 0)
+                    start += length;
+                // A start still negative after that settles on the beginning.
+                start = Math.Max(start, 0);
+            }
+            var end = length;
+            if (arguments.Count > 2 && arguments[2] is not PythonNoneValue)
+            {
+                end = RequireBound(arguments[2]);
+                if (end < 0)
+                    end += length;
+            }
+            return start > length || start > end ? -1 : start;
+        }
         var subject = SliceCharacters(text, arguments, 1, out var offset);
         var position = FindCharacterIndex(subject, needle);
         return position < 0 ? -1 : position + offset;

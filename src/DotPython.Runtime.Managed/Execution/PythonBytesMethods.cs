@@ -654,9 +654,9 @@ internal static class PythonBytesMethods
     {
         if (value.Length >= width)
             return value;
-        // The odd byte goes on the right, as `str.center` does.
+        // The same left bias `str.center` uses, so the two agree on odd padding.
         var extra = width - value.Length;
-        var left = extra / 2;
+        var left = extra / 2 + (extra & width & 1);
         return [.. Fill(fill[0], left), .. value, .. Fill(fill[0], extra - left)];
     }
 

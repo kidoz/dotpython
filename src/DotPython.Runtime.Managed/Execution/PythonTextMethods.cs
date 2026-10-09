@@ -196,7 +196,12 @@ internal static class PythonTextMethods
                 var fill = " ";
                 if (arguments.Count > 1)
                 {
-                    var supplied = RequireText(name, arguments[1]);
+                    // A non-string fill is refused before its length is considered.
+                    var supplied = RequireText(
+                        name,
+                        arguments[1],
+                        "The fill character must be a unicode character, not {1}"
+                    );
                     // The test counts characters, so a surrogate pair is also refused.
                     if (PythonTextTraversal.Count(supplied) != 1)
                     {
@@ -217,9 +222,11 @@ internal static class PythonTextMethods
         var length = PythonTextTraversal.Count(text);
         if (length >= width)
             return text;
-        // The odd character goes on the right, as CPython does.
+        // CPython biases the left padding by `marg & width & 1` rather than always
+        // giving the odd character to the right, so `'ab'.center(5)` is not symmetric.
         var extra = width - length;
-        return Repeat(fill, extra / 2) + text + Repeat(fill, extra - extra / 2);
+        var left = extra / 2 + (extra & width & 1);
+        return Repeat(fill, left) + text + Repeat(fill, extra - left);
     }
 
     private static string Left(string text, int width, string fill)
@@ -299,7 +306,7 @@ internal static class PythonTextMethods
             {
                 RequireArguments(name, arguments, 1, 1);
                 var text = ((PythonTextValue)target!).Value;
-                var separator = RequireText(name, arguments[0]);
+                var separator = RequireText(name, arguments[0], "must be str, not {1}");
                 if (separator.Length == 0)
                     throw Fault("empty separator", "ValueError");
                 var found = reverse
@@ -339,7 +346,7 @@ internal static class PythonTextMethods
                 var separator =
                     arguments.Count == 0 || arguments[0] is PythonNoneValue
                         ? null
-                        : RequireText("rsplit", arguments[0]);
+                        : RequireText("rsplit", arguments[0], "must be str or None, not {1}");
                 var limit =
                     arguments.Count > 1 && arguments[1] is not PythonNoneValue
                         ? RequireCount("rsplit", arguments[1])
@@ -457,7 +464,7 @@ internal static class PythonTextMethods
             {
                 RequireArguments(name, arguments, 1, 1);
                 var text = ((PythonTextValue)target!).Value;
-                var affix = RequireText(name, arguments[0]);
+                var affix = RequireText(name, arguments[0], "{0}() argument must be str, not {1}");
                 if (affix.Length == 0)
                     return new PythonTextValue(text);
                 var matches = prefix
@@ -475,6 +482,10 @@ internal static class PythonTextMethods
 
     // ---- search and translation -------------------------------------------------------------
 
+    /// <summary>
+    /// `rfind`/`rindex`, positioned by character rather than by UTF-16 unit so an astral
+    /// character counts once, and reporting an index in those same units.
+    /// </summary>
     private static PythonProtocolFunctionValue Search(
         string name,
         bool rfind,
@@ -486,9 +497,12 @@ internal static class PythonTextMethods
             {
                 RequireArguments(name, arguments, 1, 3);
                 var text = ((PythonTextValue)target!).Value;
-                var needle = RequireText(name, arguments[0]);
-                var start = arguments.Count > 1 ? RequireIndex(text, arguments[1]) : 0;
-                var end = arguments.Count > 2 ? RequireIndex(text, arguments[2]) : text.Length;
+                var needle = PythonTextTraversal
+                    .Enumerate(RequireText(name, arguments[0]))
+                    .ToArray();
+                var characters = PythonTextTraversal.Enumerate(text).ToArray();
+                var start = BoundedArgument(name, arguments, 1, characters.Length);
+                var end = BoundedArgument(name, arguments, 2, characters.Length);
                 // An empty needle sits at a bound rather than being searched for.
                 if (needle.Length == 0)
                     return PythonWholeNumberValue.Create(
@@ -496,24 +510,81 @@ internal static class PythonTextMethods
                         : rfind ? end
                         : start
                     );
-                var found = rfind
-                    ? text.LastIndexOf(
-                        needle,
-                        Math.Max(0, end - 1),
-                        Math.Max(0, end - start),
-                        StringComparison.Ordinal
+                var found = -1;
+                if (rfind)
+                {
+                    for (
+                        var index = Math.Min(end, characters.Length) - needle.Length;
+                        index >= start;
+                        index--
                     )
-                    : text.IndexOf(
-                        needle,
-                        start,
-                        Math.Max(0, end - start),
-                        StringComparison.Ordinal
-                    );
+                    {
+                        if (MatchesAt(characters, needle, index))
+                        {
+                            found = index;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    for (var index = start; index + needle.Length <= end; index++)
+                    {
+                        if (MatchesAt(characters, needle, index))
+                        {
+                            found = index;
+                            break;
+                        }
+                    }
+                }
                 if (found < 0 && raiseWhenMissing)
                     throw Fault("substring not found", "ValueError");
                 return PythonWholeNumberValue.Create(found);
             }
         );
+
+    private static bool MatchesAt(
+        PythonTextTraversal.Character[] haystack,
+        PythonTextTraversal.Character[] needle,
+        int index
+    )
+    {
+        for (var offset = 0; offset < needle.Length; offset++)
+        {
+            if (haystack[index + offset].Value != needle[offset].Value)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// A bound argument counted in characters. Both bounds settle a negative value against
+    /// the length, but only the end is capped by it: a start past the end is left there so
+    /// the search reports no match rather than sliding back onto the final character.
+    /// </summary>
+    private static int BoundedArgument(
+        string name,
+        IReadOnlyList<PythonValue> arguments,
+        int position,
+        int length
+    )
+    {
+        if (arguments.Count <= position || arguments[position] is PythonNoneValue)
+            return position == 1 ? 0 : length;
+        int bound;
+        if (arguments[position] is PythonWholeNumberValue whole)
+            bound = whole.Value > int.MaxValue ? int.MaxValue : (int)whole.Value;
+        else if (arguments[position] is PythonTruthValue truth)
+            bound = truth.Value ? 1 : 0;
+        else
+            throw Fault(
+                "slice indices must be integers or None or have an __index__ method",
+                "TypeError"
+            );
+        if (bound < 0)
+            bound += length;
+        return position == 1 ? Math.Max(bound, 0) : Math.Clamp(bound, 0, length);
+    }
 
     private static PythonProtocolFunctionValue Translate() =>
         new(
@@ -691,12 +762,24 @@ internal static class PythonTextMethods
             }
         );
 
-    private static string RequireText(string name, PythonValue value) =>
+    /// <summary>
+    /// A string argument, refused with the wording the calling method uses: CPython names the
+    /// method and the argument position in some places and only the expected type in others.
+    /// </summary>
+    private static string RequireText(string name, PythonValue value, string? wording = null) =>
         value is PythonTextValue text
             ? text.Value
             : throw Fault(
-                $"a string argument is required, "
-                    + $"not '{ManagedObjectProtocols.GetTypeName(value)}'",
+                wording is null
+                    ? $"{name}() argument 1 must be str, "
+                        + $"not {ManagedObjectProtocols.GetTypeName(value)}"
+                    : wording
+                        .Replace("{0}", name, StringComparison.Ordinal)
+                        .Replace(
+                            "{1}",
+                            ManagedObjectProtocols.GetTypeName(value),
+                            StringComparison.Ordinal
+                        ),
                 "TypeError"
             );
 
@@ -708,7 +791,8 @@ internal static class PythonTextMethods
             : (int)whole.Value,
             PythonTruthValue truth => truth.Value ? 1 : 0,
             _ => throw Fault(
-                $"an integer is required (got type {ManagedObjectProtocols.GetTypeName(value)})",
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted "
+                    + "as an integer",
                 "TypeError"
             ),
         };
