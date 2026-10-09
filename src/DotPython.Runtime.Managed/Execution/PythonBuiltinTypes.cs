@@ -355,9 +355,10 @@ internal static class PythonBuiltinTypes
         {
             "bool" => value is PythonTruthValue,
             "bytes" => value is PythonByteSequenceValue,
-            "int" => value is PythonWholeNumberValue or PythonTruthValue,
+            "int" => value is PythonWholeNumberValue or PythonTruthValue
+                || PythonEnum.IsInstanceOfMemberType(value, "int"),
             "float" => value is PythonFloatingPointValue,
-            "str" => value is PythonTextValue,
+            "str" => value is PythonTextValue || PythonEnum.IsInstanceOfMemberType(value, "str"),
             "list" => value is PythonListValue,
             "tuple" => value is PythonTupleValue,
             "dict" => value is PythonDictionaryValue,

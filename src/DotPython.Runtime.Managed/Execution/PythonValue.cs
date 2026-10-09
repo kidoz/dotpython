@@ -823,7 +823,10 @@ internal sealed record PythonManagedTypeValue : PythonValue
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
-    internal override string ToDisplayString() => $"<class '{QualifiedDisplayName}'>";
+    internal override string ToDisplayString() =>
+        PythonEnum.TryDescribeType(this, out var enumDescription)
+            ? enumDescription
+            : $"<class '{QualifiedDisplayName}'>";
 }
 
 internal sealed record PythonManagedObjectValue : PythonValue

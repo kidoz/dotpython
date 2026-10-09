@@ -1619,6 +1619,9 @@ internal static class ManagedObjectProtocols
                     "OverflowError"
                 ),
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
+            PythonManagedTypeValue enumType => PythonEnum.TryGetTypeLength(enumType, out var enumLength, span)
+                ? enumLength
+                : throw Fault("DPY4011", "object of type 'type' has no len()", span, "TypeError"),
             PythonManagedObjectValue instance => UserObjectProtocols.TryGetLength(
                 instance,
                 span,
@@ -1847,6 +1850,12 @@ internal static class ManagedObjectProtocols
 
             // A generator is its own iterator.
             return new PythonIteratorValue(value, -1);
+        }
+
+        if (value is PythonManagedTypeValue enumType
+            && PythonEnum.TryGetTypeIterator(enumType) is { } enumIterator)
+        {
+            return enumIterator;
         }
 
         if (value is PythonTemplateValue template)
@@ -2360,12 +2369,13 @@ internal static class ManagedObjectProtocols
                     "TypeError"
                 );
             case PythonManagedTypeValue type:
-                throw Fault(
-                    "DPY4011",
-                    $"type '{type.Name}' is not subscriptable",
-                    span,
-                    "TypeError"
-                );
+                return PythonEnum.TryGetTypeItem(type, index, span)
+                    ?? throw Fault(
+                        "DPY4011",
+                        $"type '{type.Name}' is not subscriptable",
+                        span,
+                        "TypeError"
+                    );
             default:
                 throw Fault("DPY4011", "This value is not subscriptable.", span, "TypeError");
         }
@@ -2481,6 +2491,14 @@ internal static class ManagedObjectProtocols
         if (UserObjectProtocols.TryContains(container, item, span, out var userContains))
         {
             return userContains;
+        }
+
+        if (
+            container is PythonManagedTypeValue enumContainer
+            && PythonEnum.TryContains(enumContainer, item, span) is { } enumContains
+        )
+        {
+            return enumContains;
         }
 
         if (

@@ -48,6 +48,11 @@ internal static class PythonReverseIterators
                 throw NotReversible(sequence, span);
         }
         else if (
+            sequence is PythonManagedTypeValue enumType
+            && PythonEnum.TryGetTypeReversed(enumType) is { } reversedMembers
+        )
+            return new PythonIteratorValue(reversedMembers, -1);
+        else if (
             sequence
             is not (
                 PythonListValue
