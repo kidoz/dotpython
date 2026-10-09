@@ -114,6 +114,7 @@ internal static class PythonByteArrayMethods
                 RequireArguments("append", arguments, 1, 1);
                 var mutable = (PythonByteArrayValue)target!;
                 var value = RequireByte(arguments[0], "append");
+                PythonByteArrayMutation.RequireResizable(mutable, mutable.Value.Length + 1);
                 var grown = new byte[mutable.Value.Length + 1];
                 mutable.Value.CopyTo(grown, 0);
                 grown[^1] = value;
@@ -134,6 +135,10 @@ internal static class PythonByteArrayMethods
                 var addition = PythonBytesConstruction
                     .ConstructNamed("bytearray", [arguments[0]], [], [], default)
                     .Value;
+                PythonByteArrayMutation.RequireResizable(
+                    mutable,
+                    mutable.Value.Length + addition.Length
+                );
                 var grown = new byte[mutable.Value.Length + addition.Length];
                 mutable.Value.CopyTo(grown, 0);
                 addition.CopyTo(grown, mutable.Value.Length);
@@ -154,6 +159,7 @@ internal static class PythonByteArrayMethods
                 if (index < 0)
                     index += mutable.Value.Length;
                 index = Math.Clamp(index, 0, mutable.Value.Length);
+                PythonByteArrayMutation.RequireResizable(mutable, mutable.Value.Length + 1);
                 var grown = new byte[mutable.Value.Length + 1];
                 mutable.Value.AsSpan(0, index).CopyTo(grown);
                 grown[index] = value;
@@ -178,6 +184,7 @@ internal static class PythonByteArrayMethods
                     index += mutable.Value.Length;
                 if (index < 0 || index >= mutable.Value.Length)
                     throw Fault("pop index out of range", "IndexError");
+                PythonByteArrayMutation.RequireResizable(mutable, mutable.Value.Length - 1);
                 var removed = mutable.Value[index];
                 var shrunk = new byte[mutable.Value.Length - 1];
                 mutable.Value.AsSpan(0, index).CopyTo(shrunk);
@@ -198,6 +205,7 @@ internal static class PythonByteArrayMethods
                 var index = mutable.Value.AsSpan().IndexOf(value);
                 if (index < 0)
                     throw Fault("value not found in bytearray", "ValueError");
+                PythonByteArrayMutation.RequireResizable(mutable, mutable.Value.Length - 1);
                 var shrunk = new byte[mutable.Value.Length - 1];
                 mutable.Value.AsSpan(0, index).CopyTo(shrunk);
                 mutable.Value.AsSpan(index + 1).CopyTo(shrunk.AsSpan(index));
@@ -212,7 +220,9 @@ internal static class PythonByteArrayMethods
             (target, arguments) =>
             {
                 RequireArguments("clear", arguments, 0, 0);
-                ((PythonByteArrayValue)target!).Value = [];
+                var mutable = (PythonByteArrayValue)target!;
+                PythonByteArrayMutation.RequireResizable(mutable, 0);
+                mutable.Value = [];
                 return PythonNoneValue.Instance;
             }
         );

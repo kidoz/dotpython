@@ -909,6 +909,26 @@ internal static class ManagedObjectProtocols
                 return descriptor;
             case PythonBuiltinTypeValue builtinType:
                 throw MissingTypeAttribute(builtinType.Name, name, span);
+            case PythonMemoryViewValue view:
+                if (PythonMemoryViewMethods.GetAttribute(view, name, span) is { } viewMember)
+                    return viewMember;
+                if (PythonSlotMethods.TryGetForValue("memoryview", name, out var viewSlot))
+                    return new PythonBoundMethodValue(name, view, viewSlot);
+                if (
+                    PythonObjectMembers.TryGetValueMember(
+                        view,
+                        "memoryview",
+                        name,
+                        out var objectViewMember
+                    )
+                )
+                    return new PythonBoundMethodValue(name, view, objectViewMember);
+                throw Fault(
+                    "DPY4023",
+                    $"'memoryview' object has no attribute '{name}'",
+                    span,
+                    "AttributeError"
+                );
             case PythonMethodDescriptorValue methodDescriptor:
                 return methodDescriptor.GetAttribute(name, span);
             case PythonMemberDescriptorValue memberDescriptor:
@@ -1714,12 +1734,20 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    /// <summary>The length of a view is its current dimension.</summary>
+    internal static int GetViewLength(PythonMemoryViewValue view)
+    {
+        PythonMemoryViewMethods.RequireLive(view);
+        return view.Shape is { Length: > 0 } shape ? shape[0] : view.Length;
+    }
+
     internal static int GetLength(PythonValue value, TextSpan span = default) =>
         value switch
         {
             PythonTextValue text => PythonTextTraversal.Count(text.Value, span),
             PythonByteSequenceValue bytes => bytes.Value.Length,
             PythonByteArrayValue mutable => mutable.Value.Length,
+            PythonMemoryViewValue view => GetViewLength(view),
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping, span),
@@ -2029,6 +2057,7 @@ internal static class ManagedObjectProtocols
                 or PythonTextValue
                 or PythonByteSequenceValue
                 or PythonByteArrayValue
+                or PythonMemoryViewValue
                 or PythonRangeValue
                 or PythonSetValue
             )
@@ -2124,6 +2153,22 @@ internal static class ManagedObjectProtocols
                 value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
                 return true;
             case PythonByteSequenceValue:
+                iterator.IsExhausted = true;
+                break;
+            // A view iterates the elements it exposes, whatever its format reads them as;
+            // an array of more than one dimension has no flat elements to hand out.
+            case PythonMemoryViewValue { Shape.Length: > 1 } view:
+                PythonMemoryViewMethods.RequireLive(view);
+                throw Fault(
+                    "DPY4003",
+                    "multi-dimensional sub-views are not implemented",
+                    span,
+                    "NotImplementedError"
+                );
+            case PythonMemoryViewValue view when iterator.Index < GetViewLength(view):
+                value = view.Read(iterator.Index++);
+                return true;
+            case PythonMemoryViewValue:
                 iterator.IsExhausted = true;
                 break;
             // A bytearray iterates its live contents, so shrinking it during iteration stops
@@ -2368,6 +2413,124 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    /// <summary>
+    /// Writes through a view: one element, or a slice whose rvalue has the same structure.
+    /// </summary>
+    internal static void SetViewItem(
+        PythonMemoryViewValue view,
+        PythonValue index,
+        PythonValue value,
+        TextSpan span
+    )
+    {
+        PythonMemoryViewMethods.RequireLive(view);
+        if (!view.Writable)
+            throw Fault("DPY4003", "cannot modify read-only memory", span, "TypeError");
+        if (index is not PythonSliceValue slice)
+        {
+            // Only a one-dimensional view has elements an index can name.
+            if (view.Shape.Length != 1)
+                throw Fault(
+                    "DPY4003",
+                    "sub-views are not implemented",
+                    span,
+                    "NotImplementedError"
+                );
+            view.Write(ResolveIndex(view, index, span), value);
+            return;
+        }
+        if (view.Shape.Length != 1)
+            throw Fault(
+                "DPY4003",
+                "memoryview slice assignments are currently restricted to ndim = 1",
+                span,
+                "NotImplementedError"
+            );
+        if (!TryGetByteContent(value, out var content))
+            throw Fault(
+                "DPY4003",
+                $"memoryview: invalid type for format '{view.Format}'",
+                span,
+                "TypeError"
+            );
+        var (start, stop, step) = GetSliceIndices(slice, view.FirstDimension, span);
+        var length = SliceLength(start, stop, step);
+        if (content.Length != length * view.ItemSize)
+            throw Fault(
+                "DPY4003",
+                "memoryview assignment: lvalue and rvalue have different structures",
+                span,
+                "ValueError"
+            );
+        for (var position = 0; position < length; position++)
+        {
+            var target = view.ElementOffset(start + position * step);
+            Array.Copy(content, position * view.ItemSize, view.Bytes, target, view.ItemSize);
+        }
+    }
+
+    /// <summary>The element a view reads at an index, or a sub-view for a slice.</summary>
+    internal static PythonValue GetViewItem(
+        PythonMemoryViewValue view,
+        PythonValue index,
+        TextSpan span
+    )
+    {
+        PythonMemoryViewMethods.RequireLive(view);
+        if (index is PythonSliceValue slice)
+            return SliceView(view, slice, span);
+        // Only a one-dimensional view has elements an index can name.
+        if (view.Shape.Length != 1)
+            throw Fault(
+                "DPY4003",
+                "multi-dimensional sub-views are not implemented",
+                span,
+                "NotImplementedError"
+            );
+        return view.Read(ResolveIndex(view, index, span));
+    }
+
+    /// <summary>A slice of a view is another view: dimension zero is cut, the rest kept.</summary>
+    private static PythonMemoryViewValue SliceView(
+        PythonMemoryViewValue view,
+        PythonSliceValue slice,
+        TextSpan span
+    )
+    {
+        var (start, stop, step) = GetSliceIndices(slice, view.FirstDimension, span);
+        var shape = (int[])view.Shape.Clone();
+        var strides = (int[])view.Strides.Clone();
+        shape[0] = SliceLength(start, stop, step);
+        strides[0] *= step;
+        return PythonMemoryViewMethods.CreateView(
+            view.Source,
+            view.Bytes,
+            view.Offset + start * view.Strides[0],
+            shape,
+            strides,
+            view.Format,
+            view.Writable
+        );
+    }
+
+    /// <summary>The index a view resolves, with CPython's own message for a bad one.</summary>
+    internal static int ResolveIndex(PythonMemoryViewValue view, PythonValue index, TextSpan span)
+    {
+        if (index is not PythonWholeNumberValue number)
+            throw Fault(
+                "DPY4003",
+                $"memoryview: invalid type for format '{view.Format}'",
+                span,
+                "TypeError"
+            );
+        var value = number.Value;
+        if (value < 0)
+            value += view.Length;
+        if (value < 0 || value >= view.Length)
+            throw Fault("DPY4003", "index out of bounds on memoryview", span, "IndexError");
+        return (int)value;
+    }
+
     internal static PythonValue GetItem(
         PythonValue target,
         PythonValue index,
@@ -2433,6 +2596,8 @@ internal static class ManagedObjectProtocols
                 return PythonBytesOperations.GetItem(bytes, index, span);
             case PythonByteArrayValue mutable:
                 return PythonByteArrayOperations.GetItem(mutable, index, span);
+            case PythonMemoryViewValue view:
+                return GetViewItem(view, index, span);
             case PythonRangeValue range when index is PythonSliceValue slice:
             {
                 if (range.Count > int.MaxValue)
@@ -2560,6 +2725,9 @@ internal static class ManagedObjectProtocols
 
             case PythonByteArrayValue mutable:
                 PythonByteArrayMutation.SetItem(mutable, index, value, span);
+                return;
+            case PythonMemoryViewValue view:
+                SetViewItem(view, index, value, span);
                 return;
             case PythonListValue list when index is PythonSliceValue slice:
                 AssignListSlice(list, slice, value, span);
@@ -2811,6 +2979,16 @@ internal static class ManagedObjectProtocols
         );
     }
 
+    /// <summary>How many elements a slice covers once its bounds are adjusted.</summary>
+    internal static int SliceLength(int start, int stop, int step) =>
+        step > 0
+            ? start < stop
+                ? (int)(1 + ((long)stop - start - 1) / step)
+                : 0
+            : start > stop
+                ? (int)(1 + ((long)start - stop - 1) / -(long)step)
+                : 0;
+
     private static int AdjustSliceIndex(int index, int length, int step)
     {
         if (index < 0)
@@ -2961,6 +3139,14 @@ internal static class ManagedObjectProtocols
             case PythonByteArrayValue mutable:
                 PythonByteArrayMutation.DeleteItem(mutable, index, span);
                 return;
+            case PythonMemoryViewValue view:
+                PythonMemoryViewMethods.RequireLive(view);
+                throw Fault(
+                    "DPY4003",
+                    view.Writable ? "cannot delete memory" : "cannot modify read-only memory",
+                    span,
+                    "TypeError"
+                );
             case PythonListValue list when index is PythonSliceValue slice:
             {
                 var unpacked = UnpackSlice(slice, span);
@@ -3151,6 +3337,7 @@ internal static class ManagedObjectProtocols
             PythonTextValue text => text.Value.Length != 0,
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
             PythonByteArrayValue mutable => mutable.Value.Length != 0,
+            PythonMemoryViewValue view => GetViewLength(view) != 0,
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping) != 0,
@@ -3312,6 +3499,7 @@ internal static class ManagedObjectProtocols
             PythonTruthValue truth => truth.Value ? 1 : 0,
             PythonWholeNumberValue whole => PythonNumericHash.Integer(whole.Value),
             PythonFloatingPointValue floating => PythonNumericHash.Float(floating, floating.Value),
+            PythonMemoryViewValue view => PythonMemoryViewHash(view),
             PythonComplexValue complex => PythonNumericHash.Complex(complex),
             PythonExternalObjectValue external => external.Protocol.GetHash(span),
             PythonManagedObjectValue instance
@@ -3319,6 +3507,28 @@ internal static class ManagedObjectProtocols
             _ => GetPythonHash(value, span),
         };
         return hash == -1 ? -2 : hash;
+    }
+
+    /// <summary>
+    /// CPython hashes a view only when it is read-only and one byte wide; a writable or
+    /// wider view is unhashable, because its contents could change under the hash.
+    /// </summary>
+    private static BigInteger PythonMemoryViewHash(PythonMemoryViewValue view)
+    {
+        PythonMemoryViewMethods.RequireLive(view);
+        if (view.Writable)
+            throw Fault("DPY4003", "cannot hash writable memoryview object", default, "ValueError");
+        if (view.FormatChar is not ('B' or 'b' or 'c'))
+            throw Fault(
+                "DPY4003",
+                "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
+                default,
+                "ValueError"
+            );
+        // CPython asks the object the bytes came from for its own hash before it hashes the
+        // view's, so a read-only view of a bytearray is unhashable because a bytearray is.
+        ComputePythonHash(view.Source);
+        return ComputePythonHash(PythonByteSequenceValue.Create(view.Materialize()));
     }
 
     internal static int GetPythonHash(PythonValue value, TextSpan span = default)
@@ -3413,6 +3623,16 @@ internal static class ManagedObjectProtocols
     }
 
     /// <summary>The contents of a bytes-like value, without copying.</summary>
+    /// <summary>
+    /// A view is bytes-like: its bytes in view order, which for a strided view is a copy.
+    /// </summary>
+    internal static bool TryGetMemoryViewContent(PythonMemoryViewValue view, out byte[] content)
+    {
+        PythonMemoryViewMethods.RequireLive(view);
+        content = view.Materialize();
+        return true;
+    }
+
     internal static bool TryGetByteContent(PythonValue value, out byte[] content)
     {
         switch (value)
@@ -3423,6 +3643,8 @@ internal static class ManagedObjectProtocols
             case PythonByteArrayValue mutable:
                 content = mutable.Value;
                 return true;
+            case PythonMemoryViewValue view:
+                return TryGetMemoryViewContent(view, out content);
             default:
                 content = null!;
                 return false;
@@ -3454,6 +3676,7 @@ internal static class ManagedObjectProtocols
             PythonTextValue => "str",
             PythonByteSequenceValue => "bytes",
             PythonByteArrayValue => "bytearray",
+            PythonMemoryViewValue => "memoryview",
             PythonListValue => "list",
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
@@ -4098,6 +4321,32 @@ internal static class ManagedObjectProtocols
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
+            // A view compares by the bytes it exposes, against another view of the same
+            // shape or any bytes-like value. Identity answers first, as it does for any
+            // value, and a released view compares equal to nothing else rather than
+            // reporting that it may not be read.
+            (PythonMemoryViewValue leftView, PythonMemoryViewValue rightView)
+                when ReferenceEquals(leftView, rightView) => true,
+            (PythonMemoryViewValue { Released: true }, PythonValue) => false,
+            (PythonValue, PythonMemoryViewValue { Released: true }) => false,
+            (PythonMemoryViewValue leftView, PythonMemoryViewValue rightView)
+                when !leftView.Released && !rightView.Released => leftView
+                .Shape.AsSpan()
+                .SequenceEqual(rightView.Shape)
+                && leftView.Materialize().AsSpan().SequenceEqual(rightView.Materialize()),
+            (PythonMemoryViewValue leftView, PythonValue rightValue)
+                when !leftView.Released
+                    && rightValue is not PythonMemoryViewValue { Released: true }
+                    && TryGetByteContent(rightValue, out var rightViewBytes) => leftView
+                .Materialize()
+                .AsSpan()
+                .SequenceEqual(rightViewBytes),
+            (PythonValue leftValue, PythonMemoryViewValue rightView)
+                when !rightView.Released
+                    && leftValue is not PythonMemoryViewValue { Released: true }
+                    && TryGetByteContent(leftValue, out var leftViewBytes) => leftViewBytes
+                .AsSpan()
+                .SequenceEqual(rightView.Materialize()),
             (PythonValue leftBytesLike, PythonValue rightBytesLike)
                 when TryGetByteContent(leftBytesLike, out var leftContent)
                     && TryGetByteContent(rightBytesLike, out var rightContent) => leftContent
@@ -4280,7 +4529,8 @@ internal static class ManagedObjectProtocols
                 .Value.AsSpan()
                 .SequenceCompareTo(rightBytes.Value),
             (PythonValue leftBytesLike, PythonValue rightBytesLike)
-                when TryGetByteContent(leftBytesLike, out var leftContent)
+                when OrderableBytesLike(leftBytesLike, rightBytesLike)
+                    && TryGetByteContent(leftBytesLike, out var leftContent)
                     && TryGetByteContent(rightBytesLike, out var rightContent) => leftContent
                 .AsSpan()
                 .SequenceCompareTo(rightContent),
@@ -4315,6 +4565,20 @@ internal static class ManagedObjectProtocols
             ),
         };
     }
+
+    /// <summary>
+    /// Which bytes-like values order against each other. A view has no ordering of its own:
+    /// only a bytearray accepts one as its operand, comparing by the bytes it exposes, so
+    /// `memoryview(b'a') &lt; bytearray(b'b')` answers and `memoryview(b'a') &lt; b'b'` does not.
+    /// </summary>
+    private static bool OrderableBytesLike(PythonValue left, PythonValue right) =>
+        (left, right) switch
+        {
+            (PythonMemoryViewValue, PythonByteArrayValue) => true,
+            (PythonByteArrayValue, PythonMemoryViewValue) => true,
+            (PythonMemoryViewValue, _) or (_, PythonMemoryViewValue) => false,
+            _ => true,
+        };
 
     private static int CompareSequencesOrdered(
         IReadOnlyList<PythonValue> left,

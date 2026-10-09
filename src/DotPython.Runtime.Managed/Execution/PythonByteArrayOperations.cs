@@ -37,6 +37,21 @@ internal static class PythonByteArrayOperations
 /// <summary>The item assignment and deletion a mutable sequence adds to the read surface.</summary>
 internal static class PythonByteArrayMutation
 {
+    /// <summary>
+    /// A bytearray with a memoryview open over it cannot change size, which is the guarantee
+    /// the buffer protocol gives the view. An operation that keeps the length is still
+    /// allowed: writing an element, reversing, or assigning a slice the same size.
+    /// </summary>
+    internal static void RequireResizable(
+        PythonByteArrayValue mutable,
+        int newLength,
+        TextSpan span = default
+    )
+    {
+        if (mutable.ExportCount > 0 && newLength != mutable.Value.Length)
+            throw Fault("Existing exports of data: object cannot be re-sized", "BufferError", span);
+    }
+
     /// <summary>`b[i] = x` and `b[a:b] = ...`, including the extended-slice length rule.</summary>
     internal static void SetItem(
         PythonByteArrayValue mutable,
@@ -88,6 +103,7 @@ internal static class PythonByteArrayMutation
         }
 
         var bytes = AssignedBytes(value, span);
+        RequireResizable(mutable, mutable.Value.Length - (stop - start) + bytes.Length, span);
         byte[] updated =
         [
             .. mutable.Value.AsSpan(0, start),
@@ -103,6 +119,7 @@ internal static class PythonByteArrayMutation
         if (index is not PythonSliceValue slice)
         {
             var position = ResolveIndex(mutable, index, span);
+            RequireResizable(mutable, mutable.Value.Length - 1, span);
             byte[] shrunk =
             [
                 .. mutable.Value.AsSpan(0, position),
@@ -117,6 +134,7 @@ internal static class PythonByteArrayMutation
         );
         if (removed.Count == 0)
             return;
+        RequireResizable(mutable, mutable.Value.Length - removed.Count, span);
         var kept = new List<byte>(mutable.Value.Length - removed.Count);
         for (var position = 0; position < mutable.Value.Length; position++)
         {

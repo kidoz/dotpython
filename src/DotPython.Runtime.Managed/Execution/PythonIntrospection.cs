@@ -68,6 +68,8 @@ internal static class PythonIntrospection
         PythonSlotMethods.AddSlotNames(typeName, names);
         PythonIntMethods.AddMemberNames(value, names);
         PythonFloatMethods.AddMemberNames(value, names);
+        if (value is PythonMemoryViewValue)
+            PythonMemoryViewMethods.AddMemberNames(names);
         AddObjectNames(names);
     }
 

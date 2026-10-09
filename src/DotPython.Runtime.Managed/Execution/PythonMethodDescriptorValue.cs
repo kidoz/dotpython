@@ -119,6 +119,7 @@ internal sealed record PythonMethodDescriptorValue(
             "str" => receiver is PythonTextValue,
             "bytes" => receiver is PythonByteSequenceValue,
             "bytearray" => receiver is PythonByteArrayValue,
+            "memoryview" => receiver is PythonMemoryViewValue,
             "list" => receiver is PythonListValue,
             "tuple" => receiver is PythonTupleValue,
             "dict" => receiver is PythonDictionaryValue,

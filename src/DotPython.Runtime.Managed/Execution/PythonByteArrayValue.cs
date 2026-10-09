@@ -23,6 +23,12 @@ internal sealed record PythonByteArrayValue : PythonValue
     /// <summary>The live contents; a resize replaces the array rather than growing it.</summary>
     internal byte[] Value { get; set; }
 
+    /// <summary>
+    /// How many memoryviews are open over this buffer. A live export keeps the bytearray
+    /// from resizing, which is what CPython's buffer protocol guarantees.
+    /// </summary>
+    internal int ExportCount { get; set; }
+
     internal override string ToDisplayString() => $"bytearray({PythonBytesText.Represent(Value)})";
 
     // A mutable sequence has no value identity: equality and identity agree.

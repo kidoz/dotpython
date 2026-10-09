@@ -337,6 +337,92 @@ internal static class PythonSlotMethods
             );
         }
 
+        // A view answers the sequence protocol, the two comparisons it has — equality, which
+        // asks the bytes and the shape — and the hash its own contents allow.
+        Wrapper(
+            "memoryview",
+            "__len__",
+            0,
+            (receiver, _) =>
+                PythonWholeNumberValue.Create(
+                    ManagedObjectProtocols.GetViewLength((PythonMemoryViewValue)receiver)
+                )
+        );
+        Wrapper(
+            "memoryview",
+            "__iter__",
+            0,
+            (receiver, _) => ManagedObjectProtocols.GetIterator(receiver)
+        );
+        Wrapper(
+            "memoryview",
+            "__repr__",
+            0,
+            (receiver, _) => new PythonTextValue(receiver.ToRepresentationString())
+        );
+        Wrapper(
+            "memoryview",
+            "__contains__",
+            1,
+            (receiver, arguments) =>
+                ManagedObjectProtocols.Contains(receiver, arguments[0])
+                    ? PythonTruthValue.True
+                    : PythonTruthValue.False
+        );
+        Wrapper(
+            "memoryview",
+            "__getitem__",
+            1,
+            (receiver, arguments) => ManagedObjectProtocols.GetItem(receiver, arguments[0])
+        );
+        Named(
+            "memoryview",
+            "__setitem__",
+            2,
+            (receiver, arguments) =>
+            {
+                ManagedObjectProtocols.SetItem(receiver, arguments[0], arguments[1]);
+                return PythonNoneValue.Instance;
+            }
+        );
+        Wrapper(
+            "memoryview",
+            "__delitem__",
+            1,
+            (receiver, arguments) =>
+            {
+                ManagedObjectProtocols.DeleteItem(receiver, arguments[0]);
+                return PythonNoneValue.Instance;
+            }
+        );
+        foreach (
+            var (name, operation) in new[]
+            {
+                ("__eq__", 0),
+                ("__ne__", 4),
+                ("__lt__", 1),
+                ("__le__", 2),
+                ("__gt__", 3),
+                ("__ge__", 5),
+            }
+        )
+        {
+            var comparison = operation;
+            Wrapper(
+                "memoryview",
+                name,
+                1,
+                (receiver, arguments) => Compare("memoryview", receiver, arguments[0], comparison)
+            );
+        }
+        Wrapper(
+            "memoryview",
+            "__hash__",
+            0,
+            (receiver, _) =>
+                PythonWholeNumberValue.Create(ManagedObjectProtocols.ComputePythonHash(receiver))
+        );
+
         foreach (var type in new[] { "list", "bytearray", "dict" })
         {
             Named(
@@ -755,6 +841,12 @@ internal static class PythonSlotMethods
             "str" => other is PythonTextValue,
             "bytes" => other is PythonByteSequenceValue,
             "bytearray" => other is PythonByteArrayValue or PythonByteSequenceValue,
+            // A view compares with another view and with any bytes-like value; it has no
+            // ordering at all, so every ordering falls through to the other operand.
+            "memoryview" => other
+                is PythonMemoryViewValue
+                    or PythonByteSequenceValue
+                    or PythonByteArrayValue,
             "dict" => other is PythonDictionaryValue,
             "set" or "frozenset" => other is PythonSetValue,
             "int" => other is PythonWholeNumberValue or PythonTruthValue,
@@ -783,7 +875,7 @@ internal static class PythonSlotMethods
     )
     {
         // A dict compares equal to another dict, but has no ordering at all.
-        if (type == "dict" && operation is not (0 or 4))
+        if (type is "dict" or "memoryview" && operation is not (0 or 4))
             return PythonNotImplementedValue.Instance;
         if (!Comparable(type, other))
             return PythonNotImplementedValue.Instance;
@@ -973,6 +1065,7 @@ internal static class PythonSlotMethods
                 list.Elements.AddRange(computed.Elements);
                 return list;
             case PythonByteArrayValue mutable when repeated is PythonByteArrayValue bytes:
+                PythonByteArrayMutation.RequireResizable(mutable, bytes.Value.Length);
                 mutable.Value = bytes.Value;
                 return mutable;
         }

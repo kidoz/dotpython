@@ -35,6 +35,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["NotImplementedError"] = "RuntimeError",
             ["TypeError"] = "Exception",
             ["ValueError"] = "Exception",
+            ["BufferError"] = "Exception",
             ["NameError"] = "Exception",
             ["UnboundLocalError"] = "NameError",
             ["AttributeError"] = "Exception",
@@ -7604,6 +7605,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         .ConstructNamed("bytearray", [right], [], [], span)
                         .Value;
                 }
+                PythonByteArrayMutation.RequireResizable(
+                    mutable,
+                    mutable.Value.Length + addition.Length,
+                    span
+                );
                 mutable.Value = [.. mutable.Value, .. addition];
                 _evaluationStack.Push(mutable);
                 return;
@@ -7615,6 +7621,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     PythonSequenceRepetition.GetCount(right, span),
                     span
                 );
+                PythonByteArrayMutation.RequireResizable(mutable, grown.Value.Length, span);
                 mutable.Value = grown.Value;
                 _evaluationStack.Push(mutable);
                 return;
@@ -7971,6 +7978,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A bytearray compares by content against bytes and bytearray alike.
             || left is PythonByteArrayValue
             || right is PythonByteArrayValue
+            // A memoryview compares by the bytes and the shape it exposes.
+            || left is PythonMemoryViewValue
+            || right is PythonMemoryViewValue
             // A descriptor is interned, so equality is its identity.
             || left is PythonMethodDescriptorValue
             || right is PythonMethodDescriptorValue
@@ -8267,6 +8277,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (
             opCode == PythonOpCode.BinaryAdd
+            // `bytes` and `bytearray` take any buffer on their right, but a view has no
+            // `+` of its own, so `memoryview(...) + b''` is an unsupported operand.
+            && left is not PythonMemoryViewValue
             && ManagedObjectProtocols.TryGetByteContent(left, out var leftContent)
             && ManagedObjectProtocols.TryGetByteContent(right, out var rightContent)
         )

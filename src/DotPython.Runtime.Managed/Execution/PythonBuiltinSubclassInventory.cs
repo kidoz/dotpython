@@ -53,6 +53,7 @@ internal static class PythonBuiltinSubclassInventory
         "SyntaxError",
         "TypeError",
         "ValueError",
+        "BufferError",
         // ExceptionGroup is also a direct child of Exception, after ValueError.
         "ExceptionGroup",
         "OverflowError",

@@ -93,6 +93,12 @@ internal static class PythonBytesConstruction
         // A bytearray is bytes-like here: `bytes(bytearray(b'ab'))` copies its contents.
         if (source is PythonByteArrayValue mutable)
             return PythonByteSequenceValue.Create(mutable.Value);
+        // So is a memoryview: `bytes(memoryview(b'ab'))` copies the bytes it exposes.
+        if (source is PythonMemoryViewValue view)
+        {
+            view.RequireLive();
+            return PythonByteSequenceValue.Create(view.Materialize());
+        }
         if (UserObjectProtocols.TryGetSpecialMethod(source, "__bytes__", out var hook, out _))
         {
             var result = UserObjectProtocols.Dispatcher!.Invoke(hook, [], span);

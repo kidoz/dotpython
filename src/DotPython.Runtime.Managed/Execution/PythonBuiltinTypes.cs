@@ -150,6 +150,7 @@ internal static class PythonBuiltinTypes
             PythonTextValue => Str,
             PythonByteSequenceValue => Bytes,
             PythonByteArrayValue => ByteArray,
+            PythonMemoryViewValue => MemoryView,
             PythonTemplateValue => PythonStandardModules.TemplateType,
             PythonInterpolationValue => PythonStandardModules.InterpolationType,
             PythonListValue => List,
@@ -277,6 +278,9 @@ internal static class PythonBuiltinTypes
     );
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
+    /// <summary>`memoryview`, the window over another object's bytes.</summary>
+    internal static readonly PythonBuiltinTypeValue MemoryView = PythonMemoryViewMethods.Type;
+
     /// <summary>
     /// One of the `tp_name`s above, for the places that name a type rather than a value —
     /// a method descriptor's `__objclass__` and the owner its diagnostics report.
@@ -295,6 +299,7 @@ internal static class PythonBuiltinTypes
             "set" => Set,
             "str" => Str,
             "tuple" => Tuple,
+            "memoryview" => MemoryView,
             _ => CreateOpaque(name),
         };
 
@@ -359,7 +364,7 @@ internal static class PythonBuiltinTypes
     };
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
-        [Bool, ByteArray, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
+        [Bool, ByteArray, Bytes, Dict, Float, Frozenset, Int, List, MemoryView, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
         OpaqueTypes.GetOrAdd(
@@ -383,6 +388,7 @@ internal static class PythonBuiltinTypes
             "bool" => value is PythonTruthValue,
             "bytes" => value is PythonByteSequenceValue,
             "bytearray" => value is PythonByteArrayValue,
+            "memoryview" => value is PythonMemoryViewValue,
             "int" => value is PythonWholeNumberValue or PythonTruthValue
                 || PythonEnum.IsInstanceOfMemberType(value, "int"),
             "float" => value is PythonFloatingPointValue,

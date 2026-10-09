@@ -193,6 +193,7 @@ internal static class PythonLengthHints
             is PythonTextValue
                 or PythonByteSequenceValue
                 or PythonByteArrayValue
+                or PythonMemoryViewValue
                 or PythonListValue
                 or PythonTupleValue
                 or PythonMappingProxyValue

@@ -761,6 +761,20 @@ internal static class PythonBytesMethods
     private static PythonProtocolFunctionValue Hex() =>
         new PythonProtocolFunctionValue("hex", InvokeHex, HexWithKeywords);
 
+    /// <summary>`memoryview.hex` is this same method over the bytes a view exposes.</summary>
+    internal static PythonTextValue HexOver(
+        PythonByteSequenceValue bytes,
+        IReadOnlyList<PythonValue> arguments
+    ) => InvokeHex(bytes, arguments);
+
+    /// <summary>The same method, with the keywords its separator and grouping are given by.</summary>
+    internal static PythonTextValue HexOverWithKeywords(
+        PythonByteSequenceValue bytes,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    ) => HexWithKeywords(bytes, positional, names, values);
+
     private static PythonTextValue InvokeHex(
         PythonValue? target,
         IReadOnlyList<PythonValue> arguments
