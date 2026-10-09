@@ -1619,7 +1619,11 @@ internal static class ManagedObjectProtocols
                     "OverflowError"
                 ),
             PythonExternalObjectValue external => external.Protocol.GetLength(span),
-            PythonManagedTypeValue enumType => PythonEnum.TryGetTypeLength(enumType, out var enumLength, span)
+            PythonManagedTypeValue enumType => PythonEnum.TryGetTypeLength(
+                enumType,
+                out var enumLength,
+                span
+            )
                 ? enumLength
                 : throw Fault("DPY4011", "object of type 'type' has no len()", span, "TypeError"),
             PythonManagedObjectValue instance => UserObjectProtocols.TryGetLength(
@@ -1852,8 +1856,10 @@ internal static class ManagedObjectProtocols
             return new PythonIteratorValue(value, -1);
         }
 
-        if (value is PythonManagedTypeValue enumType
-            && PythonEnum.TryGetTypeIterator(enumType) is { } enumIterator)
+        if (
+            value is PythonManagedTypeValue enumType
+            && PythonEnum.TryGetTypeIterator(enumType) is { } enumIterator
+        )
         {
             return enumIterator;
         }

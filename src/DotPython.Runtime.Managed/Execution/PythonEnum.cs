@@ -35,8 +35,10 @@ internal static class PythonEnum
     private const string Module = "enum";
 
     /// <summary>Marks the dictionaries `EnumType.__prepare__` handed to a class body.</summary>
-    private static readonly ConditionalWeakTable<PythonDictionaryValue, NamespaceMarker> Namespaces =
-        new();
+    private static readonly ConditionalWeakTable<
+        PythonDictionaryValue,
+        NamespaceMarker
+    > Namespaces = new();
 
     // `PythonManagedObjectValue.Payload` is read-only and a user `__new__` may hand
     // back an object this module never built, so the state rides in weak tables
@@ -45,10 +47,8 @@ internal static class PythonEnum
         PythonManagedObjectValue,
         MemberState
     > MemberStates = new();
-    private static readonly ConditionalWeakTable<
-        PythonManagedObjectValue,
-        AutoState
-    > AutoStates = new();
+    private static readonly ConditionalWeakTable<PythonManagedObjectValue, AutoState> AutoStates =
+        new();
     private static readonly ConditionalWeakTable<
         PythonManagedObjectValue,
         PropertyState
@@ -508,13 +508,7 @@ internal static class PythonEnum
         TextSpan span
     ) =>
         UserObjectProtocols.Dispatcher is { } dispatcher
-            ? dispatcher.InvokeWithKeywords(
-                callable,
-                arguments,
-                keywordNames,
-                keywordValues,
-                span
-            )
+            ? dispatcher.InvokeWithKeywords(callable, arguments, keywordNames, keywordValues, span)
             : ManagedObjectProtocols.Call(callable, arguments, span);
 
     private static PythonTextValue Format(PythonValue value, string specification) =>
@@ -672,11 +666,7 @@ internal static class PythonEnum
     }
 
     private static bool IsSunder(string name) =>
-        name.Length > 2
-        && name[0] == '_'
-        && name[^1] == '_'
-        && name[1] != '_'
-        && name[^2] != '_';
+        name.Length > 2 && name[0] == '_' && name[^1] == '_' && name[1] != '_' && name[^2] != '_';
 
     private static bool IsDunder(string name) =>
         name.Length > 4
@@ -723,9 +713,9 @@ internal static class PythonEnum
 
     private static void InstallMetaclassProtocols()
     {
-        Install(EnumTypeType, "__prepare__", Protocol("__prepare__", PrepareNamespace));
-        Install(EnumTypeType, "__new__", Protocol("__new__", EnumTypeNew));
-        Install(EnumTypeType, "__init__", Protocol("__init__", IgnoreInitializer));
+        Install(EnumTypeType, "__prepare__", Protocol("__prepare__", PrepareNamespaceWithKeywords));
+        Install(EnumTypeType, "__new__", Protocol("__new__", EnumTypeNewWithKeywords));
+        Install(EnumTypeType, "__init__", Protocol("__init__", IgnoreInitializerWithKeywords));
         Install(EnumTypeType, "__call__", Protocol("__call__", EnumTypeCall));
         Install(EnumTypeType, "mro", Protocol("mro", MetaclassMro));
         Install(EnumTypeType, "__bool__", Protocol("__bool__", (_, _) => PythonTruthValue.True));
@@ -742,34 +732,61 @@ internal static class PythonEnum
             "__members__",
             new PythonDescriptorValue(
                 "__members__",
-                target =>
-                    new PythonMappingProxyValue(MemberMapOf((PythonManagedTypeValue)target))
+                target => new PythonMappingProxyValue(MemberMapOf((PythonManagedTypeValue)target))
             )
         );
     }
 
     private static PythonDictionaryValue MemberMapOf(PythonManagedTypeValue type) =>
-        TryGetInfo(type, out var info)
-            ? info.MemberMap
-            : new PythonDictionaryValue([]);
+        TryGetInfo(type, out var info) ? info.MemberMap : new PythonDictionaryValue([]);
 
-    private static PythonValue IgnoreInitializer(
+    private static PythonNoneValue IgnoreInitializer(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
     ) => PythonNoneValue.Instance;
 
-    private static PythonValue PrepareNamespace(
+    /// <summary>
+    /// `EnumType.__init__` ignores its arguments, including the class statement's
+    /// keywords, which `type.__init__` also accepts and drops.
+    /// </summary>
+    private static PythonValue IgnoreInitializerWithKeywords(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
+    )
+    {
+        _ = keywordNames;
+        _ = keywordValues;
+        return IgnoreInitializer(target, positional);
+    }
+
+    /// <summary>`EnumType.__prepare__` swallows the class statement's keywords.</summary>
+    private static PythonValue PrepareNamespaceWithKeywords(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
+    )
+    {
+        _ = keywordNames;
+        _ = keywordValues;
+        return PrepareNamespace(target, positional);
+    }
+
+    private static PythonDictionaryValue PrepareNamespace(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
     )
     {
         var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
-        var bases = positional.Count > 1 && positional[1] is PythonTupleValue tuple
-            ? tuple.Elements
-            : [];
+        var bases =
+            positional.Count > 1 && positional[1] is PythonTupleValue tuple ? tuple.Elements : [];
         CheckForExistingMembers(name, bases);
         var prepared = new PythonDictionaryValue([]);
-        prepared.AddItem(new PythonDictionaryItemValue(Text("__module__"), PythonNoneValue.Instance));
+        prepared.AddItem(
+            new PythonDictionaryItemValue(Text("__module__"), PythonNoneValue.Instance)
+        );
         Namespaces.Add(prepared, new NamespaceMarker { ClassName = name });
         return prepared;
     }
@@ -810,9 +827,56 @@ internal static class PythonEnum
     private static string QualifiedName(PythonManagedTypeValue type) =>
         string.Join(".", type.Qualifiers());
 
-    private static PythonValue EnumTypeNew(
+    /// <summary>
+    /// `EnumType.__new__`: `boundary=` is consumed by the class machinery (the way
+    /// CPython's own `__new__` takes it out of the keywords) and everything else is
+    /// forwarded to `__init_subclass__`, as `type.__new__` does.
+    /// </summary>
+    private static PythonValue EnumTypeNewWithKeywords(
         PythonValue? target,
-        IReadOnlyList<PythonValue> positional
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
+    )
+    {
+        PythonValue? boundary = null;
+        List<string>? forwardedNames = null;
+        List<PythonValue>? forwardedValues = null;
+        for (var index = 0; index < keywordNames.Count; index++)
+        {
+            switch (keywordNames[index])
+            {
+                case "boundary":
+                    boundary = keywordValues[index];
+                    break;
+                case "_simple":
+                    break;
+                default:
+                    forwardedNames ??= [];
+                    forwardedValues ??= [];
+                    forwardedNames.Add(keywordNames[index]);
+                    forwardedValues.Add(keywordValues[index]);
+                    break;
+            }
+        }
+
+        return EnumTypeNew(
+            target,
+            positional,
+            boundary is null || ReferenceEquals(boundary, PythonNoneValue.Instance)
+                ? null
+                : boundary,
+            forwardedNames ?? [],
+            forwardedValues ?? []
+        );
+    }
+
+    private static PythonManagedTypeValue EnumTypeNew(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        PythonValue? boundary,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
     )
     {
         _ = target;
@@ -830,23 +894,42 @@ internal static class PythonEnum
         var bases = positional[offset + 1] as PythonTupleValue ?? new PythonTupleValue([]);
         if (positional[offset + 2] is not PythonDictionaryValue classBody)
         {
-            throw Fault("'dict' object has no attribute '_member_names'", default, "AttributeError");
+            throw Fault(
+                "'dict' object has no attribute '_member_names'",
+                default,
+                "AttributeError"
+            );
         }
 
         if (!Namespaces.TryGetValue(classBody, out var marker))
         {
-            throw Fault("'dict' object has no attribute '_member_names'", default, "AttributeError");
+            throw Fault(
+                "'dict' object has no attribute '_member_names'",
+                default,
+                "AttributeError"
+            );
         }
 
         marker.ClassName = className;
-        return CreateEnumClass(className, bases.Elements, classBody, default);
+        return CreateEnumClass(
+            className,
+            bases.Elements,
+            classBody,
+            default,
+            boundary,
+            keywordNames,
+            keywordValues
+        );
     }
 
     private static PythonManagedTypeValue CreateEnumClass(
         string className,
         IReadOnlyList<PythonValue> declaredBases,
         PythonDictionaryValue classBody,
-        TextSpan span
+        TextSpan span,
+        PythonValue? boundary = null,
+        IReadOnlyList<string>? keywordNames = null,
+        IReadOnlyList<PythonValue>? keywordValues = null
     )
     {
         var (memberType, firstEnum) = FindMixins(className, declaredBases, span);
@@ -855,11 +938,7 @@ internal static class PythonEnum
         {
             if (
                 baseValue is PythonBuiltinTypeValue
-                || baseValue
-                    is PythonManagedTypeValue
-                        {
-                            Name: "object"
-                        }
+                || baseValue is PythonManagedTypeValue { Name: "object" }
             )
             {
                 continue;
@@ -881,19 +960,30 @@ internal static class PythonEnum
                     new PythonTupleValue([.. effectiveBases]),
                     classBody,
                 ],
-                [],
-                [],
+                keywordNames ?? [],
+                keywordValues ?? [],
                 span
             );
 
         var info = EnsureInfo(enumClass);
         info.MemberType = memberType;
         info.FirstEnum = firstEnum;
-        var boundary = LookupClassValue(enumClass, "_boundary_");
-        info.Boundary = boundary ?? BoundaryStrict;
+        // `boundary or getattr(first_enum, '_boundary_', None)`: the keyword wins,
+        // and otherwise the last declared enum base supplies the inherited boundary.
+        info.Boundary =
+            boundary
+            ?? (firstEnum is null ? null : LookupClassValue(firstEnum, "_boundary_"))
+            ?? BoundaryStrict;
         FindNew(enumClass, info, classBody);
         PopulateMembers(enumClass, info, classBody, span);
         CompleteClass(enumClass, info, classBody, span);
+        if (boundary is not null)
+        {
+            // Published only after the namespace was scanned: `_boundary_` is a
+            // reserved sunder, so an injected one must not look like a member.
+            enumClass.Attributes["_boundary_"] = boundary;
+        }
+
         return enumClass;
     }
 
@@ -935,7 +1025,8 @@ internal static class PythonEnum
                 if (baseValue is PythonManagedTypeValue enumBase && IsEnumClass(enumBase))
                 {
                     var inherited =
-                        LookupClassValue(enumBase, "_member_type_") ?? PythonBuiltinFunctions.Object;
+                        LookupClassValue(enumBase, "_member_type_")
+                        ?? PythonBuiltinFunctions.Object;
                     if (!IsObjectMemberType(inherited))
                     {
                         AddDataType(dataTypes, inherited);
@@ -1240,8 +1331,8 @@ internal static class PythonEnum
     {
         if (value is PythonTextValue text)
         {
-            return text.Value
-                .Replace(',', ' ')
+            return text
+                .Value.Replace(',', ' ')
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries)
                 .ToArray();
         }
@@ -1602,7 +1693,11 @@ internal static class PythonEnum
             info.ValueMap.AddItem(new PythonDictionaryItemValue(value, member));
         }
 
-        if (!info.HashableValues.Elements.Any(entry => ManagedObjectProtocols.AreEqual(entry, value)))
+        if (
+            !info.HashableValues.Elements.Any(entry =>
+                ManagedObjectProtocols.AreEqual(entry, value)
+            )
+        )
         {
             info.HashableValues.Elements.Add(value);
         }
@@ -1741,8 +1836,9 @@ internal static class PythonEnum
     )
     {
         var start = positional.Count > 1 ? positional[1] : PythonNoneValue.Instance;
-        var count = (positional.Count > 2 ? positional[2] : PythonNoneValue.Instance) as
-            PythonWholeNumberValue;
+        var count =
+            (positional.Count > 2 ? positional[2] : PythonNoneValue.Instance)
+            as PythonWholeNumberValue;
         var lastValues = positional.Count > 3 ? positional[3] as PythonListValue : null;
         if ((count?.Value ?? BigInteger.Zero).IsZero)
         {
@@ -1795,10 +1891,7 @@ internal static class PythonEnum
     private static PythonValue DelegateToValueStr(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
-    ) =>
-        new PythonTextValue(
-            StateOf((PythonManagedObjectValue)target!)!.Value.ToDisplayString()
-        );
+    ) => new PythonTextValue(StateOf((PythonManagedObjectValue)target!)!.Value.ToDisplayString());
 
     // -------------------------------------------------------------------------
     // Metaclass call: value lookup and the functional API
@@ -1814,13 +1907,17 @@ internal static class PythonEnum
         var cls = (PythonManagedTypeValue)target!;
         if (positional.Count == 0)
         {
-            throw Fault("EnumType.__call__() missing 1 required positional argument: 'value'", default);
+            throw Fault(
+                "EnumType.__call__() missing 1 required positional argument: 'value'",
+                default
+            );
         }
 
         PythonValue? module = null;
         PythonValue? qualname = null;
         PythonValue? dataType = null;
         PythonValue? start = null;
+        PythonValue? boundary = null;
         PythonValue? names = positional.Count > 1 ? positional[1] : null;
         for (var index = 0; index < keywordNames.Count; index++)
         {
@@ -1840,6 +1937,8 @@ internal static class PythonEnum
                     start = value;
                     break;
                 case "boundary":
+                    boundary = value;
+                    break;
                 case "_simple":
                     break;
                 default:
@@ -1872,10 +1971,7 @@ internal static class PythonEnum
 
         if (positional[0] is not PythonTextValue className)
         {
-            throw Fault(
-                $"Invalid enum name {positional[0].ToRepresentationString()}",
-                default
-            );
+            throw Fault($"Invalid enum name {positional[0].ToRepresentationString()}", default);
         }
 
         return CreateFunctional(
@@ -1886,6 +1982,9 @@ internal static class PythonEnum
             qualname as PythonTextValue,
             dataType,
             start,
+            boundary is null || ReferenceEquals(boundary, PythonNoneValue.Instance)
+                ? null
+                : boundary,
             default
         );
     }
@@ -1918,7 +2017,13 @@ internal static class PythonEnum
                     {
                         if (ManagedObjectProtocols.AreEqual(candidate, value))
                         {
-                            if (TryLookupName(info.MemberMap, ((PythonTextValue)item.Key).Value, out var byName))
+                            if (
+                                TryLookupName(
+                                    info.MemberMap,
+                                    ((PythonTextValue)item.Key).Value,
+                                    out var byName
+                                )
+                            )
                             {
                                 return byName;
                             }
@@ -1929,7 +2034,10 @@ internal static class PythonEnum
 
             foreach (var item in info.ValueMap.Items)
             {
-                if (StateOf(item.Value) is { } state && ManagedObjectProtocols.AreEqual(state.Value, value))
+                if (
+                    StateOf(item.Value) is { } state
+                    && ManagedObjectProtocols.AreEqual(state.Value, value)
+                )
                 {
                     return item.Value;
                 }
@@ -1958,7 +2066,10 @@ internal static class PythonEnum
             }
         }
 
-        if (result is PythonManagedObjectValue candidateMember && ReferenceEquals(candidateMember.Type, cls))
+        if (
+            result is PythonManagedObjectValue candidateMember
+            && ReferenceEquals(candidateMember.Type, cls)
+        )
         {
             return candidateMember;
         }
@@ -2003,6 +2114,7 @@ internal static class PythonEnum
         PythonTextValue? qualname,
         PythonValue? dataType,
         PythonValue? start,
+        PythonValue? boundary,
         TextSpan span
     )
     {
@@ -2029,8 +2141,8 @@ internal static class PythonEnum
         if (names is PythonTextValue text)
         {
             foreach (
-                var name in text.Value
-                    .Replace(',', ' ')
+                var name in text
+                    .Value.Replace(',', ' ')
                     .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             )
             {
@@ -2052,9 +2164,7 @@ internal static class PythonEnum
 
                 if (element is PythonTupleValue pair && pair.Elements.Length == 2)
                 {
-                    entries.Add(
-                        (((PythonTextValue)pair.Elements[0]).Value, pair.Elements[1])
-                    );
+                    entries.Add((((PythonTextValue)pair.Elements[0]).Value, pair.Elements[1]));
                     continue;
                 }
 
@@ -2149,7 +2259,12 @@ internal static class PythonEnum
 
         if (qualname is not null)
         {
-            ManagedObjectProtocols.SetDictionaryItem(prepared, Text("__qualname__"), qualname, span);
+            ManagedObjectProtocols.SetDictionaryItem(
+                prepared,
+                Text("__qualname__"),
+                qualname,
+                span
+            );
         }
 
         // A data type given to the functional API behaves like a mixed-in one: it is
@@ -2174,10 +2289,16 @@ internal static class PythonEnum
         var createdInfo = EnsureInfo(created);
         createdInfo.MemberType = memberType;
         createdInfo.FirstEnum = firstEnum;
-        createdInfo.Boundary = LookupClassValue(created, "_boundary_") ?? BoundaryStrict;
+        createdInfo.Boundary =
+            boundary ?? LookupClassValue(firstEnum, "_boundary_") ?? BoundaryStrict;
         FindNew(created, createdInfo, prepared);
         PopulateMembers(created, createdInfo, prepared, span);
         CompleteClass(created, createdInfo, prepared, span);
+        if (boundary is not null)
+        {
+            created.Attributes["_boundary_"] = boundary;
+        }
+
         return created;
     }
 
@@ -2196,7 +2317,9 @@ internal static class PythonEnum
     )
     {
         _ = positional;
-        return PythonWholeNumberValue.Create(MemberNamesOf((PythonManagedTypeValue)target!).Elements.Count);
+        return PythonWholeNumberValue.Create(
+            MemberNamesOf((PythonManagedTypeValue)target!).Elements.Count
+        );
     }
 
     private static PythonValue MetaclassIter(
@@ -2250,11 +2373,7 @@ internal static class PythonEnum
             return member;
         }
 
-        throw Fault(
-            $"{name.ToRepresentationString()}",
-            default,
-            "KeyError"
-        );
+        throw Fault($"{name.ToRepresentationString()}", default, "KeyError");
     }
 
     private static PythonValue MetaclassContains(
@@ -2267,11 +2386,7 @@ internal static class PythonEnum
         return PythonTruthValue.FromBoolean(ContainsMember(cls, item, default));
     }
 
-    private static bool ContainsMember(
-        PythonManagedTypeValue cls,
-        PythonValue item,
-        TextSpan span
-    )
+    private static bool ContainsMember(PythonManagedTypeValue cls, PythonValue item, TextSpan span)
     {
         if (item is PythonManagedObjectValue member && ReferenceEquals(member.Type, cls))
         {
@@ -2286,7 +2401,10 @@ internal static class PythonEnum
                 if (LookupMissingHook(cls, span) is { } missing && missing is not PythonNoneValue)
                 {
                     var result = Invoke(missing, [item], span);
-                    if (result is PythonManagedObjectValue created && ReferenceEquals(created.Type, cls))
+                    if (
+                        result is PythonManagedObjectValue created
+                        && ReferenceEquals(created.Type, cls)
+                    )
                     {
                         return true;
                     }
@@ -2406,11 +2524,7 @@ internal static class PythonEnum
             "_missing_",
             new PythonClassMethodValue(Protocol("_missing_", MissingDefault))
         );
-        Install(
-            enumClass,
-            "__new__",
-            new PythonStaticMethodValue(Protocol("__new__", EnumNew))
-        );
+        Install(enumClass, "__new__", new PythonStaticMethodValue(Protocol("__new__", EnumNew)));
         Install(
             enumClass,
             "_find_new_",
@@ -2474,10 +2588,7 @@ internal static class PythonEnum
         return Text($"<{member.Type.Name}.{state.Name}: {state.Value.ToRepresentationString()}>");
     }
 
-    private static PythonValue MemberStr(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue MemberStr(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
         var member = (PythonManagedObjectValue)target!;
@@ -2513,16 +2624,10 @@ internal static class PythonEnum
         return PythonNoneValue.Instance;
     }
 
-    private static PythonValue EnumNew(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue EnumNew(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
-        throw Fault(
-            "do not use `super().__new__; call the appropriate __new__ directly",
-            default
-        );
+        throw Fault("do not use `super().__new__; call the appropriate __new__ directly", default);
     }
 
     private static PythonValue FindNewHook(
@@ -2537,7 +2642,9 @@ internal static class PythonEnum
             null,
             null
         );
-        return new PythonTupleValue([info.UseArgs ? PythonTruthValue.True : PythonTruthValue.False]);
+        return new PythonTupleValue([
+            info.UseArgs ? PythonTruthValue.True : PythonTruthValue.False,
+        ]);
     }
 
     private static PythonValue AddMemberHook(
@@ -2549,7 +2656,12 @@ internal static class PythonEnum
         var name = positional.Count > 1 ? positional[1] : positional[0];
         var member = positional.Count > 1 ? positional[2] : positional[1];
         var info = EnsureInfo(cls);
-        AddMemberAttribute(cls, info, ((PythonTextValue)name).Value, (PythonManagedObjectValue)member);
+        AddMemberAttribute(
+            cls,
+            info,
+            ((PythonTextValue)name).Value,
+            (PythonManagedObjectValue)member
+        );
         return PythonNoneValue.Instance;
     }
 
@@ -2609,7 +2721,9 @@ internal static class PythonEnum
             Install(
                 flagClass,
                 "_generate_next_value_",
-                new PythonStaticMethodValue(Protocol("_generate_next_value_", FlagGenerateNextValue))
+                new PythonStaticMethodValue(
+                    Protocol("_generate_next_value_", FlagGenerateNextValue)
+                )
             );
             Install(
                 flagClass,
@@ -2677,7 +2791,9 @@ internal static class PythonEnum
             {
                 if (raw < 0)
                 {
-                    raw = BigInteger.Max(allBits + 1, BigInteger.One << (int)raw.GetBitLength()) + raw;
+                    raw =
+                        BigInteger.Max(allBits + 1, BigInteger.One << (int)raw.GetBitLength())
+                        + raw;
                 }
             }
             else
@@ -2732,7 +2848,10 @@ internal static class PythonEnum
                 var target2 = memberValue | aliases;
                 foreach (var item in info.MemberMap.Items)
                 {
-                    if (item.Value is not PythonManagedObjectValue candidate || members.Contains(candidate))
+                    if (
+                        item.Value is not PythonManagedObjectValue candidate
+                        || members.Contains(candidate)
+                    )
                     {
                         continue;
                     }
@@ -2754,7 +2873,11 @@ internal static class PythonEnum
             }
             else if (remainder != 0 && ReferenceEquals(GetBoundary(cls), BoundaryStrict))
             {
-                throw Fault($"{DescribeClass(cls)}: no members with value {remainder}", default, "ValueError");
+                throw Fault(
+                    $"{DescribeClass(cls)}: no members with value {remainder}",
+                    default,
+                    "ValueError"
+                );
             }
             else if (remainder != 0)
             {
@@ -2793,7 +2916,11 @@ internal static class PythonEnum
         return pseudo;
     }
 
-    private static void SetMemberState(PythonManagedObjectValue member, string? name, BigInteger value)
+    private static void SetMemberState(
+        PythonManagedObjectValue member,
+        string? name,
+        BigInteger value
+    )
     {
         MemberStates.Remove(member);
         MemberStates.Add(
@@ -2806,9 +2933,11 @@ internal static class PythonEnum
 
     private static string Binary(BigInteger value, long maxBits)
     {
-        var text = value >= 0
-            ? "0b0" + ToBinaryDigits(value)
-            : "0b1" + ToBinaryDigits(~value ^ (BigInteger.One << (int)value.GetBitLength()) - 1);
+        var text =
+            value >= 0
+                ? "0b0" + ToBinaryDigits(value)
+                : "0b1"
+                    + ToBinaryDigits(~value ^ (BigInteger.One << (int)value.GetBitLength()) - 1);
         var sign = text[..3];
         var digits = text[3..];
         if (maxBits > digits.Length)
@@ -2849,7 +2978,10 @@ internal static class PythonEnum
         {
             if ((value & bit) != 0)
             {
-                if (TryLookupKey(info.ValueMap, PythonWholeNumberValue.Create(bit), out var member) && member is PythonManagedObjectValue found)
+                if (
+                    TryLookupKey(info.ValueMap, PythonWholeNumberValue.Create(bit), out var member)
+                    && member is PythonManagedObjectValue found
+                )
                 {
                     result.Add(found);
                 }
@@ -2890,7 +3022,9 @@ internal static class PythonEnum
         var member = (PythonManagedObjectValue)target!;
         var info = EnsureInfo(member.Type);
         var members = new List<PythonValue>();
-        foreach (var entry in IterateFlagMembers(member.Type, info, AsBigInteger(StateOf(member)!.Value)))
+        foreach (
+            var entry in IterateFlagMembers(member.Type, info, AsBigInteger(StateOf(member)!.Value))
+        )
         {
             members.Add(entry);
         }
@@ -2915,10 +3049,7 @@ internal static class PythonEnum
         return PythonWholeNumberValue.Create(count);
     }
 
-    private static PythonValue FlagBool(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue FlagBool(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
         return PythonTruthValue.FromBoolean(!AsBigInteger(StateOf(target!)!.Value).IsZero);
@@ -2931,7 +3062,10 @@ internal static class PythonEnum
     {
         var member = (PythonManagedObjectValue)target!;
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
-        if (other is not PythonManagedObjectValue candidate || !ReferenceEquals(candidate.Type, member.Type))
+        if (
+            other is not PythonManagedObjectValue candidate
+            || !ReferenceEquals(candidate.Type, member.Type)
+        )
         {
             throw Fault(
                 $"unsupported operand type(s) for 'in': '{PythonBuiltinTypes.GetRuntimeTypeName(other)}' and '{member.Type.Name}'",
@@ -2999,9 +3133,12 @@ internal static class PythonEnum
         var info = EnsureInfo(member.Type);
         var value = AsBigInteger(StateOf(member)!.Value);
         var boundary = GetBoundary(member.Type);
+        // `EJECT`/`KEEP` complement the whole integer (`~self._value_`), so the raw
+        // value can fall outside the class's own bits and become a plain int or a
+        // kept pseudo-member; every other boundary keeps to the single-bit mask.
         var inverted =
             ReferenceEquals(boundary, BoundaryEject) || ReferenceEquals(boundary, BoundaryKeep)
-                ? info.AllBits ^ value
+                ? ~value
                 : info.SinglesMask & ~value;
         return LookupMemberOrFault(member.Type, PythonWholeNumberValue.Create(inverted));
     }
@@ -3082,12 +3219,18 @@ internal static class PythonEnum
             Install(
                 enumClass,
                 "__sub__",
-                Protocol("__sub__", (target, positional) => MixinSubtract(target, positional, false))
+                Protocol(
+                    "__sub__",
+                    (target, positional) => MixinSubtract(target, positional, false)
+                )
             );
             Install(
                 enumClass,
                 "__rsub__",
-                Protocol("__rsub__", (target, positional) => MixinSubtract(target, positional, true))
+                Protocol(
+                    "__rsub__",
+                    (target, positional) => MixinSubtract(target, positional, true)
+                )
             );
             Install(
                 enumClass,
@@ -3144,22 +3287,34 @@ internal static class PythonEnum
             Install(
                 enumClass,
                 "__lshift__",
-                Protocol("__lshift__", (target, positional) => MixinShift(target, positional, false, true))
+                Protocol(
+                    "__lshift__",
+                    (target, positional) => MixinShift(target, positional, false, true)
+                )
             );
             Install(
                 enumClass,
                 "__rlshift__",
-                Protocol("__rlshift__", (target, positional) => MixinShift(target, positional, true, true))
+                Protocol(
+                    "__rlshift__",
+                    (target, positional) => MixinShift(target, positional, true, true)
+                )
             );
             Install(
                 enumClass,
                 "__rshift__",
-                Protocol("__rshift__", (target, positional) => MixinShift(target, positional, false, false))
+                Protocol(
+                    "__rshift__",
+                    (target, positional) => MixinShift(target, positional, false, false)
+                )
             );
             Install(
                 enumClass,
                 "__rrshift__",
-                Protocol("__rrshift__", (target, positional) => MixinShift(target, positional, true, false))
+                Protocol(
+                    "__rrshift__",
+                    (target, positional) => MixinShift(target, positional, true, false)
+                )
             );
             Install(enumClass, "__neg__", Protocol("__neg__", MixinNegate));
             Install(enumClass, "__pos__", Protocol("__pos__", MixinPositive));
@@ -3248,10 +3403,7 @@ internal static class PythonEnum
         return Text(PythonUnicodeCase.ToLower(name));
     }
 
-    private static PythonValue MixinInt(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue MixinInt(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
         return PythonWholeNumberValue.Create(AsBigInteger(StateOf(target!)!.Value));
@@ -3277,7 +3429,10 @@ internal static class PythonEnum
         var member = (PythonManagedObjectValue)target!;
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
         var value = StateOf(member)!.Value;
-        if (other is PythonManagedObjectValue candidate && ReferenceEquals(candidate.Type, member.Type))
+        if (
+            other is PythonManagedObjectValue candidate
+            && ReferenceEquals(candidate.Type, member.Type)
+        )
         {
             return PythonTruthValue.FromBoolean(
                 AsBigInteger(value) == AsBigInteger(StateOf(candidate)!.Value)
@@ -3298,10 +3453,7 @@ internal static class PythonEnum
         );
 
     /// <summary>`hash(IntEnum.A)` is `hash(1)`: the mixin hashes like its data type.</summary>
-    private static PythonValue MixinHash(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue MixinHash(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
         return PythonWholeNumberValue.Create(
@@ -3315,10 +3467,7 @@ internal static class PythonEnum
     private static BigInteger? MixinOperand(PythonManagedObjectValue member, PythonValue other) =>
         IsIntValue(other) ? AsBigInteger(other) : null;
 
-    private static PythonValue MixinAdd(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue MixinAdd(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         var member = (PythonManagedObjectValue)target!;
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
@@ -3489,7 +3638,11 @@ internal static class PythonEnum
         {
             if (baseValue.IsZero)
             {
-                throw Fault("0.0 cannot be raised to a negative power", default, "ZeroDivisionError");
+                throw Fault(
+                    "0.0 cannot be raised to a negative power",
+                    default,
+                    "ZeroDivisionError"
+                );
             }
 
             return new PythonFloatingPointValue(Math.Pow((double)baseValue, (double)exponent));
@@ -3621,7 +3774,10 @@ internal static class PythonEnum
     {
         var member = (PythonManagedObjectValue)target!;
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
-        if (other is PythonManagedObjectValue candidate && ReferenceEquals(candidate.Type, member.Type))
+        if (
+            other is PythonManagedObjectValue candidate
+            && ReferenceEquals(candidate.Type, member.Type)
+        )
         {
             other = StateOf(candidate)!.Value;
         }
@@ -3671,7 +3827,10 @@ internal static class PythonEnum
     {
         var member = (PythonManagedObjectValue)target!;
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
-        if (other is PythonManagedObjectValue candidate && ReferenceEquals(candidate.Type, member.Type))
+        if (
+            other is PythonManagedObjectValue candidate
+            && ReferenceEquals(candidate.Type, member.Type)
+        )
         {
             other = StateOf(candidate)!.Value;
         }
@@ -3681,11 +3840,7 @@ internal static class PythonEnum
             return PythonNotImplementedValue.Instance;
         }
 
-        var order = ManagedObjectProtocols.CompareOrdered(
-            StateOf(member)!.Value,
-            text,
-            default
-        );
+        var order = ManagedObjectProtocols.CompareOrdered(StateOf(member)!.Value, text, default);
         return PythonTruthValue.FromBoolean(
             comparison switch
             {
@@ -3713,7 +3868,8 @@ internal static class PythonEnum
     {
         var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
         return PythonTruthValue.FromBoolean(
-            other is PythonTextValue && ManagedObjectProtocols.Contains(StateOf(target!)!.Value, other)
+            other is PythonTextValue
+                && ManagedObjectProtocols.Contains(StateOf(target!)!.Value, other)
         );
     }
 
@@ -3744,9 +3900,7 @@ internal static class PythonEnum
     )
     {
         var member = (PythonManagedObjectValue)target!;
-        var name = positional.Count > 0 && positional[0] is PythonTextValue text
-            ? text.Value
-            : "";
+        var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
         var value = StateOf(member)!.Value;
         try
         {
@@ -3805,16 +3959,14 @@ internal static class PythonEnum
         return PythonNoneValue.Instance;
     }
 
-    private static PythonValue AutoRepr(
-        PythonValue? target,
-        IReadOnlyList<PythonValue> positional
-    )
+    private static PythonValue AutoRepr(PythonValue? target, IReadOnlyList<PythonValue> positional)
     {
         _ = positional;
         var state = AutoStateOf(target!);
-        var value = state is null || ReferenceEquals(state.Value, AutoNull)
-            ? "_auto_null"
-            : state.Value.ToRepresentationString();
+        var value =
+            state is null || ReferenceEquals(state.Value, AutoNull)
+                ? "_auto_null"
+                : state.Value.ToRepresentationString();
         return Text($"auto({value})");
     }
 
@@ -3917,14 +4069,20 @@ internal static class PythonEnum
         return PythonNoneValue.Instance;
     }
 
-    private static PythonValue PropertyFget(PythonValue? target, IReadOnlyList<PythonValue> positional) =>
-        PropertyStateOf((target ?? positional[0])!)?.Fget ?? PythonNoneValue.Instance;
+    private static PythonValue PropertyFget(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    ) => PropertyStateOf((target ?? positional[0])!)?.Fget ?? PythonNoneValue.Instance;
 
-    private static PythonValue PropertyFset(PythonValue? target, IReadOnlyList<PythonValue> positional) =>
-        PropertyStateOf((target ?? positional[0])!)?.Fset ?? PythonNoneValue.Instance;
+    private static PythonValue PropertyFset(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    ) => PropertyStateOf((target ?? positional[0])!)?.Fset ?? PythonNoneValue.Instance;
 
-    private static PythonValue PropertyFdel(PythonValue? target, IReadOnlyList<PythonValue> positional) =>
-        PropertyStateOf((target ?? positional[0])!)?.Fdel ?? PythonNoneValue.Instance;
+    private static PythonValue PropertyFdel(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    ) => PropertyStateOf((target ?? positional[0])!)?.Fdel ?? PythonNoneValue.Instance;
 
     /// <summary>
     /// Mirrors `enum.property.__get__`. The descriptor-get slot calls the raw class
@@ -3961,11 +4119,7 @@ internal static class PythonEnum
 
         if (state.AttrType == "attr" && state.ClsType is not null)
         {
-            return ManagedObjectProtocols.GetAttribute(
-                state.ClsType,
-                state.Name ?? "",
-                default
-            );
+            return ManagedObjectProtocols.GetAttribute(state.ClsType, state.Name ?? "", default);
         }
 
         if (state.AttrType == "desc")
@@ -3982,11 +4136,7 @@ internal static class PythonEnum
             return member;
         }
 
-        throw Fault(
-            $"{state.ClsName} has no attribute '{state.Name}'",
-            default,
-            "AttributeError"
-        );
+        throw Fault($"{state.ClsName} has no attribute '{state.Name}'", default, "AttributeError");
     }
 
     /// <summary>
@@ -4035,7 +4185,15 @@ internal static class PythonEnum
         PythonValue? getter,
         PythonValue? setter,
         PythonValue? deleter
-    ) => MakeProperty(new PropertyState { Fget = getter, Fset = setter, Fdel = deleter });
+    ) =>
+        MakeProperty(
+            new PropertyState
+            {
+                Fget = getter,
+                Fset = setter,
+                Fdel = deleter,
+            }
+        );
 
     private static PythonManagedObjectValue MakeProperty(PropertyState state)
     {
@@ -4212,16 +4370,15 @@ internal static class PythonEnum
             return null;
         }
 
-        if (index is PythonTextValue text && TryLookupName(MemberMapOf(type), text.Value, out var member))
+        if (
+            index is PythonTextValue text
+            && TryLookupName(MemberMapOf(type), text.Value, out var member)
+        )
         {
             return member;
         }
 
-        throw Fault(
-            $"{index.ToRepresentationString()}",
-            span,
-            "KeyError"
-        );
+        throw Fault($"{index.ToRepresentationString()}", span, "KeyError");
     }
 
     /// <summary>`value in EnumClass`.</summary>
