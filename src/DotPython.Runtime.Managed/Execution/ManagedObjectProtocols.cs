@@ -841,10 +841,21 @@ internal static class ManagedObjectProtocols
                     return new PythonBoundMethodValue(name, builtin, method);
                 }
 
+                var runtimeName = PythonBuiltinTypes.GetRuntimeTypeName(builtin);
+                if (name == "__hash__" && PythonSlotMethods.HasNoneHash(runtimeName))
+                {
+                    return PythonNoneValue.Instance;
+                }
+
+                if (PythonSlotMethods.TryGetForValue(runtimeName, name, out var slotFunction))
+                {
+                    return new PythonBoundMethodValue(name, builtin, slotFunction);
+                }
+
                 if (
                     PythonObjectMembers.TryGetValueMember(
                         builtin,
-                        PythonBuiltinTypes.GetRuntimeTypeName(builtin),
+                        runtimeName,
                         name,
                         out var objectValueMember
                     )

@@ -195,7 +195,7 @@ public sealed class ManagedPythonEngineTests
 
         var diagnostic = Assert.Single(result.Diagnostics);
         Assert.Equal("DPY4004", diagnostic.Code);
-        Assert.Equal("Division by zero.", diagnostic.Message);
+        Assert.Equal("division by zero", diagnostic.Message);
         Assert.Equal(
             new TextSpan(source.IndexOf("1 / 0", StringComparison.Ordinal), 5),
             diagnostic.Span

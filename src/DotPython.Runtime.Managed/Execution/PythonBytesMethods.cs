@@ -414,7 +414,7 @@ internal static class PythonBytesMethods
                 );
 
     private static PythonProtocolFunctionValue Split(string name, bool reverse) =>
-        new(
+        new PythonProtocolFunctionValue(
             name,
             (target, arguments) =>
             {
@@ -435,7 +435,7 @@ internal static class PythonBytesMethods
                     : SplitOnSeparator(value, separator, limit, reverse);
                 return new PythonListValue([.. pieces.Select(Wrap)]);
             }
-        );
+        ).WithSignature(["sep", "maxsplit"], [PythonNoneValue.Instance, null]);
 
     private static List<byte[]> SplitOnSeparator(
         byte[] value,
@@ -527,7 +527,7 @@ internal static class PythonBytesMethods
     }
 
     private static PythonProtocolFunctionValue SplitLines() =>
-        new(
+        new PythonProtocolFunctionValue(
             "splitlines",
             (target, arguments) =>
             {
@@ -536,7 +536,7 @@ internal static class PythonBytesMethods
                 var keepEnds = arguments.Count > 0 && ManagedObjectProtocols.IsTrue(arguments[0]);
                 return new PythonListValue([.. SplitLines(value, keepEnds).Select(Wrap)]);
             }
-        );
+        ).WithSignature(["keepends"], [null]);
 
     private static List<byte[]> SplitLines(byte[] value, bool keepEnds)
     {
@@ -711,7 +711,7 @@ internal static class PythonBytesMethods
         );
 
     private static PythonProtocolFunctionValue ExpandTabs() =>
-        new(
+        new PythonProtocolFunctionValue(
             "expandtabs",
             (target, arguments) =>
             {
@@ -737,7 +737,7 @@ internal static class PythonBytesMethods
                 }
                 return Wrap([.. result]);
             }
-        );
+        ).WithSignature(["tabsize"], [null]);
 
     private static PythonProtocolFunctionValue RemoveAffix(string name, bool prefix) =>
         new(
@@ -759,39 +759,128 @@ internal static class PythonBytesMethods
         );
 
     private static PythonProtocolFunctionValue Hex() =>
-        new(
-            "hex",
-            (target, arguments) =>
-            {
-                // `hex` reports its own arity the way CPython does rather than through
-                // the runtime's shared wording.
-                if (arguments.Count > 2)
-                {
-                    throw Fault(
-                        $"hex() takes at most 2 arguments ({arguments.Count} given)",
-                        "TypeError"
-                    );
-                }
-                var value = RequireBytes("hex", target!);
-                var separator = arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance;
-                var separatorText =
-                    separator is PythonNoneValue ? string.Empty : RequireText(separator);
-                // `bytes_per_sep` is validated for its length error before its value.
-                if (arguments.Count > 1)
-                    _ = RequireCount(arguments[1]);
-                return new PythonTextValue(RenderHex(value, separatorText));
-            }
-        );
+        new PythonProtocolFunctionValue("hex", InvokeHex, HexWithKeywords);
 
-    private static string RenderHex(byte[] value, string separator)
+    private static PythonTextValue InvokeHex(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> arguments
+    )
     {
-        if (separator.Length == 0)
+        // `hex` reports its own arity the way CPython does rather than through the
+        // runtime's shared wording.
+        if (arguments.Count > 2)
+            throw Fault($"hex() takes at most 2 arguments ({arguments.Count} given)", "TypeError");
+        var separator = arguments.Count > 0 ? RequireSeparator(arguments[0]) : string.Empty;
+        var perSeparator = arguments.Count > 1 ? RequireSeparatorCount(arguments[1]) : 1;
+        return Render(target, separator, perSeparator);
+    }
+
+    /// <summary>
+    /// A separator is one character, given as text or as a byte; `bytes_per_sep` then groups
+    /// that many bytes per separator, from the right when positive and from the left when
+    /// negative.
+    /// </summary>
+    private static PythonTextValue Render(PythonValue? target, string separator, int perSeparator)
+    {
+        var value = RequireBytes("hex", target!);
+        return new PythonTextValue(
+            RenderHex(value, separator, separator.Length == 0 ? 0 : perSeparator)
+        );
+    }
+
+    /// <summary>
+    /// `hex(sep=…, bytes_per_sep=…)`: the separator may be omitted, so it is bound by hand
+    /// rather than through a signature whose default would be indistinguishable from an
+    /// explicit `None` — which CPython refuses.
+    /// </summary>
+    private static PythonTextValue HexWithKeywords(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    )
+    {
+        var slots = new PythonValue?[2];
+        for (var index = 0; index < positional.Count && index < slots.Length; index++)
+            slots[index] = positional[index];
+        for (var index = 0; index < names.Count; index++)
+        {
+            var slot = names[index] switch
+            {
+                "sep" => 0,
+                "bytes_per_sep" => 1,
+                _ => -1,
+            };
+            if (slot < 0)
+                throw Fault(
+                    $"hex() got an unexpected keyword argument '{names[index]}'",
+                    "TypeError"
+                );
+            slots[slot] = values[index];
+        }
+        var separator = slots[0] is null ? string.Empty : RequireSeparator(slots[0]!);
+        var perSeparator = slots[1] is null ? 1 : RequireSeparatorCount(slots[1]!);
+        return Render(target, separator, perSeparator);
+    }
+
+    /// <summary>`bytes_per_sep`, whose sign chooses the end the groups align to.</summary>
+    private static int RequireSeparatorCount(PythonValue value) =>
+        value switch
+        {
+            PythonWholeNumberValue whole => (int)
+                System.Numerics.BigInteger.Clamp(whole.Value, int.MinValue, int.MaxValue),
+            PythonTruthValue truth => truth.Value ? 1 : 0,
+            _ => throw Fault(
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted "
+                    + "as an integer",
+                "TypeError"
+            ),
+        };
+
+    /// <summary>
+    /// One separator character, as a str or a bytes-like object. Anything else reports the
+    /// length error CPython raises, since the length is what it inspects first.
+    /// </summary>
+    private static string RequireSeparator(PythonValue value)
+    {
+        // A byte is one character in this range, so a single-byte separator is that
+        // character; anything that is not text or bytes reports the length error CPython
+        // raises, because the length is what it inspects first.
+        var text = ManagedObjectProtocols.TryGetByteContent(value, out var contents)
+            ? contents.Length == 1
+                ? ((char)contents[0]).ToString()
+                : string.Empty
+            : RequireText(value);
+        if (PythonTextTraversal.Count(text, default) != 1)
+            throw Fault("sep must be length 1.", "ValueError");
+        return text;
+    }
+
+    private static string RenderHex(byte[] value, string separator, int bytesPerSeparator)
+    {
+        if (
+            separator.Length == 0
+            || bytesPerSeparator == 0
+            || Math.Abs(bytesPerSeparator) >= value.Length
+        )
             return Convert.ToHexStringLower(value);
+        // A positive count aligns its groups to the end, so the first one may be short.
+        var perSeparator = Math.Abs(bytesPerSeparator);
         var builder = new System.Text.StringBuilder(value.Length * 3);
         for (var index = 0; index < value.Length; index++)
         {
             if (index != 0)
-                builder.Append(separator);
+            {
+                // A positive count aligns its groups to the end, so the first group may be
+                // short; a negative one groups from the start, and a partial last group
+                // simply ends the text.
+                var boundary =
+                    bytesPerSeparator > 0
+                        ? (value.Length - index) % perSeparator == 0
+                        : index % perSeparator == 0;
+                if (boundary)
+                    builder.Append(separator);
+            }
             builder.Append(
                 value[index].ToString("x2", System.Globalization.CultureInfo.InvariantCulture)
             );
@@ -808,7 +897,7 @@ internal static class PythonBytesMethods
             );
 
     private static PythonProtocolFunctionValue Translate() =>
-        new(
+        new PythonProtocolFunctionValue(
             "translate",
             (target, arguments) =>
             {
@@ -834,7 +923,7 @@ internal static class PythonBytesMethods
                 }
                 return Wrap([.. result]);
             }
-        );
+        ).WithSignature(["table"], [null], positionalOnly: 1);
 
     // ---- type-level methods -----------------------------------------------------------------
 

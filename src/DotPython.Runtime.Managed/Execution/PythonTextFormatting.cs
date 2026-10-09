@@ -13,7 +13,9 @@ internal static class PythonTextFormatting
 {
     internal static string FormatPercent(string template, PythonValue operand, TextSpan span)
     {
-        var usesMapping = operand is PythonDictionaryValue && TemplateUsesMappingKeys(template);
+        var usesMapping = TemplateUsesMappingKeys(template);
+        if (usesMapping && operand is not PythonDictionaryValue)
+            throw Fault("format requires a mapping", span, "TypeError");
         PythonValue[] arguments = operand switch
         {
             _ when usesMapping => [],
@@ -35,7 +37,7 @@ internal static class PythonTextFormatting
 
             if (position >= template.Length)
             {
-                throw Fault("Incomplete format.", span);
+                throw Fault("incomplete format", span, "ValueError");
             }
 
             if (template[position] == '%')
@@ -51,7 +53,7 @@ internal static class PythonTextFormatting
                 var close = template.IndexOf(')', position + 1);
                 if (close < 0)
                 {
-                    throw Fault("Incomplete format key.", span);
+                    throw Fault("incomplete format key", span, "ValueError");
                 }
 
                 mappingKey = template[(position + 1)..close];
@@ -154,7 +156,7 @@ internal static class PythonTextFormatting
 
             if (position >= template.Length)
             {
-                throw Fault("Incomplete format.", span);
+                throw Fault("incomplete format", span, "ValueError");
             }
 
             var conversion = template[position++];
@@ -167,16 +169,20 @@ internal static class PythonTextFormatting
                 'c' => FormatCharacter(value, span),
                 'd' or 'i' or 'u' => FormatPercentInteger(
                     value,
-                    10,
-                    upper: false,
+                    conversion,
                     alternate: false,
                     showSign,
                     spaceSign,
                     span
                 ),
-                'o' => FormatPercentInteger(value, 8, false, alternate, showSign, spaceSign, span),
-                'x' => FormatPercentInteger(value, 16, false, alternate, showSign, spaceSign, span),
-                'X' => FormatPercentInteger(value, 16, true, alternate, showSign, spaceSign, span),
+                'o' or 'x' or 'X' => FormatPercentInteger(
+                    value,
+                    conversion,
+                    alternate,
+                    showSign,
+                    spaceSign,
+                    span
+                ),
                 'e' or 'E' or 'f' or 'F' or 'g' or 'G' => FormatPercentFloating(
                     value,
                     conversion,
@@ -187,9 +193,10 @@ internal static class PythonTextFormatting
                     span
                 ),
                 _ => throw Fault(
-                    $"Unsupported format character '{conversion}' "
-                        + $"(0x{(int)conversion:x2}) at index {position - 1}.",
-                    span
+                    $"unsupported format character '{conversion}' "
+                        + $"(0x{(int)conversion:x2}) at index {position - 1}",
+                    span,
+                    "ValueError"
                 ),
             };
 
@@ -221,7 +228,13 @@ internal static class PythonTextFormatting
             builder.Append(text);
         }
 
-        if (mapping is null && argumentIndex < arguments.Length)
+        // A mapping is an operand in its own right, and one the template did not use is
+        // not a leftover; only positional arguments are counted.
+        if (
+            mapping is null
+            && operand is not PythonDictionaryValue
+            && argumentIndex < arguments.Length
+        )
         {
             throw Fault("not all arguments converted during string formatting", span, "TypeError");
         }
@@ -277,13 +290,13 @@ internal static class PythonTextFormatting
         return arguments[argumentIndex++];
     }
 
-    private static int RequireFormatInteger(PythonValue value, TextSpan span) =>
+    internal static int RequireFormatInteger(PythonValue value, TextSpan span) =>
         value switch
         {
             PythonWholeNumberValue whole
                 when whole.Value >= int.MinValue && whole.Value <= int.MaxValue => (int)whole.Value,
             PythonTruthValue truth => truth.Value ? 1 : 0,
-            _ => throw Fault("* wants int.", span, "TypeError"),
+            _ => throw Fault("* wants int", span, "TypeError"),
         };
 
     private static string FormatCharacter(PythonValue value, TextSpan span)
@@ -309,16 +322,22 @@ internal static class PythonTextFormatting
         }
     }
 
-    private static string FormatPercentInteger(
+    internal static string FormatPercentInteger(
         PythonValue value,
-        int radix,
-        bool upper,
+        char conversion,
         bool alternate,
         bool showSign,
         bool spaceSign,
         TextSpan span
     )
     {
+        var radix = conversion switch
+        {
+            'o' => 8,
+            'x' or 'X' => 16,
+            _ => 10,
+        };
+        var upper = conversion == 'X';
         var number = value switch
         {
             PythonWholeNumberValue whole => whole.Value,
@@ -327,8 +346,11 @@ internal static class PythonTextFormatting
                 Math.Truncate(floating.Value)
             ),
             _ => throw Fault(
-                $"{(radix == 10 ? "%d" : "%x")} format: a real number is required, not "
-                    + $"{ManagedObjectProtocols.GetTypeName(value)}.",
+                radix == 10
+                    ? $"%{conversion} format: a real number is required, not "
+                        + ManagedObjectProtocols.GetTypeName(value)
+                    : $"%{conversion} format: an integer is required, not "
+                        + ManagedObjectProtocols.GetTypeName(value),
                 span,
                 "TypeError"
             ),
@@ -346,7 +368,7 @@ internal static class PythonTextFormatting
         return ApplySign(digits, number.Sign < 0, showSign, spaceSign);
     }
 
-    private static string FormatPercentFloating(
+    internal static string FormatPercentFloating(
         PythonValue value,
         char conversion,
         int precision,
@@ -362,8 +384,7 @@ internal static class PythonTextFormatting
             PythonWholeNumberValue whole => (double)whole.Value,
             PythonTruthValue truth => truth.Value ? 1d : 0d,
             _ => throw Fault(
-                "A float is required for floating-point formatting, not "
-                    + $"{ManagedObjectProtocols.GetTypeName(value)}.",
+                "float argument required, not " + ManagedObjectProtocols.GetTypeName(value),
                 span,
                 "TypeError"
             ),

@@ -325,7 +325,7 @@ public sealed class ManagedPythonModuleRuntimeTests
         );
 
         Assert.Equal(BigInteger.Zero, result);
-        Assert.Equal($"Division by zero.{Environment.NewLine}", output.ToString());
+        Assert.Equal($"division by zero{Environment.NewLine}", output.ToString());
     }
 
     [Fact]

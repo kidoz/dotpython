@@ -35,6 +35,33 @@ internal static class PythonSlotMethods
     internal static bool TryGet(string typeName, string name, out Slot slot) =>
         Slots.TryGetValue((typeName, name), out slot);
 
+    /// <summary>
+    /// The slot a *value* of this type answers, which is the same function the type object
+    /// publishes. A wrapper refuses keywords with its own wording, as it does when unbound.
+    /// </summary>
+    internal static bool TryGetForValue(
+        string typeName,
+        string name,
+        out PythonProtocolFunctionValue function
+    )
+    {
+        // A bool answers the int slots.
+        var ownerName = typeName == "bool" ? "int" : typeName;
+        if (!Slots.TryGetValue((ownerName, name), out var slot))
+        {
+            function = null!;
+            return false;
+        }
+        function = slot.IsWrapper
+            ? slot.Function with
+            {
+                InvokeWithKeywords = (_, _, _, _) =>
+                    throw Fault($"wrapper {name}() takes no keyword arguments"),
+            }
+            : slot.Function;
+        return true;
+    }
+
     /// <summary>Whether the member is `object`'s, inherited by a type that has no own one.</summary>
     internal static bool IsObjectSlot(string typeName, string name) =>
         ObjectSlots.Contains((typeName, name));
@@ -573,6 +600,110 @@ internal static class PythonSlotMethods
             Wrapper(type, "__pos__", 0, (receiver, _) => Positive(receiver));
         }
 
+        // The numeric operators, forwards and reflected. A reflected call swaps the
+        // operands; the result is the one the operator itself produces.
+        foreach (
+            var (name, opCode, reflected) in new (
+                string Name,
+                PythonOpCode OpCode,
+                bool Reflected
+            )[]
+            {
+                ("__add__", PythonOpCode.BinaryAdd, false),
+                ("__radd__", PythonOpCode.BinaryAdd, true),
+                ("__sub__", PythonOpCode.BinarySubtract, false),
+                ("__rsub__", PythonOpCode.BinarySubtract, true),
+                ("__mul__", PythonOpCode.BinaryMultiply, false),
+                ("__rmul__", PythonOpCode.BinaryMultiply, true),
+                ("__truediv__", PythonOpCode.BinaryTrueDivide, false),
+                ("__rtruediv__", PythonOpCode.BinaryTrueDivide, true),
+                ("__floordiv__", PythonOpCode.BinaryFloorDivide, false),
+                ("__rfloordiv__", PythonOpCode.BinaryFloorDivide, true),
+                ("__mod__", PythonOpCode.BinaryModulo, false),
+                ("__rmod__", PythonOpCode.BinaryModulo, true),
+                ("__pow__", PythonOpCode.BinaryPower, false),
+                ("__rpow__", PythonOpCode.BinaryPower, true),
+            }
+        )
+        {
+            var operatorCode = opCode;
+            var isReflected = reflected;
+            foreach (var type in new[] { "int", "float" })
+            {
+                var owner = type;
+                Wrapper(
+                    type,
+                    name,
+                    1,
+                    (receiver, arguments) =>
+                        !AcceptsOperand(owner, arguments[0]) ? PythonNotImplementedValue.Instance
+                        : isReflected
+                            ? PythonVirtualMachine.ApplyBinaryOperator(
+                                operatorCode,
+                                arguments[0],
+                                receiver,
+                                default
+                            )
+                        : PythonVirtualMachine.ApplyBinaryOperator(
+                            operatorCode,
+                            receiver,
+                            arguments[0],
+                            default
+                        )
+                );
+            }
+        }
+
+        foreach (
+            var (name, opCode) in new (string, PythonOpCode)[]
+            {
+                ("__and__", PythonOpCode.BinaryAnd),
+                ("__or__", PythonOpCode.BinaryOr),
+                ("__xor__", PythonOpCode.BinaryXor),
+                ("__lshift__", PythonOpCode.BinaryLeftShift),
+                ("__rshift__", PythonOpCode.BinaryRightShift),
+            }
+        )
+        {
+            Wrapper(
+                "int",
+                name,
+                1,
+                (receiver, arguments) =>
+                    !AcceptsOperand("int", arguments[0])
+                        ? PythonNotImplementedValue.Instance
+                        : PythonVirtualMachine.ApplyBinaryOperator(
+                            opCode,
+                            receiver,
+                            arguments[0],
+                            default
+                        )
+            );
+        }
+
+        foreach (var type in new[] { "int", "float" })
+        {
+            var owner = type;
+            Wrapper(
+                type,
+                "__divmod__",
+                1,
+                (receiver, arguments) =>
+                    !AcceptsOperand(owner, arguments[0])
+                        ? PythonNotImplementedValue.Instance
+                        : PythonVirtualMachine.DivideModulo([receiver, arguments[0]], default)
+            );
+            Wrapper(
+                type,
+                "__rdivmod__",
+                1,
+                (receiver, arguments) =>
+                    !AcceptsOperand(owner, arguments[0])
+                        ? PythonNotImplementedValue.Instance
+                        : PythonVirtualMachine.DivideModulo([arguments[0], receiver], default)
+            );
+        }
+
         Wrapper(
             "int",
             "__index__",
@@ -884,6 +1015,15 @@ internal static class PythonSlotMethods
         receiver is PythonFloatingPointValue floating
             ? floating
             : PythonWholeNumberValue.Create(Integer(receiver));
+
+    /// <summary>
+    /// Whether a numeric slot takes this operand. An operand of the wrong kind is what makes
+    /// the slot answer `NotImplemented`, which is how a reflected call gets its turn; a
+    /// numeric operand that the operation cannot complete still raises.
+    /// </summary>
+    private static bool AcceptsOperand(string type, PythonValue other) =>
+        other is PythonWholeNumberValue or PythonTruthValue
+        || type == "float" && other is PythonFloatingPointValue;
 
     /// <summary>The method each in-place set operator is equivalent to.</summary>
     private static string SetInPlaceMethod(string name) =>

@@ -6944,7 +6944,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
-    private static PythonTupleValue DivideModulo(
+    internal static PythonTupleValue DivideModulo(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
     )
@@ -6966,7 +6966,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             if (rightWhole.Value.IsZero)
             {
-                throw Fault("DPY4004", "Division by zero.", span);
+                throw Fault("DPY4004", "division by zero", span);
             }
 
             var quotient = FloorDivide(leftWhole.Value, rightWhole.Value);
@@ -6985,7 +6985,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             var rightDouble = ToDouble(right);
             if (rightDouble == 0)
             {
-                throw Fault("DPY4004", "Division by zero.", span);
+                throw Fault("DPY4004", "division by zero", span);
             }
 
             var quotient = Math.Floor(leftDouble / rightDouble);
@@ -8162,6 +8162,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             }
         }
 
+        if (
+            opCode == PythonOpCode.BinaryModulo
+            && ManagedObjectProtocols.TryGetByteContent(left, out var byteTemplate)
+            && left is PythonByteSequenceValue or PythonByteArrayValue
+        )
+        {
+            var formatted = PythonBytesFormatting.FormatPercent(byteTemplate, right, span);
+            return left is PythonByteArrayValue
+                ? new PythonByteArrayValue([.. formatted.Value])
+                : formatted;
+        }
+
         if (opCode == PythonOpCode.BinaryModulo && left is PythonTextValue formatTemplate)
         {
             return new PythonTextValue(
@@ -8445,7 +8457,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             && right.IsZero
         )
         {
-            throw Fault("DPY4004", "Division by zero.", span);
+            throw Fault("DPY4004", "division by zero", span);
         }
 
         return opCode switch
@@ -8544,7 +8556,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             && right == 0
         )
         {
-            throw Fault("DPY4004", "Division by zero.", span);
+            throw Fault("DPY4004", "division by zero", span);
         }
 
         return opCode switch
@@ -8573,7 +8585,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     {
         if (opCode == PythonOpCode.BinaryTrueDivide && right == Complex.Zero)
         {
-            throw Fault("DPY4004", "Division by zero.", span);
+            throw Fault("DPY4004", "division by zero", span);
         }
 
         return opCode switch
