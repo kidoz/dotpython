@@ -5,7 +5,7 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal static class PythonBytesConstruction
 {
-    private const int MaximumSize = 10_000_000;
+    internal const int MaximumSize = 10_000_000;
     private static readonly string[] Parameters = ["source", "encoding", "errors"];
 
     internal static PythonByteSequenceValue Construct(
@@ -140,7 +140,11 @@ internal static class PythonBytesConstruction
         return FromIterable(source, span);
     }
 
-    private static PythonByteSequenceValue FromIterable(PythonValue source, TextSpan span)
+    /// <summary>
+    /// The iterable conversion on its own, without the size interpretation `bytes` gives an
+    /// integer. `int.from_bytes` accepts exactly this set of sources.
+    /// </summary>
+    internal static PythonByteSequenceValue FromIterable(PythonValue source, TextSpan span)
     {
         var result = new List<byte>();
         bool smallBuffer;

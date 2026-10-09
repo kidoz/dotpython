@@ -620,6 +620,12 @@ internal static class PythonBuiltinMethods
         ["copy"] = Set("copy", 0, 0, (set, _) => set),
     };
 
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> NumberMethods =
+        PythonIntMethods.CreateTable();
+
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> FloatMethods =
+        PythonFloatMethods.CreateTable();
+
     internal static bool TryGet(
         PythonValue target,
         string name,
@@ -636,6 +642,8 @@ internal static class PythonBuiltinMethods
             PythonTupleValue => TupleMethods,
             PythonSetValue { IsFrozen: true } => FrozenSetMethods,
             PythonSetValue => SetMethods,
+            PythonWholeNumberValue or PythonTruthValue => NumberMethods,
+            PythonFloatingPointValue => FloatMethods,
             _ => null,
         };
         if (table is not null && table.TryGetValue(name, out var found))
@@ -840,7 +848,10 @@ internal static class PythonBuiltinMethods
                 or PythonListValue
                 or PythonDictionaryValue
                 or PythonTupleValue
-                or PythonSetValue;
+                or PythonSetValue
+                or PythonWholeNumberValue
+                or PythonTruthValue
+                or PythonFloatingPointValue;
 
     private static PythonProtocolFunctionValue Text(
         string name,

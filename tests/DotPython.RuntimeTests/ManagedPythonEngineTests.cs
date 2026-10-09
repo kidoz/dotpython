@@ -1604,7 +1604,7 @@ public sealed class ManagedPythonEngineTests
     [InlineData("print({[]: 1})", "DPY4014")]
     [InlineData("for item in 1: print(item)", "DPY4015")]
     [InlineData("mapping = {'a': 1}\nfor key in mapping: mapping['b'] = 2", "DPY4016")]
-    [InlineData("value = 1\nprint(value.real)", "DPY4023")]
+    [InlineData("value = 1\nprint(value.to_string)", "DPY4023")]
     public void Execute_ReturnsRuntimeDiagnostics(string code, string expectedCode)
     {
         var result = new ManagedPythonEngine().Execute(

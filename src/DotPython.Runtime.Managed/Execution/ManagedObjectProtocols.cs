@@ -159,6 +159,28 @@ internal static class ManagedObjectProtocols
             : PythonTypeProtocols.TryGetAttribute(name, out attribute);
     }
 
+    /// <summary>
+    /// The numeric members are getset descriptors with no setter, so writing or deleting one
+    /// reports the defining type rather than the target: a bool says `int`.
+    /// </summary>
+    private static void RejectReadOnlyNumberMember(PythonValue target, string name, TextSpan span)
+    {
+        var owner = target switch
+        {
+            PythonWholeNumberValue
+            or PythonTruthValue when PythonIntMethods.IsReadOnlyMember(name) => "int",
+            PythonFloatingPointValue when PythonFloatMethods.IsReadOnlyMember(name) => "float",
+            _ => null,
+        };
+        if (owner is not null)
+            throw Fault(
+                "DPY4023",
+                $"attribute '{name}' of '{owner}' objects is not writable",
+                span,
+                "AttributeError"
+            );
+    }
+
     private static void RejectBuiltinTypeMutation(
         PythonValue target,
         string name,
@@ -429,6 +451,10 @@ internal static class ManagedObjectProtocols
                 return PythonBytesMethods.CreateFromHex();
             case PythonBuiltinTypeValue { Name: "bytes" } when name == "maketrans":
                 return PythonBytesMethods.CreateMakeTrans();
+            case PythonBuiltinTypeValue { Name: "int" } when name == "from_bytes":
+                return PythonIntMethods.CreateFromBytes();
+            case PythonBuiltinTypeValue { Name: "float" } when name == "fromhex":
+                return PythonFloatMethods.CreateFromHex();
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
             case PythonExceptionValue { ManagedType: { } exceptionClass } exception
@@ -808,6 +834,16 @@ internal static class ManagedObjectProtocols
                     return new PythonBoundMethodValue(name, builtin, method);
                 }
 
+                // The numeric members are answered from the value itself, so they never
+                // reach a method table: `(5).real` is `5` and `(1.5).imag` is `0.0`.
+                if (
+                    PythonIntMethods.TryGetMember(builtin, name, out var member)
+                    || PythonFloatMethods.TryGetMember(builtin, name, out member)
+                )
+                {
+                    return member;
+                }
+
                 // This case serves both a value and a class, so only a class reached here
                 // reports in CPython's `type object 'X'` form.
                 throw builtin is PythonBuiltinTypeValue builtinTarget
@@ -993,6 +1029,7 @@ internal static class ManagedObjectProtocols
         ArgumentNullException.ThrowIfNull(value);
 
         RejectBuiltinTypeMutation(target, name, "set", span);
+        RejectReadOnlyNumberMember(target, name, span);
         if (
             TryGetMetaclassAttribute(target, name, out _, out var metaclassDescriptor)
             && TrySetDescriptor(metaclassDescriptor, target, name, value, span)
@@ -1530,6 +1567,7 @@ internal static class ManagedObjectProtocols
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         RejectBuiltinTypeMutation(target, name, "set", span);
+        RejectReadOnlyNumberMember(target, name, span);
         if (
             TryGetMetaclassAttribute(target, name, out _, out var metaclassDescriptor)
             && TryDeleteDescriptor(metaclassDescriptor, target, name, span)
