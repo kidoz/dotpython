@@ -545,4 +545,112 @@ public sealed class FunctoolsCompatibilityTests
             attempt(lambda: c.meth.__isabstractmethod__)
             """
         );
+
+    [Fact]
+    public Task PartialMethodAppliesStoredArgumentsAndBindsDescriptors() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import functools as ft
+
+
+            def attempt(label, thunk):
+                try:
+                    print(label, "=>", thunk())
+                except Exception as error:
+                    print(label, "!!", type(error).__name__ + ":", error)
+
+
+            class C:
+                def base(self, *args, **kwargs):
+                    return (args, kwargs)
+
+                m = ft.partialmethod(base, 1, x=2)
+
+                @ft.partialmethod
+                def n(self, *args):
+                    return args
+
+
+            c = C()
+            print("calls:", c.m(3), c.m(3, y=4), C.m(c, 5), c.n(7), C.n(c, 8), c.m(4, x=9))
+            print(
+                "types:",
+                type(c.m).__name__,
+                type(c.m.func).__name__,
+                type(ft.partialmethod(len)).__name__,
+                type(ft.partialmethod(len)).__module__,
+            )
+            print("bound:", c.m.__self__ is c, c.m.func.__self__ is c)
+            print(
+                "fields:",
+                ft.partialmethod(len).func.__name__,
+                ft.partialmethod(len).args,
+                ft.partialmethod(len).keywords,
+                repr(ft.partialmethod(len, 1, x=2)),
+            )
+            pm = ft.partialmethod(C.base, 1)
+            print("pm-dict:", sorted(pm.__dict__), pm._phcount, pm._merger)
+            print("abstract:", ft.partialmethod(C.base).__isabstractmethod__)
+
+
+            class Marker:
+                __isabstractmethod__ = True
+
+                def __call__(self, *args):
+                    return args
+
+
+            print("abstract-marker:", ft.partialmethod(Marker()).__isabstractmethod__)
+            attempt("non-callable", lambda: ft.partialmethod(5))
+            attempt("no-args", lambda: ft.partialmethod())
+            attempt("kw-func", lambda: ft.partialmethod(func=C.base))
+            attempt("kw-only-extra", lambda: ft.partialmethod(x=1))
+            nested = ft.partialmethod(ft.partialmethod(len, 2), 4)
+            print("nested:", nested.func.__name__, nested.args, nested.keywords, repr(nested))
+            nested2 = ft.partialmethod(ft.partialmethod(C.base, 2, y=3), 4, y=5)
+            print("nested2:", nested2.func.__name__, nested2.args, nested2.keywords)
+
+
+            class M:
+                m = nested2
+
+
+            print("nested-call:", M().m(6))
+
+
+            class D:
+                pass
+
+
+            D.pm2 = ft.partialmethod(C.base, 7)
+            d = D()
+            print("mutated:", d.pm2(8))
+            raw = D.__dict__["pm2"]
+            raw.func = C.base
+            raw.args = (9,)
+            raw.keywords = {"z": 1}
+            print("mutated2:", d.pm2(8), raw.args, raw.keywords)
+
+
+            class S:
+                sm = ft.partialmethod(staticmethod(lambda *args: ("s", args)), 1)
+
+                @ft.partialmethod
+                @staticmethod
+                def sm2(*args):
+                    return ("s2", args)
+
+
+            s = S()
+            print("static:", s.sm(2), S.sm(3), s.sm2(4), S.sm2(5))
+
+
+            class CM:
+                cm = ft.partialmethod(classmethod(lambda cls, *args: (cls.__name__, args)), 1)
+
+
+            print("classmethod:", CM().cm(2), CM.cm(3), CM.cm.__self__ is CM)
+            print("all:", "partialmethod" in ft.__all__)
+            """
+        );
 }

@@ -385,6 +385,8 @@ internal static class ManagedObjectProtocols
                 return GetStreamAttribute(stream, name, span);
             case PythonBoundUserMethodValue boundUserMethod when name == "__name__":
                 return new PythonTextValue(boundUserMethod.Function.Name);
+            case PythonBoundUserMethodValue boundUserMethod when name == "__self__":
+                return boundUserMethod.Target;
             case PythonBoundMethodValue boundMethod when name == "__name__":
                 return new PythonTextValue(boundMethod.Name);
             case PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } boundMethod

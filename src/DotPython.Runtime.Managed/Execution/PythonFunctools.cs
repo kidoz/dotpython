@@ -46,6 +46,27 @@ internal static class PythonFunctools
         globals.SetValue("cmp_to_key", CreateCmpToKey());
         globals.SetValue("singledispatch", CreateSingleDispatch());
         globals.SetValue("singledispatchmethod", SingleDispatchMethodType);
+        globals.SetValue("partialmethod", PartialMethodType);
+        // CPython 3.14's own `__all__`; `Placeholder` is not part of this slice.
+        globals.SetValue(
+            "__all__",
+            new PythonTupleValue([
+                new PythonTextValue("update_wrapper"),
+                new PythonTextValue("wraps"),
+                new PythonTextValue("WRAPPER_ASSIGNMENTS"),
+                new PythonTextValue("WRAPPER_UPDATES"),
+                new PythonTextValue("total_ordering"),
+                new PythonTextValue("cache"),
+                new PythonTextValue("cmp_to_key"),
+                new PythonTextValue("lru_cache"),
+                new PythonTextValue("reduce"),
+                new PythonTextValue("partial"),
+                new PythonTextValue("partialmethod"),
+                new PythonTextValue("singledispatch"),
+                new PythonTextValue("singledispatchmethod"),
+                new PythonTextValue("cached_property"),
+            ])
+        );
     }
 
     /// <summary>CPython 3.14's default <c>WRAPPER_ASSIGNMENTS</c>.</summary>
@@ -2626,6 +2647,381 @@ internal static class PythonFunctools
 
         throw Error($"{function}() missing required argument '{parameter}' (pos 1)", span);
     }
+
+    // -------------------------------------------------------------------------
+    // partialmethod
+    // -------------------------------------------------------------------------
+
+    private static PythonManagedTypeValue? _partialMethodType;
+
+    private static PythonManagedTypeValue PartialMethodType =>
+        _partialMethodType ??= CreatePartialMethodType();
+
+    private static PythonManagedTypeValue CreatePartialMethodType()
+    {
+        var type = new PythonManagedTypeValue("partialmethod")
+        {
+            Module = Module,
+            QualName = "partialmethod",
+        };
+        type.Attributes["__new__"] = new PythonProtocolFunctionValue(
+            "__new__",
+            (_, arguments) => NewPartialMethod(type, arguments, [], []),
+            (_, arguments, names, values) => NewPartialMethod(type, arguments, names, values)
+        );
+        type.Attributes["__module__"] = new PythonTextValue(Module);
+        // The descriptor-get slot receives the partialmethod, the instance and the
+        // owner; an explicit `descriptor.__get__(obj, cls)` call arrives bound with
+        // the descriptor as the receiver.
+        type.Attributes["__get__"] = new PythonProtocolFunctionValue(
+            "__get__",
+            (self, arguments) => GetPartialMethodSlot(self, arguments, default),
+            (self, arguments, _, _) => GetPartialMethodSlot(self, arguments, default)
+        );
+        type.Attributes["__repr__"] = new PythonProtocolFunctionValue(
+            "__repr__",
+            (self, _) => new PythonTextValue(RepresentPartialMethod(self))
+        );
+        type.Attributes["__isabstractmethod__"] = ReadOnlyMember(
+            "__isabstractmethod__",
+            self =>
+                TryGetAttribute(
+                    PartialMethodMember(PartialMethodObject(self), "func"),
+                    "__isabstractmethod__",
+                    out var flag
+                )
+                    ? flag
+                    : PythonTruthValue.False
+        );
+        return type;
+    }
+
+    /// <summary>
+    /// CPython 3.14's `_partial_new`: `func` is positional-only, the extra arguments
+    /// and keywords are stored for later application, and a nested `partialmethod`
+    /// is flattened the way `partial` flattens a nested `partial`.
+    /// </summary>
+    private static PythonManagedObjectValue NewPartialMethod(
+        PythonManagedTypeValue type,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
+    )
+    {
+        var argumentStart = 0;
+        if (
+            positional.Count > 0
+            && positional[0] is PythonManagedTypeValue leading
+            && ReferenceEquals(leading, type)
+        )
+        {
+            argumentStart = 1;
+        }
+
+        if (positional.Count <= argumentStart)
+        {
+            // CPython's unfilled positional-only `func` reports the implementation
+            // function's own name, and the message reads the same here.
+            throw Error("_partial_new() missing 1 required positional argument: 'func'", default);
+        }
+
+        var function = positional[argumentStart];
+        // `func` may be any callable, or a descriptor (`classmethod`, `staticmethod`,
+        // `property`, ...) that binding turns into one.
+        if (!ManagedObjectProtocols.IsCallable(function) && !HasDescriptorGet(function))
+        {
+            throw Error(
+                $"the first argument {function.ToRepresentationString()} must be a callable "
+                    + "or a descriptor",
+                default
+            );
+        }
+
+        argumentStart++;
+        var stored = new List<PythonValue>();
+        var keywords = new PythonDictionaryValue([]);
+        if (
+            function is PythonManagedObjectValue nested
+            && ReferenceEquals(nested.Type, PartialMethodType)
+        )
+        {
+            function = PartialMethodMember(nested, "func");
+            stored.AddRange(PartialMethodArgumentList(nested));
+            foreach (var item in PartialMethodKeywordDictionary(nested).Items)
+            {
+                SetKeyword(keywords, ((PythonTextValue)item.Key).Value, item.Value);
+            }
+        }
+
+        for (var index = argumentStart; index < positional.Count; index++)
+        {
+            stored.Add(positional[index]);
+        }
+
+        for (var index = 0; index < keywordNames.Count; index++)
+        {
+            SetKeyword(keywords, keywordNames[index], keywordValues[index]);
+        }
+
+        var method = new PythonManagedObjectValue(type);
+        method.Attributes["func"] = function;
+        method.Attributes["args"] = new PythonTupleValue([.. stored]);
+        method.Attributes["keywords"] = keywords;
+        // CPython 3.14 keeps its placeholder bookkeeping on the instance; without
+        // `Placeholder` support both members hold the state it starts with.
+        method.Attributes["_phcount"] = new PythonWholeNumberValue(0);
+        method.Attributes["_merger"] = PythonNoneValue.Instance;
+        return method;
+    }
+
+    /// <summary>
+    /// The <c>__get__</c> entry point: the descriptor machinery invokes the slot
+    /// unbound, as <c>(value, instance, owner)</c>, while an explicit
+    /// <c>descriptor.__get__(obj, cls)</c> call arrives bound with the descriptor
+    /// as the receiver.
+    /// </summary>
+    private static PythonValue GetPartialMethodSlot(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count >= 3)
+        {
+            return GetPartialMethod(arguments[0], arguments[1], arguments[2], span);
+        }
+
+        var bound = BindNamed(
+            "partialmethod.__get__",
+            arguments,
+            [],
+            [],
+            ["instance", "owner"],
+            [null, null],
+            span
+        );
+        var owner = bound[1] ?? PythonNoneValue.Instance;
+        if (self is null)
+        {
+            return GetPartialMethod(
+                arguments[0],
+                arguments.Count > 1 ? arguments[1] : PythonNoneValue.Instance,
+                owner,
+                span
+            );
+        }
+
+        return GetPartialMethod(self, bound[0]!, owner, span);
+    }
+
+    /// <summary>
+    /// CPython asks the wrapped callable for a bound value first
+    /// (<c>func.__get__(obj, cls)</c>) and partials it whenever that produced a new
+    /// object; anything the binding leaves untouched falls back to instance-method
+    /// semantics.
+    /// </summary>
+    private static PythonValue GetPartialMethod(
+        PythonValue descriptor,
+        PythonValue instance,
+        PythonValue owner,
+        TextSpan span
+    )
+    {
+        var method = PartialMethodObject(descriptor);
+        var function = PartialMethodMember(method, "func");
+        var boundFunction = ManagedObjectProtocols.BindDescriptor(
+            function,
+            instance is PythonNoneValue ? null : instance,
+            owner,
+            span
+        );
+
+        if (!ReferenceEquals(boundFunction, function))
+        {
+            var arguments = new List<PythonValue> { boundFunction };
+            arguments.AddRange(PartialMethodArgumentList(method));
+            var names = new List<string>();
+            var values = new List<PythonValue>();
+            foreach (var item in PartialMethodKeywordDictionary(method).Items)
+            {
+                names.Add(((PythonTextValue)item.Key).Value);
+                values.Add(item.Value);
+            }
+
+            var partial = NewPartial(PartialType, arguments, names, values);
+            // CPython copies `__self__` off the value the descriptor returned and
+            // ignores a value that has none.
+            if (boundFunction is PythonBoundUserMethodValue boundUser)
+            {
+                partial.Attributes["__self__"] = boundUser.Target;
+            }
+            else if (TryGetAttribute(boundFunction, "__self__", out var boundTarget))
+            {
+                partial.Attributes["__self__"] = boundTarget;
+            }
+
+            return partial;
+        }
+
+        return PartialMethodMethod(method, instance);
+    }
+
+    /// <summary>
+    /// CPython's <c>_make_unbound_method</c>: a callable that takes the receiver as
+    /// its first argument and calls the wrapped function with the stored arguments
+    /// and keywords in front of the call's own.
+    /// </summary>
+    private static PythonValue PartialMethodMethod(
+        PythonManagedObjectValue method,
+        PythonValue instance
+    )
+    {
+        var unbound = new PythonProtocolFunctionValue(
+            "_method",
+            (self, arguments) => InvokePartialMethod(method, self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                InvokePartialMethod(method, self, arguments, names, values, default)
+        );
+
+        if (instance is PythonNoneValue)
+        {
+            // Class access leaves the wrapper unbound: it still takes the receiver
+            // as its first positional argument.
+            return unbound;
+        }
+
+        return new PythonBoundMethodValue("_method", instance, unbound);
+    }
+
+    private static PythonValue InvokePartialMethod(
+        PythonManagedObjectValue method,
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var arguments = new List<PythonValue>();
+        var callArguments = new List<PythonValue>(positional);
+        if (self is null)
+        {
+            if (callArguments.Count == 0)
+            {
+                throw Error(
+                    "_method() missing 1 required positional argument: 'cls_or_self'",
+                    span
+                );
+            }
+
+            arguments.Add(callArguments[0]);
+            callArguments.RemoveAt(0);
+        }
+        else
+        {
+            arguments.Add(self);
+        }
+
+        arguments.AddRange(PartialMethodArgumentList(method));
+        arguments.AddRange(callArguments);
+
+        // CPython merges `{**self.keywords, **keywords}`: the call's keywords win.
+        var keywords = PartialMethodKeywordDictionary(method);
+        var mergedNames = new List<string>();
+        var mergedValues = new List<PythonValue>();
+        foreach (var item in keywords.Items)
+        {
+            mergedNames.Add(((PythonTextValue)item.Key).Value);
+            mergedValues.Add(item.Value);
+        }
+
+        for (var index = 0; index < keywordNames.Count; index++)
+        {
+            var existing = mergedNames.IndexOf(keywordNames[index]);
+            if (existing >= 0)
+            {
+                mergedValues[existing] = keywordValues[index];
+            }
+            else
+            {
+                mergedNames.Add(keywordNames[index]);
+                mergedValues.Add(keywordValues[index]);
+            }
+        }
+
+        return Invoke(
+            PartialMethodMember(method, "func"),
+            arguments,
+            mergedNames,
+            mergedValues,
+            span
+        );
+    }
+
+    /// <summary>
+    /// <c>functools.partialmethod(func, ...)</c>; the stored arguments follow the
+    /// callable and the keywords print last, exactly as CPython's `_partial_repr`
+    /// renders them.
+    /// </summary>
+    private static string RepresentPartialMethod(PythonValue? self)
+    {
+        var method = PartialMethodObject(self);
+        var parts = new List<string> { Represent(PartialMethodMember(method, "func"), []) };
+        parts.AddRange(
+            PartialMethodArgumentList(method).Select(argument => Represent(argument, []))
+        );
+        parts.AddRange(
+            PartialMethodKeywordDictionary(method)
+                .Items.Select(item =>
+                    $"{((PythonTextValue)item.Key).Value}={Represent(item.Value, [])}"
+                )
+        );
+        return $"functools.partialmethod({string.Join(", ", parts)})";
+    }
+
+    /// <summary>
+    /// Whether the wrapped value carries a <c>__get__</c>, i.e. whether
+    /// <c>partialmethod</c> may wrap it even though it is not callable.
+    /// </summary>
+    private static bool HasDescriptorGet(PythonValue value) =>
+        value
+            is PythonDescriptorValue
+                or PythonPropertyValue
+                or PythonTypeMetadataDescriptorValue
+                or PythonUnicodeErrorDescriptorValue
+                or PythonStaticMethodValue
+                or PythonClassMethodValue
+        || TryGetAttribute(value, "__get__", out _);
+
+    private static PythonManagedObjectValue PartialMethodObject(PythonValue? target) =>
+        target is PythonManagedObjectValue method && ReferenceEquals(method.Type, PartialMethodType)
+            ? method
+            : throw Error(
+                "descriptor 'partialmethod' requires a 'functools.partialmethod' object",
+                default
+            );
+
+    private static PythonValue PartialMethodMember(PythonManagedObjectValue method, string name) =>
+        method.Attributes.TryGetValue(name, out var value)
+            ? value
+            : throw ManagedObjectProtocols.Fault(
+                "DPY4023",
+                $"'partialmethod' object has no attribute '{name}'",
+                default,
+                "AttributeError"
+            );
+
+    private static List<PythonValue> PartialMethodArgumentList(PythonManagedObjectValue method) =>
+        PartialMethodMember(method, "args") is PythonTupleValue tuple
+            ? [.. tuple.Elements]
+            : throw Error("partialmethod 'args' must be a tuple", default);
+
+    private static PythonDictionaryValue PartialMethodKeywordDictionary(
+        PythonManagedObjectValue method
+    ) =>
+        PartialMethodMember(method, "keywords") is PythonDictionaryValue keywords
+            ? keywords
+            : throw Error("partialmethod 'keywords' must be a dictionary", default);
 
     // -------------------------------------------------------------------------
     // Shared helpers

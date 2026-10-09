@@ -1018,6 +1018,167 @@ public sealed class FunctoolsExecutionTests
         );
     }
 
+    // -------------------------------------------------------------------------
+    // partialmethod
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void PartialMethodAppliesStoredArgumentsAndKeywords()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            class C:
+                def base(self, *args, **kwargs):
+                    return (args, kwargs)
+
+                m = ft.partialmethod(base, 1, x=2)
+
+                @ft.partialmethod
+                def n(self, *args):
+                    return args
+
+
+            c = C()
+            print(c.m(3), c.m(3, y=4), C.m(c, 5), c.n(7), C.n(c, 8), c.m(4, x=9))
+            print(
+                type(c.m).__name__,
+                type(c.m.func).__name__,
+                c.m.__self__ is c,
+                c.m.func.__self__ is c,
+            )
+            print(
+                ft.partialmethod(len).func.__name__,
+                ft.partialmethod(len).args,
+                ft.partialmethod(len).keywords,
+            )
+            print(repr(ft.partialmethod(len, 1, x=2)))
+            print(
+                sorted(ft.partialmethod(len).__dict__),
+                ft.partialmethod(len)._phcount,
+                ft.partialmethod(len)._merger,
+            )
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "((1, 3), {'x': 2}) ((1, 3), {'x': 2, 'y': 4}) ((1, 5), {'x': 2}) (7,) (8,) ((1, 4), {'x': 9})",
+                "partial method True True",
+                "len () {}",
+                "functools.partialmethod(<built-in function len>, 1, x=2)",
+                "['_merger', '_phcount', 'args', 'func', 'keywords'] 0 None"
+            ),
+            output
+        );
+    }
+
+    [Fact]
+    public void PartialMethodFlattensNestingWrapsDescriptorsAndMutates()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            def base(*args, **kwargs):
+                return (args, kwargs)
+
+
+            nested = ft.partialmethod(ft.partialmethod(base, 2, y=3), 4, y=5)
+            print(nested.func.__name__, nested.args, nested.keywords)
+
+
+            class M:
+                m = nested
+
+                def __repr__(self):
+                    return "<M>"
+
+
+            print(M().m(6))
+
+
+            class S:
+                sm = ft.partialmethod(staticmethod(lambda *args: ("s", args)), 1)
+
+                @ft.partialmethod
+                @staticmethod
+                def sm2(*args):
+                    return ("s2", args)
+
+
+            s = S()
+            print(s.sm(2), S.sm(3), s.sm2(4), S.sm2(5))
+
+
+            class CM:
+                cm = ft.partialmethod(classmethod(lambda cls, *args: (cls.__name__, args)), 1)
+
+
+            print(CM().cm(2), CM.cm(3), CM.cm.__self__ is CM)
+
+
+            class D:
+                pm = ft.partialmethod(base, 7)
+
+                def __repr__(self):
+                    return "<D>"
+
+
+            print(D().pm(8))
+            raw = D.__dict__["pm"]
+            raw.func = base
+            raw.args = (9,)
+            raw.keywords = {"z": 1}
+            print(D().pm(8), raw.args, raw.keywords)
+
+
+            class Marker:
+                __isabstractmethod__ = True
+
+                def __call__(self, *args):
+                    return args
+
+
+            print(
+                ft.partialmethod(Marker()).__isabstractmethod__,
+                ft.partialmethod(len).__isabstractmethod__,
+            )
+
+
+            def attempt(thunk):
+                try:
+                    thunk()
+                except Exception as error:
+                    print(type(error).__name__ + ":", error)
+
+
+            attempt(lambda: ft.partialmethod(5))
+            attempt(lambda: ft.partialmethod())
+            attempt(lambda: ft.partialmethod(func=base))
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "base (2, 4) {'y': 5}",
+                "((<M>, 2, 4, 6), {'y': 5})",
+                "('s', (1, 2)) ('s', (1, 3)) ('s2', (4,)) ('s2', (5,))",
+                "('CM', (1, 2)) ('CM', (1, 3)) True",
+                "((<D>, 7, 8), {})",
+                "((<D>, 9, 8), {'z': 1}) (9,) {'z': 1}",
+                "True False",
+                "TypeError: the first argument 5 must be a callable or a descriptor",
+                "TypeError: _partial_new() missing 1 required positional argument: 'func'",
+                "TypeError: _partial_new() missing 1 required positional argument: 'func'"
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         using var output = new StringWriter();
