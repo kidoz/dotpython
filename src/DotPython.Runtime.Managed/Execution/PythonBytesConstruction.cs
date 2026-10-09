@@ -18,11 +18,23 @@ internal static class PythonBytesConstruction
         IReadOnlyList<string> names,
         IReadOnlyList<PythonValue> values,
         TextSpan span
+    ) => ConstructNamed("bytes", positional, names, values, span);
+
+    /// <summary>
+    /// The shared binding behind `bytes` and `bytearray`, which differ only in the name their
+    /// diagnostics use and in what the caller does with the resulting bytes.
+    /// </summary>
+    internal static PythonByteSequenceValue ConstructNamed(
+        string typeName,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
     )
     {
         if (positional.Count + names.Count > 3)
             throw Error(
-                $"bytes() takes at most 3 arguments ({positional.Count + names.Count} given)",
+                $"{typeName}() takes at most 3 arguments ({positional.Count + names.Count} given)",
                 "TypeError",
                 span
             );
@@ -31,13 +43,13 @@ internal static class PythonBytesConstruction
             var slot = Array.IndexOf(Parameters, names[index]);
             if (slot >= 0 && slot < positional.Count)
                 throw Error(
-                    $"argument for bytes() given by name ('{names[index]}') and position ({slot + 1})",
+                    $"argument for {typeName}() given by name ('{names[index]}') and position ({slot + 1})",
                     "TypeError",
                     span
                 );
         }
         var slots = PythonKeywordArguments.Bind(
-            "bytes",
+            typeName,
             Parameters,
             0,
             positional,
@@ -78,6 +90,9 @@ internal static class PythonBytesConstruction
             );
         if (source is PythonByteSequenceValue bytes)
             return bytes;
+        // A bytearray is bytes-like here: `bytes(bytearray(b'ab'))` copies its contents.
+        if (source is PythonByteArrayValue mutable)
+            return PythonByteSequenceValue.Create(mutable.Value);
         if (UserObjectProtocols.TryGetSpecialMethod(source, "__bytes__", out var hook, out _))
         {
             var result = UserObjectProtocols.Dispatcher!.Invoke(hook, [], span);

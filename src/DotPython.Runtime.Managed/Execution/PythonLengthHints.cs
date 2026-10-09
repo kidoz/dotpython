@@ -85,6 +85,7 @@ internal static class PythonLengthHints
                 or PythonRangeValue
                 or PythonTextValue
                 or PythonByteSequenceValue
+                or PythonByteArrayValue
                 or PythonDictionaryValue
                 or PythonDictionaryViewValue
                 or PythonSetValue;
@@ -114,6 +115,9 @@ internal static class PythonLengthHints
             ),
             PythonByteSequenceValue bytes => PythonWholeNumberValue.Create(
                 Math.Max(0, bytes.Value.Length - iterator.Index)
+            ),
+            PythonByteArrayValue mutable => PythonWholeNumberValue.Create(
+                Math.Max(0, mutable.Value.Length - iterator.Index)
             ),
             PythonDictionaryValue dictionary => GetCollectionHint(iterator, dictionary.Items.Count),
             PythonDictionaryViewValue view => GetCollectionHint(
@@ -188,6 +192,7 @@ internal static class PythonLengthHints
             value
             is PythonTextValue
                 or PythonByteSequenceValue
+                or PythonByteArrayValue
                 or PythonListValue
                 or PythonTupleValue
                 or PythonMappingProxyValue

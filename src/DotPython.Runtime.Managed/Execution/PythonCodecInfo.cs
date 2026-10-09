@@ -224,7 +224,7 @@ internal static class PythonCodecInfo
         TextSpan span
     )
     {
-        if (value is not PythonByteSequenceValue bytes)
+        if (!ManagedObjectProtocols.TryGetByteContent(value, out var contents))
         {
             throw ManagedObjectProtocols.Fault(
                 "DPY4003",
@@ -234,7 +234,7 @@ internal static class PythonCodecInfo
             );
         }
         var text = PythonBytesDecoding.Decode(
-            bytes.Value,
+            contents,
             codec.Encoding.CodePage,
             codec.Encoding.GetPreamble().Length != 0,
             errors,
@@ -242,7 +242,7 @@ internal static class PythonCodecInfo
         );
         return new PythonTupleValue([
             new PythonTextValue(text),
-            PythonWholeNumberValue.Create(bytes.Value.Length),
+            PythonWholeNumberValue.Create(contents.Length),
         ]);
     }
 

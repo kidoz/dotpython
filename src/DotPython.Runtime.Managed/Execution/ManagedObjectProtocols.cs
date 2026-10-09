@@ -1610,6 +1610,7 @@ internal static class ManagedObjectProtocols
         {
             PythonTextValue text => PythonTextTraversal.Count(text.Value, span),
             PythonByteSequenceValue bytes => bytes.Value.Length,
+            PythonByteArrayValue mutable => mutable.Value.Length,
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping, span),
@@ -1918,6 +1919,7 @@ internal static class ManagedObjectProtocols
                 or PythonDictionaryValue
                 or PythonTextValue
                 or PythonByteSequenceValue
+                or PythonByteArrayValue
                 or PythonRangeValue
                 or PythonSetValue
             )
@@ -2013,6 +2015,14 @@ internal static class ManagedObjectProtocols
                 value = PythonWholeNumberValue.Create(bytes.Value[iterator.Index++]);
                 return true;
             case PythonByteSequenceValue:
+                iterator.IsExhausted = true;
+                break;
+            // A bytearray iterates its live contents, so shrinking it during iteration stops
+            // the iterator rather than reading past the end.
+            case PythonByteArrayValue mutable when iterator.Index < mutable.Value.Length:
+                value = PythonWholeNumberValue.Create(mutable.Value[iterator.Index++]);
+                return true;
+            case PythonByteArrayValue:
                 iterator.IsExhausted = true;
                 break;
             case PythonSetValue set:
@@ -2312,6 +2322,8 @@ internal static class ManagedObjectProtocols
                 return PythonTextTraversal.GetItem(text, index, span);
             case PythonByteSequenceValue bytes:
                 return PythonBytesOperations.GetItem(bytes, index, span);
+            case PythonByteArrayValue mutable:
+                return PythonByteArrayOperations.GetItem(mutable, index, span);
             case PythonRangeValue range when index is PythonSliceValue slice:
             {
                 if (range.Count > int.MaxValue)
@@ -2437,6 +2449,9 @@ internal static class ManagedObjectProtocols
                     "TypeError"
                 );
 
+            case PythonByteArrayValue mutable:
+                PythonByteArrayMutation.SetItem(mutable, index, value, span);
+                return;
             case PythonListValue list when index is PythonSliceValue slice:
                 AssignListSlice(list, slice, value, span);
                 return;
@@ -2554,7 +2569,12 @@ internal static class ManagedObjectProtocols
 
         if (container is PythonByteSequenceValue bytes)
         {
-            return BytesContains(bytes, item, span);
+            return BytesContains(bytes.Value, item, span);
+        }
+
+        if (container is PythonByteArrayValue mutable)
+        {
+            return BytesContains(mutable.Value, item, span);
         }
 
         if (container is PythonMappingProxyValue proxy)
@@ -2585,15 +2605,16 @@ internal static class ManagedObjectProtocols
     /// a subsequence, and anything else is refused. Iterating the bytes would answer the
     /// integer case only, so the whole test is spelled out here.
     /// </summary>
-    private static bool BytesContains(
-        PythonByteSequenceValue bytes,
-        PythonValue item,
-        TextSpan span
-    )
+    private static bool BytesContains(byte[] bytes, PythonValue item, TextSpan span)
     {
         if (item is PythonByteSequenceValue subsequence)
         {
-            return bytes.Value.AsSpan().IndexOf(subsequence.Value) >= 0;
+            return bytes.AsSpan().IndexOf(subsequence.Value) >= 0;
+        }
+
+        if (item is PythonByteArrayValue subsequenceBytes)
+        {
+            return bytes.AsSpan().IndexOf(subsequenceBytes.Value) >= 0;
         }
 
         var byteValue = item switch
@@ -2606,7 +2627,7 @@ internal static class ManagedObjectProtocols
         {
             if (value < 0 || value > 255)
                 throw Fault("DPY4003", "byte must be in range(0, 256)", span, "ValueError");
-            return bytes.Value.AsSpan().IndexOf((byte)value) >= 0;
+            return bytes.AsSpan().IndexOf((byte)value) >= 0;
         }
 
         throw Fault(
@@ -2828,6 +2849,9 @@ internal static class ManagedObjectProtocols
                     "TypeError"
                 );
 
+            case PythonByteArrayValue mutable:
+                PythonByteArrayMutation.DeleteItem(mutable, index, span);
+                return;
             case PythonListValue list when index is PythonSliceValue slice:
             {
                 var unpacked = UnpackSlice(slice, span);
@@ -3017,6 +3041,7 @@ internal static class ManagedObjectProtocols
             PythonComplexValue complex => complex.Value != Complex.Zero,
             PythonTextValue text => text.Value.Length != 0,
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
+            PythonByteArrayValue mutable => mutable.Value.Length != 0,
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping) != 0,
@@ -3220,12 +3245,13 @@ internal static class ManagedObjectProtocols
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonTypeUnionValue union => GetTypeUnionHash(union),
             PythonGenericAliasValue alias => GetGenericAliasHash(alias, span),
-            PythonListValue or PythonDictionaryValue or PythonSetValue => throw Fault(
-                "DPY4014",
-                $"unhashable type: '{GetTypeName(value)}'",
-                span,
-                "TypeError"
-            ),
+            PythonListValue or PythonDictionaryValue or PythonSetValue or PythonByteArrayValue =>
+                throw Fault(
+                    "DPY4014",
+                    $"unhashable type: '{GetTypeName(value)}'",
+                    span,
+                    "TypeError"
+                ),
             _ => RuntimeHelpers.GetHashCode(value),
         };
     }
@@ -3277,6 +3303,23 @@ internal static class ManagedObjectProtocols
         }
     }
 
+    /// <summary>The contents of a bytes-like value, without copying.</summary>
+    internal static bool TryGetByteContent(PythonValue value, out byte[] content)
+    {
+        switch (value)
+        {
+            case PythonByteSequenceValue bytes:
+                content = bytes.Value;
+                return true;
+            case PythonByteArrayValue mutable:
+                content = mutable.Value;
+                return true;
+            default:
+                content = null!;
+                return false;
+        }
+    }
+
     internal static byte[] GetBytes(PythonByteSequenceValue value)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -3301,6 +3344,7 @@ internal static class ManagedObjectProtocols
             PythonComplexValue => "complex",
             PythonTextValue => "str",
             PythonByteSequenceValue => "bytes",
+            PythonByteArrayValue => "bytearray",
             PythonListValue => "list",
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
@@ -3868,7 +3912,7 @@ internal static class ManagedObjectProtocols
         value switch
         {
             PythonSetValue set => set.IsFrozen,
-            PythonListValue or PythonDictionaryValue => false,
+            PythonListValue or PythonDictionaryValue or PythonByteArrayValue => false,
             // Tuples have a hash slot; hashing discovers unhashable children in order.
             PythonTupleValue => true,
             PythonManagedObjectValue instance => UserObjectProtocols.IsHashable(instance),
@@ -3942,6 +3986,11 @@ internal static class ManagedObjectProtocols
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
+            (PythonValue leftBytesLike, PythonValue rightBytesLike)
+                when TryGetByteContent(leftBytesLike, out var leftContent)
+                    && TryGetByteContent(rightBytesLike, out var rightContent) => leftContent
+                .AsSpan()
+                .SequenceEqual(rightContent),
             (PythonListValue leftList, PythonListValue rightList) => IsTrue(
                 CompareSequenceValues(
                     leftList.Elements,
@@ -4101,6 +4150,11 @@ internal static class ManagedObjectProtocols
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceCompareTo(rightBytes.Value),
+            (PythonValue leftBytesLike, PythonValue rightBytesLike)
+                when TryGetByteContent(leftBytesLike, out var leftContent)
+                    && TryGetByteContent(rightBytesLike, out var rightContent) => leftContent
+                .AsSpan()
+                .SequenceCompareTo(rightContent),
             (PythonTupleValue leftTuple, PythonTupleValue rightTuple) => CompareSequencesOrdered(
                 leftTuple.Elements,
                 rightTuple.Elements,

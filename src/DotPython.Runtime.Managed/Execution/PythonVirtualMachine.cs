@@ -7524,6 +7524,30 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         switch (left)
         {
+            // A bytearray extends and repeats in place, keeping its identity.
+            case PythonByteArrayValue mutable when binaryOpCode == PythonOpCode.BinaryAdd:
+            {
+                if (!ManagedObjectProtocols.TryGetByteContent(right, out var addition))
+                {
+                    addition = PythonBytesConstruction
+                        .ConstructNamed("bytearray", [right], [], [], span)
+                        .Value;
+                }
+                mutable.Value = [.. mutable.Value, .. addition];
+                _evaluationStack.Push(mutable);
+                return;
+            }
+            case PythonByteArrayValue mutable when binaryOpCode == PythonOpCode.BinaryMultiply:
+            {
+                var grown = PythonBytesOperations.Repeat(
+                    new PythonByteSequenceValue(mutable.Value),
+                    PythonSequenceRepetition.GetCount(right, span),
+                    span
+                );
+                mutable.Value = grown.Value;
+                _evaluationStack.Push(mutable);
+                return;
+            }
             case PythonListValue list when binaryOpCode == PythonOpCode.BinaryAdd:
                 ManagedObjectProtocols.ExtendList(list, right, span, _userIterationDispatcher);
                 _evaluationStack.Push(list);
@@ -7873,6 +7897,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // shared protocol layer decides.
             || left is PythonGenericAliasValue
             || right is PythonGenericAliasValue
+            // A bytearray compares by content against bytes and bytearray alike.
+            || left is PythonByteArrayValue
+            || right is PythonByteArrayValue
         )
         {
             return ManagedObjectProtocols.AreEqual(left, right);
@@ -8090,11 +8117,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (
             opCode == PythonOpCode.BinaryAdd
-            && left is PythonByteSequenceValue leftBytes
-            && right is PythonByteSequenceValue rightBytes
+            && ManagedObjectProtocols.TryGetByteContent(left, out var leftContent)
+            && ManagedObjectProtocols.TryGetByteContent(right, out var rightContent)
         )
         {
-            return new PythonByteSequenceValue([.. leftBytes.Value, .. rightBytes.Value]);
+            byte[] joined = [.. leftContent, .. rightContent];
+            return left is PythonByteArrayValue
+                ? new PythonByteArrayValue(joined)
+                : PythonByteSequenceValue.Create(joined);
         }
 
         if (opCode == PythonOpCode.BinaryAdd)
@@ -8122,12 +8152,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         or PythonTupleValue
                         or PythonTextValue
                         or PythonByteSequenceValue
+                        or PythonByteArrayValue
                     ? left
                 : right
                     is PythonListValue
                         or PythonTupleValue
                         or PythonTextValue
                         or PythonByteSequenceValue
+                        or PythonByteArrayValue
                     ? right
                 : null;
             if (sequence is not null)
@@ -8147,6 +8179,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         bytes,
                         count,
                         span
+                    ),
+                    PythonByteArrayValue mutable => new PythonByteArrayValue(
+                        PythonBytesOperations
+                            .Repeat(new PythonByteSequenceValue(mutable.Value), count, span)
+                            .Value
                     ),
                     _ => RepeatSequence(sequence, count, span),
                 };

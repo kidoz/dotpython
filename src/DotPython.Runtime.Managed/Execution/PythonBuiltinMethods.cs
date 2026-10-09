@@ -234,6 +234,9 @@ internal static class PythonBuiltinMethods
         ),
     };
 
+    private static readonly Dictionary<string, PythonProtocolFunctionValue> ByteArrayMethods =
+        PythonByteArrayMethods.CreateTable();
+
     private static readonly Dictionary<string, PythonProtocolFunctionValue> BytesMethods = new(
         PythonBytesMethods.CreateTable(),
         StringComparer.Ordinal
@@ -627,6 +630,7 @@ internal static class PythonBuiltinMethods
         {
             PythonTextValue => TextMethods,
             PythonByteSequenceValue => BytesMethods,
+            PythonByteArrayValue => ByteArrayMethods,
             PythonListValue => ListMethods,
             PythonDictionaryValue => DictionaryMethods,
             PythonTupleValue => TupleMethods,
@@ -832,6 +836,7 @@ internal static class PythonBuiltinMethods
         target
             is PythonTextValue
                 or PythonByteSequenceValue
+                or PythonByteArrayValue
                 or PythonListValue
                 or PythonDictionaryValue
                 or PythonTupleValue

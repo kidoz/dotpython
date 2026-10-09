@@ -59,6 +59,7 @@ internal static class PythonReverseIterators
                 or PythonTupleValue
                 or PythonTextValue
                 or PythonByteSequenceValue
+                or PythonByteArrayValue
                 or PythonRangeValue
                 or PythonDictionaryValue
                 or PythonDictionaryViewValue

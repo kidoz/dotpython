@@ -149,6 +149,7 @@ internal static class PythonBuiltinTypes
             PythonComplexValue => PythonBuiltinFunctions.Complex,
             PythonTextValue => Str,
             PythonByteSequenceValue => Bytes,
+            PythonByteArrayValue => ByteArray,
             PythonTemplateValue => PythonStandardModules.TemplateType,
             PythonInterpolationValue => PythonStandardModules.InterpolationType,
             PythonListValue => List,
@@ -235,6 +236,11 @@ internal static class PythonBuiltinTypes
         "bytes",
         PythonBytesConstruction.Construct,
         PythonBytesConstruction.ConstructWithKeywords
+    );
+    internal static readonly PythonBuiltinTypeValue ByteArray = new(
+        "bytearray",
+        PythonByteArrayConstruction.Construct,
+        PythonByteArrayConstruction.ConstructWithKeywords
     );
     internal static readonly PythonBuiltinTypeValue Dict = new(
         "dict",
@@ -332,7 +338,7 @@ internal static class PythonBuiltinTypes
     };
 
     internal static IEnumerable<PythonBuiltinTypeValue> All =>
-        [Bool, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
+        [Bool, ByteArray, Bytes, Dict, Float, Frozenset, Int, List, Set, Str, Tuple];
 
     internal static PythonBuiltinTypeValue CreateOpaque(string name) =>
         OpaqueTypes.GetOrAdd(
@@ -355,6 +361,7 @@ internal static class PythonBuiltinTypes
         {
             "bool" => value is PythonTruthValue,
             "bytes" => value is PythonByteSequenceValue,
+            "bytearray" => value is PythonByteArrayValue,
             "int" => value is PythonWholeNumberValue or PythonTruthValue
                 || PythonEnum.IsInstanceOfMemberType(value, "int"),
             "float" => value is PythonFloatingPointValue,

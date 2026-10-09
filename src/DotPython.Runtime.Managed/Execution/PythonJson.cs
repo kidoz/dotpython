@@ -483,6 +483,7 @@ internal static class PythonJson
         {
             PythonTextValue text => text.Value,
             PythonByteSequenceValue bytes => DecodeUtf8(bytes.Value, span),
+            PythonByteArrayValue mutable => DecodeUtf8(mutable.Value, span),
             _ => throw Fault(
                 $"the JSON object must be str, bytes or bytearray, not {ManagedObjectProtocols.GetTypeName(value)}",
                 span
@@ -749,6 +750,7 @@ internal static class PythonJson
                 PythonWholeNumberValue or PythonFloatingPointValue or PythonTruthValue => "number",
                 PythonTextValue => "str",
                 PythonByteSequenceValue => "bytes",
+                PythonByteArrayValue => "bytearray",
                 PythonListValue => "list",
                 PythonTupleValue => "tuple",
                 PythonSetValue set => set.IsFrozen ? "frozenset" : "set",
