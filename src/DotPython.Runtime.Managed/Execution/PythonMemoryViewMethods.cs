@@ -47,6 +47,58 @@ internal static class PythonMemoryViewMethods
         "toreadonly",
     ];
 
+    /// <summary>The methods a view publishes through its type object.</summary>
+    private static readonly string[] MethodNames =
+    [
+        "cast",
+        "count",
+        "hex",
+        "index",
+        "release",
+        "tobytes",
+        "tolist",
+        "toreadonly",
+    ];
+
+    private static readonly Dictionary<string, PythonMethodDescriptorValue> Descriptors = [];
+
+    /// <summary>
+    /// The descriptor `memoryview.cast` and its siblings are: the member a view answers,
+    /// seen through the type and callable with the receiver as its first argument.
+    /// </summary>
+    internal static PythonMethodDescriptorValue? GetTypeDescriptor(string typeName, string name)
+    {
+        if (typeName != "memoryview" || Array.IndexOf(MethodNames, name) < 0)
+            return null;
+        lock (Descriptors)
+        {
+            if (!Descriptors.TryGetValue(name, out var descriptor))
+            {
+                descriptor = new PythonMethodDescriptorValue(
+                    Type,
+                    name,
+                    new PythonProtocolFunctionValue(
+                        name,
+                        (receiver, arguments) =>
+                        {
+                            var view = (PythonMemoryViewValue)receiver!;
+                            var bound = (PythonBoundMethodValue)GetAttribute(view, name, default)!;
+                            return bound.Function.Invoke(view, arguments);
+                        },
+                        (_, _, _, _) =>
+                            throw Fault(
+                                $"memoryview.{name}() takes no keyword arguments",
+                                "TypeError",
+                                default
+                            )
+                    )
+                );
+                Descriptors[name] = descriptor;
+            }
+            return descriptor;
+        }
+    }
+
     /// <summary>The names a view adds to `dir()`.</summary>
     internal static void AddMemberNames(List<string> names)
     {
@@ -89,6 +141,16 @@ internal static class PythonMemoryViewMethods
                     true
                 );
             default:
+                // Anything else may hand a buffer out through `__buffer__`.
+                if (
+                    PythonBufferProtocol.TryCreateView(
+                        source,
+                        PythonBufferProtocol.FullReadOnly,
+                        span,
+                        out var exported
+                    )
+                )
+                    return exported;
                 throw Fault(
                     $"memoryview: a bytes-like object is required, not "
                         + $"'{ManagedObjectProtocols.GetTypeName(source)}'",
@@ -292,11 +354,41 @@ internal static class PythonMemoryViewMethods
     {
         if (view.Released)
             return;
+        // The view counts as released before its owner hears about it, so a hook that
+        // releases what it was handed does not start over.
+        var owner = view.BufferOwner;
+        view.Released = true;
+        if (owner is not null)
+            NotifyRelease(owner, view);
         // Every view holds exactly one export of its own on the object it reads, so
         // releasing a slice or a view of a view drops that view's export alone.
         if (view.Source is PythonByteArrayValue mutable)
             mutable.ExportCount--;
-        view.Released = true;
+    }
+
+    /// <summary>
+    /// `__release_buffer__(view)`. CPython reports a failure here as unraisable and lets the
+    /// release stand, so the hook's own errors never reach the caller.
+    /// </summary>
+    private static void NotifyRelease(PythonValue owner, PythonMemoryViewValue view)
+    {
+        if (
+            !UserObjectProtocols.TryGetSpecialMethod(
+                owner,
+                "__release_buffer__",
+                out var hook,
+                out _
+            )
+        )
+            return;
+        try
+        {
+            UserObjectProtocols.Dispatcher!.Invoke(hook, [view], default);
+        }
+        catch (Exception error) when (error is PythonRaisedException or PythonRuntimeException)
+        {
+            // Ignored, as CPython's unraisable reporting does.
+        }
     }
 
     /// <summary>`toreadonly()`: the same bytes through a view that refuses to write.</summary>

@@ -150,7 +150,14 @@ internal static class PythonByteArrayMutation
     /// </summary>
     private static byte[] AssignedBytes(PythonValue value, TextSpan span)
     {
-        if (ManagedObjectProtocols.TryGetByteContent(value, out var content))
+        if (
+            PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.FullReadOnly,
+                span,
+                out var content
+            )
+        )
             return content;
         // A slice takes a bytes-like object or an iterable of byte values; a bare integer is
         // only meaningful for a single index, which the caller handles.

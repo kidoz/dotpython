@@ -37,6 +37,7 @@ internal sealed record PythonMemberDescriptorValue(
         {
             "int" => receiver is PythonWholeNumberValue or PythonTruthValue,
             "float" => receiver is PythonFloatingPointValue,
+            "memoryview" => receiver is PythonMemoryViewValue,
             _ => false,
         };
 

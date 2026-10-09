@@ -423,6 +423,39 @@ internal static class PythonSlotMethods
                 PythonWholeNumberValue.Create(ManagedObjectProtocols.ComputePythonHash(receiver))
         );
 
+        // The PEP 688 exporters: every bytes-like builtin hands out a view of itself, and
+        // the mutable one and a view also take that export back again. They are methods of
+        // one argument, which report a wrong count in `METH_O`'s own words rather than in
+        // the wrapper family's.
+        void Exporter(string type, string name, Func<PythonValue, PythonValue, PythonValue> body) =>
+            slots[(type, name)] = new Slot(
+                true,
+                new PythonProtocolFunctionValue(
+                    name,
+                    (receiver, arguments) =>
+                        arguments.Count == 1
+                            ? body(receiver!, arguments[0])
+                            : throw Fault($"{name} expected 1 argument, got {arguments.Count}")
+                )
+            );
+
+        foreach (var type in new[] { "bytes", "bytearray", "memoryview" })
+        {
+            Exporter(
+                type,
+                "__buffer__",
+                (receiver, flags) => PythonBufferProtocol.Export(receiver, flags, default)
+            );
+        }
+        foreach (var type in new[] { "bytearray", "memoryview" })
+        {
+            Exporter(
+                type,
+                "__release_buffer__",
+                (receiver, export) => PythonBufferProtocol.ReleaseExport(receiver, export, default)
+            );
+        }
+
         foreach (var type in new[] { "list", "bytearray", "dict" })
         {
             Named(

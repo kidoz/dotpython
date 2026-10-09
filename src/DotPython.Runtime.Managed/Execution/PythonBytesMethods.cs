@@ -133,8 +133,13 @@ internal static class PythonBytesMethods
     // ---- argument coercion ------------------------------------------------------------------
 
     private static byte[] RequireBytes(string name, PythonValue value) =>
-        value is PythonByteSequenceValue bytes
-            ? bytes.Value
+        PythonBufferProtocol.TryGetContent(
+            value,
+            PythonBufferProtocol.Simple,
+            default,
+            out var content
+        )
+            ? content
             : throw Fault(
                 $"a bytes-like object is required, not '{ManagedObjectProtocols.GetTypeName(value)}'",
                 "TypeError"
@@ -160,6 +165,17 @@ internal static class PythonBytesMethods
                 throw Fault("byte must be in range(0, 256)", "ValueError");
             return [(byte)candidate];
         }
+
+        // Anything else may still hand out a buffer.
+        if (
+            PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.Simple,
+                span,
+                out var contents
+            )
+        )
+            return contents;
 
         throw Fault(
             "argument should be integer or bytes-like object, "
@@ -325,7 +341,14 @@ internal static class PythonBytesMethods
                     : [arguments[0]];
                 foreach (var candidate in candidates)
                 {
-                    if (candidate is not PythonByteSequenceValue prefix)
+                    if (
+                        !PythonBufferProtocol.TryGetContent(
+                            candidate,
+                            PythonBufferProtocol.Simple,
+                            default,
+                            out var prefix
+                        )
+                    )
                     {
                         throw Fault(
                             $"{name} first arg must be bytes or a tuple of bytes, "
@@ -333,13 +356,13 @@ internal static class PythonBytesMethods
                             "TypeError"
                         );
                     }
-                    var length = prefix.Value.Length;
+                    var length = prefix.Length;
                     if (length > to - from)
                         continue;
                     var slice = start
                         ? value.AsSpan(from, length)
                         : value.AsSpan(to - length, length);
-                    if (slice.SequenceEqual(prefix.Value))
+                    if (slice.SequenceEqual(prefix))
                         return Truth(true);
                 }
                 return Truth(false);
@@ -590,7 +613,14 @@ internal static class PythonBytesMethods
                 {
                     if (index != 0)
                         result.AddRange(separator);
-                    if (elements[index] is not PythonByteSequenceValue element)
+                    if (
+                        !PythonBufferProtocol.TryGetContent(
+                            elements[index],
+                            PythonBufferProtocol.Simple,
+                            default,
+                            out var element
+                        )
+                    )
                     {
                         throw Fault(
                             $"sequence item {index}: expected a bytes-like object, "
@@ -598,7 +628,7 @@ internal static class PythonBytesMethods
                             "TypeError"
                         );
                     }
-                    result.AddRange(element.Value);
+                    result.AddRange(element);
                 }
                 return Wrap([.. result]);
             }
@@ -917,7 +947,14 @@ internal static class PythonBytesMethods
             {
                 RequireArguments("translate", arguments, 1, 2);
                 var value = RequireBytes("translate", target!);
-                if (arguments[0] is not PythonByteSequenceValue table)
+                if (
+                    !PythonBufferProtocol.TryGetContent(
+                        arguments[0],
+                        PythonBufferProtocol.Simple,
+                        default,
+                        out var table
+                    )
+                )
                 {
                     throw Fault(
                         "a bytes-like object is required, "
@@ -925,7 +962,7 @@ internal static class PythonBytesMethods
                         "TypeError"
                     );
                 }
-                if (table.Value.Length != 256)
+                if (table.Length != 256)
                     throw Fault("translation table must be 256 characters long", "ValueError");
                 var delete = arguments.Count > 1 ? RequireBytes("translate", arguments[1]) : null;
                 var result = new List<byte>(value.Length);
@@ -933,7 +970,7 @@ internal static class PythonBytesMethods
                 {
                     if (delete is not null && Contains(delete, current))
                         continue;
-                    result.Add(table.Value[current]);
+                    result.Add(table[current]);
                 }
                 return Wrap([.. result]);
             }
@@ -958,16 +995,24 @@ internal static class PythonBytesMethods
                         "TypeError"
                     );
                 }
-                var source = arguments[0] switch
-                {
-                    PythonTextValue text => text.Value,
-                    PythonByteSequenceValue bytes => Latin1(bytes.Value, span),
-                    _ => throw Fault(
+                string source;
+                if (arguments[0] is PythonTextValue text)
+                    source = text.Value;
+                else if (
+                    PythonBufferProtocol.TryGetContent(
+                        arguments[0],
+                        PythonBufferProtocol.Simple,
+                        span,
+                        out var contents
+                    )
+                )
+                    source = Latin1(contents, span);
+                else
+                    throw Fault(
                         "fromhex() argument must be str or bytes-like, "
                             + $"not {ManagedObjectProtocols.GetTypeName(arguments[0])}",
                         "TypeError"
-                    ),
-                };
+                    );
                 return Wrap(ParseHex(source, span));
             },
             (_, names, _, span) =>

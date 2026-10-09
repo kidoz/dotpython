@@ -130,11 +130,19 @@ internal static class PythonByteArrayMethods
             {
                 RequireArguments("extend", arguments, 1, 1);
                 var mutable = (PythonByteArrayValue)target!;
-                // The bytes constructor already converts any iterable of integers and
+                // An object that hands out a buffer is asked for one, and anything else goes
+                // through the bytes constructor, which converts any iterable of integers and
                 // reports CPython's errors for the values it cannot accept.
-                var addition = PythonBytesConstruction
-                    .ConstructNamed("bytearray", [arguments[0]], [], [], default)
-                    .Value;
+                var addition = PythonBufferProtocol.TryGetContent(
+                    arguments[0],
+                    PythonBufferProtocol.Simple,
+                    default,
+                    out var buffered
+                )
+                    ? buffered
+                    : PythonBytesConstruction
+                        .ConstructNamed("bytearray", [arguments[0]], [], [], default)
+                        .Value;
                 PythonByteArrayMutation.RequireResizable(
                     mutable,
                     mutable.Value.Length + addition.Length

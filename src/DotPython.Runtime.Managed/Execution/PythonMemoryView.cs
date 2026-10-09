@@ -68,6 +68,13 @@ internal sealed record PythonMemoryViewValue : PythonValue
     /// <summary>A view stops answering once it is released.</summary>
     internal bool Released { get; set; }
 
+    /// <summary>
+    /// The object that handed this view out through `__buffer__`, whose
+    /// `__release_buffer__` runs when it is released, or null for a view this runtime
+    /// made itself.
+    /// </summary>
+    internal PythonValue? BufferOwner { get; set; }
+
     /// <summary>The format character the view reads and writes with.</summary>
     internal char FormatChar => Format[^1];
 

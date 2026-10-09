@@ -99,16 +99,31 @@ internal static class PythonBytesConstruction
             view.RequireLive();
             return PythonByteSequenceValue.Create(view.Materialize());
         }
-        if (UserObjectProtocols.TryGetSpecialMethod(source, "__bytes__", out var hook, out _))
-        {
-            var result = UserObjectProtocols.Dispatcher!.Invoke(hook, [], span);
-            return result as PythonByteSequenceValue
-                ?? throw Error(
-                    $"__bytes__ returned non-bytes (type {ManagedObjectProtocols.GetTypeName(result)})",
-                    "TypeError",
-                    span
-                );
-        }
+        // A bytearray takes its bytes from any buffer the object hands out, and never asks
+        // `__bytes__`, which CPython's bytearray does not use at all.
+        if (
+            typeName == "bytearray"
+            && PythonBufferProtocol.TryGetContent(
+                source,
+                PythonBufferProtocol.FullReadOnly,
+                span,
+                out var bufferedBytes
+            )
+        )
+            return PythonByteSequenceValue.Create(bufferedBytes);
+        if (typeName == "bytes" && TryCallBytesHook(source, span) is { } hookBytes)
+            return hookBytes;
+        // `bytes` asks for a buffer only when there is no `__bytes__` to answer first.
+        if (
+            typeName == "bytes"
+            && PythonBufferProtocol.TryGetContent(
+                source,
+                PythonBufferProtocol.FullReadOnly,
+                span,
+                out var exportedBytes
+            )
+        )
+            return PythonByteSequenceValue.Create(exportedBytes);
         if (source is PythonTextValue)
             throw Error("string argument without an encoding", "TypeError", span);
         BigInteger count;
@@ -143,14 +158,32 @@ internal static class PythonBytesConstruction
                 ? PythonByteSequenceValue.Empty
                 : new PythonByteSequenceValue(new byte[(int)count]);
         }
-        return FromIterable(source, span);
+        return FromIterable(source, span, typeName);
+    }
+
+    /// <summary>`__bytes__`, as `bytes(obj)` and the `%b`/`%s` conversions both take it.</summary>
+    internal static PythonByteSequenceValue? TryCallBytesHook(PythonValue source, TextSpan span)
+    {
+        if (!UserObjectProtocols.TryGetSpecialMethod(source, "__bytes__", out var hook, out _))
+            return null;
+        var result = UserObjectProtocols.Dispatcher!.Invoke(hook, [], span);
+        return result as PythonByteSequenceValue
+            ?? throw Error(
+                $"__bytes__ returned non-bytes (type {ManagedObjectProtocols.GetTypeName(result)})",
+                "TypeError",
+                span
+            );
     }
 
     /// <summary>
     /// The iterable conversion on its own, without the size interpretation `bytes` gives an
     /// integer. `int.from_bytes` accepts exactly this set of sources.
     /// </summary>
-    internal static PythonByteSequenceValue FromIterable(PythonValue source, TextSpan span)
+    internal static PythonByteSequenceValue FromIterable(
+        PythonValue source,
+        TextSpan span,
+        string typeName = "bytes"
+    )
     {
         var result = new List<byte>();
         bool smallBuffer;
@@ -185,7 +218,7 @@ internal static class PythonBytesConstruction
                 when (PythonNamespaceMapping.IsPythonException(error, "TypeError"))
             {
                 throw Error(
-                    $"cannot convert '{ManagedObjectProtocols.GetTypeName(source)}' object to bytes",
+                    $"cannot convert '{ManagedObjectProtocols.GetTypeName(source)}' object to {typeName}",
                     "TypeError",
                     span
                 );

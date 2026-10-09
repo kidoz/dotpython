@@ -17,9 +17,12 @@ internal static class PythonMemberDescriptors
     {
         // A bool answers int's members, under int's name.
         var ownerName = typeName == "bool" ? "int" : typeName;
-        if (ownerName is not ("int" or "float"))
+        if (ownerName is not ("int" or "float" or "memoryview"))
             return null;
-        var names = ownerName == "int" ? IntNames : FloatNames;
+        var names =
+            ownerName == "int" ? IntNames
+            : ownerName == "float" ? FloatNames
+            : ViewNames;
         if (Array.IndexOf(names, name) < 0)
             return null;
         lock (Descriptors)
@@ -29,15 +32,39 @@ internal static class PythonMemberDescriptors
                 descriptor = new PythonMemberDescriptorValue(
                     PythonBuiltinTypes.ForName(ownerName),
                     name,
-                    ownerName == "int"
-                        ? receiver => ReadIntMember(receiver, name)
-                        : receiver => ReadFloatMember(receiver, name)
+                    ownerName == "int" ? receiver => ReadIntMember(receiver, name)
+                        : ownerName == "float" ? receiver => ReadFloatMember(receiver, name)
+                        : receiver =>
+                            PythonMemoryViewMethods.GetAttribute(receiver, name, default)
+                            ?? throw ManagedObjectProtocols.Fault(
+                                "DPY4023",
+                                $"'memoryview' object has no attribute '{name}'",
+                                default,
+                                "AttributeError"
+                            )
                 );
                 Descriptors[(ownerName, name)] = descriptor;
             }
             return descriptor;
         }
     }
+
+    /// <summary>The data members a view answers, in the order CPython declares them.</summary>
+    private static readonly string[] ViewNames =
+    [
+        "obj",
+        "format",
+        "itemsize",
+        "ndim",
+        "shape",
+        "strides",
+        "readonly",
+        "nbytes",
+        "contiguous",
+        "c_contiguous",
+        "f_contiguous",
+        "suboffsets",
+    ];
 
     private static PythonValue ReadIntMember(PythonValue receiver, string name) =>
         name switch

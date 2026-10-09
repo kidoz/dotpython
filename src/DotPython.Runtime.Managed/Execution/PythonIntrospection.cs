@@ -129,6 +129,24 @@ internal static class PythonIntrospection
             case PythonNoneValue:
                 size = 32;
                 return true;
+            case PythonEllipsisValue:
+                size = 32;
+                return true;
+            // A tuple is a fixed header plus one pointer per element, and a bytes object one
+            // byte per byte it holds.
+            case PythonTupleValue tuple:
+                size = 48 + 8 * tuple.Elements.Length;
+                return true;
+            case PythonByteSequenceValue bytes:
+                size = 49 + bytes.Value.Length;
+                return true;
+            // A range and a slice are a fixed size whatever their bounds are.
+            case PythonRangeValue:
+                size = 64;
+                return true;
+            case PythonSliceValue:
+                size = 56;
+                return true;
             default:
                 size = default;
                 return false;
@@ -137,7 +155,16 @@ internal static class PythonIntrospection
 
     /// <summary>Whether a type publishes `__sizeof__` at all, given the sizes modelled.</summary>
     internal static bool HasSize(string typeName) =>
-        typeName is "int" or "bool" or "float" or "NoneType";
+        typeName
+            is "int"
+                or "bool"
+                or "float"
+                or "NoneType"
+                or "ellipsis"
+                or "tuple"
+                or "bytes"
+                or "range"
+                or "slice";
 
     private static readonly string[] ObjectMemberNames =
     [

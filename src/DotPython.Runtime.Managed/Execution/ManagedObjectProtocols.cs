@@ -894,6 +894,10 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue builtinType
                 when PythonMemberDescriptors.Get(builtinType.Name, name) is { } numericMember:
                 return numericMember;
+            case PythonBuiltinTypeValue builtinType
+                when PythonMemoryViewMethods.GetTypeDescriptor(builtinType.Name, name)
+                    is { } viewMethod:
+                return viewMethod;
             // What the type inherits from `object`, and the two entry points it carries.
             case PythonBuiltinTypeValue builtinType
                 when PythonObjectMembers.GetTypeDescriptor(builtinType.Name, name)
@@ -2446,7 +2450,14 @@ internal static class ManagedObjectProtocols
                 span,
                 "NotImplementedError"
             );
-        if (!TryGetByteContent(value, out var content))
+        if (
+            !PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.FullReadOnly,
+                span,
+                out var content
+            )
+        )
             throw Fault(
                 "DPY4003",
                 $"memoryview: invalid type for format '{view.Format}'",

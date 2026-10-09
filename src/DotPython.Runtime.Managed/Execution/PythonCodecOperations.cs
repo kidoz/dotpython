@@ -69,14 +69,21 @@ internal static class PythonCodecOperations
         {
             if (decode)
             {
-                if (slots[0] is not PythonByteSequenceValue bytes)
+                if (
+                    !PythonBufferProtocol.TryGetContent(
+                        slots[0]!,
+                        PythonBufferProtocol.Simple,
+                        span,
+                        out var bytes
+                    )
+                )
                     throw Error(
                         $"a bytes-like object is required, not '{ManagedObjectProtocols.GetTypeName(slots[0]!)}'",
                         span
                     );
                 return new PythonTextValue(
                     PythonBytesDecoding.Decode(
-                        bytes.Value,
+                        bytes,
                         codec.CodePage,
                         codec.GetPreamble().Length != 0,
                         errors,

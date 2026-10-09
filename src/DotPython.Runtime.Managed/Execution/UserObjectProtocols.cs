@@ -327,6 +327,12 @@ internal static class UserObjectProtocols
         )
             return false;
 
+        // A builtin left operand handles its own operators in the interpreter — `bytes`
+        // takes a buffer on its right — so the user-object dispatch steps aside here and
+        // lets the interpreter try that, refusing in its own words if nothing applies.
+        if (left is not PythonManagedObjectValue)
+            return false;
+
         throw ManagedObjectProtocols.Fault(
             "DPY4005",
             $"unsupported operand type(s) for {names.Symbol}: "

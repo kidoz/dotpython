@@ -235,7 +235,17 @@ internal static class PythonBytesFormatting
     /// <summary>`%s` and `%b` take a bytes-like value and nothing else.</summary>
     private static string RequireBytesLike(PythonValue value, TextSpan span)
     {
-        if (!ManagedObjectProtocols.TryGetByteContent(value, out var contents))
+        // `__bytes__` answers first, and then a buffer the object hands out.
+        if (PythonBytesConstruction.TryCallBytesHook(value, span) is { } hookBytes)
+            return System.Text.Encoding.Latin1.GetString(hookBytes.Value);
+        if (
+            !PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.FullReadOnly,
+                span,
+                out var contents
+            )
+        )
             throw Fault(
                 "%b requires a bytes-like object, or an object that implements "
                     + $"__bytes__, not '{ManagedObjectProtocols.GetTypeName(value)}'",

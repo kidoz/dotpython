@@ -341,7 +341,14 @@ internal static class PythonIntMethods
     /// </summary>
     private static byte[] RequireContents(PythonValue value)
     {
-        if (ManagedObjectProtocols.TryGetByteContent(value, out var contents))
+        if (
+            PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.FullReadOnly,
+                default,
+                out var contents
+            )
+        )
             return contents;
         if (value is PythonTextValue)
             throw Fault("cannot convert 'str' object to bytes", "TypeError");

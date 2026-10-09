@@ -7599,7 +7599,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A bytearray extends and repeats in place, keeping its identity.
             case PythonByteArrayValue mutable when binaryOpCode == PythonOpCode.BinaryAdd:
             {
-                if (!ManagedObjectProtocols.TryGetByteContent(right, out var addition))
+                if (
+                    !PythonBufferProtocol.TryGetContent(
+                        right,
+                        PythonBufferProtocol.Simple,
+                        span,
+                        out var addition
+                    )
+                )
                 {
                     addition = PythonBytesConstruction
                         .ConstructNamed("bytearray", [right], [], [], span)
@@ -8281,7 +8288,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // `+` of its own, so `memoryview(...) + b''` is an unsupported operand.
             && left is not PythonMemoryViewValue
             && ManagedObjectProtocols.TryGetByteContent(left, out var leftContent)
-            && ManagedObjectProtocols.TryGetByteContent(right, out var rightContent)
+            && PythonBufferProtocol.TryGetContent(
+                right,
+                PythonBufferProtocol.Simple,
+                span,
+                out var rightContent
+            )
         )
         {
             byte[] joined = [.. leftContent, .. rightContent];

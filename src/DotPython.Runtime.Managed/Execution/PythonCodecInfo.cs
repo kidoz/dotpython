@@ -224,7 +224,14 @@ internal static class PythonCodecInfo
         TextSpan span
     )
     {
-        if (!ManagedObjectProtocols.TryGetByteContent(value, out var contents))
+        if (
+            !PythonBufferProtocol.TryGetContent(
+                value,
+                PythonBufferProtocol.Simple,
+                span,
+                out var contents
+            )
+        )
         {
             throw ManagedObjectProtocols.Fault(
                 "DPY4003",
