@@ -632,35 +632,111 @@ internal static class PythonBuiltinMethods
         out PythonProtocolFunctionValue method
     )
     {
-        var table = target switch
+        var typeName = target switch
         {
-            PythonTextValue => TextMethods,
-            PythonByteSequenceValue => BytesMethods,
-            PythonByteArrayValue => ByteArrayMethods,
-            PythonListValue => ListMethods,
-            PythonDictionaryValue => DictionaryMethods,
-            PythonTupleValue => TupleMethods,
-            PythonSetValue { IsFrozen: true } => FrozenSetMethods,
-            PythonSetValue => SetMethods,
-            PythonWholeNumberValue or PythonTruthValue => NumberMethods,
-            PythonFloatingPointValue => FloatMethods,
+            PythonTextValue => "str",
+            PythonByteSequenceValue => "bytes",
+            PythonByteArrayValue => "bytearray",
+            PythonListValue => "list",
+            PythonDictionaryValue => "dict",
+            PythonTupleValue => "tuple",
+            PythonSetValue { IsFrozen: true } => "frozenset",
+            PythonSetValue => "set",
+            PythonWholeNumberValue or PythonTruthValue => "int",
+            PythonFloatingPointValue => "float",
             _ => null,
         };
+        if (typeName is null)
+        {
+            method = null!;
+            return false;
+        }
+        return TryGetTypeMember(typeName, name, out method);
+    }
+
+    /// <summary>
+    /// The methods the type object itself answers. Reaching one through the type gives a
+    /// method descriptor, so `list.append` is callable with an explicit receiver.
+    /// </summary>
+    internal static bool TryGetTypeMember(
+        string typeName,
+        string name,
+        out PythonProtocolFunctionValue method
+    )
+    {
+        var table = TableFor(typeName);
         if (table is not null && table.TryGetValue(name, out var found))
         {
             method = found;
             return true;
         }
 
-        if (target is PythonSetValue && SetAlgebraMethods.TryGetValue(name, out var algebra))
+        // Both set types share the query algebra; only `set` carries the mutators.
+        if (
+            typeName is "set" or "frozenset"
+            && SetAlgebraMethods.TryGetValue(name, out var algebra)
+        )
         {
             method = algebra;
             return true;
         }
 
+        // A bool is an int, so it answers the int methods, under int's name.
+        if (typeName == "bool")
+            return TryGetTypeMember("int", name, out method);
+
         method = null!;
         return false;
+
+        static Dictionary<string, PythonProtocolFunctionValue>? TableFor(string name) =>
+            name switch
+            {
+                "str" => TextMethods,
+                "bytes" => BytesMethods,
+                "bytearray" => ByteArrayMethods,
+                "list" => ListMethods,
+                "dict" => DictionaryMethods,
+                "tuple" => TupleMethods,
+                "set" => SetMethods,
+                "frozenset" => FrozenSetMethods,
+                "int" => NumberMethods,
+                "float" => FloatMethods,
+                _ => null,
+            };
     }
+
+    /// <summary>
+    /// The interned descriptor for a type's method, or null when the type has no such
+    /// method. One descriptor per type and name keeps `list.append is list.append`.
+    /// </summary>
+    internal static PythonMethodDescriptorValue? GetTypeMemberDescriptor(
+        string typeName,
+        string name
+    )
+    {
+        if (!TryGetTypeMember(typeName, name, out var function))
+            return null;
+        // A bool reports the type it borrowed from, so `bool.bit_length` is int's descriptor.
+        var ownerName = typeName == "bool" ? "int" : typeName;
+        lock (TypeMemberDescriptors)
+        {
+            if (!TypeMemberDescriptors.TryGetValue((ownerName, name), out var descriptor))
+            {
+                descriptor = new PythonMethodDescriptorValue(
+                    PythonBuiltinTypes.ForName(ownerName),
+                    name,
+                    function
+                );
+                TypeMemberDescriptors[(ownerName, name)] = descriptor;
+            }
+            return descriptor;
+        }
+    }
+
+    private static readonly Dictionary<
+        (string Owner, string Name),
+        PythonMethodDescriptorValue
+    > TypeMemberDescriptors = new();
 
     private static readonly Dictionary<string, PythonProtocolFunctionValue> SetAlgebraMethods = new(
         StringComparer.Ordinal

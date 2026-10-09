@@ -2068,6 +2068,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             target
             is PythonProtocolFunctionValue
                 or PythonBoundMethodValue
+                or PythonMethodDescriptorValue
                 or PythonManagedTypeValue
                 or PythonGenericAliasValue
                 or PythonExternalObjectValue
@@ -2693,6 +2694,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             PythonBuiltinTypeValue type => type.Name is "tuple" or "set" or "frozenset",
             PythonBoundMethodValue method => method.Function.Name is "join",
+            PythonMethodDescriptorValue descriptor => descriptor.Name is "join",
             _ => false,
         };
         if (
@@ -4028,6 +4030,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     _evaluationStack.Push(CreateExceptionValue(exceptionType, positional));
                     return;
                 case PythonProtocolFunctionValue or PythonBoundMethodValue:
+                case PythonMethodDescriptorValue:
                 case PythonStaticMethodValue or PythonClassMethodValue:
                 case PythonExternalObjectValue:
                 case PythonManagedTypeValue { Construct: not null }:
@@ -4141,6 +4144,31 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     functionWithKeywords(null, positional, keywordNames, keywordValues)
                 );
                 return;
+            case PythonMethodDescriptorValue descriptor:
+            {
+                // The receiver binds first, so a wrong one is reported before the method
+                // ever sees the keywords it would refuse.
+                var (receiver, rest) = descriptor.BindReceiver(positional, span);
+                if (descriptor.Function.InvokeWithKeywords is { } underlying)
+                {
+                    _evaluationStack.Push(underlying(receiver, rest, keywordNames, keywordValues));
+                    return;
+                }
+                throw Fault(
+                    "DPY4009",
+                    $"{descriptor.OwnerName}.{descriptor.Name}() takes no keyword arguments",
+                    span,
+                    "TypeError"
+                );
+            }
+            case PythonBoundMethodValue bound:
+                throw Fault(
+                    "DPY4009",
+                    $"{ManagedObjectProtocols.GetTypeName(bound.Target)}.{bound.Name}() takes "
+                        + "no keyword arguments",
+                    span,
+                    "TypeError"
+                );
             default:
                 throw Fault(
                     "DPY4009",
@@ -4648,6 +4676,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             target
             is PythonProtocolFunctionValue
                 or PythonBoundMethodValue
+                or PythonMethodDescriptorValue
                 or PythonManagedTypeValue
                 or PythonGenericAliasValue
                 or PythonExternalObjectValue

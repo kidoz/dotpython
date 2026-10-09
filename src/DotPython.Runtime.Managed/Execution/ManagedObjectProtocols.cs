@@ -40,6 +40,7 @@ internal static class ManagedObjectProtocols
             or PythonProtocolFunctionValue
             or PythonBoundMethodValue
             or PythonBoundUserMethodValue
+            or PythonMethodDescriptorValue
             or PythonStaticMethodValue => true,
             PythonManagedObjectValue instance => ManagedObjectProtocols.TryGetTypeAttribute(
                 instance.Type,
@@ -69,6 +70,7 @@ internal static class ManagedObjectProtocols
             PythonGenericAliasValue alias => Call(alias.Origin, arguments, span),
             PythonBuiltinTypeValue builtinType => builtinType.Construct(arguments, span),
             PythonProtocolFunctionValue function => function.Invoke(null, arguments),
+            PythonMethodDescriptorValue descriptor => descriptor.Invoke(arguments, span),
             PythonBoundMethodValue
             {
                 Target: PythonIteratorValue iterator,
@@ -447,12 +449,17 @@ internal static class ManagedObjectProtocols
                 );
             case PythonBuiltinTypeValue { Name: "str" } when name == "maketrans":
                 return PythonTextMethods.CreateMakeTrans();
-            case PythonBuiltinTypeValue { Name: "bytes" } when name == "fromhex":
+            // `bytearray` inherits both classmethods from `bytes`.
+            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } when name == "fromhex":
                 return PythonBytesMethods.CreateFromHex();
-            case PythonBuiltinTypeValue { Name: "bytes" } when name == "maketrans":
+            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } when name == "maketrans":
                 return PythonBytesMethods.CreateMakeTrans();
+            // `from_bytes` is a classmethod, so it constructs the class it was reached
+            // through: `bool.from_bytes(b'\x01')` is `True`, not `1`.
             case PythonBuiltinTypeValue { Name: "int" } when name == "from_bytes":
-                return PythonIntMethods.CreateFromBytes();
+                return PythonIntMethods.CreateFromBytes(boolean: false);
+            case PythonBuiltinTypeValue { Name: "bool" } when name == "from_bytes":
+                return PythonIntMethods.CreateFromBytes(boolean: true);
             case PythonBuiltinTypeValue { Name: "float" } when name == "fromhex":
                 return PythonFloatMethods.CreateFromHex();
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
@@ -854,8 +861,14 @@ internal static class ManagedObjectProtocols
                         span,
                         "AttributeError"
                     );
+            case PythonBuiltinTypeValue builtinType
+                when PythonBuiltinMethods.GetTypeMemberDescriptor(builtinType.Name, name)
+                    is { } descriptor:
+                return descriptor;
             case PythonBuiltinTypeValue builtinType:
                 throw MissingTypeAttribute(builtinType.Name, name, span);
+            case PythonMethodDescriptorValue methodDescriptor:
+                return methodDescriptor.GetAttribute(name, span);
             default:
                 throw Fault(
                     "DPY4023",
@@ -3422,6 +3435,7 @@ internal static class ManagedObjectProtocols
                 named.TypeName,
             PythonExternalObjectValue => "object",
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } => "method_descriptor",
+            PythonMethodDescriptorValue => "method_descriptor",
             PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } =>
                 "builtin_function_or_method",
             PythonBuiltinFunctionValue or PythonProtocolFunctionValue =>

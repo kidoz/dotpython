@@ -278,6 +278,27 @@ internal static class PythonBuiltinTypes
     internal static readonly PythonBuiltinTypeValue Tuple = new("tuple", ConstructTuple);
 
     /// <summary>
+    /// One of the `tp_name`s above, for the places that name a type rather than a value —
+    /// a method descriptor's `__objclass__` and the owner its diagnostics report.
+    /// </summary>
+    internal static PythonBuiltinTypeValue ForName(string name) =>
+        name switch
+        {
+            "bool" => Bool,
+            "bytes" => Bytes,
+            "bytearray" => ByteArray,
+            "dict" => Dict,
+            "float" => Float,
+            "frozenset" => Frozenset,
+            "int" => Int,
+            "list" => List,
+            "set" => Set,
+            "str" => Str,
+            "tuple" => Tuple,
+            _ => CreateOpaque(name),
+        };
+
+    /// <summary>
     /// `type(None)`. `None` contributes this member to a PEP 604 union, and the union
     /// renders it back as `None` because that is how the union was written.
     /// </summary>

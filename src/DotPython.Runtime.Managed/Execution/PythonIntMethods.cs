@@ -36,7 +36,7 @@ internal static class PythonIntMethods
                 value => new PythonTupleValue([AsInteger(value), PythonWholeNumberValue.Create(1)])
             ),
             ["to_bytes"] = ToBytes(),
-            ["from_bytes"] = FromBytes(),
+            ["from_bytes"] = FromBytes(boolean: false),
         };
 
     /// <summary>
@@ -65,8 +65,11 @@ internal static class PythonIntMethods
     internal static bool IsReadOnlyMember(string name) =>
         name is "real" or "imag" or "numerator" or "denominator";
 
-    /// <summary>`int.from_bytes(bytes, byteorder='big', *, signed=False)`.</summary>
-    internal static PythonProtocolFunctionValue CreateFromBytes() => FromBytes();
+    /// <summary>
+    /// `int.from_bytes(bytes, byteorder='big', *, signed=False)`. It is a classmethod, so
+    /// `bool` reaches the same implementation and constructs a bool.
+    /// </summary>
+    internal static PythonProtocolFunctionValue CreateFromBytes(bool boolean) => FromBytes(boolean);
 
     internal static bool TryGetInteger(PythonValue value, out BigInteger integer)
     {
@@ -179,13 +182,21 @@ internal static class PythonIntMethods
     }
 
     /// <summary>`int.from_bytes`: the value the given bytes spell, in the requested order.</summary>
-    private static PythonProtocolFunctionValue FromBytes() =>
+    private static PythonProtocolFunctionValue FromBytes(bool boolean) =>
         new(
             "from_bytes",
-            (_, arguments) => FromBytesCore(arguments, arguments.Count, [], []),
+            (_, arguments) => AsClass(boolean, FromBytesCore(arguments, arguments.Count, [], [])),
             (_, positional, names, values) =>
-                FromBytesCore(positional, positional.Count, names, values)
+                AsClass(boolean, FromBytesCore(positional, positional.Count, names, values))
         );
+
+    /// <summary>A classmethod answers with the class it was reached through.</summary>
+    private static PythonValue AsClass(bool boolean, PythonWholeNumberValue value) =>
+        boolean
+            ? value.Value.IsZero
+                ? PythonTruthValue.False
+                : PythonTruthValue.True
+            : value;
 
     private static PythonWholeNumberValue FromBytesCore(
         IReadOnlyList<PythonValue> positional,
