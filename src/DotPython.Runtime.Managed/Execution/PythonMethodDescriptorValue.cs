@@ -34,10 +34,13 @@ internal sealed record PythonMethodDescriptorValue(
 
     internal string OwnerName => Owner.Name;
 
+    /// <summary>The owner as CPython names it in a repr and a refusal.</summary>
+    internal string QualifiedOwnerName => Owner.QualifiedName;
+
     internal override string ToDisplayString() =>
         IsWrapper
-            ? $"<slot wrapper '{Name}' of '{OwnerName}' objects>"
-            : $"<method '{Name}' of '{OwnerName}' objects>";
+            ? $"<slot wrapper '{Name}' of '{QualifiedOwnerName}' objects>"
+            : $"<method '{Name}' of '{QualifiedOwnerName}' objects>";
 
     internal PythonValue GetAttribute(string name, TextSpan span) =>
         name switch
@@ -86,7 +89,7 @@ internal sealed record PythonMethodDescriptorValue(
         if (arguments.Count == 0)
             throw Fault(
                 IsWrapper
-                    ? $"descriptor '{Name}' of '{OwnerName}' object needs an argument"
+                    ? $"descriptor '{Name}' of '{QualifiedOwnerName}' object needs an argument"
                     : $"unbound method {OwnerName}.{Name}() needs an argument",
                 span
             );
@@ -96,9 +99,9 @@ internal sealed record PythonMethodDescriptorValue(
             var received = ManagedObjectProtocols.GetTypeName(receiver);
             throw Fault(
                 IsWrapper
-                    ? $"descriptor '{Name}' requires a '{OwnerName}' object but received a "
+                    ? $"descriptor '{Name}' requires a '{QualifiedOwnerName}' object but received a "
                         + $"'{received}'"
-                    : $"descriptor '{Name}' for '{OwnerName}' objects doesn't apply to a "
+                    : $"descriptor '{Name}' for '{QualifiedOwnerName}' objects doesn't apply to a "
                         + $"'{received}' object",
                 span
             );
@@ -120,6 +123,7 @@ internal sealed record PythonMethodDescriptorValue(
             "bytes" => receiver is PythonByteSequenceValue,
             "bytearray" => receiver is PythonByteArrayValue,
             "memoryview" => receiver is PythonMemoryViewValue,
+            "deque" => receiver is PythonDequeValue,
             "list" => receiver is PythonListValue,
             "tuple" => receiver is PythonTupleValue,
             "dict" => receiver is PythonDictionaryValue,

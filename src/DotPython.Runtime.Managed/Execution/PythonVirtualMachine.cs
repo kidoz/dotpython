@@ -7633,6 +7633,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 _evaluationStack.Push(mutable);
                 return;
             }
+            case PythonDequeValue deque when binaryOpCode == PythonOpCode.BinaryAdd:
+                PythonDequeMethods.ExtendInPlace(deque, right, span);
+                _evaluationStack.Push(deque);
+                return;
+            case PythonDequeValue deque when binaryOpCode == PythonOpCode.BinaryMultiply:
+                PythonDequeMethods.RepeatInPlace(deque, right, span);
+                _evaluationStack.Push(deque);
+                return;
             case PythonListValue list when binaryOpCode == PythonOpCode.BinaryAdd:
                 ManagedObjectProtocols.ExtendList(list, right, span, _userIterationDispatcher);
                 _evaluationStack.Push(list);
@@ -7991,6 +7999,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A range compares by the sequence it walks.
             || left is PythonRangeValue
             || right is PythonRangeValue
+            // A deque compares by its contents.
+            || left is PythonDequeValue
+            || right is PythonDequeValue
             // A descriptor is interned, so equality is its identity.
             || left is PythonMethodDescriptorValue
             || right is PythonMethodDescriptorValue
@@ -8305,6 +8316,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 : PythonByteSequenceValue.Create(joined);
         }
 
+        if (opCode == PythonOpCode.BinaryAdd && left is PythonDequeValue leftDeque)
+            return PythonDequeMethods.Concatenate(leftDeque, right, span);
+
+        if (opCode == PythonOpCode.BinaryMultiply && left is PythonDequeValue multiplyDeque)
+            return PythonDequeMethods.Repeat(multiplyDeque, right, span);
+
         if (opCode == PythonOpCode.BinaryAdd)
         {
             if (left is PythonListValue leftList && right is PythonListValue rightList)
@@ -8324,8 +8341,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // Nothing concatenated, so the refusal names the type that has to change.
             if (IsConcatenable(left) && !IsSameConcatenationFamily(left, right))
             {
-                var leftName = ManagedObjectProtocols.GetTypeName(left);
-                var rightName = ManagedObjectProtocols.GetTypeName(right);
+                var leftName = PythonBoundDisplay.QualifiedTypeName(left);
+                var rightName = PythonBoundDisplay.QualifiedTypeName(right);
                 throw Fault(
                     "DPY4005",
                     left is PythonByteSequenceValue or PythonByteArrayValue
@@ -8346,6 +8363,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         or PythonTextValue
                         or PythonByteSequenceValue
                         or PythonByteArrayValue
+                        or PythonDequeValue
                     ? left
                 : right
                     is PythonListValue
@@ -8353,6 +8371,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                         or PythonTextValue
                         or PythonByteSequenceValue
                         or PythonByteArrayValue
+                        or PythonDequeValue
                     ? right
                 : null;
             if (sequence is not null)
@@ -8371,6 +8390,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     PythonByteSequenceValue bytes => PythonBytesOperations.Repeat(
                         bytes,
                         count,
+                        span
+                    ),
+                    PythonDequeValue deque => PythonDequeMethods.Repeat(
+                        deque,
+                        PythonWholeNumberValue.Create(count),
                         span
                     ),
                     PythonByteArrayValue mutable => new PythonByteArrayValue(

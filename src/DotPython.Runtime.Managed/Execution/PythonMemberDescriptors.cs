@@ -17,12 +17,13 @@ internal static class PythonMemberDescriptors
     {
         // A bool answers int's members, under int's name.
         var ownerName = typeName == "bool" ? "int" : typeName;
-        if (ownerName is not ("int" or "float" or "memoryview" or "range"))
+        if (ownerName is not ("int" or "float" or "memoryview" or "range" or "deque"))
             return null;
         var names =
             ownerName == "int" ? IntNames
             : ownerName == "float" ? FloatNames
             : ownerName == "range" ? RangeNames
+            : ownerName == "deque" ? ["maxlen"]
             : ViewNames;
         if (Array.IndexOf(names, name) < 0)
             return null;
@@ -35,6 +36,8 @@ internal static class PythonMemberDescriptors
                     name,
                     ownerName == "int" ? receiver => ReadIntMember(receiver, name)
                         : ownerName == "float" ? receiver => ReadFloatMember(receiver, name)
+                        : ownerName == "deque"
+                            ? receiver => ReadDequeMember((PythonDequeValue)receiver, name)
                         : ownerName == "range"
                             ? receiver => ReadRangeMember((PythonRangeValue)receiver, name)
                         : receiver =>
@@ -59,6 +62,11 @@ internal static class PythonMemberDescriptors
 
     /// <summary>The bounds a range carries.</summary>
     private static readonly string[] RangeNames = ["start", "stop", "step"];
+
+    private static PythonValue ReadDequeMember(PythonDequeValue deque, string name) =>
+        deque.MaxLength is { } limit
+            ? PythonWholeNumberValue.Create(limit)
+            : PythonNoneValue.Instance;
 
     private static PythonWholeNumberValue ReadRangeMember(PythonRangeValue range, string name) =>
         name switch

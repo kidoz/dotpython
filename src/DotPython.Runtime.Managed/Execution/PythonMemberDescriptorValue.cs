@@ -29,7 +29,8 @@ internal sealed record PythonMemberDescriptorValue(
     /// <summary>The word CPython declares the descriptor with, `member` or `attribute`.</summary>
     internal string Kind { get; init; } = "attribute";
 
-    internal override string ToDisplayString() => $"<{Kind} '{Name}' of '{OwnerName}' objects>";
+    internal override string ToDisplayString() =>
+        $"<{Kind} '{Name}' of '{Owner.QualifiedName}' objects>";
 
     /// <summary>
     /// Which values carry the member. A bool answers int's members, and only int defines
@@ -42,6 +43,7 @@ internal sealed record PythonMemberDescriptorValue(
             "float" => receiver is PythonFloatingPointValue,
             "memoryview" => receiver is PythonMemoryViewValue,
             "range" => receiver is PythonRangeValue,
+            "deque" => receiver is PythonDequeValue,
             _ => false,
         };
 
@@ -93,7 +95,7 @@ internal sealed record PythonMemberDescriptorValue(
         }
         if (!AppliesTo(instance))
             throw Fault(
-                $"descriptor '{Name}' for '{OwnerName}' objects doesn't apply to a "
+                $"descriptor '{Name}' for '{Owner.QualifiedName}' objects doesn't apply to a "
                     + $"'{ManagedObjectProtocols.GetTypeName(instance)}' object",
                 span
             );

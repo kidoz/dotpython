@@ -351,6 +351,11 @@ internal static class PythonStandardModules
         IReadOnlyList<string> searchRoots
     )
     {
+        modules["collections"] = PythonModuleDefinition.Native(
+            "<dotpython collections>",
+            isPackage: true,
+            globals => globals.SetValue("deque", PythonDequeMethods.Type)
+        );
         modules["types"] = PythonModuleDefinition.Native(
             "<dotpython types>",
             false,

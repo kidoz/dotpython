@@ -172,6 +172,7 @@ internal static class ManagedObjectProtocols
             PythonWholeNumberValue
             or PythonTruthValue when PythonIntMethods.IsReadOnlyMember(name) => "int",
             PythonFloatingPointValue when PythonFloatMethods.IsReadOnlyMember(name) => "float",
+            PythonDequeValue when name == "maxlen" => "collections.deque",
             _ => null,
         };
         if (owner is not null)
@@ -945,6 +946,10 @@ internal static class ManagedObjectProtocols
                 when PythonMemoryViewMethods.GetTypeDescriptor(builtinType.Name, name)
                     is { } viewMethod:
                 return viewMethod;
+            case PythonBuiltinTypeValue builtinType
+                when PythonDequeMethods.GetTypeDescriptor(builtinType.Name, name)
+                    is { } dequeMethod:
+                return dequeMethod;
             // What the type inherits from `object`, and the two entry points it carries.
             case PythonBuiltinTypeValue builtinType
                 when PythonObjectMembers.GetTypeDescriptor(builtinType.Name, name)
@@ -991,6 +996,43 @@ internal static class ManagedObjectProtocols
                 throw Fault(
                     "DPY4023",
                     $"'memoryview' object has no attribute '{name}'",
+                    span,
+                    "AttributeError"
+                );
+            case PythonDequeValue deque:
+                // An unhashable type answers `__hash__` with the value None.
+                if (name == "__hash__")
+                    return PythonNoneValue.Instance;
+                if (PythonDequeMethods.GetAttribute(deque, name, span) is { } dequeMember)
+                    return dequeMember;
+                if (
+                    PythonSlotMethods.TryGetForValue(
+                        "deque",
+                        name,
+                        out var dequeSlot,
+                        out var dequeSlotIsWrapper
+                    )
+                )
+                    return new PythonBoundMethodValue(name, deque, dequeSlot)
+                    {
+                        IsWrapper = dequeSlotIsWrapper,
+                    };
+                if (
+                    PythonObjectMembers.TryGetValueMember(
+                        deque,
+                        "deque",
+                        name,
+                        out var dequeObjectMember,
+                        out var dequeObjectIsWrapper
+                    )
+                )
+                    return new PythonBoundMethodValue(name, deque, dequeObjectMember)
+                    {
+                        IsWrapper = dequeObjectIsWrapper,
+                    };
+                throw Fault(
+                    "DPY4023",
+                    $"'deque' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -1845,6 +1887,57 @@ internal static class ManagedObjectProtocols
         PythonValue type
     ) => function with { BoundTo = type };
 
+    /// <summary>
+    /// A deque is indexed by a whole number: reading a slice is refused with the sequence
+    /// wording, while assigning one reports the integer conversion CPython reports.
+    /// </summary>
+    private static PythonValue GetDequeItem(
+        PythonDequeValue deque,
+        PythonValue index,
+        TextSpan span
+    )
+    {
+        if (index is not PythonWholeNumberValue number)
+            throw Fault(
+                "DPY4003",
+                $"sequence index must be integer, not '{GetTypeName(index)}'",
+                span,
+                "TypeError"
+            );
+        return deque.Elements[ResolveDequeIndex(deque, number.Value, span)];
+    }
+
+    private static int ResolveDequeIndex(PythonDequeValue deque, BigInteger index, TextSpan span)
+    {
+        var resolved = index;
+        if (resolved < 0)
+            resolved += deque.Elements.Count;
+        if (resolved < 0 || resolved >= deque.Elements.Count)
+            throw Fault("DPY4003", "deque index out of range", span, "IndexError");
+        return (int)resolved;
+    }
+
+    private static int ResolveDequeAssignment(
+        PythonDequeValue deque,
+        PythonValue index,
+        TextSpan span
+    )
+    {
+        BigInteger value;
+        if (index is PythonWholeNumberValue whole)
+            value = whole.Value;
+        else if (index is PythonTruthValue truth)
+            value = truth.Value ? BigInteger.One : BigInteger.Zero;
+        else
+            throw Fault(
+                "DPY4003",
+                $"'{GetTypeName(index)}' object cannot be interpreted as an integer",
+                span,
+                "TypeError"
+            );
+        return ResolveDequeIndex(deque, value, span);
+    }
+
     /// <summary>The length of a view is its current dimension.</summary>
     internal static int GetViewLength(PythonMemoryViewValue view)
     {
@@ -1859,6 +1952,7 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => bytes.Value.Length,
             PythonByteArrayValue mutable => mutable.Value.Length,
             PythonMemoryViewValue view => GetViewLength(view),
+            PythonDequeValue deque => deque.Elements.Count,
             PythonListValue list => list.Elements.Count,
             PythonTupleValue tuple => tuple.Elements.Length,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping, span),
@@ -2169,6 +2263,7 @@ internal static class ManagedObjectProtocols
                 or PythonByteSequenceValue
                 or PythonByteArrayValue
                 or PythonMemoryViewValue
+                or PythonDequeValue
                 or PythonRangeValue
                 or PythonSetValue
             )
@@ -2182,7 +2277,7 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        return new PythonIteratorValue(
+        var created = new PythonIteratorValue(
             value,
             value switch
             {
@@ -2191,6 +2286,9 @@ internal static class ManagedObjectProtocols
                 _ => -1,
             }
         );
+        if (value is PythonDequeValue deque)
+            created.ObservedVersion = deque.Version;
+        return created;
     }
 
     internal static void EnsureFileOpen(PythonFileValue file, TextSpan span)
@@ -2234,6 +2332,21 @@ internal static class ManagedObjectProtocols
 
                 break;
             }
+            case PythonDequeValue deque:
+                // CPython refuses to iterate a deque that changed under the iterator, even
+                // when its length did not.
+                if (iterator.ObservedVersion != deque.Version)
+                {
+                    iterator.IsExhausted = true;
+                    throw Fault("DPY4003", "deque mutated during iteration", span, "RuntimeError");
+                }
+                if (iterator.Index < deque.Elements.Count)
+                {
+                    value = deque.Elements[iterator.Index++];
+                    return true;
+                }
+                iterator.IsExhausted = true;
+                break;
             case PythonListValue list when iterator.Index < list.Elements.Count:
                 value = list.Elements[iterator.Index++];
                 return true;
@@ -2716,6 +2829,8 @@ internal static class ManagedObjectProtocols
                 return PythonByteArrayOperations.GetItem(mutable, index, span);
             case PythonMemoryViewValue view:
                 return GetViewItem(view, index, span);
+            case PythonDequeValue deque:
+                return GetDequeItem(deque, index, span);
             case PythonRangeValue range when index is PythonSliceValue slice:
             {
                 if (range.Count > int.MaxValue)
@@ -2846,6 +2961,10 @@ internal static class ManagedObjectProtocols
                 return;
             case PythonMemoryViewValue view:
                 SetViewItem(view, index, value, span);
+                return;
+            case PythonDequeValue deque:
+                deque.Elements[ResolveDequeAssignment(deque, index, span)] = value;
+                deque.Version++;
                 return;
             case PythonListValue list when index is PythonSliceValue slice:
                 AssignListSlice(list, slice, value, span);
@@ -3265,6 +3384,10 @@ internal static class ManagedObjectProtocols
                     span,
                     "TypeError"
                 );
+            case PythonDequeValue deque:
+                deque.Elements.RemoveAt(ResolveDequeAssignment(deque, index, span));
+                deque.Version++;
+                return;
             case PythonListValue list when index is PythonSliceValue slice:
             {
                 var unpacked = UnpackSlice(slice, span);
@@ -3456,6 +3579,7 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue bytes => bytes.Value.Length != 0,
             PythonByteArrayValue mutable => mutable.Value.Length != 0,
             PythonMemoryViewValue view => GetViewLength(view) != 0,
+            PythonDequeValue deque => deque.Elements.Count != 0,
             PythonListValue list => list.Elements.Count != 0,
             PythonTupleValue tuple => tuple.Elements.Length != 0,
             PythonMappingProxyValue proxy => GetLength(proxy.Mapping) != 0,
@@ -3697,13 +3821,16 @@ internal static class ManagedObjectProtocols
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonTypeUnionValue union => GetTypeUnionHash(union),
             PythonGenericAliasValue alias => GetGenericAliasHash(alias, span),
-            PythonListValue or PythonDictionaryValue or PythonSetValue or PythonByteArrayValue =>
-                throw Fault(
-                    "DPY4014",
-                    $"unhashable type: '{GetTypeName(value)}'",
-                    span,
-                    "TypeError"
-                ),
+            PythonListValue
+            or PythonDictionaryValue
+            or PythonSetValue
+            or PythonByteArrayValue
+            or PythonDequeValue => throw Fault(
+                "DPY4014",
+                $"unhashable type: '{PythonBoundDisplay.QualifiedTypeName(value)}'",
+                span,
+                "TypeError"
+            ),
             _ => RuntimeHelpers.GetHashCode(value),
         };
     }
@@ -3810,6 +3937,7 @@ internal static class ManagedObjectProtocols
             PythonByteSequenceValue => "bytes",
             PythonByteArrayValue => "bytearray",
             PythonMemoryViewValue => "memoryview",
+            PythonDequeValue => "deque",
             PythonListValue => "list",
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
@@ -4455,6 +4583,10 @@ internal static class ManagedObjectProtocols
                 leftRange,
                 rightRange
             ),
+            (PythonDequeValue leftDeque, PythonDequeValue rightDeque) => DequesEqual(
+                leftDeque,
+                rightDeque
+            ),
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
@@ -4681,6 +4813,11 @@ internal static class ManagedObjectProtocols
                 rightList.Elements,
                 span
             ),
+            (PythonDequeValue leftDeque, PythonDequeValue rightDeque) => CompareSequencesOrdered(
+                leftDeque.Elements,
+                rightDeque.Elements,
+                span
+            ),
             (PythonExternalObjectValue external, _) => CompareExternalOrdered(
                 external,
                 right,
@@ -4696,7 +4833,8 @@ internal static class ManagedObjectProtocols
             _ => throw Fault(
                 "DPY4005",
                 $"'{symbol}' not supported between instances of "
-                    + $"'{GetTypeName(left)}' and '{GetTypeName(right)}'",
+                    + $"'{PythonBoundDisplay.QualifiedTypeName(left)}' and "
+                    + $"'{PythonBoundDisplay.QualifiedTypeName(right)}'",
                 span,
                 "TypeError"
             ),
@@ -4728,6 +4866,19 @@ internal static class ManagedObjectProtocols
         if (left.Count.IsZero)
             return true;
         return left.Start == right.Start && (left.Count.IsOne || left.Step == right.Step);
+    }
+
+    /// <summary>Two deques are equal when they hold equal elements in the same order.</summary>
+    private static bool DequesEqual(PythonDequeValue left, PythonDequeValue right)
+    {
+        if (left.Elements.Count != right.Elements.Count)
+            return false;
+        for (var index = 0; index < left.Elements.Count; index++)
+        {
+            if (!AreEqual(left.Elements[index], right.Elements[index]))
+                return false;
+        }
+        return true;
     }
 
     private static int CompareSequencesOrdered(

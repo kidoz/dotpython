@@ -194,6 +194,7 @@ internal static class PythonLengthHints
                 or PythonByteSequenceValue
                 or PythonByteArrayValue
                 or PythonMemoryViewValue
+                or PythonDequeValue
                 or PythonListValue
                 or PythonTupleValue
                 or PythonMappingProxyValue

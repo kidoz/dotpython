@@ -18,8 +18,14 @@ internal abstract record PythonValue
 internal static class PythonBoundDisplay
 {
     internal static string Of(string name, PythonValue bound) =>
-        $"<built-in method {name} of {PythonBuiltinTypes.GetRuntimeTypeName(bound)} object "
-        + $"at 0x{RuntimeHelpers.GetHashCode(bound):x}>";
+        $"<built-in method {name} of {QualifiedTypeName(bound)} object at "
+        + $"0x{RuntimeHelpers.GetHashCode(bound):x}>";
+
+    /// <summary>The name of a value's type, qualified when the type lives in a module.</summary>
+    internal static string QualifiedTypeName(PythonValue value) =>
+        PythonBuiltinTypes.GetRuntimeType(value) is PythonBuiltinTypeValue type
+            ? type.QualifiedName
+            : PythonBuiltinTypes.GetRuntimeTypeName(value);
 }
 
 internal sealed record PythonNoneValue : PythonValue
@@ -335,6 +341,12 @@ internal sealed record PythonBuiltinTypeValue(
 ) : PythonValue
 {
     internal string ModuleName { get; init; } = "builtins";
+
+    /// <summary>
+    /// The name CPython reports the type under: a type defined in a module is qualified by
+    /// it, `collections.deque`, while a builtin keeps its bare name.
+    /// </summary>
+    internal string QualifiedName => ModuleName == "builtins" ? Name : $"{ModuleName}.{Name}";
 
     internal PythonTupleValue? MatchArguments { get; init; }
 
@@ -669,8 +681,7 @@ internal sealed record PythonBoundMethodValue(
 
     internal override string ToDisplayString() =>
         IsWrapper
-            ? $"<method-wrapper '{Name}' of "
-                + $"{PythonBuiltinTypes.GetRuntimeTypeName(Target)} object at "
+            ? $"<method-wrapper '{Name}' of {PythonBoundDisplay.QualifiedTypeName(Target)} object at "
                 + $"0x{RuntimeHelpers.GetHashCode(Target):x}>"
             : PythonBoundDisplay.Of(Name, Target);
 }
@@ -1579,6 +1590,12 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
 
     internal int Index { get; set; }
 
+    /// <summary>
+    /// The mutation count a deque had when this iterator was made: a deque refuses to be
+    /// iterated once it changed, even when the change kept its length.
+    /// </summary>
+    internal int ObservedVersion { get; set; }
+
     internal int DictionaryPosition { get; set; }
 
     internal int TextOffset { get; set; }
@@ -1587,7 +1604,7 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
     internal BigInteger RangeIndex { get; set; }
 
     internal override string ToDisplayString() =>
-        $"<{PythonBuiltinTypes.GetRuntimeTypeName(this)} object at "
+        $"<{PythonBoundDisplay.QualifiedTypeName(this)} object at "
         + $"0x{RuntimeHelpers.GetHashCode(this):x}>";
 }
 

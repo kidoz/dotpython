@@ -36,7 +36,7 @@ internal static class PythonSlotMethods
     /// CPython marks a type unhashable.
     /// </summary>
     internal static bool HasNoneHash(string typeName) =>
-        typeName is "list" or "bytearray" or "dict" or "set";
+        typeName is "list" or "bytearray" or "dict" or "set" or "deque";
 
     internal static bool TryGet(string typeName, string name, out Slot slot) =>
         Slots.TryGetValue((typeName, name), out slot);
@@ -488,6 +488,131 @@ internal static class PythonSlotMethods
             (receiver, _) =>
                 PythonWholeNumberValue.Create(ManagedObjectProtocols.ComputePythonHash(receiver))
         );
+
+        // A deque answers the sequence protocol, the two ends of it, concatenation and
+        // repetition, and the comparisons — its contents decide equality and ordering.
+        Wrapper(
+            "deque",
+            "__len__",
+            0,
+            (receiver, _) =>
+                PythonWholeNumberValue.Create(ManagedObjectProtocols.GetLength(receiver))
+        );
+        Wrapper(
+            "deque",
+            "__iter__",
+            0,
+            (receiver, _) => ManagedObjectProtocols.GetIterator(receiver)
+        );
+        Method(
+            "deque",
+            "__reversed__",
+            (receiver, _) => PythonReverseIterators.Create(receiver!, default)
+        );
+        Wrapper(
+            "deque",
+            "__getitem__",
+            1,
+            (receiver, arguments) => ManagedObjectProtocols.GetItem(receiver, arguments[0])
+        );
+        Named(
+            "deque",
+            "__setitem__",
+            2,
+            (receiver, arguments) =>
+            {
+                ManagedObjectProtocols.SetItem(receiver, arguments[0], arguments[1]);
+                return PythonNoneValue.Instance;
+            }
+        );
+        Wrapper(
+            "deque",
+            "__delitem__",
+            1,
+            (receiver, arguments) =>
+            {
+                ManagedObjectProtocols.DeleteItem(receiver, arguments[0]);
+                return PythonNoneValue.Instance;
+            }
+        );
+        slots[("deque", "__init__")] = new Slot(
+            true,
+            new PythonProtocolFunctionValue(
+                "__init__",
+                (receiver, arguments) =>
+                    PythonDequeMethods.Reinitialize((PythonDequeValue)receiver!, arguments, default)
+            )
+        );
+        Wrapper(
+            "deque",
+            "__contains__",
+            1,
+            (receiver, arguments) =>
+                ManagedObjectProtocols.Contains(receiver, arguments[0])
+                    ? PythonTruthValue.True
+                    : PythonTruthValue.False
+        );
+        Wrapper(
+            "deque",
+            "__repr__",
+            0,
+            (receiver, _) => new PythonTextValue(receiver.ToRepresentationString())
+        );
+        Wrapper(
+            "deque",
+            "__add__",
+            1,
+            (receiver, arguments) =>
+                Binary("deque", receiver, arguments[0], PythonOpCode.BinaryAdd, "add")
+        );
+        Wrapper(
+            "deque",
+            "__iadd__",
+            1,
+            (receiver, arguments) =>
+                PythonDequeMethods.ExtendInPlace((PythonDequeValue)receiver!, arguments[0], default)
+        );
+        Wrapper(
+            "deque",
+            "__mul__",
+            1,
+            (receiver, arguments) =>
+                Binary("deque", receiver, arguments[0], PythonOpCode.BinaryMultiply, "mul")
+        );
+        Wrapper(
+            "deque",
+            "__rmul__",
+            1,
+            (receiver, arguments) =>
+                Binary("deque", receiver, arguments[0], PythonOpCode.BinaryMultiply, "mul")
+        );
+        Wrapper(
+            "deque",
+            "__imul__",
+            1,
+            (receiver, arguments) =>
+                PythonDequeMethods.RepeatInPlace((PythonDequeValue)receiver!, arguments[0], default)
+        );
+        foreach (
+            var (name, operation) in new[]
+            {
+                ("__eq__", 0),
+                ("__ne__", 4),
+                ("__lt__", 1),
+                ("__le__", 2),
+                ("__gt__", 3),
+                ("__ge__", 5),
+            }
+        )
+        {
+            var comparison = operation;
+            Wrapper(
+                "deque",
+                name,
+                1,
+                (receiver, arguments) => Compare("deque", receiver, arguments[0], comparison)
+            );
+        }
 
         // The PEP 688 exporters: every bytes-like builtin hands out a view of itself, and
         // the mutable one and a view also take that export back again. They are methods of
@@ -943,6 +1068,7 @@ internal static class PythonSlotMethods
             // A view compares with another view and with any bytes-like value; it has no
             // ordering at all, so every ordering falls through to the other operand.
             "range" => other is PythonRangeValue,
+            "deque" => other is PythonDequeValue,
             "memoryview" => other
                 is PythonMemoryViewValue
                     or PythonByteSequenceValue

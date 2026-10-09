@@ -14,6 +14,13 @@ namespace DotPython.Runtime.Managed.Execution;
 /// <summary>Built-in type objects usable as constructors and isinstance class info.</summary>
 internal static class PythonBuiltinTypes
 {
+    /// <summary>The module a type defined outside builtins reports itself under.</summary>
+    private static readonly Dictionary<string, string> ModuleNames = new()
+    {
+        ["_deque_iterator"] = "collections",
+        ["_deque_reverse_iterator"] = "collections",
+    };
+
     private static readonly ConcurrentDictionary<string, PythonBuiltinTypeValue> OpaqueTypes = new(
         StringComparer.Ordinal
     );
@@ -151,6 +158,7 @@ internal static class PythonBuiltinTypes
             PythonByteSequenceValue => Bytes,
             PythonByteArrayValue => ByteArray,
             PythonMemoryViewValue => MemoryView,
+            PythonDequeValue => PythonDequeMethods.Type,
             PythonTemplateValue => PythonStandardModules.TemplateType,
             PythonInterpolationValue => PythonStandardModules.InterpolationType,
             PythonListValue => List,
@@ -188,6 +196,7 @@ internal static class PythonBuiltinTypes
             PythonIteratorValue { Iterable: PythonTupleValue } => "tuple_iterator",
             PythonIteratorValue { Iterable: PythonByteSequenceValue } => "bytes_iterator",
             PythonIteratorValue { Iterable: PythonMemoryViewValue } => "memory_iterator",
+            PythonIteratorValue { Iterable: PythonDequeValue } => "_deque_iterator",
             PythonIteratorValue { Iterable: PythonSetValue } => "set_iterator",
             PythonIteratorValue { Iterable: PythonTextValue text }
                 when text.Value.All(character => character <= 127) => "str_ascii_iterator",
@@ -301,6 +310,7 @@ internal static class PythonBuiltinTypes
             "str" => Str,
             "tuple" => Tuple,
             "memoryview" => MemoryView,
+            "deque" => PythonDequeMethods.Type,
             _ => CreateOpaque(name),
         };
 
@@ -381,6 +391,9 @@ internal static class PythonBuiltinTypes
                             "TypeError"
                         )
                 )
+                {
+                    ModuleName = ModuleNames.TryGetValue(key, out var module) ? module : "builtins",
+                }
         );
 
     internal static bool IsInstance(PythonValue value, PythonBuiltinTypeValue type) =>
@@ -390,6 +403,7 @@ internal static class PythonBuiltinTypes
             "bytes" => value is PythonByteSequenceValue,
             "bytearray" => value is PythonByteArrayValue,
             "memoryview" => value is PythonMemoryViewValue,
+            "deque" => value is PythonDequeValue,
             "int" => value is PythonWholeNumberValue or PythonTruthValue
                 || PythonEnum.IsInstanceOfMemberType(value, "int"),
             "float" => value is PythonFloatingPointValue,

@@ -70,6 +70,8 @@ internal static class PythonIntrospection
         PythonFloatMethods.AddMemberNames(value, names);
         if (value is PythonMemoryViewValue)
             PythonMemoryViewMethods.AddMemberNames(names);
+        if (value is PythonDequeValue)
+            PythonDequeMethods.AddMemberNames(names);
         AddObjectNames(names);
     }
 
