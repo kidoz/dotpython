@@ -1150,18 +1150,23 @@ internal static class PythonEnum
                 value = UnwrapWrapper(value);
             }
 
+            var storedValues = false;
             value = ResolveAutoValue(
                 enumClass,
                 info,
                 name,
                 value,
                 ref autoCalled,
+                ref storedValues,
                 lastValues,
                 generateNextValue,
                 span
             );
             pending.Add((name, value));
-            lastValues.Add(value);
+            if (!storedValues)
+            {
+                lastValues.Add(value);
+            }
         }
 
         // `_EnumDict.__setitem__` marked these for removal in `EnumType.__new__`.
@@ -1256,6 +1261,7 @@ internal static class PythonEnum
         string name,
         PythonValue value,
         ref bool autoCalled,
+        ref bool storedValues,
         List<PythonValue> lastValues,
         PythonValue? generateNextValue,
         TextSpan span
@@ -1263,6 +1269,7 @@ internal static class PythonEnum
     {
         if (AutoStateOf(value) is { } single)
         {
+            autoCalled = true;
             return ResolveOne(info, enumClass, name, single, lastValues, generateNextValue, span);
         }
 
@@ -1278,15 +1285,27 @@ internal static class PythonEnum
             if (AutoStateOf(element) is { } state)
             {
                 any = true;
-                autoValues.Add(
-                    ResolveOne(info, enumClass, name, state, lastValues, generateNextValue, span)
+                autoCalled = true;
+                var generated = ResolveOne(
+                    info,
+                    enumClass,
+                    name,
+                    state,
+                    lastValues,
+                    generateNextValue,
+                    span
                 );
+                // `_EnumDict.__setitem__` records each generated value as it goes,
+                // so the next `auto()` in the same tuple sees it.
+                lastValues.Add(generated);
+                autoValues.Add(generated);
                 continue;
             }
 
             autoValues.Add(element);
         }
 
+        storedValues = any;
         return any ? new PythonTupleValue([.. autoValues]) : value;
     }
 
@@ -1305,9 +1324,15 @@ internal static class PythonEnum
             return state.Value;
         }
 
-        var generator = generateNextValue ?? LookupClassValue(enumClass, "_generate_next_value_");
+        // A looked-up `_generate_next_value_` is the raw staticmethod; the protocol
+        // call path cannot call a Python function, so unwrap before invoking.
+        var generator = UnwrapStatic(
+            generateNextValue
+                ?? LookupClassValue(enumClass, "_generate_next_value_")
+                ?? DefaultGnvFunction
+        );
         var generated = Invoke(
-            generator ?? DefaultGnvFunction,
+            generator,
             [
                 Text(name),
                 PythonWholeNumberValue.Create(1),
@@ -1374,9 +1399,13 @@ internal static class PythonEnum
     )
     {
         _ = info;
-        var generator = generateNextValue ?? LookupClassValue(enumClass, "_generate_next_value_");
+        var generator = UnwrapStatic(
+            generateNextValue
+                ?? LookupClassValue(enumClass, "_generate_next_value_")
+                ?? DefaultGnvFunction
+        );
         return Invoke(
-            generator ?? DefaultGnvFunction,
+            generator,
             [
                 Text(name),
                 start,
@@ -4024,9 +4053,44 @@ internal static class PythonEnum
             "unique",
             (arguments, span) =>
             {
-                if (arguments.Count != 1 || arguments[0] is not PythonManagedTypeValue enumeration)
+                if (arguments.Count != 1)
                 {
-                    throw Fault("unique() takes exactly one enum class", span);
+                    throw Fault(
+                        arguments.Count == 0
+                            ? "unique() missing 1 required positional argument: 'enumeration'"
+                            : $"unique() takes 1 positional argument but {arguments.Count} were given",
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                if (arguments[0] is not PythonManagedTypeValue enumeration)
+                {
+                    // `unique` reads `__members__` off its argument, so a class that
+                    // isn't one of ours (a builtin or exception type) reports the
+                    // `type object` phrasing, not the plain `'type' object` one.
+                    var typeName = arguments[0] switch
+                    {
+                        PythonBuiltinTypeValue builtin => builtin.Name,
+                        PythonExceptionTypeValue exception => exception.Name,
+                        _ => null,
+                    };
+                    throw Fault(
+                        typeName is null
+                            ? $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}' object has no attribute '__members__'"
+                            : $"type object '{typeName}' has no attribute '__members__'",
+                        span,
+                        "AttributeError"
+                    );
+                }
+
+                if (!IsEnumClass(enumeration))
+                {
+                    throw Fault(
+                        $"type object '{enumeration.Name}' has no attribute '__members__'",
+                        span,
+                        "AttributeError"
+                    );
                 }
 
                 var info = EnsureInfo(enumeration);
