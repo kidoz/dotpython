@@ -175,4 +175,41 @@ public sealed class BytesMethodCompatibilityTests
             probe(lambda: b'abc'.count(300))
             """
         );
+
+    [Fact]
+    public Task ArgumentDiagnosticsMatchCPython() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            def probe(thunk):
+                try:
+                    print(repr(thunk()))
+                except Exception as error:
+                    print(type(error).__name__, error)
+
+            probe(lambda: b'a'.count('x'))
+            probe(lambda: b'a'.startswith('x'))
+            probe(lambda: b'a'.strip(1))
+            probe(lambda: b'a'.split(1))
+            probe(lambda: b'a'.rsplit(1))
+            probe(lambda: b'a'.partition(1))
+            probe(lambda: b'a'.rpartition(1))
+            probe(lambda: b'a'.removeprefix(1))
+            probe(lambda: b'a'.removesuffix(None))
+            probe(lambda: b'a'.replace(1, b'b'))
+            probe(lambda: b'a'.translate('x'))
+            probe(lambda: b'a'.center(b'x'))
+            probe(lambda: b'a'.center(5, 1))
+            probe(lambda: b'a'.center(-1, b'ab'))
+            probe(lambda: b'a'.ljust(8, 42))
+            probe(lambda: b'a'.rjust(9, b''))
+            probe(lambda: b'a'.expandtabs(None))
+            probe(lambda: b'a'.expandtabs(b'x'))
+            probe(lambda: b'a'.zfill(b'x'))
+            probe(lambda: b'a'.join([1]))
+            probe(lambda: b'a'.count(b'a', 'x'))
+            probe(lambda: b'ab'.hex(',', 1, 2))
+            probe(lambda: b'ab'.hex(1))
+            probe(lambda: b'a'.decode(5))
+            """
+        );
 }

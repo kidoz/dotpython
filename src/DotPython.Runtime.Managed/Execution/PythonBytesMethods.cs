@@ -176,7 +176,10 @@ internal static class PythonBytesMethods
         else if (value is PythonTruthValue truth)
             bound = truth.Value ? 1 : 0;
         else if (!UserObjectProtocols.TryConvertToIndex(value, default, out bound))
-            throw Fault("slice indices must be integers or have an __index__ method", "TypeError");
+            throw Fault(
+                "slice indices must be integers or None or have an __index__ method",
+                "TypeError"
+            );
 
         var clamped =
             bound < int.MinValue ? int.MinValue
@@ -404,7 +407,11 @@ internal static class PythonBytesMethods
                 ? truth.Value
                     ? 1
                     : 0
-                : throw Fault("an integer is required", "TypeError");
+                : throw Fault(
+                    $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be "
+                        + "interpreted as an integer",
+                    "TypeError"
+                );
 
     private static PythonProtocolFunctionValue Split(string name, bool reverse) =>
         new(
@@ -635,9 +642,25 @@ internal static class PythonBytesMethods
                 RequireArguments(name, arguments, 1, 2);
                 var value = RequireBytes(name, target!);
                 var width = RequireCount(arguments[0]);
-                var fill = arguments.Count > 1 ? RequireBytes(name, arguments[1]) : [(byte)' '];
-                // The fill is checked even when the width already fits, and unlike `str`
-                // it must be exactly one byte.
+                byte[] fill;
+                if (arguments.Count > 1)
+                {
+                    // The fill is checked even when the width already fits, and unlike
+                    // `str` it must be exactly one byte. A non-bytes fill names its type.
+                    if (arguments[1] is not PythonByteSequenceValue fillBytes)
+                    {
+                        throw Fault(
+                            $"{name}() argument 2 must be a byte string of length 1, "
+                                + $"not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
+                            "TypeError"
+                        );
+                    }
+                    fill = fillBytes.Value;
+                }
+                else
+                {
+                    fill = [(byte)' '];
+                }
                 if (fill.Length != 1)
                 {
                     throw Fault(
@@ -694,10 +717,7 @@ internal static class PythonBytesMethods
             {
                 RequireArguments("expandtabs", arguments, 0, 1);
                 var value = RequireBytes("expandtabs", target!);
-                var size =
-                    arguments.Count > 0 && arguments[0] is not PythonNoneValue
-                        ? RequireCount(arguments[0])
-                        : 8;
+                var size = arguments.Count > 0 ? RequireCount(arguments[0]) : 8;
                 var result = new List<byte>(value.Length);
                 var column = 0;
                 foreach (var current in value)
@@ -726,18 +746,15 @@ internal static class PythonBytesMethods
             {
                 RequireArguments(name, arguments, 1, 1);
                 var value = RequireBytes(name, target!);
-                if (arguments[0] is not PythonByteSequenceValue affix)
-                {
-                    throw Fault($"{name} arg must be bytes", "TypeError");
-                }
-                if (affix.Value.Length > value.Length)
+                var affix = RequireBytes(name, arguments[0]);
+                if (affix.Length > value.Length)
                     return Wrap(value);
                 var matches = prefix
-                    ? value.AsSpan(0, affix.Value.Length).SequenceEqual(affix.Value)
-                    : value.AsSpan(value.Length - affix.Value.Length).SequenceEqual(affix.Value);
+                    ? value.AsSpan(0, affix.Length).SequenceEqual(affix)
+                    : value.AsSpan(value.Length - affix.Length).SequenceEqual(affix);
                 if (!matches)
                     return Wrap(value);
-                return Wrap(prefix ? value[affix.Value.Length..] : value[..^affix.Value.Length]);
+                return Wrap(prefix ? value[affix.Length..] : value[..^affix.Length]);
             }
         );
 
@@ -746,7 +763,15 @@ internal static class PythonBytesMethods
             "hex",
             (target, arguments) =>
             {
-                RequireArguments("hex", arguments, 0, 3);
+                // `hex` reports its own arity the way CPython does rather than through
+                // the runtime's shared wording.
+                if (arguments.Count > 2)
+                {
+                    throw Fault(
+                        $"hex() takes at most 2 arguments ({arguments.Count} given)",
+                        "TypeError"
+                    );
+                }
                 var value = RequireBytes("hex", target!);
                 var separator = arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance;
                 var separatorText =
