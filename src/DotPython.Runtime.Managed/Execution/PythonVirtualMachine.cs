@@ -7988,6 +7988,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A memoryview compares by the bytes and the shape it exposes.
             || left is PythonMemoryViewValue
             || right is PythonMemoryViewValue
+            // A range compares by the sequence it walks.
+            || left is PythonRangeValue
+            || right is PythonRangeValue
             // A descriptor is interned, so equality is its identity.
             || left is PythonMethodDescriptorValue
             || right is PythonMethodDescriptorValue

@@ -432,36 +432,42 @@ internal static class ManagedObjectProtocols
                 return matchArguments;
             case PythonDictionaryValue when name == "fromkeys":
             case PythonBuiltinTypeValue { Name: "dict" } when name == "fromkeys":
-                return new PythonBuiltinFunctionValue(
-                    "fromkeys",
-                    (arguments, callSpan) =>
-                    {
-                        PythonBuiltinFunctions.RequireArgumentCount(
-                            "fromkeys",
-                            arguments,
-                            1,
-                            2,
-                            callSpan
-                        );
-                        var fill = arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
-                        return DictionaryFromKeys(arguments[0], fill, callSpan);
-                    }
+                return BindToType(
+                    new PythonBuiltinFunctionValue(
+                        "fromkeys",
+                        (arguments, callSpan) =>
+                        {
+                            PythonBuiltinFunctions.RequireArgumentCount(
+                                "fromkeys",
+                                arguments,
+                                1,
+                                2,
+                                callSpan
+                            );
+                            var fill =
+                                arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
+                            return DictionaryFromKeys(arguments[0], fill, callSpan);
+                        }
+                    ),
+                    PythonBuiltinTypes.Dict
                 );
-            case PythonBuiltinTypeValue { Name: "str" } when name == "maketrans":
-                return PythonTextMethods.CreateMakeTrans();
+            case PythonBuiltinTypeValue { Name: "str" } builtin when name == "maketrans":
+                return PythonTextMethods.CreateMakeTrans() with { BoundTo = builtin };
             // `bytearray` inherits both classmethods from `bytes`.
-            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } when name == "fromhex":
-                return PythonBytesMethods.CreateFromHex();
-            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } when name == "maketrans":
-                return PythonBytesMethods.CreateMakeTrans();
+            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } builtin
+                when name == "fromhex":
+                return PythonBytesMethods.CreateFromHex() with { BoundTo = builtin };
+            case PythonBuiltinTypeValue { Name: "bytes" or "bytearray" } builtin
+                when name == "maketrans":
+                return PythonBytesMethods.CreateMakeTrans() with { BoundTo = builtin };
             // `from_bytes` is a classmethod, so it constructs the class it was reached
             // through: `bool.from_bytes(b'\x01')` is `True`, not `1`.
-            case PythonBuiltinTypeValue { Name: "int" } when name == "from_bytes":
-                return PythonIntMethods.CreateFromBytes(boolean: false);
-            case PythonBuiltinTypeValue { Name: "bool" } when name == "from_bytes":
-                return PythonIntMethods.CreateFromBytes(boolean: true);
-            case PythonBuiltinTypeValue { Name: "float" } when name == "fromhex":
-                return PythonFloatMethods.CreateFromHex();
+            case PythonBuiltinTypeValue { Name: "int" } builtin when name == "from_bytes":
+                return PythonIntMethods.CreateFromBytes(boolean: false) with { BoundTo = builtin };
+            case PythonBuiltinTypeValue { Name: "bool" } builtin when name == "from_bytes":
+                return PythonIntMethods.CreateFromBytes(boolean: true) with { BoundTo = builtin };
+            case PythonBuiltinTypeValue { Name: "float" } builtin when name == "fromhex":
+                return PythonFloatMethods.CreateFromHex() with { BoundTo = builtin };
             case PythonExceptionTypeValue exceptionTypeValue when name == "__name__":
                 return new PythonTextValue(exceptionTypeValue.Name);
             case PythonExceptionValue { ManagedType: { } exceptionClass } exception
@@ -553,13 +559,17 @@ internal static class ManagedObjectProtocols
             or PythonDictionaryViewValue when name == "__reversed__":
                 return new PythonBoundMethodValue(name, target, PythonReverseIterators.Method);
             case PythonIteratorValue iterator when name is "__iter__" or "__next__":
+                // Both are slots a builtin iterator answers, so both report that way.
                 return new PythonBoundMethodValue(
                     name,
                     iterator,
                     name == "__iter__"
                         ? PythonIteratorProtocols.IterMethod
                         : PythonIteratorProtocols.NextMethod
-                );
+                )
+                {
+                    IsWrapper = true,
+                };
             case PythonIteratorValue iterator
                 when name == "__length_hint__" && PythonLengthHints.SupportsIterator(iterator):
                 return new PythonBoundMethodValue(name, iterator, PythonLengthHints.IteratorMethod);
@@ -812,6 +822,21 @@ internal static class ManagedObjectProtocols
                             (_, _) => CloseGenerator(generator, span)
                         )
                     ),
+                    // `__next__` and `__iter__` are the iterator slots a generator answers.
+                    "__next__" or "__iter__" => new PythonBoundMethodValue(
+                        name,
+                        generator,
+                        new PythonProtocolFunctionValue(
+                            name,
+                            (_, arguments) =>
+                                name == "__iter__"
+                                    ? generator
+                                    : SendToGenerator(generator, arguments, span)
+                        )
+                    )
+                    {
+                        IsWrapper = true,
+                    },
                     _ => throw Fault(
                         "DPY4023",
                         $"'{generator.TypeName}' object has no attribute '{name}'",
@@ -835,6 +860,14 @@ internal static class ManagedObjectProtocols
                         "AttributeError"
                     ),
                 };
+            case var subclassSource
+                when name == "__subclasshook__" && subclassSource is not PythonBuiltinTypeValue:
+                // Every value answers the hook, bound to its type rather than to itself. A
+                // builtin type object answers it through its own chain, under its own name.
+                return PythonPickleProtocols.SubclassHook(
+                    PythonBuiltinTypes.GetRuntimeType(subclassSource),
+                    PythonBuiltinTypes.GetRuntimeTypeName(subclassSource)
+                );
             case var builtin when PythonBuiltinMethods.SupportsMethods(builtin):
                 if (PythonBuiltinMethods.TryGet(builtin, name, out var method))
                 {
@@ -847,9 +880,19 @@ internal static class ManagedObjectProtocols
                     return PythonNoneValue.Instance;
                 }
 
-                if (PythonSlotMethods.TryGetForValue(runtimeName, name, out var slotFunction))
+                if (
+                    PythonSlotMethods.TryGetForValue(
+                        runtimeName,
+                        name,
+                        out var slotFunction,
+                        out var slotIsWrapper
+                    )
+                )
                 {
-                    return new PythonBoundMethodValue(name, builtin, slotFunction);
+                    return new PythonBoundMethodValue(name, builtin, slotFunction)
+                    {
+                        IsWrapper = slotIsWrapper,
+                    };
                 }
 
                 if (
@@ -857,11 +900,15 @@ internal static class ManagedObjectProtocols
                         builtin,
                         runtimeName,
                         name,
-                        out var objectValueMember
+                        out var objectValueMember,
+                        out var objectValueIsWrapper
                     )
                 )
                 {
-                    return new PythonBoundMethodValue(name, builtin, objectValueMember);
+                    return new PythonBoundMethodValue(name, builtin, objectValueMember)
+                    {
+                        IsWrapper = objectValueIsWrapper,
+                    };
                 }
 
                 // The numeric members are answered from the value itself, so they never
@@ -906,7 +953,7 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue builtinType
                 when PythonObjectMembers.GetTypeFunction(builtinType.Name, name)
                     is { } typeFunction:
-                return typeFunction;
+                return typeFunction with { BoundTo = builtinType };
             case PythonBuiltinTypeValue builtinType
                 when PythonBuiltinMethods.GetTypeMemberDescriptor(builtinType.Name, name)
                     is { } descriptor:
@@ -916,20 +963,70 @@ internal static class ManagedObjectProtocols
             case PythonMemoryViewValue view:
                 if (PythonMemoryViewMethods.GetAttribute(view, name, span) is { } viewMember)
                     return viewMember;
-                if (PythonSlotMethods.TryGetForValue("memoryview", name, out var viewSlot))
-                    return new PythonBoundMethodValue(name, view, viewSlot);
+                if (
+                    PythonSlotMethods.TryGetForValue(
+                        "memoryview",
+                        name,
+                        out var viewSlot,
+                        out var viewSlotIsWrapper
+                    )
+                )
+                    return new PythonBoundMethodValue(name, view, viewSlot)
+                    {
+                        IsWrapper = viewSlotIsWrapper,
+                    };
                 if (
                     PythonObjectMembers.TryGetValueMember(
                         view,
                         "memoryview",
                         name,
-                        out var objectViewMember
+                        out var objectViewMember,
+                        out var objectViewIsWrapper
                     )
                 )
-                    return new PythonBoundMethodValue(name, view, objectViewMember);
+                    return new PythonBoundMethodValue(name, view, objectViewMember)
+                    {
+                        IsWrapper = objectViewIsWrapper,
+                    };
                 throw Fault(
                     "DPY4023",
                     $"'memoryview' object has no attribute '{name}'",
+                    span,
+                    "AttributeError"
+                );
+            case PythonRangeValue range:
+                // A range answers its bounds as members, its protocol through the slots its
+                // type publishes, and `object`'s members after those.
+                if (PythonMemberDescriptors.Get("range", name) is { } rangeMember)
+                    return rangeMember.Get(range);
+                if (
+                    PythonSlotMethods.TryGetForValue(
+                        "range",
+                        name,
+                        out var rangeSlot,
+                        out var rangeSlotIsWrapper
+                    )
+                )
+                    return new PythonBoundMethodValue(name, range, rangeSlot)
+                    {
+                        IsWrapper = rangeSlotIsWrapper,
+                    };
+                if (
+                    PythonObjectMembers.TryGetValueMember(
+                        range,
+                        "range",
+                        name,
+                        out var rangeObjectMember,
+                        out var rangeObjectIsWrapper
+                    )
+                )
+                    return new PythonBoundMethodValue(name, range, rangeObjectMember)
+                    {
+                        IsWrapper = rangeObjectIsWrapper,
+                    };
+                throw Fault(
+                    "DPY4023",
+                    $"'range' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -945,11 +1042,15 @@ internal static class ManagedObjectProtocols
                         target,
                         PythonBuiltinTypes.GetRuntimeTypeName(target),
                         name,
-                        out var objectMemberForValue
+                        out var objectMemberForValue,
+                        out var objectValueForValueIsWrapper
                     )
                 )
                 {
-                    return new PythonBoundMethodValue(name, target, objectMemberForValue);
+                    return new PythonBoundMethodValue(name, target, objectMemberForValue)
+                    {
+                        IsWrapper = objectValueForValueIsWrapper,
+                    };
                 }
 
                 throw Fault(
@@ -1737,6 +1838,12 @@ internal static class ManagedObjectProtocols
                 );
         }
     }
+
+    /// <summary>A builtin function a type object handed out, which reports as its method.</summary>
+    private static PythonBuiltinFunctionValue BindToType(
+        PythonBuiltinFunctionValue function,
+        PythonValue type
+    ) => function with { BoundTo = type };
 
     /// <summary>The length of a view is its current dimension.</summary>
     internal static int GetViewLength(PythonMemoryViewValue view)
@@ -3511,6 +3618,7 @@ internal static class ManagedObjectProtocols
             PythonWholeNumberValue whole => PythonNumericHash.Integer(whole.Value),
             PythonFloatingPointValue floating => PythonNumericHash.Float(floating, floating.Value),
             PythonMemoryViewValue view => PythonMemoryViewHash(view),
+            PythonRangeValue range => PythonRangeHash(range),
             PythonComplexValue complex => PythonNumericHash.Complex(complex),
             PythonExternalObjectValue external => external.Protocol.GetHash(span),
             PythonManagedObjectValue instance
@@ -3541,6 +3649,20 @@ internal static class ManagedObjectProtocols
         ComputePythonHash(view.Source);
         return ComputePythonHash(PythonByteSequenceValue.Create(view.Materialize()));
     }
+
+    /// <summary>
+    /// CPython hashes a range as the triple it is — its length, its start and its step — so
+    /// two ranges that walk the same sequence hash alike. Every empty range shares one value,
+    /// since the sequence cannot tell them apart.
+    /// </summary>
+    private static BigInteger PythonRangeHash(PythonRangeValue range) =>
+        ComputePythonHash(
+            new PythonTupleValue([
+                PythonWholeNumberValue.Create(range.Count),
+                PythonWholeNumberValue.Create(range.Count.IsZero ? BigInteger.Zero : range.Start),
+                PythonWholeNumberValue.Create(range.Count.IsZero ? BigInteger.One : range.Step),
+            ])
+        );
 
     internal static int GetPythonHash(PythonValue value, TextSpan span = default)
     {
@@ -4329,6 +4451,10 @@ internal static class ManagedObjectProtocols
                 rightText.Value,
                 StringComparison.Ordinal
             ),
+            (PythonRangeValue leftRange, PythonRangeValue rightRange) => RangesEqual(
+                leftRange,
+                rightRange
+            ),
             (PythonByteSequenceValue leftBytes, PythonByteSequenceValue rightBytes) => leftBytes
                 .Value.AsSpan()
                 .SequenceEqual(rightBytes.Value),
@@ -4590,6 +4716,19 @@ internal static class ManagedObjectProtocols
             (PythonMemoryViewValue, _) or (_, PythonMemoryViewValue) => false,
             _ => true,
         };
+
+    /// <summary>
+    /// Two ranges are equal when they walk the same sequence: the same length, and — as far
+    /// as the sequence can tell — the same first element and the same step.
+    /// </summary>
+    private static bool RangesEqual(PythonRangeValue left, PythonRangeValue right)
+    {
+        if (left.Count != right.Count)
+            return false;
+        if (left.Count.IsZero)
+            return true;
+        return left.Start == right.Start && (left.Count.IsOne || left.Step == right.Step);
+    }
 
     private static int CompareSequencesOrdered(
         IReadOnlyList<PythonValue> left,

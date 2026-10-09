@@ -160,7 +160,7 @@ internal sealed record PythonMethodDescriptorValue(
                 span
             );
 
-        return new PythonBoundMethodValue(Name, instance, Function);
+        return new PythonBoundMethodValue(Name, instance, Function) { IsWrapper = IsWrapper };
     }
 
     // Descriptors are interned per type and name, so identity is the answer to equality.

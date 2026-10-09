@@ -14,6 +14,14 @@ internal abstract record PythonValue
     internal virtual string ToRepresentationString() => ToDisplayString();
 }
 
+/// <summary>`dict.fromkeys` and its siblings: a builtin function a type object handed out.</summary>
+internal static class PythonBoundDisplay
+{
+    internal static string Of(string name, PythonValue bound) =>
+        $"<built-in method {name} of {PythonBuiltinTypes.GetRuntimeTypeName(bound)} object "
+        + $"at 0x{RuntimeHelpers.GetHashCode(bound):x}>";
+}
+
 internal sealed record PythonNoneValue : PythonValue
 {
     internal static PythonNoneValue Instance { get; } = new();
@@ -290,7 +298,15 @@ internal sealed record PythonBuiltinFunctionValue(
     BuiltinKeywordInvoker? InvokeWithKeywords = null
 ) : PythonValue
 {
-    internal override string ToDisplayString() => $"<built-in function {Name}>";
+    /// <summary>
+    /// The type object that handed this function out, when one did: `dict.fromkeys` reports
+    /// `&lt;built-in method fromkeys of type object at 0x...&gt;`, a function in a module keeps
+    /// reporting `&lt;built-in function fromkeys&gt;`.
+    /// </summary>
+    internal PythonValue? BoundTo { get; init; }
+
+    internal override string ToDisplayString() =>
+        BoundTo is null ? $"<built-in function {Name}>" : PythonBoundDisplay.Of(Name, BoundTo);
 
     /// <summary>Declares the parameter names so keyword calls bind onto the positional form.</summary>
     internal PythonBuiltinFunctionValue WithSignature(
@@ -612,10 +628,13 @@ internal sealed record PythonProtocolFunctionValue(
 {
     internal bool IsTypeMethodDescriptor { get; init; }
 
+    /// <summary>The type object that handed this function out, when one did.</summary>
+    internal PythonValue? BoundTo { get; init; }
+
     internal override string ToDisplayString() =>
-        IsTypeMethodDescriptor
-            ? $"<method '{Name}' of 'type' objects>"
-            : $"<built-in function {Name}>";
+        IsTypeMethodDescriptor ? $"<method '{Name}' of 'type' objects>"
+        : BoundTo is null ? $"<built-in function {Name}>"
+        : PythonBoundDisplay.Of(Name, BoundTo);
 
     /// <summary>Declares the parameter names so keyword calls bind onto the positional form.</summary>
     internal PythonProtocolFunctionValue WithSignature(
@@ -641,7 +660,19 @@ internal sealed record PythonBoundMethodValue(
     PythonProtocolFunctionValue Function
 ) : PythonValue
 {
-    internal override string ToDisplayString() => $"<bound method {Name}>";
+    /// <summary>
+    /// A slot wrapper rather than a method: CPython binds the two through different objects
+    /// and reports them differently — `&lt;method-wrapper '__len__' of list object at 0x...&gt;`
+    /// against `&lt;built-in method append of list object at 0x...&gt;`.
+    /// </summary>
+    internal bool IsWrapper { get; init; }
+
+    internal override string ToDisplayString() =>
+        IsWrapper
+            ? $"<method-wrapper '{Name}' of "
+                + $"{PythonBuiltinTypes.GetRuntimeTypeName(Target)} object at "
+                + $"0x{RuntimeHelpers.GetHashCode(Target):x}>"
+            : PythonBoundDisplay.Of(Name, Target);
 }
 
 internal sealed record PythonTypeMetadataDescriptorValue(string Name) : PythonValue
@@ -1108,7 +1139,8 @@ internal sealed record PythonFunctionValue(
     /// </summary>
     internal PythonValue? ClassNamespace { get; set; }
 
-    internal override string ToDisplayString() => $"<function {Name}>";
+    internal override string ToDisplayString() =>
+        $"<function {QualName ?? Name} at 0x{RuntimeHelpers.GetHashCode(this):x}>";
 }
 
 internal sealed record PythonInterpolationValue(
@@ -1239,7 +1271,8 @@ internal sealed record PythonGeneratorValue : PythonValue
 
     internal (bool HasValue, PythonValue Value) Resume() => ResumeCore!(null, null);
 
-    internal override string ToDisplayString() => $"<{TypeName} object {Name}>";
+    internal override string ToDisplayString() =>
+        $"<{TypeName} object {Name} at 0x{RuntimeHelpers.GetHashCode(this):x}>";
 
     public bool Equals(PythonGeneratorValue? other) => ReferenceEquals(this, other);
 
@@ -1268,7 +1301,9 @@ internal sealed record PythonBoundUserMethodValue(
     PythonFunctionValue Function
 ) : PythonValue
 {
-    internal override string ToDisplayString() => $"<bound method {Name}>";
+    internal override string ToDisplayString() =>
+        $"<bound method {ManagedObjectProtocols.GetTypeName(Target)}.{Name} of "
+        + $"{Target.ToRepresentationString()}>";
 }
 
 internal sealed record PythonModuleValue(string Name, PythonGlobalNamespace Globals) : PythonValue
@@ -1551,7 +1586,9 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
     // Range cursors can advance beyond the managed collection index limit.
     internal BigInteger RangeIndex { get; set; }
 
-    internal override string ToDisplayString() => "<collection_iterator>";
+    internal override string ToDisplayString() =>
+        $"<{PythonBuiltinTypes.GetRuntimeTypeName(this)} object at "
+        + $"0x{RuntimeHelpers.GetHashCode(this):x}>";
 }
 
 /// <summary>A read-only text file handle over content snapshotted at open time.</summary>

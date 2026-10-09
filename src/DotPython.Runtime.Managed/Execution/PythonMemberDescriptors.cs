@@ -17,11 +17,12 @@ internal static class PythonMemberDescriptors
     {
         // A bool answers int's members, under int's name.
         var ownerName = typeName == "bool" ? "int" : typeName;
-        if (ownerName is not ("int" or "float" or "memoryview"))
+        if (ownerName is not ("int" or "float" or "memoryview" or "range"))
             return null;
         var names =
             ownerName == "int" ? IntNames
             : ownerName == "float" ? FloatNames
+            : ownerName == "range" ? RangeNames
             : ViewNames;
         if (Array.IndexOf(names, name) < 0)
             return null;
@@ -34,6 +35,8 @@ internal static class PythonMemberDescriptors
                     name,
                     ownerName == "int" ? receiver => ReadIntMember(receiver, name)
                         : ownerName == "float" ? receiver => ReadFloatMember(receiver, name)
+                        : ownerName == "range"
+                            ? receiver => ReadRangeMember((PythonRangeValue)receiver, name)
                         : receiver =>
                             PythonMemoryViewMethods.GetAttribute(receiver, name, default)
                             ?? throw ManagedObjectProtocols.Fault(
@@ -42,12 +45,28 @@ internal static class PythonMemberDescriptors
                                 default,
                                 "AttributeError"
                             )
-                );
+                )
+                {
+                    // A range declares its bounds as members; the others are getset
+                    // attributes.
+                    Kind = ownerName == "range" ? "member" : "attribute",
+                };
                 Descriptors[(ownerName, name)] = descriptor;
             }
             return descriptor;
         }
     }
+
+    /// <summary>The bounds a range carries.</summary>
+    private static readonly string[] RangeNames = ["start", "stop", "step"];
+
+    private static PythonWholeNumberValue ReadRangeMember(PythonRangeValue range, string name) =>
+        name switch
+        {
+            "start" => PythonWholeNumberValue.Create(range.Start),
+            "stop" => PythonWholeNumberValue.Create(range.Stop),
+            _ => PythonWholeNumberValue.Create(range.Step),
+        };
 
     /// <summary>The data members a view answers, in the order CPython declares them.</summary>
     private static readonly string[] ViewNames =

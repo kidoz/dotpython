@@ -107,12 +107,24 @@ public sealed class FunctoolsExecutionTests
             print(ft.partial.__module__)
             print(type(p))
             print(type(p).__name__)
+            def shape(value):
+                text = repr(value)
+                result = ''
+                while True:
+                    head, sep, tail = text.partition(' at 0x')
+                    if not sep:
+                        return result + text
+                    cut = 0
+                    while cut < len(tail) and tail[cut] in '0123456789abcdef':
+                        cut += 1
+                    result = result + head + ' at 0xADDR'
+                    text = tail[cut:]
             print(p.func is f)
             print(p.args)
             print(p.keywords)
-            print(repr(p))
-            print(repr(ft.partial(f, 1, 2, 3, 4, x=5)))
-            print(repr(ft.partial(f, b=2, c=9)))
+            print(shape(p))
+            print(shape(ft.partial(f, 1, 2, 3, 4, x=5)))
+            print(shape(ft.partial(f, b=2, c=9)))
             """
         );
 
@@ -126,9 +138,9 @@ public sealed class FunctoolsExecutionTests
                 "True",
                 "(1,)",
                 "{}",
-                "functools.partial(<function f>, 1)",
-                "functools.partial(<function f>, 1, 2, 3, 4, x=5)",
-                "functools.partial(<function f>, b=2, c=9)"
+                "functools.partial(<function f at 0xADDR>, 1)",
+                "functools.partial(<function f at 0xADDR>, 1, 2, 3, 4, x=5)",
+                "functools.partial(<function f at 0xADDR>, b=2, c=9)"
             ),
             output
         );
@@ -177,23 +189,35 @@ public sealed class FunctoolsExecutionTests
             def f(a, b, c=3):
                 return (a, b, c)
 
+            def shape(value):
+                text = repr(value)
+                result = ''
+                while True:
+                    head, sep, tail = text.partition(' at 0x')
+                    if not sep:
+                        return result + text
+                    cut = 0
+                    while cut < len(tail) and tail[cut] in '0123456789abcdef':
+                        cut += 1
+                    result = result + head + ' at 0xADDR'
+                    text = tail[cut:]
             inner = ft.partial(f, 1)
             outer = ft.partial(inner, 2)
-            print(repr(outer))
+            print(shape(outer))
             print(outer())
             print(outer.func is f)
             print(outer.args)
-            print(repr(ft.partial(ft.partial(ft.partial(f, 1), 2), 3)))
+            print(shape(ft.partial(ft.partial(ft.partial(f, 1), 2), 3)))
             """
         );
 
         Assert.Equal(
             Lines(
-                "functools.partial(<function f>, 1, 2)",
+                "functools.partial(<function f at 0xADDR>, 1, 2)",
                 "(1, 2, 3)",
                 "True",
                 "(1, 2)",
-                "functools.partial(<function f>, 1, 2, 3)"
+                "functools.partial(<function f at 0xADDR>, 1, 2, 3)"
             ),
             output
         );
@@ -337,8 +361,20 @@ public sealed class FunctoolsExecutionTests
             print(wrapped.__name__)
             print(wrapped.__qualname__)
             print(wrapped.__module__)
+            def shape(value):
+                text = repr(value)
+                result = ''
+                while True:
+                    head, sep, tail = text.partition(' at 0x')
+                    if not sep:
+                        return result + text
+                    cut = 0
+                    while cut < len(tail) and tail[cut] in '0123456789abcdef':
+                        cut += 1
+                    result = result + head + ' at 0xADDR'
+                    text = tail[cut:]
             print(wrapped.__wrapped__ is myfunc)
-            print(wrapped.__dict__)
+            print(shape(wrapped.__dict__))
             print(wrapped.custom)
             print(wrapped(1, 2))
             """
@@ -350,7 +386,7 @@ public sealed class FunctoolsExecutionTests
                 "myfunc",
                 "__main__",
                 "True",
-                "{'custom': 'attr', '__wrapped__': <function myfunc>}",
+                "{'custom': 'attr', '__wrapped__': <function myfunc at 0xADDR>}",
                 "attr",
                 "3"
             ),

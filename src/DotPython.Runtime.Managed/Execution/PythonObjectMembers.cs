@@ -30,9 +30,12 @@ internal static class PythonObjectMembers
         PythonValue target,
         string typeName,
         string name,
-        out PythonProtocolFunctionValue member
+        out PythonProtocolFunctionValue member,
+        out bool isWrapper
     )
     {
+        // `__getattribute__` and `__init__` are slots; the rest are methods.
+        isWrapper = name is "__getattribute__" or "__init__";
         switch (name)
         {
             case "__format__":
@@ -52,6 +55,9 @@ internal static class PythonObjectMembers
                 return true;
             case "__dir__":
                 member = Dir(SizeOwner(typeName));
+                return true;
+            case "__reduce__":
+                member = PythonPickleProtocols.Reduce();
                 return true;
             case "__sizeof__":
                 if (!PythonIntrospection.HasSize(typeName))
@@ -83,6 +89,7 @@ internal static class PythonObjectMembers
         "__getattribute__",
         "__getstate__",
         "__init__",
+        "__reduce__",
         "__sizeof__",
     ];
 
@@ -107,9 +114,13 @@ internal static class PythonObjectMembers
         {
             return null;
         }
-        // `int` publishes its own size and a bool answers that one; everything else sees
+        // `int` publishes its own size and a bool answers that one; the types that can
+        // rebuild themselves publish their own `__reduce__`; everything else sees
         // `object`'s.
-        var owner = OwnsSize(typeName, name) ? "int" : "object";
+        var owner =
+            name == "__reduce__" && PythonPickleProtocols.OwnsReduce(typeName) ? typeName
+            : OwnsSize(typeName, name) ? "int"
+            : "object";
         lock (Descriptors)
         {
             if (!Descriptors.TryGetValue((owner, name), out var descriptor))
@@ -120,6 +131,7 @@ internal static class PythonObjectMembers
                     "__format__" => Format(),
                     "__getattribute__" => GetAttribute(),
                     "__getstate__" => GetState(),
+                    "__reduce__" => PythonPickleProtocols.Reduce(),
                     "__sizeof__" => Size(owner),
                     _ => Initialize(),
                 };
@@ -198,6 +210,11 @@ internal static class PythonObjectMembers
                             arguments[0]
                         );
                     }
+                );
+            case "__subclasshook__":
+                return PythonPickleProtocols.SubclassHook(
+                    PythonBuiltinTypes.ForName(typeName),
+                    typeName
                 );
             default:
                 return null;

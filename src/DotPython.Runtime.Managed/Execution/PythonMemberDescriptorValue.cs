@@ -26,7 +26,10 @@ internal sealed record PythonMemberDescriptorValue(
 {
     internal string OwnerName => Owner.Name;
 
-    internal override string ToDisplayString() => $"<attribute '{Name}' of '{OwnerName}' objects>";
+    /// <summary>The word CPython declares the descriptor with, `member` or `attribute`.</summary>
+    internal string Kind { get; init; } = "attribute";
+
+    internal override string ToDisplayString() => $"<{Kind} '{Name}' of '{OwnerName}' objects>";
 
     /// <summary>
     /// Which values carry the member. A bool answers int's members, and only int defines
@@ -38,6 +41,7 @@ internal sealed record PythonMemberDescriptorValue(
             "int" => receiver is PythonWholeNumberValue or PythonTruthValue,
             "float" => receiver is PythonFloatingPointValue,
             "memoryview" => receiver is PythonMemoryViewValue,
+            "range" => receiver is PythonRangeValue,
             _ => false,
         };
 

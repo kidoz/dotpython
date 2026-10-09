@@ -64,7 +64,8 @@ internal static class PythonSlotMethods
     internal static bool TryGetForValue(
         string typeName,
         string name,
-        out PythonProtocolFunctionValue function
+        out PythonProtocolFunctionValue function,
+        out bool isWrapper
     )
     {
         // A bool answers the int slots.
@@ -72,8 +73,10 @@ internal static class PythonSlotMethods
         if (!Slots.TryGetValue((ownerName, name), out var slot))
         {
             function = null!;
+            isWrapper = false;
             return false;
         }
+        isWrapper = slot.IsWrapper;
         function = slot.IsWrapper
             ? slot.Function with
             {
@@ -417,6 +420,69 @@ internal static class PythonSlotMethods
         }
         Wrapper(
             "memoryview",
+            "__hash__",
+            0,
+            (receiver, _) =>
+                PythonWholeNumberValue.Create(ManagedObjectProtocols.ComputePythonHash(receiver))
+        );
+
+        // A range answers the sequence protocol through slots of its own, and its reversal
+        // as a method rather than a slot.
+        Wrapper(
+            "range",
+            "__len__",
+            0,
+            (receiver, _) =>
+                PythonWholeNumberValue.Create(ManagedObjectProtocols.GetLength(receiver))
+        );
+        Wrapper(
+            "range",
+            "__iter__",
+            0,
+            (receiver, _) => ManagedObjectProtocols.GetIterator(receiver)
+        );
+        Wrapper(
+            "range",
+            "__getitem__",
+            1,
+            (receiver, arguments) => ManagedObjectProtocols.GetItem(receiver, arguments[0])
+        );
+        Wrapper(
+            "range",
+            "__contains__",
+            1,
+            (receiver, arguments) =>
+                ManagedObjectProtocols.Contains(receiver, arguments[0])
+                    ? PythonTruthValue.True
+                    : PythonTruthValue.False
+        );
+        Method(
+            "range",
+            "__reversed__",
+            (receiver, _) => PythonReverseIterators.Create(receiver!, default)
+        );
+        foreach (
+            var (name, operation) in new[]
+            {
+                ("__eq__", 0),
+                ("__ne__", 4),
+                ("__lt__", 1),
+                ("__le__", 2),
+                ("__gt__", 3),
+                ("__ge__", 5),
+            }
+        )
+        {
+            var comparison = operation;
+            Wrapper(
+                "range",
+                name,
+                1,
+                (receiver, arguments) => Compare("range", receiver, arguments[0], comparison)
+            );
+        }
+        Wrapper(
+            "range",
             "__hash__",
             0,
             (receiver, _) =>
@@ -876,6 +942,7 @@ internal static class PythonSlotMethods
             "bytearray" => other is PythonByteArrayValue or PythonByteSequenceValue,
             // A view compares with another view and with any bytes-like value; it has no
             // ordering at all, so every ordering falls through to the other operand.
+            "range" => other is PythonRangeValue,
             "memoryview" => other
                 is PythonMemoryViewValue
                     or PythonByteSequenceValue
@@ -907,8 +974,8 @@ internal static class PythonSlotMethods
         int operation
     )
     {
-        // A dict compares equal to another dict, but has no ordering at all.
-        if (type is "dict" or "memoryview" && operation is not (0 or 4))
+        // A dict, a view and a range compare for equality alone; nothing orders them.
+        if (type is "dict" or "memoryview" or "range" && operation is not (0 or 4))
             return PythonNotImplementedValue.Instance;
         if (!Comparable(type, other))
             return PythonNotImplementedValue.Instance;
