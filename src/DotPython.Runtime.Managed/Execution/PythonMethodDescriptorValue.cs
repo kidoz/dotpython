@@ -117,6 +117,11 @@ internal sealed record PythonMethodDescriptorValue(
     /// frozenset is not a set, and only `bool` borrows another type's methods.
     /// </summary>
     private bool AppliesTo(PythonValue receiver) =>
+        // A subclass instance answers its ancestor's methods, on the storage it carries.
+        PythonSubclassStorage.StorageKindOf(receiver) == OwnerName
+        || AppliesToOwn(receiver);
+
+    private bool AppliesToOwn(PythonValue receiver) =>
         OwnerName switch
         {
             "str" => receiver is PythonTextValue,
@@ -149,6 +154,10 @@ internal sealed record PythonMethodDescriptorValue(
     /// `__get__(instance, owner)`: bound to an instance, or the same descriptor when the
     /// instance is None — which is how a class attribute read reaches it.
     /// </summary>
+    /// <summary>`__get__(instance, owner)`: a bound method, or the descriptor itself for a class.</summary>
+    internal PythonValue BindDescriptor(PythonValue? instance, PythonValue? owner, TextSpan span) =>
+        Bind(instance, owner, span);
+
     private PythonValue Bind(PythonValue? instance, PythonValue? owner, TextSpan span)
     {
         if (instance is null or PythonNoneValue)

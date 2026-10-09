@@ -1060,7 +1060,8 @@ internal static class PythonSlotMethods
     private static bool Comparable(string type, PythonValue other) =>
         type switch
         {
-            "list" => other is PythonListValue,
+            "list" => other is PythonListValue
+                || PythonSubclassStorage.StorageKindOf(other) == "list",
             "tuple" => other is PythonTupleValue,
             "str" => other is PythonTextValue,
             "bytes" => other is PythonByteSequenceValue,
@@ -1073,7 +1074,8 @@ internal static class PythonSlotMethods
                 is PythonMemoryViewValue
                     or PythonByteSequenceValue
                     or PythonByteArrayValue,
-            "dict" => other is PythonDictionaryValue,
+            "dict" => other is PythonDictionaryValue
+                || PythonSubclassStorage.StorageKindOf(other) == "dict",
             "set" or "frozenset" => other is PythonSetValue,
             "int" => other is PythonWholeNumberValue or PythonTruthValue,
             "float" => other

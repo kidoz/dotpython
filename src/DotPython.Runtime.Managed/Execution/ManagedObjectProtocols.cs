@@ -76,7 +76,12 @@ internal static class ManagedObjectProtocols
                 Target: PythonIteratorValue iterator,
                 Name: "__iter__" or "__next__"
             } method => PythonIteratorProtocols.Invoke(iterator, method.Name, arguments, span),
-            PythonBoundMethodValue method => method.Function.Invoke(method.Target, arguments),
+            PythonBoundMethodValue method => method.Function.Invoke(
+                method.TargetsStorage
+                    ? PythonSubclassStorage.Of(method.Target) ?? method.Target
+                    : method.Target,
+                arguments
+            ),
             PythonExternalObjectValue external => external.Protocol.Call(arguments, span),
             PythonManagedTypeValue type when type.Construct is not null => type.Construct(
                 arguments
@@ -1936,6 +1941,38 @@ internal static class ManagedObjectProtocols
                 "TypeError"
             );
         return ResolveDequeIndex(deque, value, span);
+    }
+
+    /// <summary>
+    /// Binds a builtin's descriptor to whatever it works on: the storage a subclass instance
+    /// carries for the builtin's own kind — `dict.get` reads the dict — and the instance
+    /// itself for `object`'s members, which every object answers.
+    /// </summary>
+    private static PythonValue BindBuiltinDescriptor(
+        PythonMethodDescriptorValue descriptor,
+        PythonValue instance,
+        PythonValue owner,
+        TextSpan span
+    )
+    {
+        var kind = PythonSubclassStorage.StorageKindOf(instance);
+        // A slot the builtin answers through `object`, such as `__str__`, still works on the
+        // storage; only `object`'s own instance protocol — `__getattribute__`, `__format__` —
+        // works on the instance.
+        var targetsStorage =
+            kind is not null
+            && (
+                kind == descriptor.OwnerName
+                || PythonSlotMethods.IsObjectSlot(kind, descriptor.Name)
+            );
+        var receiver = targetsStorage ? PythonSubclassStorage.Of(instance) ?? instance : instance;
+        var bound = descriptor.BindDescriptor(receiver, owner, span);
+        return bound is PythonBoundMethodValue method
+            ? method with
+            {
+                TargetsStorage = targetsStorage,
+            }
+            : bound;
     }
 
     /// <summary>The length of a view is its current dimension.</summary>
@@ -4138,6 +4175,8 @@ internal static class ManagedObjectProtocols
                 attributeName ?? GetTypeName(owner),
                 span
             ),
+            PythonMethodDescriptorValue descriptor when instance is not null =>
+                BindBuiltinDescriptor(descriptor, instance, owner, span),
             PythonProtocolFunctionValue function when instance is not null =>
                 new PythonBoundMethodValue(function.Name, instance, function),
             PythonFunctionValue function when instance is not null =>
@@ -4215,6 +4254,39 @@ internal static class ManagedObjectProtocols
     {
         if (type is PythonManagedTypeValue managed)
             return managed.Attributes.TryGetValue(name, out value!);
+        if (
+            type is PythonBuiltinTypeValue builtin
+            && PythonSubclassStorage.Supports(builtin.Name)
+            // Allocation stays with the runtime: the builtin's `__new__` requires a builtin
+            // type, and a subclass is allocated from its own layout.
+            && name != "__new__"
+        )
+        {
+            // Whatever the builtin's type object answers — its methods, its slots, its
+            // classmethods — is the subclass's own. `object`'s instance protocol is left to
+            // the instance path, which would otherwise recurse through `__getattribute__`.
+            PythonValue own;
+            try
+            {
+                own = GetAttributeCore(builtin, name, default);
+            }
+            catch (PythonRuntimeException fault)
+                when (fault.PythonExceptionTypeName == "AttributeError")
+            {
+                value = null!;
+                return false;
+            }
+            if (
+                own is PythonMethodDescriptorValue { OwnerName: "object" } descriptor
+                && !PythonSlotMethods.IsObjectSlot(builtin.Name, descriptor.Name)
+            )
+            {
+                value = null!;
+                return false;
+            }
+            value = own;
+            return true;
+        }
         if (type is PythonExceptionTypeValue exception)
             return PythonExceptionProtocols.TryGetOwnAttribute(exception, name, out value!);
         if (ReferenceEquals(type, PythonBuiltinTypes.Type) && name != "__init_subclass__")
@@ -4578,6 +4650,13 @@ internal static class ManagedObjectProtocols
                 leftText.Value,
                 rightText.Value,
                 StringComparison.Ordinal
+            ),
+            // A subclass instance compares as the storage it carries: `D({'a': 1}) == {'a': 1}`.
+            (PythonValue leftStorage, PythonValue rightStorage)
+                when PythonSubclassStorage.Of(leftStorage) is not null
+                    || PythonSubclassStorage.Of(rightStorage) is not null => AreEqual(
+                PythonSubclassStorage.Resolve(leftStorage),
+                PythonSubclassStorage.Resolve(rightStorage)
             ),
             (PythonRangeValue leftRange, PythonRangeValue rightRange) => RangesEqual(
                 leftRange,

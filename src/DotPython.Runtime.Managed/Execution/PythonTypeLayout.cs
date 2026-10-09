@@ -129,16 +129,45 @@ internal static class PythonTypeLayout
                 || IsObject(current)
             )
                 continue;
-            if (current is PythonBuiltinTypeValue builtin)
+            if (current is PythonBuiltinTypeValue { Name: var builtinName } builtin)
             {
-                throw Error(
-                    $"Subclassing the builtin type '{builtin.Name}' is not supported in this runtime slice.",
-                    span
-                );
+                // A storage builtin gives the class its layout.
+                if (PythonSubclassStorage.Supports(builtinName))
+                    continue;
+                // A type CPython itself refuses says so in CPython's words; one this runtime
+                // has not reached yet reports its own.
+                throw Error(BaseRefusal(builtin), span);
             }
             throw Error("bases must be types", span);
         }
     }
+
+    /// <summary>Why a builtin cannot be a base: CPython's own words, or this runtime's.</summary>
+    internal static string BaseRefusal(PythonBuiltinTypeValue builtin) =>
+        IsNotAcceptableBase(builtin)
+            ? $"type '{builtin.Name}' is not an acceptable base type"
+            : $"Subclassing the builtin type '{builtin.Name}' is not supported in this runtime slice.";
+
+    /// <summary>The builtins CPython itself refuses as bases, whatever the implementation.</summary>
+    private static bool IsNotAcceptableBase(PythonBuiltinTypeValue builtin) =>
+        builtin.Name
+            is "bool"
+                or "range"
+                or "slice"
+                or "memoryview"
+                or "mappingproxy"
+                or "NoneType"
+                or "NotImplementedType"
+                or "ellipsis"
+                or "function"
+                or "builtin_function_or_method"
+                or "method"
+                or "type"
+                or "module"
+                or "generator"
+                or "coroutine"
+                or "async_generator"
+                or "cell";
 
     private static void ValidateBaseAdmissibility(PythonValue type, TextSpan span)
     {

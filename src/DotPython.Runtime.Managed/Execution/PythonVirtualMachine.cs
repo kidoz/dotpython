@@ -5248,7 +5248,25 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
-        var instance = new PythonManagedObjectValue(type);
+        var instance = new PythonManagedObjectValue(type, PythonSubclassStorage.Allocate(type));
+        if (
+            PythonSubclassStorage.StorageKindOf(type) is { } ownKind
+            && (
+                !ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var ownInit)
+                || ownInit is not PythonFunctionValue
+            )
+        )
+        {
+            // A class that defines no `__init__` of its own takes the builtin's constructor,
+            // which fills the storage the class allocated.
+            _evaluationStack.Push(
+                new PythonManagedObjectValue(
+                    type,
+                    PythonSubclassStorage.Fill(ownKind, arguments, [], [], span)
+                )
+            );
+            return;
+        }
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
             if (arguments.Length != 0)
@@ -5319,7 +5337,29 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
-        var instance = new PythonManagedObjectValue(type);
+        var instance = new PythonManagedObjectValue(type, PythonSubclassStorage.Allocate(type));
+        if (
+            PythonSubclassStorage.StorageKindOf(type) is { } ownKind
+            && (
+                !ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var ownInit)
+                || ownInit is not PythonFunctionValue
+            )
+        )
+        {
+            _evaluationStack.Push(
+                new PythonManagedObjectValue(
+                    type,
+                    PythonSubclassStorage.Fill(
+                        ownKind,
+                        positional,
+                        keywordNames,
+                        keywordValues,
+                        span
+                    )
+                )
+            );
+            return;
+        }
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
             throw Fault("DPY4009", $"{type.Name}() takes no arguments.", span, "TypeError");
@@ -6081,12 +6121,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 if (
                     baseValue is PythonManagedTypeValue
                     || ReferenceEquals(baseValue, PythonBuiltinTypes.Type)
+                    // A storage builtin gives the class its layout.
+                    || baseValue is PythonBuiltinTypeValue storageBase
+                        && PythonSubclassStorage.Supports(storageBase.Name)
                 )
                     continue;
                 throw Fault(
                     "DPY4034",
                     baseValue is PythonBuiltinTypeValue builtin
-                        ? $"Subclassing the builtin type '{builtin.Name}' is not supported in this runtime slice."
+                        ? PythonTypeLayout.BaseRefusal(builtin)
                         : $"'{ManagedObjectProtocols.GetTypeName(baseValue)}' is not an acceptable base type.",
                     span,
                     "TypeError"
@@ -8002,6 +8045,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A deque compares by its contents.
             || left is PythonDequeValue
             || right is PythonDequeValue
+            // A subclass instance compares as the storage it carries.
+            || PythonSubclassStorage.Of(left) is not null
+            || PythonSubclassStorage.Of(right) is not null
             // A descriptor is interned, so equality is its identity.
             || left is PythonMethodDescriptorValue
             || right is PythonMethodDescriptorValue

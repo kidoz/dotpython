@@ -408,9 +408,11 @@ internal static class PythonBuiltinTypes
                 || PythonEnum.IsInstanceOfMemberType(value, "int"),
             "float" => value is PythonFloatingPointValue,
             "str" => value is PythonTextValue || PythonEnum.IsInstanceOfMemberType(value, "str"),
-            "list" => value is PythonListValue,
+            "list" => value is PythonListValue
+                || PythonSubclassStorage.StorageKindOf(value) == "list",
             "tuple" => value is PythonTupleValue,
-            "dict" => value is PythonDictionaryValue,
+            "dict" => value is PythonDictionaryValue
+                || PythonSubclassStorage.StorageKindOf(value) == "dict",
             "set" => value is PythonSetValue { IsFrozen: false },
             "frozenset" => value is PythonSetValue { IsFrozen: true },
             "complex" => value is PythonComplexValue,

@@ -679,6 +679,12 @@ internal sealed record PythonBoundMethodValue(
     /// </summary>
     internal bool IsWrapper { get; init; }
 
+    /// <summary>
+    /// Whether the bound function works on the storage a subclass instance carries rather
+    /// than on the instance itself: `dict.get` does, while `object.__getattribute__` does not.
+    /// </summary>
+    internal bool TargetsStorage { get; init; }
+
     internal override string ToDisplayString() =>
         IsWrapper
             ? $"<method-wrapper '{Name}' of {PythonBoundDisplay.QualifiedTypeName(Target)} object at "
