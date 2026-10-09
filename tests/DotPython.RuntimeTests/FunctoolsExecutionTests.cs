@@ -690,6 +690,334 @@ public sealed class FunctoolsExecutionTests
         );
     }
 
+    // -------------------------------------------------------------------------
+    // total_ordering
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void TotalOrderingDerivesTheMissingComparisons()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            class L:
+                def __lt__(self, other):
+                    return "lt"
+
+
+            ft.total_ordering(L)
+            print(sorted(n for n in ("__ge__", "__gt__", "__le__", "__lt__") if n in L.__dict__))
+            a, b = L(), L()
+            print(a < b, a > b, a <= b, a >= b)
+
+
+            class Both:
+                def __lt__(self, other):
+                    return False
+
+                def __gt__(self, other):
+                    return False
+
+
+            ft.total_ordering(Both)
+            print(sorted(n for n in ("__ge__", "__gt__", "__le__", "__lt__") if n in Both.__dict__))
+
+
+            class Nothing:
+                pass
+
+
+            try:
+                ft.total_ordering(Nothing)
+            except ValueError as error:
+                print(type(error).__name__ + ":", error)
+            except TypeError as error:
+                print(type(error).__name__ + ":", error)
+
+            print(ft.total_ordering(5))
+            print(ft.total_ordering(str) is str)
+            print(ft.total_ordering(complex) is complex)
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "['__ge__', '__gt__', '__le__', '__lt__']",
+                "lt False lt False",
+                "['__ge__', '__gt__', '__le__', '__lt__']",
+                "ValueError: must define at least one ordering operation: < > <= >=",
+                "5",
+                "True",
+                "True"
+            ),
+            output
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // cmp_to_key
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void CmpToKeyBuildsSortableKeys()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            def cmp(x, y):
+                return (x > y) - (x < y)
+
+
+            k = ft.cmp_to_key(cmp)
+            w1, w2, w3 = k(1), k(2), k(1)
+            print(type(w1).__name__, type(w1).__module__)
+            print(w1.obj, w2.obj, k(obj=7).obj)
+            print(w1 < w2, w2 > w1, w1 == w3, w1 != w2, w1 <= w3, w3 >= w2)
+            print(sorted([3, 1, 2], key=k))
+            print(sorted(["b", "a", "c"], key=ft.cmp_to_key(cmp)))
+
+
+            def attempt(thunk):
+                try:
+                    thunk()
+                except Exception as error:
+                    print(type(error).__name__ + ":", error)
+
+
+            attempt(lambda: ft.cmp_to_key())
+            attempt(lambda: ft.cmp_to_key(cmp, other=1))
+            attempt(lambda: ft.cmp_to_key(mycmp=cmp, other=1))
+            attempt(lambda: k())
+            attempt(lambda: k(1, 2))
+            attempt(lambda: k(bogus=1))
+            attempt(lambda: k(1) < 5)
+
+            kn = ft.cmp_to_key(cmp)
+            attempt(lambda: kn < kn)
+            attempt(lambda: kn == kn)
+
+
+            def truthy(x, y):
+                return 5
+
+
+            k5 = ft.cmp_to_key(truthy)
+            print(k5(1) < k5(2), k5(1) <= k5(2), k5(1) == k5(2), k5(1) > k5(2))
+
+
+            def nothing(x, y):
+                return NotImplemented
+
+
+            def attempt_type(thunk):
+                try:
+                    thunk()
+                except Exception as error:
+                    print(type(error).__name__)
+
+
+            attempt_type(lambda: ft.cmp_to_key(nothing)(1) < ft.cmp_to_key(nothing)(2))
+            print(ft.cmp_to_key(nothing)(1) == ft.cmp_to_key(nothing)(2))
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "KeyWrapper functools",
+                "1 2 7",
+                "True True True True True False",
+                "[1, 2, 3]",
+                "['a', 'b', 'c']",
+                "TypeError: cmp_to_key() missing required argument 'mycmp' (pos 1)",
+                "TypeError: cmp_to_key() takes at most 1 argument (2 given)",
+                "TypeError: cmp_to_key() takes at most 1 keyword argument (2 given)",
+                "TypeError: K() missing required argument 'obj' (pos 1)",
+                "TypeError: K() takes at most 1 argument (2 given)",
+                "TypeError: K() missing required argument 'obj' (pos 1)",
+                "TypeError: other argument must be K instance",
+                "AttributeError: object",
+                "AttributeError: object",
+                "False False False True",
+                "TypeError",
+                "False"
+            ),
+            output
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // singledispatch
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void SingleDispatchRegistersByClassAndAnnotation()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            @ft.singledispatch
+            def fun(arg, verbose=False):
+                return "base"
+
+
+            @fun.register
+            def _(arg: int, verbose=False):
+                return "int"
+
+
+            @fun.register(complex)
+            def _(arg, verbose=False):
+                return "complex"
+
+
+            @fun.register(float)
+            @fun.register(complex)
+            def _(arg, verbose=False):
+                return "floatcomplex"
+
+
+            print(fun(1), fun(1.0), fun(1 + 2j), fun("x"), fun(1, verbose=True))
+            print(fun.__name__, fun.__qualname__)
+            print(fun.__wrapped__(1))
+            print(sorted(c.__name__ for c in fun.registry))
+            print(fun.registry[object](0), fun.dispatch(str)(99))
+
+
+            def attempt(thunk):
+                try:
+                    thunk()
+                except Exception as error:
+                    print(type(error).__name__ + ":", error)
+
+
+            attempt(lambda: fun())
+            attempt(lambda: fun.register(3))
+            attempt(lambda: fun.dispatch(3))
+
+
+            class Base:
+                pass
+
+
+            class Sub(Base):
+                pass
+
+
+            @ft.singledispatch
+            def fun3(arg):
+                return "base"
+
+
+            fun3.register(Base, lambda arg: "base-impl")
+            print(fun3(Sub()), fun3(Base()), fun3(1))
+
+
+            @ft.singledispatch
+            def fun4(arg):
+                return "base"
+
+
+            fun4.register(int, lambda arg: "int")
+            print(fun4(1), fun4("x"))
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "int floatcomplex floatcomplex base int",
+                "fun fun",
+                "base",
+                "['complex', 'float', 'int', 'object']",
+                "base base",
+                "TypeError: fun requires at least 1 positional argument",
+                "TypeError: Invalid first argument to `register()`: 3. Use either `@register(some_class)` or plain `@register` on an annotated function.",
+                "TypeError: cannot create weak reference to 'int' object",
+                "base-impl base-impl base",
+                "int base"
+            ),
+            output
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // singledispatchmethod
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void SingleDispatchMethodBindsToInstances()
+    {
+        var output = Run(
+            """
+            import functools as ft
+
+
+            class C:
+                def __repr__(self):
+                    return "<C>"
+
+                @ft.singledispatchmethod
+                def meth(self, arg):
+                    return "base"
+
+                @meth.register
+                def _(self, arg: int):
+                    return "int"
+
+                @meth.register(complex)
+                def _(self, arg):
+                    return "complex"
+
+
+            c = C()
+            print(c.meth(1), c.meth(1.0), c.meth(1 + 0j))
+            print(repr(C.meth), repr(c.meth))
+            print(c.meth.__name__, c.meth.__qualname__, c.meth.__wrapped__(c, 1))
+            print(C.meth(c, 1))
+
+
+            class D(C):
+                pass
+
+
+            print(D().meth(1))
+            print(isinstance(ft.singledispatchmethod(len), ft.singledispatchmethod))
+
+
+            def attempt(thunk):
+                try:
+                    thunk()
+                except Exception as error:
+                    print(type(error).__name__ + ":", error)
+
+
+            attempt(lambda: c.meth())
+            attempt(lambda: ft.singledispatchmethod(5))
+            attempt(lambda: c.meth.__isabstractmethod__)
+            """
+        );
+
+        Assert.Equal(
+            Lines(
+                "int base complex",
+                "<single dispatch method C.meth> <bound single dispatch method C.meth of <C>>",
+                "meth C.meth base",
+                "base",
+                "int",
+                "True",
+                "TypeError: meth requires at least 1 positional argument",
+                "TypeError: 5 is not callable or a descriptor",
+                "AttributeError: 'function' object has no attribute '__isabstractmethod__'"
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         using var output = new StringWriter();

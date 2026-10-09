@@ -42,6 +42,10 @@ internal static class PythonFunctools
         globals.SetValue("cache", CreateLruCacheWithoutLimit());
         globals.SetValue("_CacheInfo", CacheInfoType);
         globals.SetValue("cached_property", CachedPropertyType);
+        globals.SetValue("total_ordering", CreateTotalOrdering());
+        globals.SetValue("cmp_to_key", CreateCmpToKey());
+        globals.SetValue("singledispatch", CreateSingleDispatch());
+        globals.SetValue("singledispatchmethod", SingleDispatchMethodType);
     }
 
     /// <summary>CPython 3.14's default <c>WRAPPER_ASSIGNMENTS</c>.</summary>
@@ -1311,8 +1315,8 @@ internal static class PythonFunctools
         );
         type.Attributes["__get__"] = new PythonProtocolFunctionValue(
             "__get__",
-            (_, arguments) => GetCachedProperty(arguments[0], arguments[1], default),
-            (_, arguments, _, _) => GetCachedProperty(arguments[0], arguments[1], default)
+            (self, arguments) => GetCachedPropertySlot(self, arguments, default),
+            (self, arguments, _, _) => GetCachedPropertySlot(self, arguments, default)
         );
         type.Attributes["__set_name__"] = new PythonProtocolFunctionValue(
             "__set_name__",
@@ -1348,7 +1352,7 @@ internal static class PythonFunctools
         }
 
         var bound = BindNamed(
-            "cached_property",
+            "cached_property.__init__",
             arguments,
             keywordNames,
             keywordValues,
@@ -1357,20 +1361,41 @@ internal static class PythonFunctools
             default
         );
         var function = bound[0]!;
-        if (!ManagedObjectProtocols.IsCallable(function))
-        {
-            throw Error("cached_property() argument must be callable", default);
-        }
 
-        // `func`, `attrname` and `__doc__` are plain instance attributes, exactly as
-        // CPython's `__init__` leaves them: writable, and `attrname` starts as None.
+        // `func`, `attrname`, `__doc__` and `__module__` are plain instance attributes,
+        // exactly as CPython's `__init__` leaves them: writable, `attrname` starts as
+        // None, and nothing checks that the argument is callable — a value without a
+        // `__module__` fails on the attribute read itself.
         var property = new PythonManagedObjectValue(type);
         property.Attributes["func"] = function;
         property.Attributes["attrname"] = PythonNoneValue.Instance;
         property.Attributes["__doc__"] = TryGetAttribute(function, "__doc__", out var doc)
             ? doc
             : PythonNoneValue.Instance;
+        property.Attributes["__module__"] = ModuleOfCachedFunction(function);
         return property;
+    }
+
+    /// <summary>
+    /// CPython's `__init__` copies `__module__` off the wrapped callable. Builtin
+    /// functions in this runtime carry no `__module__` (CPython's carry `'builtins'`),
+    /// so a callable that has none yields None rather than failing; anything else
+    /// without the attribute fails with the attribute error, exactly as CPython's
+    /// `self.__module__ = func.__module__` does.
+    /// </summary>
+    private static PythonValue ModuleOfCachedFunction(PythonValue function)
+    {
+        if (TryGetAttribute(function, "__module__", out var module))
+        {
+            return module;
+        }
+
+        if (ManagedObjectProtocols.IsCallable(function))
+        {
+            return PythonNoneValue.Instance;
+        }
+
+        return ManagedObjectProtocols.GetAttribute(function, "__module__", default);
     }
 
     private static void SetCachedPropertyName(PythonValue? self, PythonValue name)
@@ -1380,7 +1405,59 @@ internal static class PythonFunctools
             throw Error("descriptor 'cached_property' requires a cached_property object", default);
         }
 
-        property.Attributes["attrname"] = name;
+        if (
+            !property.Attributes.TryGetValue("attrname", out var current)
+            || current is PythonNoneValue
+        )
+        {
+            property.Attributes["attrname"] = name;
+            return;
+        }
+
+        if (ManagedObjectProtocols.AreEqual(current, name))
+        {
+            return;
+        }
+
+        throw Error(
+            "Cannot assign the same cached_property to two different names "
+                + $"({current.ToRepresentationString()} and {name.ToRepresentationString()}).",
+            default
+        );
+    }
+
+    /// <summary>
+    /// The <c>__get__</c> entry point: the runtime's descriptor machinery invokes the slot
+    /// unbound, as <c>(value, instance, owner)</c>, while an explicit
+    /// <c>descriptor.__get__(instance, owner)</c> call arrives bound with the descriptor
+    /// as the receiver.
+    /// </summary>
+    private static PythonValue GetCachedPropertySlot(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count >= 3)
+        {
+            return GetCachedProperty(arguments[0], arguments[1], span);
+        }
+
+        var bound = BindNamed(
+            "cached_property.__get__",
+            arguments,
+            [],
+            [],
+            ["instance", "owner"],
+            [null, null],
+            span
+        );
+        if (self is null)
+        {
+            return GetCachedProperty(arguments[0], arguments[1], span);
+        }
+
+        return GetCachedProperty(self, bound[0]!, span);
     }
 
     /// <summary>
@@ -1422,6 +1499,1132 @@ internal static class PythonFunctools
         var value = Invoke(function, [instance], span);
         ManagedObjectProtocols.SetAttribute(instance, attributeName.Value, value, span);
         return value;
+    }
+
+    // -------------------------------------------------------------------------
+    // total_ordering
+    // -------------------------------------------------------------------------
+
+    private static PythonBuiltinFunctionValue CreateTotalOrdering() =>
+        new PythonBuiltinFunctionValue(
+            "total_ordering",
+            (arguments, span) => TotalOrdering(arguments, [], [], span),
+            (arguments, names, values, span) => TotalOrdering(arguments, names, values, span)
+        );
+
+    /// <summary>The four ordering operations, in CPython's `max()` preference order.</summary>
+    private static readonly string[] OrderingOperations = ["__lt__", "__le__", "__gt__", "__ge__"];
+
+    /// <summary>
+    /// CPython's `_convert`: the operations derived from each root, and the expression each
+    /// is derived with.
+    /// </summary>
+    private static readonly Dictionary<
+        string,
+        (string Name, OrderingDerivation Derivation)[]
+    > OrderingConversions = new(StringComparer.Ordinal)
+    {
+        ["__lt__"] =
+        [
+            ("__gt__", OrderingDerivation.NegateAndNotEqual),
+            ("__le__", OrderingDerivation.OrEqual),
+            ("__ge__", OrderingDerivation.Negate),
+        ],
+        ["__le__"] =
+        [
+            ("__ge__", OrderingDerivation.NegateOrEqual),
+            ("__lt__", OrderingDerivation.AndNotEqual),
+            ("__gt__", OrderingDerivation.Negate),
+        ],
+        ["__gt__"] =
+        [
+            ("__lt__", OrderingDerivation.NegateAndNotEqual),
+            ("__ge__", OrderingDerivation.OrEqual),
+            ("__le__", OrderingDerivation.Negate),
+        ],
+        ["__ge__"] =
+        [
+            ("__le__", OrderingDerivation.NegateOrEqual),
+            ("__gt__", OrderingDerivation.AndNotEqual),
+            ("__lt__", OrderingDerivation.Negate),
+        ],
+    };
+
+    /// <summary>How a derived comparison folds the root's result with `==`/`!=`.</summary>
+    private enum OrderingDerivation
+    {
+        /// <summary>`not op_result`.</summary>
+        Negate,
+
+        /// <summary>`op_result or self == other`.</summary>
+        OrEqual,
+
+        /// <summary>`not op_result or self == other`.</summary>
+        NegateOrEqual,
+
+        /// <summary>`op_result and self != other`.</summary>
+        AndNotEqual,
+
+        /// <summary>`not op_result and self != other`.</summary>
+        NegateAndNotEqual,
+    }
+
+    /// <summary>
+    /// `total_ordering(cls)`: derives the ordering comparisons the class does not define
+    /// from the strongest one it does.
+    /// </summary>
+    private static PythonValue TotalOrdering(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var cls = BindNamed(
+            "total_ordering",
+            positional,
+            keywordNames,
+            keywordValues,
+            ["cls"],
+            [null],
+            span
+        )[0]!;
+        var roots = OrderingOperations
+            .Where(operation => DefinesOrderingOperation(cls, operation))
+            .ToList();
+        if (roots.Count == 0)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "must define at least one ordering operation: < > <= >=",
+                span,
+                "ValueError"
+            );
+        }
+
+        // CPython's `max(roots)` prefers `__lt__` to `__le__` to `__gt__` to `__ge__`,
+        // which is the order `OrderingOperations` is already written in.
+        var root = roots[0];
+        foreach (var (name, derivation) in OrderingConversions[root])
+        {
+            if (!roots.Contains(name))
+            {
+                ManagedObjectProtocols.SetAttribute(
+                    cls,
+                    name,
+                    CreateOrderingOperation(name, root, derivation),
+                    span
+                );
+            }
+        }
+
+        return cls;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="cls"/> supplies an ordering comparison itself: CPython
+    /// compares `getattr(cls, op)` against `object`'s, which for a class means the class's
+    /// own dictionaries down to `object`, and for an instance is always a bound object
+    /// that cannot be `object`'s.
+    /// </summary>
+    private static bool DefinesOrderingOperation(PythonValue cls, string name)
+    {
+        if (!PythonTypeProtocols.IsType(cls))
+        {
+            return true;
+        }
+
+        if (cls is PythonManagedTypeValue type)
+        {
+            foreach (var entry in type.Mro)
+            {
+                if (ReferenceEquals(entry, PythonBuiltinFunctions.Object))
+                {
+                    break;
+                }
+
+                if (ManagedObjectProtocols.TryGetOwnTypeAttribute(entry, name, out _))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // A builtin type carries its own comparison slots; `object` itself does not.
+        return !ReferenceEquals(cls, PythonBuiltinFunctions.Object);
+    }
+
+    /// <summary>
+    /// One derived comparison. CPython calls the root through `type(self).__op__` rather
+    /// than the operator, so a `NotImplemented` result is passed straight out instead of
+    /// being retried reflectively.
+    /// </summary>
+    private static PythonProtocolFunctionValue CreateOrderingOperation(
+        string name,
+        string root,
+        OrderingDerivation derivation
+    ) =>
+        new(
+            name,
+            (self, arguments) =>
+            {
+                if (self is not PythonManagedObjectValue instance || arguments.Count == 0)
+                {
+                    return PythonNotImplementedValue.Instance;
+                }
+
+                var other = arguments[0];
+                var result = InvokeOrderingRoot(instance, root, other);
+                if (ReferenceEquals(result, PythonNotImplementedValue.Instance))
+                {
+                    return result;
+                }
+
+                var known = ManagedObjectProtocols.IsTrue(result);
+                return derivation switch
+                {
+                    OrderingDerivation.Negate => PythonTruthValue.FromBoolean(!known),
+                    OrderingDerivation.OrEqual => known
+                        ? result
+                        : EqualityOf(instance, other, PythonRichComparison.Equal),
+                    OrderingDerivation.NegateOrEqual => known
+                        ? EqualityOf(instance, other, PythonRichComparison.Equal)
+                        : PythonTruthValue.True,
+                    OrderingDerivation.AndNotEqual => known
+                        ? EqualityOf(instance, other, PythonRichComparison.NotEqual)
+                        : result,
+                    _ => known
+                        ? PythonTruthValue.False
+                        : EqualityOf(instance, other, PythonRichComparison.NotEqual),
+                };
+            }
+        );
+
+    private static PythonValue InvokeOrderingRoot(
+        PythonManagedObjectValue instance,
+        string root,
+        PythonValue other
+    ) =>
+        TryGetAttribute(instance.Type, root, out var method)
+            ? Invoke(method, [instance, other], default)
+            : PythonNotImplementedValue.Instance;
+
+    private static PythonValue EqualityOf(
+        PythonValue left,
+        PythonValue right,
+        PythonRichComparison comparison
+    ) => ManagedObjectProtocols.RichCompareValue(left, right, comparison, default);
+
+    // -------------------------------------------------------------------------
+    // cmp_to_key
+    // -------------------------------------------------------------------------
+
+    private static PythonManagedTypeValue? _keyWrapperType;
+
+    private static PythonManagedTypeValue KeyWrapperType =>
+        _keyWrapperType ??= CreateKeyWrapperType();
+
+    /// <summary>
+    /// Where a wrapper keeps the comparison function it was built with. CPython's
+    /// `KeyWrapper` is a C type with the comparison in a struct field, so no Python name
+    /// reaches it; a name no identifier can spell keeps the same property here.
+    /// </summary>
+    private const string KeyComparison = "\0comparison";
+
+    private static PythonBuiltinFunctionValue CreateCmpToKey() =>
+        new PythonBuiltinFunctionValue(
+            "cmp_to_key",
+            (arguments, span) => CmpToKey(arguments, [], [], span),
+            (arguments, names, values, span) => CmpToKey(arguments, names, values, span)
+        );
+
+    /// <summary>
+    /// `cmp_to_key(mycmp)`: wraps the comparison in a key object. The arity wording comes
+    /// from the C implementation's argument parsing, which distinguishes positional from
+    /// keyword overflow.
+    /// </summary>
+    private static PythonManagedObjectValue CmpToKey(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    ) =>
+        NewKey(
+            SingleArgument("cmp_to_key", "mycmp", positional, keywordNames, keywordValues, span)
+        );
+
+    /// <summary>The prototype key: a wrapper carrying a comparison and no object yet.</summary>
+    private static PythonManagedObjectValue NewKey(PythonValue comparison)
+    {
+        var key = new PythonManagedObjectValue(KeyWrapperType);
+        key.Attributes[KeyComparison] = comparison;
+        return key;
+    }
+
+    private static PythonManagedTypeValue CreateKeyWrapperType()
+    {
+        var type = new PythonManagedTypeValue("KeyWrapper")
+        {
+            Module = Module,
+            QualName = "KeyWrapper",
+        };
+        // CPython's `K` declares `__slots__ = ['obj']`, so one declared member reproduces
+        // both its attribute surface and its `no __dict__` refusal.
+        type.Slots = PythonSlotLayout.Create(type, new PythonTextValue("obj"), default);
+        type.Attributes["obj"] = PythonNoneValue.Instance;
+        type.Attributes["__call__"] = new PythonProtocolFunctionValue(
+            "__call__",
+            (self, arguments) => CallKey(self, arguments, [], [], default),
+            (self, arguments, names, values) => CallKey(self, arguments, names, values, default)
+        );
+        foreach (var (name, comparison) in KeyComparisons)
+        {
+            type.Attributes[name] = new PythonProtocolFunctionValue(
+                name,
+                (self, arguments) =>
+                    CompareKeys(
+                        self,
+                        arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance,
+                        comparison
+                    )
+            );
+        }
+
+        // `K.__hash__ = None`: ordering without hashing.
+        type.Attributes["__hash__"] = PythonNoneValue.Instance;
+        return type;
+    }
+
+    /// <summary>`K`'s six rich comparisons and the operator each applies to the comparison result.</summary>
+    private static readonly (string Name, PythonRichComparison Comparison)[] KeyComparisons =
+    [
+        ("__lt__", PythonRichComparison.LessThan),
+        ("__le__", PythonRichComparison.LessThanOrEqual),
+        ("__gt__", PythonRichComparison.GreaterThan),
+        ("__ge__", PythonRichComparison.GreaterThanOrEqual),
+        ("__eq__", PythonRichComparison.Equal),
+        ("__ne__", PythonRichComparison.NotEqual),
+    ];
+
+    /// <summary>
+    /// `K(obj)`: the C type's factory call — every call makes a fresh wrapper sharing the
+    /// prototype's comparison function.
+    /// </summary>
+    private static PythonManagedObjectValue CallKey(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var comparison = KeyComparisonOf(self);
+        var obj = SingleArgument("K", "obj", positional, keywordNames, keywordValues, span);
+        var key = new PythonManagedObjectValue(KeyWrapperType);
+        key.Attributes[KeyComparison] = comparison;
+        key.Attributes["obj"] = obj;
+        return key;
+    }
+
+    private static PythonValue KeyComparisonOf(PythonValue? self) =>
+        self is PythonManagedObjectValue key
+        && key.Attributes.TryGetValue(KeyComparison, out var comparison)
+            ? comparison
+            : PythonNoneValue.Instance;
+
+    /// <summary>
+    /// One of `K`'s rich comparisons: `mycmp(self.obj, other.obj)` fed through the same
+    /// operator against zero, so a comparison returning `NotImplemented` surfaces as the
+    /// operator's own error.
+    /// </summary>
+    private static PythonValue CompareKeys(
+        PythonValue? self,
+        PythonValue other,
+        PythonRichComparison comparison
+    )
+    {
+        if (
+            self is not PythonManagedObjectValue key
+            || other is not PythonManagedObjectValue candidate
+            || !ReferenceEquals(key.Type, KeyWrapperType)
+            || !ReferenceEquals(candidate.Type, KeyWrapperType)
+        )
+        {
+            throw Error("other argument must be K instance", default);
+        }
+
+        var result = Invoke(
+            KeyComparisonOf(key),
+            [KeyObjectOf(key), KeyObjectOf(candidate)],
+            default
+        );
+        return ManagedObjectProtocols.RichCompareValue(
+            result,
+            new PythonWholeNumberValue(0),
+            comparison,
+            default
+        );
+    }
+
+    /// <summary>
+    /// `self.obj`, which for a wrapper that was never called is absent rather than `None`;
+    /// the C type reports that miss as a bare `AttributeError: object`.
+    /// </summary>
+    private static PythonValue KeyObjectOf(PythonManagedObjectValue key) =>
+        key.Attributes.TryGetValue("obj", out var obj)
+            ? obj
+            : throw ManagedObjectProtocols.Fault("DPY4023", "object", default, "AttributeError");
+
+    // -------------------------------------------------------------------------
+    // singledispatch
+    // -------------------------------------------------------------------------
+
+    private static PythonManagedTypeValue? _singleDispatchType;
+
+    private static PythonManagedTypeValue SingleDispatchType =>
+        _singleDispatchType ??= CreateSingleDispatchType();
+
+    /// <summary>
+    /// What a `singledispatch` wrapper carries: the default implementation, the registry
+    /// of implementations, and the per-class cache `dispatch` fills in.
+    /// </summary>
+    private sealed class DispatchState
+    {
+        internal PythonValue Function { get; init; } = PythonNoneValue.Instance;
+
+        internal PythonDictionaryValue Registry { get; } = new([]);
+
+        internal PythonDictionaryValue DispatchCache { get; } = new([]);
+    }
+
+    private static PythonBuiltinFunctionValue CreateSingleDispatch() =>
+        new PythonBuiltinFunctionValue(
+            "singledispatch",
+            (arguments, span) => SingleDispatch(arguments, [], [], span),
+            (arguments, names, values, span) => SingleDispatch(arguments, names, values, span)
+        );
+
+    /// <summary>
+    /// `singledispatch(func)`: the default implementation is registered for `object` and
+    /// the wrapper carries `register`, `dispatch`, `registry` and `_clear_cache` before
+    /// `update_wrapper` copies the wrapped function's own attributes over.
+    /// </summary>
+    private static PythonManagedObjectValue SingleDispatch(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var func = BindNamed(
+            "singledispatch",
+            positional,
+            keywordNames,
+            keywordValues,
+            ["func"],
+            [null],
+            span
+        )[0]!;
+        return WrapSingleDispatch(func, span);
+    }
+
+    private static PythonManagedObjectValue WrapSingleDispatch(PythonValue func, TextSpan span)
+    {
+        var state = new DispatchState { Function = func };
+        ManagedObjectProtocols.SetDictionaryItem(
+            state.Registry,
+            PythonBuiltinFunctions.Object,
+            func,
+            span
+        );
+        var wrapper = new PythonManagedObjectValue(SingleDispatchType, state);
+        wrapper.Attributes["registry"] = new PythonMappingProxyValue(state.Registry);
+        UpdateWrapper([wrapper, func], [], [], span);
+        return wrapper;
+    }
+
+    private static PythonManagedTypeValue CreateSingleDispatchType()
+    {
+        var type = new PythonManagedTypeValue("_singledispatch_wrapper")
+        {
+            Module = Module,
+            QualName = "singledispatch_wrapper",
+        };
+        type.Attributes["__call__"] = new PythonProtocolFunctionValue(
+            "__call__",
+            (self, arguments) => InvokeDispatched(self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                InvokeDispatched(self, arguments, names, values, default)
+        );
+        type.Attributes["register"] = new PythonProtocolFunctionValue(
+            "register",
+            (self, arguments) => RegisterDispatched(self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                RegisterDispatched(self, arguments, names, values, default)
+        );
+        type.Attributes["dispatch"] = new PythonProtocolFunctionValue(
+            "dispatch",
+            (self, arguments) => DispatchDispatched(self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                DispatchDispatched(self, arguments, names, values, default)
+        );
+        type.Attributes["_clear_cache"] = new PythonProtocolFunctionValue(
+            "_clear_cache",
+            (self, arguments) =>
+            {
+                if (arguments.Count > 0)
+                {
+                    throw Error(
+                        $"_clear_cache() takes no arguments ({arguments.Count} given)",
+                        default
+                    );
+                }
+
+                DispatchStateOf(self).DispatchCache.ClearItems();
+                return PythonNoneValue.Instance;
+            }
+        );
+        return type;
+    }
+
+    /// <summary>`wrapper(*args, **kwargs)`: dispatch on the first argument's class.</summary>
+    private static PythonValue InvokeDispatched(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        if (positional.Count == 0)
+        {
+            throw Error(
+                $"{FunctionNameOf(DispatchStateOf(self).Function, "singledispatch function")} "
+                    + "requires at least 1 positional argument",
+                span
+            );
+        }
+
+        var implementation = ImplementationFor(
+            self,
+            PythonBuiltinTypes.GetRuntimeType(positional[0]),
+            span
+        );
+        return Invoke(implementation, positional, keywordNames, keywordValues, span);
+    }
+
+    /// <summary>`dispatch(cls)`: the registry's best match, cached per class.</summary>
+    private static PythonValue DispatchDispatched(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var bound = BindNamed(
+            "singledispatch.<locals>.dispatch",
+            positional,
+            keywordNames,
+            keywordValues,
+            ["cls"],
+            [null],
+            span
+        );
+        return ImplementationFor(self, bound[0]!, span);
+    }
+
+    private static PythonValue ImplementationFor(
+        PythonValue? wrapper,
+        PythonValue cls,
+        TextSpan span
+    )
+    {
+        var state = DispatchStateOf(wrapper);
+        if (ManagedObjectProtocols.TryFindDictionaryItem(state.DispatchCache, cls, out var cached))
+        {
+            return cached.Value;
+        }
+
+        var implementation = ManagedObjectProtocols.TryFindDictionaryItem(
+            state.Registry,
+            cls,
+            out var direct
+        )
+            ? direct.Value
+            : FindImplementation(cls, state.Registry, span);
+        ManagedObjectProtocols.SetDictionaryItem(state.DispatchCache, cls, implementation, span);
+        return implementation;
+    }
+
+    /// <summary>
+    /// `_find_impl`: the first registry class found walking the class's MRO. CPython folds
+    /// abstract bases into that MRO first; this runtime has no `abc`, so the MRO itself is
+    /// the whole search.
+    /// </summary>
+    private static PythonValue FindImplementation(
+        PythonValue cls,
+        PythonDictionaryValue registry,
+        TextSpan span
+    )
+    {
+        if (!PythonTypeProtocols.IsType(cls))
+        {
+            // CPython keys its dispatch cache by weak reference, which is where a
+            // non-class argument fails first; this runtime has no weak references.
+            throw Error(
+                $"cannot create weak reference to "
+                    + $"'{ManagedObjectProtocols.GetTypeName(cls)}' object",
+                span
+            );
+        }
+
+        foreach (var entry in PythonBuiltinTypes.GetMro(cls).Elements)
+        {
+            if (ManagedObjectProtocols.TryFindDictionaryItem(registry, entry, out var match))
+            {
+                return match.Value;
+            }
+        }
+
+        // Every registry holds `object` and every MRO ends with it, so this is unreachable.
+        return PythonNoneValue.Instance;
+    }
+
+    /// <summary>
+    /// `register(cls, func=None)`: records an implementation for a class or a union of
+    /// classes, or returns the decorator when no implementation was supplied.
+    /// </summary>
+    private static PythonValue RegisterDispatched(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        // `func` defaults to None, which is what makes `@fun.register` reachable: the
+        // decorated function arrives as `cls`.
+        var bound = BindNamed(
+            "singledispatch.<locals>.register",
+            positional,
+            keywordNames,
+            keywordValues,
+            ["cls", "func"],
+            [null, PythonNoneValue.Instance],
+            span
+        );
+        var func = bound[1] is PythonNoneValue ? null : bound[1];
+        return RegisterImplementation(self, bound[0]!, func, span);
+    }
+
+    private static PythonValue RegisterImplementation(
+        PythonValue? wrapper,
+        PythonValue cls,
+        PythonValue? func,
+        TextSpan span
+    )
+    {
+        if (IsDispatchType(cls))
+        {
+            if (func is null)
+            {
+                // `lambda f: register(cls, f)`, the decorator form.
+                return new PythonBuiltinFunctionValue(
+                    "<lambda>",
+                    (arguments, inner) =>
+                    {
+                        if (arguments.Count != 1)
+                        {
+                            throw Error(
+                                "<lambda>() takes 1 positional argument "
+                                    + $"but {arguments.Count} were given",
+                                inner
+                            );
+                        }
+
+                        return RegisterImplementation(wrapper, cls, arguments[0], inner);
+                    }
+                );
+            }
+        }
+        else
+        {
+            if (func is not null)
+            {
+                throw Error(
+                    $"Invalid first argument to `register()`. {cls.ToRepresentationString()} "
+                        + "is not a class or union type.",
+                    span
+                );
+            }
+
+            // `register` on an annotated function reads the class from the first
+            // annotation. This runtime keeps annotations unresolved, so a string
+            // annotation reports the invalid-annotation error CPython reserves for a
+            // value that is not a class.
+            var annotation = FirstAnnotation(cls);
+            if (annotation is not { } declared)
+            {
+                throw Error(
+                    $"Invalid first argument to `register()`: {cls.ToRepresentationString()}. "
+                        + "Use either `@register(some_class)` or plain `@register` on an "
+                        + "annotated function.",
+                    span
+                );
+            }
+
+            func = cls;
+            if (!IsDispatchType(declared.Value))
+            {
+                throw Error(
+                    $"Invalid annotation for '{declared.Name}'. "
+                        + $"{declared.Value.ToRepresentationString()} is not a class.",
+                    span
+                );
+            }
+
+            cls = declared.Value;
+        }
+
+        var registry = DispatchStateOf(wrapper).Registry;
+        if (cls is PythonTypeUnionValue union)
+        {
+            foreach (var member in union.Members)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(registry, member, func!, span);
+            }
+        }
+        else
+        {
+            ManagedObjectProtocols.SetDictionaryItem(registry, cls, func!, span);
+        }
+
+        // CPython clears the dispatch cache after every registration.
+        DispatchStateOf(wrapper).DispatchCache.ClearItems();
+        return func!;
+    }
+
+    /// <summary>
+    /// The first item of a function's annotations, which CPython resolves through
+    /// `get_type_hints` and this runtime takes as written. Null when there are none, which
+    /// is the case that reports `Invalid first argument`.
+    /// </summary>
+    private static (string Name, PythonValue Value)? FirstAnnotation(PythonValue func)
+    {
+        if (
+            TryGetAttribute(func, "__annotations__", out var annotations)
+            && annotations is PythonDictionaryValue dictionary
+            && dictionary.Items.Count > 0
+        )
+        {
+            var first = dictionary.Items[0];
+            return (RequireText(first.Key, "register", default), first.Value);
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether a first argument can be registered: a class, or a union of classes.</summary>
+    private static bool IsDispatchType(PythonValue cls) =>
+        PythonTypeProtocols.IsType(cls)
+        || cls is PythonTypeUnionValue union && union.Members.All(PythonTypeProtocols.IsType);
+
+    private static DispatchState DispatchStateOf(PythonValue? target) =>
+        target is PythonManagedObjectValue { Payload: DispatchState state }
+            ? state
+            : throw Error(
+                "descriptor 'singledispatch' requires a 'singledispatch' object",
+                default
+            );
+
+    private static string FunctionNameOf(PythonValue function, string fallback) =>
+        TryGetAttribute(function, "__name__", out var name) && name is PythonTextValue text
+            ? text.Value
+            : fallback;
+
+    // -------------------------------------------------------------------------
+    // singledispatchmethod
+    // -------------------------------------------------------------------------
+
+    private static PythonManagedTypeValue? _singleDispatchMethodType;
+    private static PythonManagedTypeValue? _singleDispatchMethodGetType;
+
+    private static PythonManagedTypeValue SingleDispatchMethodType =>
+        _singleDispatchMethodType ??= CreateSingleDispatchMethodType();
+
+    private static PythonManagedTypeValue SingleDispatchMethodGetType =>
+        _singleDispatchMethodGetType ??= CreateSingleDispatchMethodGetType();
+
+    /// <summary>A descriptor's state: the generic function and the function it wraps.</summary>
+    private sealed class DispatchMethodState
+    {
+        internal DispatchMethodState(PythonValue dispatcher, PythonValue function)
+        {
+            Dispatcher = dispatcher;
+            Function = function;
+        }
+
+        internal PythonValue Dispatcher { get; }
+
+        internal PythonValue Function { get; }
+    }
+
+    /// <summary>The state of one attribute access: the descriptor, the instance and the owner.</summary>
+    private sealed class DispatchMethodGetState
+    {
+        internal DispatchMethodGetState(
+            DispatchMethodState unbound,
+            PythonValue owner,
+            PythonValue ownerClass
+        )
+        {
+            Unbound = unbound;
+            Object = owner;
+            Class = ownerClass;
+        }
+
+        internal DispatchMethodState Unbound { get; }
+
+        internal PythonValue Object { get; }
+
+        internal PythonValue Class { get; }
+    }
+
+    private static PythonManagedTypeValue CreateSingleDispatchMethodType()
+    {
+        var type = new PythonManagedTypeValue("singledispatchmethod")
+        {
+            Module = Module,
+            QualName = "singledispatchmethod",
+        };
+        type.Attributes["__new__"] = new PythonProtocolFunctionValue(
+            "__new__",
+            (_, arguments) => NewSingleDispatchMethod(type, arguments, [], []),
+            (_, arguments, names, values) => NewSingleDispatchMethod(type, arguments, names, values)
+        );
+        type.Attributes["__get__"] = new PythonProtocolFunctionValue(
+            "__get__",
+            (_, arguments) => BindDispatchedMethod(arguments[0], arguments[1], arguments[2]),
+            (_, arguments, _, _) => BindDispatchedMethod(arguments[0], arguments[1], arguments[2])
+        );
+        type.Attributes["register"] = new PythonProtocolFunctionValue(
+            "register",
+            (self, arguments) => RegisterDispatchedMethod(self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                RegisterDispatchedMethod(self, arguments, names, values, default)
+        );
+        type.Attributes["__isabstractmethod__"] = ReadOnlyMember(
+            "__isabstractmethod__",
+            self => DelegateToWrappedFunction(self, "__isabstractmethod__", PythonTruthValue.False)
+        );
+        type.Attributes["__repr__"] = new PythonProtocolFunctionValue(
+            "__repr__",
+            (self, _) =>
+                new PythonTextValue(
+                    $"<single dispatch method descriptor {DispatchMethodName(DispatchMethodStateOf(self).Function)}>"
+                )
+        );
+        return type;
+    }
+
+    private static PythonManagedObjectValue NewSingleDispatchMethod(
+        PythonManagedTypeValue type,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues
+    )
+    {
+        var arguments = positional;
+        if (
+            positional.Count > 0
+            && positional[0] is PythonManagedTypeValue leading
+            && ReferenceEquals(leading, type)
+        )
+        {
+            arguments = [.. positional.Skip(1)];
+        }
+
+        var bound = BindNamed(
+            "singledispatchmethod.__init__",
+            arguments,
+            keywordNames,
+            keywordValues,
+            ["func"],
+            [null],
+            default
+        );
+        var func = bound[0]!;
+        if (!ManagedObjectProtocols.IsCallable(func) && !TryGetAttribute(func, "__get__", out _))
+        {
+            throw Error(
+                $"{func.ToRepresentationString()} is not callable or a descriptor",
+                default
+            );
+        }
+
+        var dispatcher = WrapSingleDispatch(func, default);
+        var descriptor = new PythonManagedObjectValue(
+            type,
+            new DispatchMethodState(dispatcher, func)
+        );
+        descriptor.Attributes["dispatcher"] = dispatcher;
+        descriptor.Attributes["func"] = func;
+        return descriptor;
+    }
+
+    /// <summary>`_singledispatchmethod_get`: what one attribute access resolves to.</summary>
+    private static PythonManagedObjectValue BindDispatchedMethod(
+        PythonValue self,
+        PythonValue instance,
+        PythonValue ownerClass
+    )
+    {
+        var bound = new PythonManagedObjectValue(
+            SingleDispatchMethodGetType,
+            new DispatchMethodGetState(DispatchMethodStateOf(self), instance, ownerClass)
+        );
+        bound.Attributes["_unbound"] = self;
+        bound.Attributes["_obj"] = instance;
+        bound.Attributes["_cls"] = ownerClass;
+        return bound;
+    }
+
+    private static PythonManagedTypeValue CreateSingleDispatchMethodGetType()
+    {
+        var type = new PythonManagedTypeValue("_singledispatchmethod_get")
+        {
+            Module = Module,
+            QualName = "singledispatchmethod_get",
+        };
+        type.Attributes["__call__"] = new PythonProtocolFunctionValue(
+            "__call__",
+            (self, arguments) => CallDispatchedMethod(self, arguments, [], [], default),
+            (self, arguments, names, values) =>
+                CallDispatchedMethod(self, arguments, names, values, default)
+        );
+        type.Attributes["__repr__"] = new PythonProtocolFunctionValue(
+            "__repr__",
+            (self, _) => new PythonTextValue(RepresentBoundMethod(self))
+        );
+        type.Attributes["register"] = new PythonProtocolFunctionValue(
+            "register",
+            (self, arguments) =>
+                RegisterMethodImplementation(
+                    DispatchMethodGetStateOf(self).Unbound,
+                    arguments,
+                    [],
+                    [],
+                    default
+                ),
+            (self, arguments, names, values) =>
+                RegisterMethodImplementation(
+                    DispatchMethodGetStateOf(self).Unbound,
+                    arguments,
+                    names,
+                    values,
+                    default
+                )
+        );
+        // CPython resolves these lazily through `__getattr__`; the same values are
+        // ordinary members here.
+        type.Attributes["__wrapped__"] = ReadOnlyMember(
+            "__wrapped__",
+            self => DispatchMethodGetStateOf(self).Unbound.Function
+        );
+        type.Attributes["__name__"] = ReadOnlyMember(
+            "__name__",
+            self => DelegateToWrappedFunctionStrict(self, "__name__")
+        );
+        type.Attributes["__qualname__"] = ReadOnlyMember(
+            "__qualname__",
+            self => DelegateToWrappedFunctionStrict(self, "__qualname__")
+        );
+        type.Attributes["__isabstractmethod__"] = ReadOnlyMember(
+            "__isabstractmethod__",
+            self => DelegateToWrappedFunctionStrict(self, "__isabstractmethod__")
+        );
+        return type;
+    }
+
+    /// <summary>
+    /// `_singledispatchmethod_get.__call__`: dispatch on the first argument and bind the
+    /// implementation the way the wrapped descriptor would bind it.
+    /// </summary>
+    private static PythonValue CallDispatchedMethod(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var state = DispatchMethodGetStateOf(self);
+        if (positional.Count == 0)
+        {
+            throw Error(
+                $"{FunctionNameOf(state.Unbound.Function, "singledispatchmethod method")} "
+                    + "requires at least 1 positional argument",
+                span
+            );
+        }
+
+        var implementation = ImplementationFor(
+            state.Unbound.Dispatcher,
+            PythonBuiltinTypes.GetRuntimeType(positional[0]),
+            span
+        );
+        // CPython calls `implementation.__get__(self._obj, self._cls)`; a class-level
+        // access binds nothing, which for this runtime means a C# `null` instance rather
+        // than the Python `None` the state holds.
+        var target = ManagedObjectProtocols.BindDescriptor(
+            implementation,
+            state.Object is PythonNoneValue ? null : state.Object,
+            state.Class,
+            span
+        );
+        return Invoke(target, positional, keywordNames, keywordValues, span);
+    }
+
+    private static PythonValue RegisterDispatchedMethod(
+        PythonValue? descriptor,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    ) =>
+        RegisterMethodImplementation(
+            DispatchMethodStateOf(descriptor),
+            positional,
+            keywordNames,
+            keywordValues,
+            span
+        );
+
+    private static PythonValue RegisterMethodImplementation(
+        DispatchMethodState state,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        // `method` defaults to None, so `@meth.register` sends the decorated function
+        // through the annotation path exactly as the dispatcher's own `register` does.
+        var bound = BindNamed(
+            "register",
+            positional,
+            keywordNames,
+            keywordValues,
+            ["cls", "method"],
+            [null, PythonNoneValue.Instance],
+            span
+        );
+        return RegisterImplementation(
+            state.Dispatcher,
+            bound[0]!,
+            bound[1] is PythonNoneValue ? null : bound[1],
+            span
+        );
+    }
+
+    private static string RepresentBoundMethod(PythonValue? self)
+    {
+        var state = DispatchMethodGetStateOf(self);
+        var name = DispatchMethodName(state.Unbound.Function);
+        return state.Object is PythonNoneValue
+            ? $"<single dispatch method {name}>"
+            : $"<bound single dispatch method {name} of {state.Object.ToRepresentationString()}>";
+    }
+
+    private static string DispatchMethodName(PythonValue function)
+    {
+        if (
+            TryGetAttribute(function, "__qualname__", out var qualname)
+            && qualname is PythonTextValue qualified
+        )
+        {
+            return qualified.Value;
+        }
+
+        return FunctionNameOf(function, "?");
+    }
+
+    private static PythonValue DelegateToWrappedFunction(
+        PythonValue self,
+        string name,
+        PythonValue fallback
+    )
+    {
+        var function = DispatchMethodGetStateOf(self).Unbound.Function;
+        return TryGetAttribute(function, name, out var value) ? value : fallback;
+    }
+
+    /// <summary>
+    /// The same delegation without a fallback: `_singledispatchmethod_get.__getattr__` is a
+    /// plain `getattr`, so an attribute the wrapped function does not have raises.
+    /// </summary>
+    private static PythonValue DelegateToWrappedFunctionStrict(PythonValue self, string name) =>
+        ManagedObjectProtocols.GetAttribute(
+            DispatchMethodGetStateOf(self).Unbound.Function,
+            name,
+            default
+        );
+
+    private static DispatchMethodState DispatchMethodStateOf(PythonValue? target) =>
+        target is PythonManagedObjectValue { Payload: DispatchMethodState state }
+            ? state
+            : throw Error(
+                "descriptor 'singledispatchmethod' requires a 'singledispatchmethod' object",
+                default
+            );
+
+    private static DispatchMethodGetState DispatchMethodGetStateOf(PythonValue? target) =>
+        target is PythonManagedObjectValue { Payload: DispatchMethodGetState state }
+            ? state
+            : throw Error(
+                "descriptor '_singledispatchmethod_get' requires a bound dispatch method",
+                default
+            );
+
+    /// <summary>
+    /// Argument Clinic's parse for the module's single-argument factories: `mycmp`/`obj` is
+    /// positional-or-keyword, exactly one value is accepted, and an overflow that is all
+    /// keywords reports differently from one that includes a positional.
+    /// </summary>
+    private static PythonValue SingleArgument(
+        string function,
+        string parameter,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var given = positional.Count + keywordValues.Count;
+        if (given > 1)
+        {
+            throw Error(
+                positional.Count == 0
+                    ? $"{function}() takes at most 1 keyword argument ({given} given)"
+                    : $"{function}() takes at most 1 argument ({given} given)",
+                span
+            );
+        }
+
+        if (positional.Count == 1)
+        {
+            return positional[0];
+        }
+
+        if (keywordNames.Count == 1 && keywordNames[0] == parameter)
+        {
+            return keywordValues[0];
+        }
+
+        throw Error($"{function}() missing required argument '{parameter}' (pos 1)", span);
     }
 
     // -------------------------------------------------------------------------
