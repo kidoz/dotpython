@@ -841,6 +841,18 @@ internal static class ManagedObjectProtocols
                     return new PythonBoundMethodValue(name, builtin, method);
                 }
 
+                if (
+                    PythonObjectMembers.TryGetValueMember(
+                        builtin,
+                        PythonBuiltinTypes.GetRuntimeTypeName(builtin),
+                        name,
+                        out var objectValueMember
+                    )
+                )
+                {
+                    return new PythonBoundMethodValue(name, builtin, objectValueMember);
+                }
+
                 // The numeric members are answered from the value itself, so they never
                 // reach a method table: `(5).real` is `5` and `(1.5).imag` is `0.0`.
                 if (
@@ -871,6 +883,15 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue builtinType
                 when PythonMemberDescriptors.Get(builtinType.Name, name) is { } numericMember:
                 return numericMember;
+            // What the type inherits from `object`, and the two entry points it carries.
+            case PythonBuiltinTypeValue builtinType
+                when PythonObjectMembers.GetTypeDescriptor(builtinType.Name, name)
+                    is { } objectMember:
+                return objectMember;
+            case PythonBuiltinTypeValue builtinType
+                when PythonObjectMembers.GetTypeFunction(builtinType.Name, name)
+                    is { } typeFunction:
+                return typeFunction;
             case PythonBuiltinTypeValue builtinType
                 when PythonBuiltinMethods.GetTypeMemberDescriptor(builtinType.Name, name)
                     is { } descriptor:
