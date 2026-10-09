@@ -623,7 +623,10 @@ internal static class PythonEnum
         );
 
     /// <summary>AttributeError text for a metaclass method applied to the wrong object.</summary>
-    private static PythonRuntimeException MissingClassAttribute(PythonValue self, string attribute) =>
+    private static PythonRuntimeException MissingClassAttribute(
+        PythonValue self,
+        string attribute
+    ) =>
         Fault(
             self switch
             {
@@ -633,7 +636,8 @@ internal static class PythonEnum
                     $"type object '{builtin.Name}' has no attribute '{attribute}'",
                 PythonExceptionTypeValue exceptionType =>
                     $"type object '{exceptionType.Name}' has no attribute '{attribute}'",
-                _ => $"'{PythonBuiltinTypes.GetRuntimeTypeName(self)}' object has no attribute '{attribute}'",
+                _ =>
+                    $"'{PythonBuiltinTypes.GetRuntimeTypeName(self)}' object has no attribute '{attribute}'",
             },
             default,
             "AttributeError"
@@ -687,10 +691,27 @@ internal static class PythonEnum
             return false;
         }
 
-        if (ManagedObjectProtocols.TryFindDictionaryItem(dictionary, key, out var item))
+        // A tuple or frozenset can pass the shallow check and still fail to hash once its
+        // elements are reached. CPython's own lookup catches that and falls through to the
+        // long search, so an unhashable value ends as "not a valid <Enum>" rather than a
+        // hashing error.
+        try
         {
-            value = item.Value;
-            return true;
+            if (ManagedObjectProtocols.TryFindDictionaryItem(dictionary, key, out var item))
+            {
+                value = item.Value;
+                return true;
+            }
+        }
+        catch (PythonRaisedException exception) when (IsUnhashable(exception.Value))
+        {
+            value = PythonNoneValue.Instance;
+            return false;
+        }
+        catch (PythonRuntimeException fault) when (IsUnhashableFault(fault))
+        {
+            value = PythonNoneValue.Instance;
+            return false;
         }
 
         value = PythonNoneValue.Instance;
@@ -940,8 +961,7 @@ internal static class PythonEnum
         // separate class argument, so `name` is the first parameter and the bases
         // follow it -- the same shape an unbound call through `EnumType` has.
         var name = self is PythonTextValue text ? text.Value : "";
-        var bases =
-            rest.Count > 0 && rest[0] is PythonTupleValue tuple ? tuple.Elements : [];
+        var bases = rest.Count > 0 && rest[0] is PythonTupleValue tuple ? tuple.Elements : [];
         CheckForExistingMembers(name, bases);
         var prepared = new PythonDictionaryValue([]);
         prepared.AddItem(
@@ -2159,6 +2179,16 @@ internal static class PythonEnum
         );
     }
 
+    /// <summary>Whether a caught exception is the hashing failure an unhashable value raises.</summary>
+    private static bool IsUnhashable(PythonExceptionValue exception) =>
+        exception.TypeName == "TypeError";
+
+    private static bool IsUnhashableFault(PythonRuntimeException fault) =>
+        (
+            fault.PythonExceptionTypeName
+            ?? PythonErrorIndicator.GetPythonExceptionTypeName(fault.Code)
+        ) == "TypeError";
+
     /// <summary>Mirrors `Enum.__new__`'s value lookup.</summary>
     private static PythonValue LookupMember(
         PythonManagedTypeValue cls,
@@ -2536,10 +2566,7 @@ internal static class PythonEnum
     /// before CPython's unpacking raises its own wording. Errors raised while the
     /// iteration itself runs are passed through untouched.
     /// </summary>
-    private static List<PythonValue>? TryMaterializeFunctionalPair(
-        PythonValue item,
-        TextSpan span
-    )
+    private static List<PythonValue>? TryMaterializeFunctionalPair(PythonValue item, TextSpan span)
     {
         try
         {
@@ -2589,7 +2616,9 @@ internal static class PythonEnum
     {
         // `EnumType` inherits `mro` from `type`, so the descriptor reaches the call
         // unbound and refuses an argument that is not a type, in `type.mro`'s own words.
-        var arguments = target is null ? positional : new List<PythonValue>([target, .. positional]);
+        var arguments = target is null
+            ? positional
+            : new List<PythonValue>([target, .. positional]);
         if (arguments.Count == 0)
         {
             throw Fault("unbound method type.mro() needs an argument", default);

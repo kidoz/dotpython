@@ -316,7 +316,7 @@ internal static class ManagedObjectProtocols
                 when PythonTypeProtocols.TryGetAttribute(name, out var defaultTypeAttribute):
                 return BindDescriptor(defaultTypeAttribute, type, type.Metaclass, span, name);
             case PythonManagedTypeValue type:
-                throw MissingAttribute(type.Name, name, span);
+                throw MissingTypeAttribute(type.Name, name, span);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetAttribute(name, span);
             case PythonTypeMetadataDescriptorValue descriptor:
@@ -808,12 +808,18 @@ internal static class ManagedObjectProtocols
                     return new PythonBoundMethodValue(name, builtin, method);
                 }
 
-                throw Fault(
-                    "DPY4023",
-                    $"'{GetTypeName(builtin)}' object has no attribute '{name}'",
-                    span,
-                    "AttributeError"
-                );
+                // This case serves both a value and a class, so only a class reached here
+                // reports in CPython's `type object 'X'` form.
+                throw builtin is PythonBuiltinTypeValue builtinTarget
+                    ? MissingTypeAttribute(builtinTarget.Name, name, span)
+                    : Fault(
+                        "DPY4023",
+                        $"'{GetTypeName(builtin)}' object has no attribute '{name}'",
+                        span,
+                        "AttributeError"
+                    );
+            case PythonBuiltinTypeValue builtinType:
+                throw MissingTypeAttribute(builtinType.Name, name, span);
             default:
                 throw Fault(
                     "DPY4023",
@@ -1588,7 +1594,7 @@ internal static class ManagedObjectProtocols
             case PythonManagedTypeValue type when type.Attributes.Remove(name):
                 return;
             case PythonManagedTypeValue type:
-                throw MissingAttribute(type.Name, name, span);
+                throw MissingTypeAttribute(type.Name, name, span);
             default:
                 throw Fault(
                     "DPY4023",
@@ -4273,6 +4279,22 @@ internal static class ManagedObjectProtocols
         string name,
         TextSpan span
     ) => Fault("DPY4022", $"'{typeName}' object has no attribute '{name}'", span, "AttributeError");
+
+    /// <summary>
+    /// A missing attribute on a class rather than on an instance: CPython words it with the
+    /// class's own name, so `C.NOPE` reports `type object 'C'`, not `'C' object`.
+    /// </summary>
+    internal static PythonRuntimeException MissingTypeAttribute(
+        string typeName,
+        string name,
+        TextSpan span
+    ) =>
+        Fault(
+            "DPY4022",
+            $"type object '{typeName}' has no attribute '{name}'",
+            span,
+            "AttributeError"
+        );
 
     internal static PythonRuntimeException Fault(
         string code,
