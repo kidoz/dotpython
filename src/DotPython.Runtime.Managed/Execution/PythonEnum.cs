@@ -214,6 +214,13 @@ internal static class PythonEnum
         InstallClassProtocols(StrEnumClass);
         InstallClassProtocols(FlagClass);
         InstallClassProtocols(IntFlagClass);
+        // The default `_generate_next_value_` lives on `Enum` alone: `Flag` and
+        // `StrEnum` install their own, and a subclass inherits whichever applies.
+        Install(
+            EnumClass,
+            "_generate_next_value_",
+            new PythonStaticMethodValue(Protocol("_generate_next_value_", DefaultGenerateNextValue))
+        );
         InstallFlagProtocols();
         InstallMixinProtocols();
         InstallAutoProtocols();
@@ -560,14 +567,39 @@ internal static class PythonEnum
         memberType is PythonBuiltinTypeValue { Name: "object" };
 
     private static bool IsIntValue(PythonValue value) =>
-        value is PythonWholeNumberValue or PythonTruthValue;
+        value is PythonWholeNumberValue or PythonTruthValue || TryMemberInteger(value, out _);
+
+    /// <summary>
+    /// An `int`-mixin member (`IntEnum`/`IntFlag`) stands in for the integer it
+    /// wraps, both as an operand and as a value the module itself compares.
+    /// </summary>
+    private static bool TryMemberInteger(PythonValue value, out BigInteger result)
+    {
+        result = BigInteger.Zero;
+        if (!IsInstanceOfMemberType(value, "int"))
+        {
+            return false;
+        }
+
+        switch (StateOf(value)?.Value)
+        {
+            case PythonWholeNumberValue whole:
+                result = whole.Value;
+                return true;
+            case PythonTruthValue truth:
+                result = truth.Value ? BigInteger.One : BigInteger.Zero;
+                return true;
+            default:
+                return false;
+        }
+    }
 
     private static BigInteger AsBigInteger(PythonValue value) =>
         value switch
         {
             PythonWholeNumberValue whole => whole.Value,
             PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
-            _ => BigInteger.Zero,
+            _ => TryMemberInteger(value, out var memberValue) ? memberValue : BigInteger.Zero,
         };
 
     private static bool IsSingleBit(BigInteger value) =>
@@ -1279,7 +1311,7 @@ internal static class PythonEnum
             [
                 Text(name),
                 PythonWholeNumberValue.Create(1),
-                PythonWholeNumberValue.Create(info.MemberNames.Elements.Count),
+                PythonWholeNumberValue.Create(lastValues.Count),
                 new PythonListValue([.. lastValues]),
             ],
             span
@@ -1341,13 +1373,14 @@ internal static class PythonEnum
         PythonValue start
     )
     {
+        _ = info;
         var generator = generateNextValue ?? LookupClassValue(enumClass, "_generate_next_value_");
         return Invoke(
             generator ?? DefaultGnvFunction,
             [
                 Text(name),
                 start,
-                PythonWholeNumberValue.Create(info.MemberNames.Elements.Count),
+                PythonWholeNumberValue.Create(lastValues.Count),
                 new PythonListValue([.. lastValues]),
             ],
             span
@@ -2346,13 +2379,6 @@ internal static class PythonEnum
         );
         Install(
             enumClass,
-            "_generate_next_value_",
-            new PythonStaticMethodValue(
-                Protocol("_generate_next_value_", DefaultGenerateNextValue)
-            )
-        );
-        Install(
-            enumClass,
             "__new__",
             new PythonStaticMethodValue(Protocol("__new__", EnumNew))
         );
@@ -2550,6 +2576,11 @@ internal static class PythonEnum
                 flagClass,
                 "_missing_",
                 new PythonClassMethodValue(Protocol("_missing_", FlagMissing))
+            );
+            Install(
+                flagClass,
+                "_generate_next_value_",
+                new PythonStaticMethodValue(Protocol("_generate_next_value_", FlagGenerateNextValue))
             );
             Install(
                 flagClass,
@@ -3057,6 +3088,60 @@ internal static class PythonEnum
             );
             Install(
                 enumClass,
+                "__truediv__",
+                Protocol(
+                    "__truediv__",
+                    (target, positional) => MixinTrueDivide(target, positional, false)
+                )
+            );
+            Install(
+                enumClass,
+                "__rtruediv__",
+                Protocol(
+                    "__rtruediv__",
+                    (target, positional) => MixinTrueDivide(target, positional, true)
+                )
+            );
+            Install(
+                enumClass,
+                "__pow__",
+                Protocol("__pow__", (target, positional) => MixinPower(target, positional, false))
+            );
+            Install(
+                enumClass,
+                "__rpow__",
+                Protocol("__rpow__", (target, positional) => MixinPower(target, positional, true))
+            );
+            Install(
+                enumClass,
+                "__lshift__",
+                Protocol("__lshift__", (target, positional) => MixinShift(target, positional, false, true))
+            );
+            Install(
+                enumClass,
+                "__rlshift__",
+                Protocol("__rlshift__", (target, positional) => MixinShift(target, positional, true, true))
+            );
+            Install(
+                enumClass,
+                "__rshift__",
+                Protocol("__rshift__", (target, positional) => MixinShift(target, positional, false, false))
+            );
+            Install(
+                enumClass,
+                "__rrshift__",
+                Protocol("__rrshift__", (target, positional) => MixinShift(target, positional, true, false))
+            );
+            Install(enumClass, "__neg__", Protocol("__neg__", MixinNegate));
+            Install(enumClass, "__pos__", Protocol("__pos__", MixinPositive));
+            Install(enumClass, "__abs__", Protocol("__abs__", MixinAbsolute));
+            if (ReferenceEquals(enumClass, IntEnumClass))
+            {
+                // `IntFlag` keeps `~`, which returns a flag.
+                Install(enumClass, "__invert__", Protocol("__invert__", MixinInvert));
+            }
+            Install(
+                enumClass,
                 "__lt__",
                 Protocol("__lt__", (target, positional) => MixinCompare(target, positional, "<"))
             );
@@ -3116,6 +3201,22 @@ internal static class PythonEnum
             "__radd__",
             Protocol("__radd__", (target, positional) => StrMixinConcat(target, positional, true))
         );
+        Install(
+            StrEnumClass,
+            "_generate_next_value_",
+            new PythonStaticMethodValue(Protocol("_generate_next_value_", StrEnumGenerateNextValue))
+        );
+    }
+
+    /// <summary>`StrEnum._generate_next_value_` is the lower-cased member name.</summary>
+    private static PythonValue StrEnumGenerateNextValue(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        _ = target;
+        var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
+        return Text(PythonUnicodeCase.ToLower(name));
     }
 
     private static PythonValue MixinInt(
@@ -3313,6 +3414,132 @@ internal static class PythonEnum
         var left = reflected ? right : value;
         var divisor = reflected ? value : right;
         return PythonWholeNumberValue.Create(left - (FloorDivide(left, divisor) * divisor));
+    }
+
+    private static PythonValue MixinTrueDivide(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        bool reflected
+    )
+    {
+        var member = (PythonManagedObjectValue)target!;
+        var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
+        if (MixinOperand(member, other) is not { } right)
+        {
+            return PythonNotImplementedValue.Instance;
+        }
+
+        var value = AsBigInteger(StateOf(member)!.Value);
+        var numerator = reflected ? right : value;
+        var denominator = reflected ? value : right;
+        if (denominator.IsZero)
+        {
+            throw Fault("division by zero", default, "ZeroDivisionError");
+        }
+
+        return new PythonFloatingPointValue((double)numerator / (double)denominator);
+    }
+
+    private static PythonValue MixinPower(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        bool reflected
+    )
+    {
+        var member = (PythonManagedObjectValue)target!;
+        var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
+        if (MixinOperand(member, other) is not { } right)
+        {
+            return PythonNotImplementedValue.Instance;
+        }
+
+        var value = AsBigInteger(StateOf(member)!.Value);
+        var baseValue = reflected ? right : value;
+        var exponent = reflected ? value : right;
+        if (exponent.Sign < 0)
+        {
+            if (baseValue.IsZero)
+            {
+                throw Fault("0.0 cannot be raised to a negative power", default, "ZeroDivisionError");
+            }
+
+            return new PythonFloatingPointValue(Math.Pow((double)baseValue, (double)exponent));
+        }
+
+        if (exponent > int.MaxValue)
+        {
+            throw Fault("exponent too large", default, "OverflowError");
+        }
+
+        return PythonWholeNumberValue.Create(BigInteger.Pow(baseValue, (int)exponent));
+    }
+
+    private static PythonValue MixinShift(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional,
+        bool reflected,
+        bool left
+    )
+    {
+        var member = (PythonManagedObjectValue)target!;
+        var other = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
+        if (MixinOperand(member, other) is not { } right)
+        {
+            return PythonNotImplementedValue.Instance;
+        }
+
+        var value = AsBigInteger(StateOf(member)!.Value);
+        var baseValue = reflected ? right : value;
+        var amount = reflected ? value : right;
+        if (amount.Sign < 0)
+        {
+            throw Fault("negative shift count", default, "ValueError");
+        }
+
+        if (amount > int.MaxValue)
+        {
+            throw Fault("shift count too large", default, "OverflowError");
+        }
+
+        return PythonWholeNumberValue.Create(
+            left ? baseValue << (int)amount : baseValue >> (int)amount
+        );
+    }
+
+    private static PythonValue MixinNegate(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        _ = positional;
+        return PythonWholeNumberValue.Create(-AsBigInteger(StateOf(target!)!.Value));
+    }
+
+    private static PythonValue MixinPositive(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        _ = positional;
+        return PythonWholeNumberValue.Create(AsBigInteger(StateOf(target!)!.Value));
+    }
+
+    private static PythonValue MixinAbsolute(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        _ = positional;
+        return PythonWholeNumberValue.Create(BigInteger.Abs(AsBigInteger(StateOf(target!)!.Value)));
+    }
+
+    private static PythonValue MixinInvert(
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        _ = positional;
+        return PythonWholeNumberValue.Create(~AsBigInteger(StateOf(target!)!.Value));
     }
 
     /// <summary>`//` rounds towards negative infinity, unlike BigInteger division.</summary>
