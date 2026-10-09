@@ -529,6 +529,152 @@ internal static class PythonEnum
     private static void Install(PythonManagedTypeValue type, string name, PythonValue value) =>
         type.Attributes[name] = value;
 
+    /// <summary>
+    /// `EnumType`'s methods are plain functions on the metaclass, so a call through
+    /// `EnumType` itself passes `cls` positionally (`EnumType.__len__(Color)`) while a call
+    /// through an enum class is bound (`Color.__len__()`); both shapes gather into one
+    /// argument list, and a call that leaves a parameter unfilled is CPython's binding
+    /// `TypeError`.
+    /// </summary>
+    private static (PythonValue Self, IReadOnlyList<PythonValue> Remaining) BindMetaclassSelf(
+        string name,
+        string[] parameters,
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        var arguments = new List<PythonValue>(parameters.Length + positional.Count);
+        if (target is not null)
+        {
+            arguments.Add(target);
+        }
+
+        arguments.AddRange(positional);
+        if (arguments.Count < parameters.Length)
+        {
+            throw Fault(
+                $"EnumType.{name}() missing {DescribeMissingArguments(parameters, arguments.Count)}",
+                default
+            );
+        }
+
+        return (arguments[0], arguments.GetRange(1, arguments.Count - 1));
+    }
+
+    private static string DescribeMissingArguments(string[] parameters, int given)
+    {
+        var missing = parameters.Length - given;
+        var names = parameters[given..].Select(parameter => $"'{parameter}'").ToArray();
+        var listed = names.Length switch
+        {
+            1 => names[0],
+            2 => $"{names[0]} and {names[1]}",
+            _ => string.Join(", ", names[..^1]) + $", and {names[^1]}",
+        };
+        return $"{missing} required positional argument{(missing == 1 ? "" : "s")}: {listed}";
+    }
+
+    /// <summary>
+    /// A member method reached through its class (`Color.__repr__()`) is the plain function
+    /// from the class namespace in CPython: the class is not `self`, the first argument is,
+    /// and a call without one is a binding `TypeError` naming the defining class.
+    /// </summary>
+    private static (PythonValue Self, IReadOnlyList<PythonValue> Remaining) BindMemberSelf(
+        string owner,
+        string name,
+        string selfParameter,
+        PythonValue? target,
+        IReadOnlyList<PythonValue> positional
+    )
+    {
+        if (target is null || target is PythonManagedTypeValue)
+        {
+            if (positional.Count == 0)
+            {
+                throw Fault(
+                    $"{owner}.{name}() missing 1 required positional argument: '{selfParameter}'",
+                    default
+                );
+            }
+
+            return (positional[0], [.. positional.Skip(1)]);
+        }
+
+        return (target, positional);
+    }
+
+    /// <summary>
+    /// Installs a member method that tolerates both call shapes, so no member protocol can
+    /// dereference a member that the unbound call never supplied.
+    /// </summary>
+    private static PythonProtocolFunctionValue MemberProtocol(
+        string name,
+        string owner,
+        string selfParameter,
+        Func<PythonValue?, IReadOnlyList<PythonValue>, PythonValue> invoke
+    ) =>
+        Protocol(
+            name,
+            (target, positional) =>
+            {
+                var (self, rest) = BindMemberSelf(owner, name, selfParameter, target, positional);
+                return invoke(self, rest);
+            }
+        );
+
+    /// <summary>AttributeError text for a metaclass method applied to the wrong object.</summary>
+    private static PythonRuntimeException MissingClassAttribute(PythonValue self, string attribute) =>
+        Fault(
+            self switch
+            {
+                PythonManagedTypeValue type =>
+                    $"type object '{type.Name}' has no attribute '{attribute}'",
+                PythonBuiltinTypeValue builtin =>
+                    $"type object '{builtin.Name}' has no attribute '{attribute}'",
+                PythonExceptionTypeValue exceptionType =>
+                    $"type object '{exceptionType.Name}' has no attribute '{attribute}'",
+                _ => $"'{PythonBuiltinTypes.GetRuntimeTypeName(self)}' object has no attribute '{attribute}'",
+            },
+            default,
+            "AttributeError"
+        );
+
+    private static bool IsTypeValue(PythonValue value) =>
+        value is PythonManagedTypeValue or PythonBuiltinTypeValue or PythonExceptionTypeValue;
+
+    private static string TypeDisplayName(PythonValue value) =>
+        value switch
+        {
+            PythonManagedTypeValue type => type.Name,
+            PythonBuiltinTypeValue builtin => builtin.Name,
+            PythonExceptionTypeValue exceptionType => exceptionType.Name,
+            _ => PythonBuiltinTypes.GetRuntimeTypeName(value),
+        };
+
+    /// <summary>
+    /// `EnumType.__contains__` starts from `isinstance(value, cls)`; this evaluates the
+    /// class-info shapes that call accepts, with CPython's refusal for anything else.
+    /// </summary>
+    private static bool IsInstanceOfClassInfo(PythonValue value, PythonValue classInfo) =>
+        classInfo switch
+        {
+            PythonTupleValue tuple => tuple.Elements.Any(element =>
+                IsInstanceOfClassInfo(value, element)
+            ),
+            PythonTypeUnionValue union => union.Members.Any(member =>
+                IsInstanceOfClassInfo(value, member)
+            ),
+            PythonManagedTypeValue type => PythonBuiltinTypes.GetRuntimeType(value)
+                is PythonManagedTypeValue runtime
+                && runtime.Mro.Any(entry => ReferenceEquals(entry, type)),
+            PythonBuiltinTypeValue builtin => PythonBuiltinTypes.IsInstance(value, builtin),
+            PythonExceptionTypeValue => value is PythonExceptionValue,
+            _ => throw Fault(
+                "isinstance() arg 2 must be a type, a tuple of types, or a union",
+                default
+            ),
+        };
+
     private static bool TryLookupKey(
         PythonDictionaryValue dictionary,
         PythonValue key,
@@ -743,7 +889,17 @@ internal static class PythonEnum
     private static PythonNoneValue IgnoreInitializer(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
-    ) => PythonNoneValue.Instance;
+    )
+    {
+        if (target is null && positional.Count == 0)
+        {
+            // `EnumType.__init__` is `type.__init__`, so calling it with no class at all
+            // is the slot wrapper's own binding error.
+            throw Fault("descriptor '__init__' of 'type' object needs an argument", default);
+        }
+
+        return PythonNoneValue.Instance;
+    }
 
     /// <summary>
     /// `EnumType.__init__` ignores its arguments, including the class statement's
@@ -779,9 +935,13 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
+        var (self, rest) = BindMetaclassSelf("__prepare__", ["cls", "bases"], target, positional);
+        // The class statement calls `metaclass.__prepare__(name, bases)` without a
+        // separate class argument, so `name` is the first parameter and the bases
+        // follow it -- the same shape an unbound call through `EnumType` has.
+        var name = self is PythonTextValue text ? text.Value : "";
         var bases =
-            positional.Count > 1 && positional[1] is PythonTupleValue tuple ? tuple.Elements : [];
+            rest.Count > 0 && rest[0] is PythonTupleValue tuple ? tuple.Elements : [];
         CheckForExistingMembers(name, bases);
         var prepared = new PythonDictionaryValue([]);
         prepared.AddItem(
@@ -819,7 +979,22 @@ internal static class PythonEnum
     private static PythonValue DescribeClassTarget(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
-    ) => new PythonTextValue(DescribeClass((PythonManagedTypeValue)target!));
+    )
+    {
+        var (self, _) = BindMetaclassSelf("__repr__", ["cls"], target, positional);
+        if (self is PythonManagedTypeValue type)
+        {
+            return new PythonTextValue(DescribeClass(type));
+        }
+
+        if (IsTypeValue(self))
+        {
+            return new PythonTextValue($"<enum '{TypeDisplayName(self)}'>");
+        }
+
+        // `EnumType.__repr__` opens with `issubclass(cls, Flag)`.
+        throw Fault("issubclass() arg 1 must be a class", default);
+    }
 
     private static string DescribeClass(PythonManagedTypeValue type) =>
         IsFlagClass(type) ? $"<flag '{QualifiedName(type)}'>" : $"<enum '{QualifiedName(type)}'>";
@@ -1904,11 +2079,11 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> keywordValues
     )
     {
-        var cls = (PythonManagedTypeValue)target!;
-        if (positional.Count == 0)
+        var (self, rest) = BindMetaclassSelf("__call__", ["cls", "value"], target, positional);
+        if (self is not PythonManagedTypeValue cls)
         {
             throw Fault(
-                "EnumType.__call__() missing 1 required positional argument: 'value'",
+                $"'{PythonBuiltinTypes.GetRuntimeTypeName(self)}' object is not callable",
                 default
             );
         }
@@ -1918,7 +2093,7 @@ internal static class PythonEnum
         PythonValue? dataType = null;
         PythonValue? start = null;
         PythonValue? boundary = null;
-        PythonValue? names = positional.Count > 1 ? positional[1] : null;
+        PythonValue? names = rest.Count > 1 ? rest[1] : null;
         for (var index = 0; index < keywordNames.Count; index++)
         {
             var value = keywordValues[index];
@@ -1952,10 +2127,10 @@ internal static class PythonEnum
         var info = EnsureInfo(cls);
         if (info.MemberMap.Items.Count != 0 || info.MemberNames.Elements.Count != 0)
         {
-            var lookup = positional[0];
+            var lookup = rest[0];
             if (names is not null)
             {
-                lookup = new PythonTupleValue([positional[0], names, .. positional.Skip(2)]);
+                lookup = new PythonTupleValue([rest[0], names, .. rest.Skip(2)]);
             }
 
             return LookupMember(cls, info, lookup, default);
@@ -1969,17 +2144,12 @@ internal static class PythonEnum
             );
         }
 
-        if (positional[0] is not PythonTextValue className)
-        {
-            throw Fault($"Invalid enum name {positional[0].ToRepresentationString()}", default);
-        }
-
         return CreateFunctional(
             cls,
-            className.Value,
+            rest[0],
             names,
-            module as PythonTextValue,
-            qualname as PythonTextValue,
+            module,
+            qualname,
             dataType,
             start,
             boundary is null || ReferenceEquals(boundary, PythonNoneValue.Instance)
@@ -2108,10 +2278,10 @@ internal static class PythonEnum
     /// <summary>Mirrors `EnumType._create_`.</summary>
     private static PythonManagedTypeValue CreateFunctional(
         PythonManagedTypeValue baseClass,
-        string className,
+        PythonValue className,
         PythonValue? names,
-        PythonTextValue? module,
-        PythonTextValue? qualname,
+        PythonValue? module,
+        PythonValue? qualname,
         PythonValue? dataType,
         PythonValue? start,
         PythonValue? boundary,
@@ -2126,10 +2296,10 @@ internal static class PythonEnum
 
         var prepared = (PythonDictionaryValue)PrepareNamespace(
             null,
-            [Text(className), new PythonTupleValue([.. bases])]
+            [className, new PythonTupleValue([.. bases])]
         );
         var startValue = start ?? PythonWholeNumberValue.Create(1);
-        var entries = new List<(string Name, PythonValue Value)>();
+        var entries = new List<(PythonValue Name, PythonValue? Value)>();
         var info = EnsureInfo(baseClass);
         var firstEnum = baseClass;
         var memberType =
@@ -2146,92 +2316,60 @@ internal static class PythonEnum
                     .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             )
             {
-                entries.Add((name, PythonNoneValue.Instance));
-            }
-        }
-        else if (names is PythonTupleValue or PythonListValue)
-        {
-            IReadOnlyList<PythonValue> elements = names is PythonTupleValue tuple
-                ? tuple.Elements
-                : ((PythonListValue)names).Elements;
-            foreach (var element in elements)
-            {
-                if (element is PythonTextValue elementName)
-                {
-                    entries.Add((elementName.Value, PythonNoneValue.Instance));
-                    continue;
-                }
-
-                if (element is PythonTupleValue pair && pair.Elements.Length == 2)
-                {
-                    entries.Add((((PythonTextValue)pair.Elements[0]).Value, pair.Elements[1]));
-                    continue;
-                }
-
-                throw Fault(
-                    $"Invalid enum member name or value: {element.ToRepresentationString()}",
-                    span,
-                    "ValueError"
-                );
-            }
-        }
-        else if (names is PythonDictionaryValue mapping)
-        {
-            foreach (var item in mapping.Items)
-            {
-                entries.Add((((PythonTextValue)item.Key).Value, item.Value));
+                entries.Add((Text(name), null));
             }
         }
         else if (names is not null)
         {
-            foreach (var element in ManagedObjectProtocols.MaterializeValues(names, span, null))
+            IReadOnlyList<PythonValue> elements = names switch
             {
-                if (element is PythonTextValue elementName)
+                PythonTupleValue tuple => tuple.Elements,
+                PythonListValue list => list.Elements,
+                _ => ManagedObjectProtocols.MaterializeValues(names, span, null),
+            };
+            // A list or tuple that starts with a string holds bare names whose values
+            // are generated, whatever the remaining elements turn out to be.
+            var generatedNames =
+                names is PythonTupleValue or PythonListValue
+                && elements.Count > 0
+                && elements[0] is PythonTextValue;
+            foreach (var element in elements)
+            {
+                if (generatedNames)
                 {
-                    entries.Add((elementName.Value, PythonNoneValue.Instance));
-                    continue;
+                    entries.Add((element, null));
                 }
-
-                if (element is PythonTupleValue pair && pair.Elements.Length == 2)
+                else
                 {
-                    entries.Add((((PythonTextValue)pair.Elements[0]).Value, pair.Elements[1]));
-                    continue;
+                    AddFunctionalEntry(entries, element, names, span);
                 }
-
-                throw Fault(
-                    $"Invalid enum member name or value: {element.ToRepresentationString()}",
-                    span,
-                    "ValueError"
-                );
             }
         }
 
+        // `_generate_next_value_` runs for every name before the first classdict
+        // insert, so a bad `start` is reported before a bad member name.
         var lastValues = new List<PythonValue>();
-        var generated = new List<(string Name, PythonValue Value)>();
+        var generated = new List<(PythonValue Name, PythonValue Value)>();
         foreach (var (name, value) in entries)
         {
-            if (ReferenceEquals(value, PythonNoneValue.Instance))
-            {
-                var next = GenerateNextValue(
+            var next =
+                value
+                ?? GenerateNextValue(
                     firstEnum,
                     info,
-                    name,
+                    name is PythonTextValue nameText ? nameText.Value : "",
                     lastValues,
                     generator,
                     span,
                     startValue
                 );
-                generated.Add((name, next));
-                lastValues.Add(next);
-                continue;
-            }
-
-            generated.Add((name, value));
-            lastValues.Add(value);
+            generated.Add((name, next));
+            lastValues.Add(next);
         }
 
-        foreach (var (name, value) in generated)
+        foreach (var (entryName, value) in generated)
         {
+            var name = RequireFunctionalMemberName(entryName, span);
             if (TryLookupName(prepared, name, out var existing))
             {
                 throw Fault(
@@ -2244,7 +2382,7 @@ internal static class PythonEnum
             prepared.AddItem(new PythonDictionaryItemValue(Text(name), value));
         }
 
-        if (module is not null)
+        if (module is not null and not PythonNoneValue)
         {
             // `__prepare__` already seeds `__module__`; the functional API's explicit
             // module replaces it rather than adding a second item.
@@ -2255,16 +2393,6 @@ internal static class PythonEnum
             // Without one, `type.__new__` names the caller's module, but only when the
             // namespace does not already carry the key.
             ManagedObjectProtocols.DeleteItem(prepared, Text("__module__"), span);
-        }
-
-        if (qualname is not null)
-        {
-            ManagedObjectProtocols.SetDictionaryItem(
-                prepared,
-                Text("__qualname__"),
-                qualname,
-                span
-            );
         }
 
         // A data type given to the functional API behaves like a mixed-in one: it is
@@ -2278,10 +2406,38 @@ internal static class PythonEnum
             }
         }
 
+        // `type.__new__` validates its first argument last, after the namespace has
+        // been built, and the qualified name just after it.
+        if (className is not PythonTextValue classNameText)
+        {
+            throw Fault(
+                $"type.__new__() argument 1 must be str, not {ManagedObjectProtocols.GetTypeName(className)}",
+                span
+            );
+        }
+
+        if (qualname is not null and not PythonNoneValue)
+        {
+            if (qualname is not PythonTextValue)
+            {
+                throw Fault(
+                    $"type __qualname__ must be a str, not {ManagedObjectProtocols.GetTypeName(qualname)}",
+                    span
+                );
+            }
+
+            ManagedObjectProtocols.SetDictionaryItem(
+                prepared,
+                Text("__qualname__"),
+                qualname,
+                span
+            );
+        }
+
         var created = (PythonManagedTypeValue)
             UserObjectProtocols.Dispatcher!.CreateType(
                 EnumTypeType,
-                [Text(className), new PythonTupleValue([.. createBases]), prepared],
+                [classNameText, new PythonTupleValue([.. createBases]), prepared],
                 [],
                 [],
                 span
@@ -2302,13 +2458,159 @@ internal static class PythonEnum
         return created;
     }
 
+    /// <summary>
+    /// One pass of `_create_`'s `for item in names` loop: a string item names a
+    /// member whose value is looked up in the source mapping; anything else must
+    /// unpack into exactly two values.
+    /// </summary>
+    private static void AddFunctionalEntry(
+        List<(PythonValue Name, PythonValue? Value)> entries,
+        PythonValue item,
+        PythonValue source,
+        TextSpan span
+    )
+    {
+        if (item is PythonTextValue)
+        {
+            entries.Add((item, ManagedObjectProtocols.GetItem(source, item, span)));
+            return;
+        }
+
+        entries.Add(UnpackFunctionalPair(item, span));
+    }
+
+    /// <summary>
+    /// `member_name, member_value = item`, in the words of CPython's own unpacking:
+    /// a value that is not iterable, or that does not hold exactly two values, is
+    /// rejected before the class dictionary ever sees it.
+    /// </summary>
+    private static (PythonValue Name, PythonValue? Value) UnpackFunctionalPair(
+        PythonValue item,
+        TextSpan span
+    )
+    {
+        IReadOnlyList<PythonValue> elements;
+        if (item is PythonTupleValue tuple)
+        {
+            elements = tuple.Elements;
+        }
+        else if (item is PythonListValue list)
+        {
+            elements = list.Elements;
+        }
+        else if (TryMaterializeFunctionalPair(item, span) is { } materialized)
+        {
+            elements = materialized;
+        }
+        else
+        {
+            throw Fault(
+                $"cannot unpack non-iterable {ManagedObjectProtocols.GetTypeName(item)} object",
+                span
+            );
+        }
+
+        if (elements.Count < 2)
+        {
+            throw Fault(
+                $"not enough values to unpack (expected 2, got {elements.Count})",
+                span,
+                "ValueError"
+            );
+        }
+
+        if (elements.Count > 2)
+        {
+            throw Fault(
+                $"too many values to unpack (expected 2, got {elements.Count})",
+                span,
+                "ValueError"
+            );
+        }
+
+        return (elements[0], elements[1]);
+    }
+
+    /// <summary>
+    /// Iterates a pair candidate, or reports "not iterable" the way `iter()` does
+    /// before CPython's unpacking raises its own wording. Errors raised while the
+    /// iteration itself runs are passed through untouched.
+    /// </summary>
+    private static List<PythonValue>? TryMaterializeFunctionalPair(
+        PythonValue item,
+        TextSpan span
+    )
+    {
+        try
+        {
+            return ManagedObjectProtocols.MaterializeValues(item, span, null);
+        }
+        catch (PythonRuntimeException error) when (error.Code == "DPY4015")
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The member name a functional-API entry must supply. `_EnumDict.__setitem__`
+    /// starts with `_is_private`, whose first step is `len(key)`, so a key without
+    /// a length is rejected there; one that has a length but is not a string only
+    /// fails later, when the member is set on the new class.
+    /// </summary>
+    private static string RequireFunctionalMemberName(PythonValue name, TextSpan span)
+    {
+        if (name is PythonTextValue text)
+        {
+            return text.Value;
+        }
+
+        try
+        {
+            _ = ManagedObjectProtocols.GetLength(name, span);
+        }
+        catch (PythonRuntimeException)
+        {
+            throw Fault(
+                $"object of type '{ManagedObjectProtocols.GetTypeName(name)}' has no len()",
+                span
+            );
+        }
+
+        throw Fault(
+            $"attribute name must be string, not '{ManagedObjectProtocols.GetTypeName(name)}'",
+            span
+        );
+    }
+
     private static PythonValue MetaclassMro(
         PythonValue? target,
         IReadOnlyList<PythonValue> positional
     )
     {
-        _ = positional;
-        return PythonTypeMro.Compute(target!, default);
+        // `EnumType` inherits `mro` from `type`, so the descriptor reaches the call
+        // unbound and refuses an argument that is not a type, in `type.mro`'s own words.
+        var arguments = target is null ? positional : new List<PythonValue>([target, .. positional]);
+        if (arguments.Count == 0)
+        {
+            throw Fault("unbound method type.mro() needs an argument", default);
+        }
+
+        var self = arguments[0];
+        if (self is PythonManagedTypeValue type)
+        {
+            return PythonTypeMro.Compute(type, default);
+        }
+
+        if (IsTypeValue(self))
+        {
+            return PythonBuiltinTypes.GetMro(self);
+        }
+
+        throw Fault(
+            $"descriptor 'mro' for 'type' objects doesn't apply to a"
+                + $" '{PythonBuiltinTypes.GetRuntimeTypeName(self)}' object",
+            default
+        );
     }
 
     private static PythonValue MetaclassLen(
@@ -2316,9 +2618,9 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        _ = positional;
+        var (self, _) = BindMetaclassSelf("__len__", ["cls"], target, positional);
         return PythonWholeNumberValue.Create(
-            MemberNamesOf((PythonManagedTypeValue)target!).Elements.Count
+            MemberNamesOf(RequireMemberNamesOwner(self)).Elements.Count
         );
     }
 
@@ -2327,18 +2629,8 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        _ = positional;
-        var cls = (PythonManagedTypeValue)target!;
-        var members = new List<PythonValue>();
-        foreach (var name in MemberNamesOf(cls).Elements)
-        {
-            if (TryLookupName(MemberMapOf(cls), ((PythonTextValue)name).Value, out var member))
-            {
-                members.Add(member);
-            }
-        }
-
-        return new PythonIteratorValue(new PythonListValue(members), -1);
+        var (self, _) = BindMetaclassSelf("__iter__", ["cls"], target, positional);
+        return new PythonIteratorValue(new PythonListValue(MembersOf(self)), -1);
     }
 
     private static PythonValue MetaclassReversed(
@@ -2346,8 +2638,32 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        _ = positional;
-        var cls = (PythonManagedTypeValue)target!;
+        var (self, _) = BindMetaclassSelf("__reversed__", ["cls"], target, positional);
+        var members = MembersOf(self);
+        members.Reverse();
+        return new PythonIteratorValue(new PythonListValue(members), -1);
+    }
+
+    /// <summary>
+    /// `EnumType.__len__/__iter__/__reversed__` read `cls._member_names_`; a class (or any
+    /// other object) without it is an AttributeError with CPython's wording.
+    /// </summary>
+    private static PythonManagedTypeValue RequireMemberNamesOwner(PythonValue self)
+    {
+        if (
+            self is PythonManagedTypeValue cls
+            && (IsEnumClass(cls) || LookupClassValue(cls, "_member_names_") is not null)
+        )
+        {
+            return cls;
+        }
+
+        throw MissingClassAttribute(self, "_member_names_");
+    }
+
+    private static List<PythonValue> MembersOf(PythonValue self)
+    {
+        var cls = RequireMemberNamesOwner(self);
         var members = new List<PythonValue>();
         foreach (var name in MemberNamesOf(cls).Elements)
         {
@@ -2357,8 +2673,7 @@ internal static class PythonEnum
             }
         }
 
-        members.Reverse();
-        return new PythonIteratorValue(new PythonListValue(members), -1);
+        return members;
     }
 
     private static PythonValue MetaclassGetItem(
@@ -2366,8 +2681,13 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        var cls = (PythonManagedTypeValue)target!;
-        var name = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
+        var (self, rest) = BindMetaclassSelf("__getitem__", ["cls", "name"], target, positional);
+        if (self is not PythonManagedTypeValue cls || !IsEnumClass(cls))
+        {
+            throw MissingClassAttribute(self, "_member_map_");
+        }
+
+        var name = rest[0];
         if (TryLookupKey(MemberMapOf(cls), name, out var member))
         {
             return member;
@@ -2381,9 +2701,13 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        var cls = (PythonManagedTypeValue)target!;
-        var item = positional.Count > 0 ? positional[0] : PythonNoneValue.Instance;
-        return PythonTruthValue.FromBoolean(ContainsMember(cls, item, default));
+        var (self, rest) = BindMetaclassSelf("__contains__", ["cls", "value"], target, positional);
+        var item = rest[0];
+        return PythonTruthValue.FromBoolean(
+            self is PythonManagedTypeValue cls && IsEnumClass(cls)
+                ? ContainsMember(cls, item, default)
+                : IsInstanceOfClassInfo(item, self)
+        );
     }
 
     private static bool ContainsMember(PythonManagedTypeValue cls, PythonValue item, TextSpan span)
@@ -2443,9 +2767,20 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        var cls = (PythonManagedTypeValue)target!;
-        var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
-        var value = positional.Count > 1 ? positional[1] : PythonNoneValue.Instance;
+        var (self, rest) = BindMetaclassSelf(
+            "__setattr__",
+            ["cls", "name", "value"],
+            target,
+            positional
+        );
+        if (self is not PythonManagedTypeValue cls)
+        {
+            // `EnumType.__setattr__` opens with `cls.__dict__`.
+            throw MissingClassAttribute(self, "__dict__");
+        }
+
+        var name = rest[0] is PythonTextValue text ? text.Value : "";
+        var value = rest[1];
         if (TryLookupName(MemberMapOf(cls), name, out _))
         {
             throw Fault($"cannot reassign member '{name}'", default, "AttributeError");
@@ -2466,8 +2801,14 @@ internal static class PythonEnum
         IReadOnlyList<PythonValue> positional
     )
     {
-        var cls = (PythonManagedTypeValue)target!;
-        var name = positional.Count > 0 && positional[0] is PythonTextValue text ? text.Value : "";
+        var (self, rest) = BindMetaclassSelf("__delattr__", ["cls", "attr"], target, positional);
+        if (self is not PythonManagedTypeValue cls)
+        {
+            // `EnumType.__delattr__` opens with `attr in cls._member_map_`.
+            throw MissingClassAttribute(self, "_member_map_");
+        }
+
+        var name = rest[0] is PythonTextValue text ? text.Value : "";
         if (TryLookupName(MemberMapOf(cls), name, out _))
         {
             throw Fault($"'{cls.Name}' cannot delete member '{name}'.", default, "AttributeError");
