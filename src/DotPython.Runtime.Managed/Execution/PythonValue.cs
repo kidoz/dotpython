@@ -1385,16 +1385,24 @@ internal sealed record PythonSuperProxyValue(PythonValue DefiningType, PythonVal
     : PythonValue
 {
     internal override string ToDisplayString() =>
-        $"<super: {GetClassName(DefiningType)}, {Instance switch { PythonManagedObjectValue managed => managed.Type.Name, PythonExceptionValue exception => exception.TypeName, _ => "object" }}>";
+        $"<super: {Representation(DefiningType)}, {TargetRepresentation(Instance)}>";
 
-    private static string GetClassName(PythonValue value) =>
+    /// <summary>The class the proxy stands after, as a class repr.</summary>
+    private static string Representation(PythonValue value) =>
         value switch
         {
-            PythonManagedTypeValue type => type.Name,
-            PythonBuiltinTypeValue type => type.Name,
-            PythonExceptionTypeValue type => type.Name,
-            _ => ManagedObjectProtocols.GetTypeName(value),
+            PythonManagedTypeValue type => $"<class '{type.Name}'>",
+            PythonBuiltinTypeValue type => $"<class '{type.Name}'>",
+            PythonExceptionTypeValue type => $"<class '{type.Name}'>",
+            _ => value.ToRepresentationString(),
         };
+
+    /// <summary>The object the proxy was made for, reported by its type's name and nothing
+    /// else — what CPython prints is the address-free half of `object.__repr__`.</summary>
+    private static string TargetRepresentation(PythonValue value) =>
+        value is PythonManagedObjectValue instance
+            ? $"<{instance.Type.Name} object>"
+            : $"<{ManagedObjectProtocols.GetTypeName(value)} object>";
 }
 
 internal sealed record PythonBoundUserMethodValue(

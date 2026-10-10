@@ -296,7 +296,7 @@ internal static class ManagedObjectProtocols
                     );
                 throw Fault(
                     "DPY4022",
-                    $"'super' object has no attribute '{name}'.",
+                    $"'super' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -2082,8 +2082,9 @@ internal static class ManagedObjectProtocols
                 || descriptor.Name != "__str__"
                     && PythonSlotMethods.IsObjectSlot(kind, descriptor.Name)
             );
-        var receiver = targetsStorage ? PythonSubclassStorage.Of(instance) ?? instance : instance;
-        var bound = descriptor.BindDescriptor(receiver, owner, span);
+        // The receiver stays the instance — a bound method reports the object it was read
+        // from — while the call itself resolves the storage the method works on.
+        var bound = descriptor.BindDescriptor(instance, owner, span);
         return bound is PythonBoundMethodValue method
             ? method with
             {
@@ -4492,6 +4493,19 @@ internal static class ManagedObjectProtocols
             }
             if (TryGetOwnTypeAttribute(current, name, out value!))
                 return true;
+            // `super().__new__` reaches the builtin's own allocator, which is the one a
+            // subclass of a storage builtin is created by; the ordinary lookup keeps it out
+            // of the constructor path.
+            if (name == "__new__" && current is PythonBuiltinTypeValue builtin)
+            {
+                try
+                {
+                    value = GetAttributeCore(builtin, name, default);
+                    return true;
+                }
+                catch (PythonRuntimeException fault)
+                    when (fault.PythonExceptionTypeName == "AttributeError") { }
+            }
             if (
                 ReferenceEquals(current, PythonBuiltinFunctions.Object)
                 && PythonBuiltinFunctions.TryGetObjectProtocol(name, out value!)

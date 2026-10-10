@@ -1518,7 +1518,9 @@ internal static class PythonDataclasses
                     span
                 ),
                 PythonBoundMethodValue { Function.InvokeWithKeywords: { } method } bound => method(
-                    bound.Target,
+                    bound.TargetsStorage
+                        ? PythonSubclassStorage.Of(bound.Target) ?? bound.Target
+                        : bound.Target,
                     arguments,
                     keywordNames,
                     keywordValues

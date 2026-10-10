@@ -4174,7 +4174,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 Function.InvokeWithKeywords: { } methodWithKeywords
             } method:
                 _evaluationStack.Push(
-                    methodWithKeywords(method.Target, positional, keywordNames, keywordValues)
+                    methodWithKeywords(
+                        StorageTarget(method),
+                        positional,
+                        keywordNames,
+                        keywordValues
+                    )
                 );
                 return;
             case PythonProtocolFunctionValue { InvokeWithKeywords: { } functionWithKeywords }:
@@ -5099,7 +5104,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         throw Fault(
             "DPY4034",
             arguments.Count == 0
-                ? "super(): no arguments (zero-argument super() is only supported inside class methods in this runtime slice)."
+                ? "super(): no arguments"
                 : "super(type, obj): obj must be an instance or subtype of type",
             span,
             arguments.Count == 0 ? "RuntimeError" : "TypeError"
@@ -5417,6 +5422,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             captureReturnLocalContinuation: true
         );
     }
+
+    /// <summary>
+    /// The target a builtin's own call works on: a method a storage subclass answers with
+    /// works on the storage it carries, which is what a keyword call has to resolve the same
+    /// way a positional one does.
+    /// </summary>
+    private static PythonValue StorageTarget(PythonBoundMethodValue method) =>
+        method.TargetsStorage
+            ? PythonSubclassStorage.Of(method.Target) ?? method.Target
+            : method.Target;
 
     private void DispatchDescriptorCall(
         PythonValue callable,
@@ -6075,6 +6090,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 ? new PythonValue[] { PythonBuiltinFunctions.Object }
                 : bases.Elements;
         var effectiveBases = declaredBases.Where(element => !IsObjectBase(element)).ToArray();
+        // Two bases that settle on different storage builtins cannot share the one layout a
+        // class has, and a base that is not acceptable is refused here rather than later.
+        if (effectiveBases.Length > 1)
+            _ = PythonTypeLayout.BestBase(effectiveBases, span);
         if (
             effectiveBases.Any(PythonTypeProtocols.IsMetaclass)
             && effectiveBases.Any(value =>

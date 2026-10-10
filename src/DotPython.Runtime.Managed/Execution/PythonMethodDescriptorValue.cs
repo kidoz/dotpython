@@ -106,6 +106,10 @@ internal sealed record PythonMethodDescriptorValue(
                 span
             );
         }
+        // A subclass instance answers its ancestor's methods on the storage it carries, so
+        // `list.__init__(L(), [1])` and `super().__init__(...)` both reach the list itself.
+        if (PythonSubclassStorage.StorageKindOf(receiver) == OwnerName)
+            receiver = PythonSubclassStorage.Of(receiver) ?? receiver;
         var rest = new PythonValue[arguments.Count - 1];
         for (var index = 1; index < arguments.Count; index++)
             rest[index - 1] = arguments[index];

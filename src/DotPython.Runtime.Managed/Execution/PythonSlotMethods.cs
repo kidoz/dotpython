@@ -848,7 +848,8 @@ internal static class PythonSlotMethods
 
         foreach (var type in new[] { "list", "bytearray", "dict", "set" })
         {
-            slots[(type, "__init__")] = new Slot(
+            var kind = type;
+            slots[(kind, "__init__")] = new Slot(
                 true,
                 new PythonProtocolFunctionValue(
                     "__init__",
@@ -856,11 +857,36 @@ internal static class PythonSlotMethods
                     {
                         if (arguments.Count > 1)
                             throw Fault(
-                                $"{type} expected at most 1 argument, got {arguments.Count}"
+                                $"{kind} expected at most 1 argument, got {arguments.Count}"
                             );
-                        Initialize(type, receiver!, arguments);
+                        Initialize(kind, receiver!, arguments);
                         return PythonNoneValue.Instance;
-                    }
+                    },
+                    // Only a dictionary's initializer takes keywords, after its argument:
+                    // `dict.__init__(d, mapping, **kwds)`.
+                    kind == "dict"
+                        ? (receiver, positional, names, values) =>
+                        {
+                            if (positional.Count > 1)
+                                throw Fault(
+                                    "dict expected at most 1 argument, got "
+                                        + $"{positional.Count} positional arguments"
+                                );
+                            Initialize(kind, receiver!, positional);
+                            if (receiver is PythonDictionaryValue dictionary)
+                            {
+                                for (var index = 0; index < names.Count; index++)
+                                {
+                                    ManagedObjectProtocols.SetItem(
+                                        dictionary,
+                                        new PythonTextValue(names[index]),
+                                        values[index]
+                                    );
+                                }
+                            }
+                            return PythonNoneValue.Instance;
+                        }
+                        : null
                 )
             );
         }
@@ -1309,8 +1335,13 @@ internal static class PythonSlotMethods
             case PythonByteArrayValue mutable:
                 mutable.Value = [];
                 break;
-            case PythonDictionaryValue dictionary:
+            // `dict.__init__` merges what it is given into the dictionary rather than
+            // starting over, which is what `d.__init__({'b': 2})` does in CPython; the three
+            // sequences replace their contents instead.
+            case PythonDictionaryValue dictionary when type != "dict":
                 dictionary.ClearItems();
+                break;
+            case PythonDictionaryValue:
                 break;
             case PythonSetValue set:
                 set.ClearEntries();
