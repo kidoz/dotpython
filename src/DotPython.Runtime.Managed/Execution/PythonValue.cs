@@ -791,6 +791,12 @@ internal sealed record PythonPropertyValue(
     /// </summary>
     internal string? MemberDisplay { get; init; }
 
+    /// <summary>
+    /// The docstring the property was built with — `property(fget, fset, fdel, doc)` — or
+    /// null, in which case the getter's own docstring is the one it reports.
+    /// </summary>
+    internal PythonValue? Doc { get; init; }
+
     internal override string ToDisplayString()
     {
         if (MemberDisplay is not { } owner)

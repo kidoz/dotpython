@@ -66,8 +66,22 @@ public sealed class ClassBindingCompatibilityTests
 
         Assert.Empty(parsed.Diagnostics);
         Assert.Empty(result.Diagnostics);
-        var classCode = Assert.IsType<PythonCodeObject>(Assert.Single(result.Code.Constants).Value);
-        var methodCode = Assert.IsType<PythonCodeObject>(Assert.Single(classCode.Constants).Value);
+        var classCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    result.Code.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
+        var methodCode = Assert.IsType<PythonCodeObject>(
+            Assert
+                .Single(
+                    classCode.Constants,
+                    constant => constant.Type == PythonConstantType.CodeObject
+                )
+                .Value
+        );
         Assert.Contains("_C__method", classCode.Names);
         Assert.Equal("__method", methodCode.Name);
         Assert.Equal(["self", "_C__arg"], methodCode.VariableNames);

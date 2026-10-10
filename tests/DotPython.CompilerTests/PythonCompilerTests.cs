@@ -20,9 +20,12 @@ public sealed class PythonCompilerTests
 
         Assert.Empty(result.Diagnostics);
         Assert.Equal(DotPythonBytecodeFormat.CurrentVersion, result.Code.FormatVersion);
-        Assert.Equal(["value", "print"], result.Code.Names);
+        Assert.Equal(["__doc__", "value", "print"], result.Code.Names);
         Assert.Equal(
             [
+                // Every module body opens by binding its docstring, which is None here.
+                PythonOpCode.LoadConstant,
+                PythonOpCode.StoreName,
                 PythonOpCode.LoadConstant,
                 PythonOpCode.LoadConstant,
                 PythonOpCode.BinaryAdd,
@@ -35,8 +38,9 @@ public sealed class PythonCompilerTests
             ],
             result.Code.Instructions.Select(instruction => instruction.OpCode)
         );
-        Assert.Equal(new BigInteger(40), result.Code.Constants[0].Value);
-        Assert.Equal(new BigInteger(2), result.Code.Constants[1].Value);
+        Assert.Equal(PythonConstantType.NoneValue, result.Code.Constants[0].Type);
+        Assert.Equal(new BigInteger(40), result.Code.Constants[1].Value);
+        Assert.Equal(new BigInteger(2), result.Code.Constants[2].Value);
     }
 
     [Fact]
@@ -47,7 +51,10 @@ public sealed class PythonCompilerTests
         var result = PythonCompiler.Compile(parseResult.Module);
 
         Assert.Empty(result.Diagnostics);
-        var constant = Assert.Single(result.Code.Constants);
+        var constant = Assert.Single(
+            result.Code.Constants,
+            constant => constant.Type == PythonConstantType.TextValue
+        );
         Assert.Equal(PythonConstantType.TextValue, constant.Type);
         Assert.Equal("line\nnext", constant.Value);
     }
@@ -642,6 +649,8 @@ public sealed class PythonCompilerTests
         Assert.Equal(
             [
                 PythonOpCode.LoadConstant,
+                PythonOpCode.StoreName,
+                PythonOpCode.LoadConstant,
                 PythonOpCode.BuildList,
                 PythonOpCode.GetIterator,
                 PythonOpCode.ForIter,
@@ -657,11 +666,13 @@ public sealed class PythonCompilerTests
             ],
             result.Code.Instructions.Select(instruction => instruction.OpCode)
         );
-        var breakJump = result.Code.Instructions[6];
-        Assert.Equal(12, breakJump.Operand);
-        var loopJump = result.Code.Instructions[7];
-        Assert.Equal(3, loopJump.Operand);
-        Assert.Equal(8, result.Code.Instructions[3].Operand);
+        // The body opens with the module's `__doc__` binding, so every index the jumps
+        // name sits two instructions later than the source order alone would give.
+        var breakJump = result.Code.Instructions[8];
+        Assert.Equal(14, breakJump.Operand);
+        var loopJump = result.Code.Instructions[9];
+        Assert.Equal(5, loopJump.Operand);
+        Assert.Equal(10, result.Code.Instructions[5].Operand);
     }
 
     [Fact]
@@ -895,7 +906,7 @@ public sealed class PythonCompilerTests
                 instruction is { OpCode: PythonOpCode.UnpackSequence, Operand: 2 }
             )
         );
-        var buildTuple = result.Code.Instructions[2];
+        var buildTuple = result.Code.Instructions[4];
         Assert.Equal(PythonOpCode.BuildTuple, buildTuple.OpCode);
         Assert.Equal(2, buildTuple.Operand);
     }

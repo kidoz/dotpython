@@ -85,7 +85,7 @@ public static class PythonCompiler
         internal PythonCompilationResult Compile(PythonModule module)
         {
             EmitBodyAnnotate(module.Statements, AnnotateGlobalName, module.Span.End);
-            var code = CompileCode(module.Statements, module.Span.End);
+            var code = CompileCode(module.Statements, module.Span.End, bindsDocString: true);
             return new PythonCompilationResult(code, _diagnostics);
         }
 
@@ -163,14 +163,67 @@ public static class PythonCompiler
             IReadOnlyList<PythonParameter>? signature = null,
             bool isGenerator = false,
             bool isCoroutine = false,
-            PythonCodeObject? annotateCode = null
+            PythonCodeObject? annotateCode = null,
+            bool bindsDocString = false
         )
         {
             _isCoroutine = isCoroutine;
             _isAsyncGenerator = isGenerator && isCoroutine;
-            CompileStatements(statements);
+            var docString = BodyDocString(statements);
+            var body = docString is null ? statements : [.. statements.Skip(1)];
+            if (bindsDocString)
+            {
+                // A module or class body carries its docstring as a `__doc__` binding, and
+                // opens with `__doc__ = None` when it has none — which is what CPython's
+                // compiler stores for both scopes. A function's docstring is kept on the
+                // code object alone, which is where the function is built from.
+                var span =
+                    statements.Count != 0 ? statements[0].Span : new TextSpan(endPosition, 0);
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        docString is null
+                            ? new PythonConstant(PythonConstantType.NoneValue, null)
+                            : new PythonConstant(PythonConstantType.TextValue, docString)
+                    ),
+                    span
+                );
+                Emit(PythonOpCode.StoreName, GetNameIndex("__doc__"), span);
+            }
+
+            CompileStatements(body);
             Emit(PythonOpCode.ReturnNone, 0, new TextSpan(endPosition, 0));
-            return CreateCodeObject(signature, isGenerator, isCoroutine, annotateCode);
+            return CreateCodeObject(signature, isGenerator, isCoroutine, annotateCode, docString);
+        }
+
+        /// <summary>
+        /// The docstring a body opens with: the text of its first statement when that
+        /// statement is a string, and null for every other opening.
+        /// </summary>
+        private string? BodyDocString(IReadOnlyList<PythonStatement> statements)
+        {
+            if (statements.Count == 0)
+                return null;
+            if (statements[0] is not PythonExpressionStatement statement)
+                return null;
+            // Parentheses around the literal are not part of the constant it stands for,
+            // so `def f(): ("doc")` opens with a docstring just as `def f(): "doc"` does.
+            var expression = statement.Expression;
+            while (expression is PythonParenthesizedExpression parenthesized)
+                expression = parenthesized.Expression;
+            if (
+                expression
+                is not PythonConstantExpression
+                {
+                    ConstantKind: PythonConstantKind.StringLiteral
+                } constant
+            )
+                return null;
+            return
+                PythonLiteralDecoder.Decode(constant, _diagnostics)
+                    is { Type: PythonConstantType.TextValue, Value: string text }
+                ? text
+                : null;
         }
 
         /// <summary>
@@ -236,7 +289,8 @@ public static class PythonCompiler
             IReadOnlyList<PythonParameter>? signature,
             bool isGenerator = false,
             bool isCoroutine = false,
-            PythonCodeObject? annotateCode = null
+            PythonCodeObject? annotateCode = null,
+            string? docString = null
         )
         {
             var keywordOnlyCount = 0;
@@ -277,7 +331,8 @@ public static class PythonCompiler
                 hasVariadicKeywords,
                 isGenerator,
                 isCoroutine,
-                annotateCode
+                annotateCode,
+                docString
             );
         }
 
@@ -2133,7 +2188,11 @@ public static class PythonCompiler
                 _enableCallLocal
             );
             childCompiler.EmitBodyAnnotate(@class.Body, AnnotateClassDictName, @class.Span.End);
-            var childCode = childCompiler.CompileCode(@class.Body, @class.Span.End);
+            var childCode = childCompiler.CompileCode(
+                @class.Body,
+                @class.Span.End,
+                bindsDocString: true
+            );
             var constantIndex = AddConstant(
                 new PythonConstant(PythonConstantType.CodeObject, childCode)
             );

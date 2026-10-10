@@ -256,6 +256,12 @@ internal static class ManagedObjectProtocols
                     : PythonNoneValue.Instance;
             case PythonModuleValue module when name == "__annotations__":
                 return GetModuleAnnotations(module, span);
+            // A module object always carries a `__doc__`, answering None when its body
+            // opens with anything that is not a string.
+            case PythonModuleValue module when name == "__doc__":
+                return module.Globals.TryGetValue(name, out var moduleDoc)
+                    ? moduleDoc
+                    : PythonNoneValue.Instance;
             case PythonModuleValue module
                 when module.Globals.TryGetValue(name, out var moduleValue):
                 return moduleValue;
@@ -410,10 +416,12 @@ internal static class ManagedObjectProtocols
                 return shadowedValue;
             case PythonFunctionValue function when name == "__name__":
                 return new PythonTextValue(function.Name);
-            // No docstring is retained for a compilation-unit function, so its
-            // `__doc__` is None, as for an undecorated CPython function.
-            case PythonFunctionValue when name == "__doc__":
-                return PythonNoneValue.Instance;
+            // The docstring the function's body opens with, which the compiler keeps on
+            // the code object the function was built from.
+            case PythonFunctionValue function when name == "__doc__":
+                return function.Code.Definition.DocString is { } doc
+                    ? new PythonTextValue(doc)
+                    : PythonNoneValue.Instance;
             case PythonFunctionValue when name == "__type_params__":
                 return new PythonTupleValue([]);
             case PythonFunctionValue function when name == "__qualname__":
@@ -469,6 +477,8 @@ internal static class ManagedObjectProtocols
                 return new PythonTextValue(boundUserMethod.Function.Name);
             case PythonBoundUserMethodValue boundUserMethod when name == "__self__":
                 return boundUserMethod.Target;
+            case PythonBoundUserMethodValue boundUserMethod when name == "__doc__":
+                return GetAttributeCore(boundUserMethod.Function, name, span);
             case PythonBoundMethodValue boundMethod when name == "__name__":
                 return new PythonTextValue(boundMethod.Name);
             case PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } boundMethod
@@ -479,12 +489,20 @@ internal static class ManagedObjectProtocols
                 return boundMethod.Target;
             case PythonBuiltinFunctionValue builtinFunction when name == "__name__":
                 return new PythonTextValue(builtinFunction.Name);
+            // The runtime's own functions carry no docstrings, so the attribute exists and
+            // is None, where CPython documents every builtin.
+            case PythonBuiltinFunctionValue when name == "__doc__":
+                return PythonNoneValue.Instance;
             case PythonBuiltinTypeValue builtinTypeValue when name == "__name__":
                 return new PythonTextValue(builtinTypeValue.Name);
             case PythonBuiltinTypeValue builtinTypeValue when name == "__qualname__":
                 return new PythonTextValue(builtinTypeValue.Name);
             case PythonBuiltinTypeValue builtinTypeValue when name == "__module__":
                 return new PythonTextValue(builtinTypeValue.ModuleName);
+            // The runtime's own types carry no docstrings either, so the attribute exists
+            // and is None, where CPython documents every builtin.
+            case PythonBuiltinTypeValue or PythonExceptionTypeValue when name == "__doc__":
+                return PythonNoneValue.Instance;
             case PythonBuiltinTypeValue { MatchArguments: { Elements.Length: > 0 } matchArguments }
                 when name == "__match_args__":
                 return matchArguments;

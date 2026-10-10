@@ -322,7 +322,10 @@ internal static class PythonBuiltinFunctions
             OptionalCallable(arguments, 0),
             OptionalCallable(arguments, 1),
             OptionalCallable(arguments, 2)
-        );
+        )
+        {
+            Doc = arguments.Count > 3 ? arguments[3] : null,
+        };
     }
 
     private static PythonValue? OptionalCallable(IReadOnlyList<PythonValue> arguments, int index) =>
@@ -359,6 +362,7 @@ internal static class PythonBuiltinFunctions
             "fget" => property.Getter ?? PythonNoneValue.Instance,
             "fset" => property.Setter ?? PythonNoneValue.Instance,
             "fdel" => property.Deleter ?? PythonNoneValue.Instance,
+            "__doc__" => property.Doc ?? PropertyDoc(property.Getter),
             "getter" => PropertyRebinder("getter", callable => property with { Getter = callable }),
             "setter" => PropertyRebinder("setter", callable => property with { Setter = callable }),
             "deleter" => PropertyRebinder(
@@ -372,6 +376,23 @@ internal static class PythonBuiltinFunctions
                 "AttributeError"
             ),
         };
+
+    /// <summary>The getter's docstring, which is a property's own when it was built
+    /// without one.</summary>
+    private static PythonValue PropertyDoc(PythonValue? getter)
+    {
+        if (getter is null)
+            return PythonNoneValue.Instance;
+        try
+        {
+            return ManagedObjectProtocols.GetAttribute(getter, "__doc__");
+        }
+        catch (Exception error)
+            when (PythonNamespaceMapping.IsPythonException(error, "AttributeError"))
+        {
+            return PythonNoneValue.Instance;
+        }
+    }
 
     private static PythonBuiltinFunctionValue PropertyRebinder(
         string name,

@@ -19,7 +19,8 @@ public sealed class PythonCodeObject
         bool hasVariadicKeywords = false,
         bool isGenerator = false,
         bool isCoroutine = false,
-        PythonCodeObject? annotateCode = null
+        PythonCodeObject? annotateCode = null,
+        string? docString = null
     )
     {
         ArgumentOutOfRangeException.ThrowIfNegative(keywordOnlyArgumentCount);
@@ -42,6 +43,7 @@ public sealed class PythonCodeObject
         IsGenerator = isGenerator;
         IsCoroutine = isCoroutine;
         AnnotateCode = annotateCode;
+        DocString = docString;
         Instructions = new ReadOnlyCollection<PythonInstruction>(instructions);
         Constants = new ReadOnlyCollection<PythonConstant>(constants);
         Names = new ReadOnlyCollection<string>(names);
@@ -91,6 +93,13 @@ public sealed class PythonCodeObject
     /// to `__annotations__` in the globals and closure captured at the def site.
     /// </summary>
     public PythonCodeObject? AnnotateCode { get; }
+
+    /// <summary>
+    /// The docstring the body opens with, which is what a function, class or module
+    /// reports as `__doc__` — the first statement's text when that statement is a
+    /// string, and null when it is anything else.
+    /// </summary>
+    public string? DocString { get; }
 
     /// <summary>Whether the signature has no variadic or keyword-only parameters.</summary>
     public bool HasSimpleSignature =>

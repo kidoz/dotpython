@@ -101,7 +101,7 @@ public sealed class ClassNamespaceCompilationTests
         );
         var restored = DotPythonModuleArtifactSerializer.Deserialize(bytes);
         Assert.Equal(bytes, DotPythonModuleArtifactSerializer.Serialize(restored));
-        Assert.Equal(35, restored.Code.FormatVersion);
+        Assert.Equal(36, restored.Code.FormatVersion);
         Assert.Contains(
             GetClassCode(restored.Code).Instructions,
             item => item.OpCode == PythonOpCode.LoadClassCell
