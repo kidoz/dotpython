@@ -1019,6 +1019,41 @@ internal static class UserObjectProtocols
         return false;
     }
 
+    /// <summary>
+    /// `complex(value)` for an object that implements the protocol itself. The conversion
+    /// is asked for before the real-number fallbacks, which is the order CPython's own
+    /// `complex()` uses.
+    /// </summary>
+    internal static bool TryConvertToComplex(
+        PythonValue value,
+        TextSpan span,
+        out System.Numerics.Complex result
+    )
+    {
+        result = default;
+        if (
+            _dispatcher is null
+            || value is not PythonManagedObjectValue
+            || !TryInvoke(value, "__complex__", [], span, out var converted)
+        )
+        {
+            return false;
+        }
+
+        if (converted is not PythonComplexValue complex)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                $"__complex__ returned non-complex (type {ManagedObjectProtocols.GetTypeName(converted)})",
+                span,
+                "TypeError"
+            );
+        }
+
+        result = complex.Value;
+        return true;
+    }
+
     // ----------------------------------------------------------------------------
     // Attribute hooks
     // ----------------------------------------------------------------------------

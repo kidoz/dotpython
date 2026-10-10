@@ -158,6 +158,17 @@ internal static class PythonCollectionsAbc
         StringComparer.Ordinal
     );
 
+    /// <summary>
+    /// The classes are built once, when the type is first touched, so that a class built on
+    /// one of them — `collections.UserDict` on `MutableMapping` — finds it whether or not the
+    /// `collections.abc` module has been imported yet.
+    /// </summary>
+    static PythonCollectionsAbc()
+    {
+        foreach (var definition in Definitions)
+            Build(definition);
+    }
+
     /// <summary>The classes registered with each base class, per `register`.</summary>
     private static readonly Dictionary<PythonManagedTypeValue, HashSet<PythonValue>> Registered =
     [];
@@ -193,6 +204,9 @@ internal static class PythonCollectionsAbc
         "ValuesView",
     ];
 
+    /// <summary>One of the classes by name, for a type that is built on it.</summary>
+    internal static PythonManagedTypeValue Class(string name) => Classes[name];
+
     /// <summary>`abc.ABCMeta`, the metaclass every class here is an instance of.</summary>
     internal static readonly PythonManagedTypeValue AbcMeta = CreateMetaClass();
 
@@ -201,7 +215,7 @@ internal static class PythonCollectionsAbc
     {
         globals.SetValue("ABCMeta", AbcMeta);
         foreach (var definition in Definitions)
-            globals.SetValue(definition.Name, Build(definition));
+            globals.SetValue(definition.Name, Classes[definition.Name]);
         globals.SetValue(
             "__all__",
             new PythonListValue([

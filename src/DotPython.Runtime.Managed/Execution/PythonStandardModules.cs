@@ -346,6 +346,22 @@ internal static class PythonStandardModules
         }
     }
 
+    /// <summary>
+    /// The names `collections` publishes, in CPython's own order, less `namedtuple`, which the
+    /// module does not carry yet — a list naming it would break `from collections import *`.
+    /// </summary>
+    private static readonly string[] CollectionsExports =
+    [
+        "ChainMap",
+        "Counter",
+        "OrderedDict",
+        "UserDict",
+        "UserList",
+        "UserString",
+        "defaultdict",
+        "deque",
+    ];
+
     internal static void AddTo(
         Dictionary<string, PythonModuleDefinition> modules,
         IReadOnlyList<string> searchRoots
@@ -360,6 +376,18 @@ internal static class PythonStandardModules
                 globals.SetValue("defaultdict", PythonDefaultDict.Type);
                 globals.SetValue("Counter", PythonCounter.Type);
                 globals.SetValue("OrderedDict", PythonOrderedDict.Type);
+                globals.SetValue("UserDict", PythonUserDict.Type);
+                globals.SetValue("UserList", PythonUserList.Type);
+                globals.SetValue("ChainMap", PythonChainMap.Type);
+                globals.SetValue("UserString", PythonUserString.Type);
+                globals.SetValue(
+                    "__all__",
+                    new PythonListValue([
+                        .. CollectionsExports.Select(name =>
+                            (PythonValue)new PythonTextValue(name)
+                        ),
+                    ])
+                );
             }
         );
         modules["collections.abc"] = PythonModuleDefinition.Native(

@@ -208,6 +208,12 @@ internal static class PythonBuiltinFunctions
 
         if (arguments.Count == 1 && arguments[0] is PythonComplexValue existing)
             return existing;
+        // An object with the protocol answers for itself, before any real-number conversion.
+        if (
+            arguments.Count == 1
+            && UserObjectProtocols.TryConvertToComplex(arguments[0], span, out var implemented)
+        )
+            return new PythonComplexValue(implemented);
         var real = RequireComplexComponent("complex", arguments[0], span);
         if (arguments.Count == 1)
             return new PythonComplexValue(real);
