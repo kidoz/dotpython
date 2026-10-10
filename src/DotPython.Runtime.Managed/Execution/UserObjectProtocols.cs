@@ -4,6 +4,14 @@ using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
+/// <summary>Where a running frame stands: its file, its line, and the module it runs in.</summary>
+internal readonly record struct PythonFrameLocation(
+    string FileName,
+    int Line,
+    string Module,
+    PythonGlobalNamespace? Globals
+);
+
 /// <summary>
 /// Runs user-defined special methods on the owning VM for the static protocol layer,
 /// which cannot execute interpreter frames itself.
@@ -65,6 +73,13 @@ internal interface IUserObjectDispatcher
 
     /// <summary>The `__name__` of the module the running frame belongs to.</summary>
     string? CurrentModuleName();
+
+    /// <summary>
+    /// Where a call came from: the file and line of the frame `level` steps up from the
+    /// running one — level 1 is the caller of a builtin — with the module name and globals
+    /// of that frame, which is what `warnings.warn` reports a warning at.
+    /// </summary>
+    PythonFrameLocation? CallerLocation(int level);
 
     (bool HasValue, PythonValue Value) StepSequenceIterator(
         PythonSequenceIteratorSourceValue source,

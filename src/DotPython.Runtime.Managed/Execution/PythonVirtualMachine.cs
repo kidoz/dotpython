@@ -58,6 +58,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["UnicodeTranslateError"] = "UnicodeError",
             ["SystemExit"] = "BaseException",
             ["KeyboardInterrupt"] = "BaseException",
+            ["Warning"] = "Exception",
+            ["UserWarning"] = "Warning",
+            ["DeprecationWarning"] = "Warning",
+            ["PendingDeprecationWarning"] = "Warning",
+            ["SyntaxWarning"] = "Warning",
+            ["RuntimeWarning"] = "Warning",
+            ["FutureWarning"] = "Warning",
+            ["ImportWarning"] = "Warning",
+            ["UnicodeWarning"] = "Warning",
+            ["BytesWarning"] = "Warning",
+            ["ResourceWarning"] = "Warning",
+            ["EncodingWarning"] = "Warning",
         };
     private readonly Dictionary<string, PythonValue> _builtins;
     private readonly Dictionary<string, PythonBuiltinFunctionValue> _builtinConstructors = new(
@@ -6207,6 +6219,32 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         && moduleName is PythonTextValue moduleText
             ? moduleText.Value
             : null;
+
+    PythonFrameLocation? IUserObjectDispatcher.CallerLocation(int level) => CallerLocation(level);
+
+    /// <summary>
+    /// Where the frame `level` steps up from the running one stands — a builtin does not
+    /// push a frame of its own, so level 1 is the frame that called it.
+    /// </summary>
+    private PythonFrameLocation? CallerLocation(int level)
+    {
+        if (level < 1 || level > _frameCount)
+            return null;
+        ref var frame = ref _frames[_frameCount - level];
+        var span = GetCurrentSpan(frame);
+        var module =
+            frame.Globals.TryGetValue("__name__", out var name) && name is PythonTextValue text
+                ? text.Value
+                : "<string>";
+        return PythonSourceLocations.TryLocate(
+            frame.Code.Definition,
+            span.Start,
+            out var fileName,
+            out var line
+        )
+            ? new PythonFrameLocation(fileName, line, module, frame.Globals)
+            : new PythonFrameLocation("<string>", 0, module, frame.Globals);
+    }
 
     private static bool IsObjectBase(PythonValue value) =>
         value is PythonBuiltinTypeValue { Name: "object" };

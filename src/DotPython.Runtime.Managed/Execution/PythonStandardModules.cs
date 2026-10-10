@@ -404,6 +404,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonContextLib.Initialize
         );
+        modules["warnings"] = PythonModuleDefinition.Native(
+            "<dotpython warnings>",
+            isPackage: false,
+            PythonWarnings.Initialize
+        );
         modules["collections.abc"] = PythonModuleDefinition.Native(
             "<dotpython collections.abc>",
             isPackage: false,

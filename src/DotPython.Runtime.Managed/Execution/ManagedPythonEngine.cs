@@ -215,6 +215,9 @@ public sealed class ManagedPythonEngine
                 return new ManagedExecutionResult(source, [.. compilation.Diagnostics]);
             }
 
+            // The source goes with the code, so a warning can name the file and line it
+            // was issued at.
+            PythonSourceLocations.Register(compilation.Code, source.FilePath ?? "<string>", source);
             return ExecuteCodeObject(source, compilation.Code, output, options, cancellationToken);
         }
     }
@@ -363,6 +366,7 @@ public sealed class ManagedPythonEngine
             throw ModuleCompilationFailure(name, compilation.Diagnostics[0], importSpan);
         }
 
+        PythonSourceLocations.Register(compilation.Code, source.FilePath ?? name, source);
         return PrepareCode(compilation.Code);
     }
 
