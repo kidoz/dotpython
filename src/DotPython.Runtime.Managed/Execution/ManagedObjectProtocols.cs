@@ -445,6 +445,12 @@ internal static class ManagedObjectProtocols
             case PythonProtocolFunctionValue { IsPythonMethod: true } defaultedFunction
                 when name == "__defaults__":
                 return defaultedFunction.Defaults ?? PythonNoneValue.Instance;
+            // The attributes a function the runtime builds carries, `__wrapped__` among
+            // them, which is what `functools.wraps` writes and what introspection reads.
+            case PythonProtocolFunctionValue function
+                when !IsFunctionMetadataName(name)
+                    && function.Attributes.TryGetValue(name, out var protocolAttribute):
+                return protocolAttribute;
             case PythonFunctionValue function when name == "__dict__":
                 return function.Attributes.Dictionary;
             case PythonFunctionValue function when name == "__annotate__":

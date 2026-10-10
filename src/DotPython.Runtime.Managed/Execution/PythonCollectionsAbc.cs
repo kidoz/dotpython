@@ -1496,7 +1496,36 @@ internal static class PythonCollectionsAbc
         }
         else if (IsKindRegistered(abc, PythonBuiltinTypes.GetRuntimeTypeName(value)))
             return true;
+        // A class the table does not describe answers through its own hook, which is what
+        // `ABCMeta` consults before it gives up — `contextlib.AbstractContextManager` and a
+        // user's own abstract base class both arrive here.
+        if (Hooked(abc, value) is { } hooked)
+            return hooked;
         return DuckTypes(abc, value) is true;
+    }
+
+    /// <summary>The class's own `__subclasshook__`, when it declares one that answers.</summary>
+    private static bool? Hooked(PythonManagedTypeValue abc, PythonValue value)
+    {
+        if (!abc.Attributes.TryGetValue("__subclasshook__", out var hook))
+            return null;
+        var candidate = value switch
+        {
+            PythonManagedObjectValue instance => (PythonValue)instance.Type,
+            PythonManagedTypeValue or PythonBuiltinTypeValue or PythonExceptionTypeValue => value,
+            _ => PythonBuiltinTypes.GetRuntimeType(value),
+        };
+        var answer = UserObjectProtocols.Dispatcher!.Invoke(
+            ManagedObjectProtocols.BindDescriptor(hook, abc, abc, default, "__subclasshook__"),
+            [candidate],
+            default
+        );
+        return answer switch
+        {
+            PythonTruthValue truth => truth.Value,
+            PythonNotImplementedValue => null,
+            _ => null,
+        };
     }
 
     /// <summary>
@@ -1521,6 +1550,10 @@ internal static class PythonCollectionsAbc
         }
         if (cls is PythonBuiltinTypeValue builtin && IsKindRegistered(abc, builtin.Name))
             return true;
+        // A class the table does not describe answers through its own hook, which is what
+        // `ABCMeta` consults before it gives up.
+        if (Hooked(abc, cls) is { } hooked)
+            return hooked;
         return DuckTypes(abc, cls) is true;
     }
 
@@ -1560,7 +1593,11 @@ internal static class PythonCollectionsAbc
         if (candidate is PythonManagedTypeValue managed)
             return !ManagedObjectProtocols.TryGetTypeAttribute(managed, "__hash__", out var hash)
                 || hash is not PythonNoneValue;
-        var name = PythonBuiltinTypes.GetRuntimeTypeName(candidate);
+        // A builtin class answers for itself: `dict.__hash__` is None, so `issubclass(dict,
+        // Hashable)` and `isinstance({}, Hashable)` are both false.
+        var name = candidate is PythonBuiltinTypeValue builtin
+            ? builtin.Name
+            : PythonBuiltinTypes.GetRuntimeTypeName(candidate);
         return !PythonSlotMethods.HasNoneHash(name);
     }
 

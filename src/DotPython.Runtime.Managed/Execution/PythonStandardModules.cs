@@ -399,6 +399,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonAbc.Initialize
         );
+        modules["contextlib"] = PythonModuleDefinition.Native(
+            "<dotpython contextlib>",
+            isPackage: false,
+            PythonContextLib.Initialize
+        );
         modules["collections.abc"] = PythonModuleDefinition.Native(
             "<dotpython collections.abc>",
             isPackage: false,

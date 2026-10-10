@@ -105,7 +105,7 @@ internal static class PythonAbc
     /// `class ABC: pass` with `ABCMeta` as its metaclass — a class that declares nothing, so a
     /// subclass of it answers `__abstractmethods__` from its own body.
     /// </summary>
-    private static PythonManagedTypeValue AbcClass()
+    internal static PythonManagedTypeValue AbcClass()
     {
         if (_abcClass is { } built)
             return built;
