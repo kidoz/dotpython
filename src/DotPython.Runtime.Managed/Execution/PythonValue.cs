@@ -671,6 +671,13 @@ internal sealed record PythonProtocolFunctionValue(
     /// <summary>The defaults a function written in Python was given, or null for none.</summary>
     internal PythonValue? Defaults { get; init; }
 
+    /// <summary>The module a function written in Python belongs to.</summary>
+    internal string? Module { get; init; }
+
+    /// <summary>The attributes a function written in Python carries, such as the marker
+    /// `abc.abstractmethod` writes.</summary>
+    internal PythonAttributeDictionary Attributes { get; } = new();
+
     internal override string ToDisplayString() =>
         IsTypeMethodDescriptor ? $"<method '{Name}' of 'type' objects>"
         : IsPythonMethod && DeclaringType is { } pythonType

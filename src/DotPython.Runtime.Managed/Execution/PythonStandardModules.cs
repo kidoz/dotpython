@@ -389,6 +389,11 @@ internal static class PythonStandardModules
                 );
             }
         );
+        modules["abc"] = PythonModuleDefinition.Native(
+            "<dotpython abc>",
+            isPackage: false,
+            PythonAbc.Initialize
+        );
         modules["collections.abc"] = PythonModuleDefinition.Native(
             "<dotpython collections.abc>",
             isPackage: false,

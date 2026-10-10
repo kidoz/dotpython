@@ -281,6 +281,20 @@ internal static class PythonCollectionsAbc
         type.SetResolutionOrder(
             new PythonTupleValue([type, PythonBuiltinTypes.Type, PythonBuiltinFunctions.Object])
         );
+        // `ABCMeta.register(cls, subclass)` is the metaclass's own register, which is what a
+        // class built on it answers with unless it declares one of its own.
+        type.Attributes["register"] = new PythonBuiltinFunctionValue(
+            "register",
+            (arguments, span) =>
+                arguments.Count == 2 && arguments[0] is PythonManagedTypeValue abc
+                    ? Register(abc, [arguments[1]], span)
+                    : throw ManagedObjectProtocols.Fault(
+                        "DPY4003",
+                        "register() takes exactly 2 arguments",
+                        span,
+                        "TypeError"
+                    )
+        );
         return type;
     }
 
@@ -1696,7 +1710,7 @@ internal static class PythonCollectionsAbc
             var text = ((PythonTextValue)name).Value;
             // A name still answers with the stub when the class and its bases below the one
             // that declares it implement nothing.
-            if (ResolvesToAbstractStub(type, text) && !missing.Contains(text))
+            if (PythonAbc.IsStillAbstract(type, text) && !missing.Contains(text))
                 missing.Add(text);
         }
         if (missing.Count == 0)

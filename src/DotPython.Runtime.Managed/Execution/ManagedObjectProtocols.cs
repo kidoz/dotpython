@@ -364,6 +364,14 @@ internal static class ManagedObjectProtocols
                 return descriptor.GetAttribute(name, span);
             case PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor:
                 return PythonTypeMethodDescriptors.GetAttribute(descriptor, name, span);
+            case PythonPropertyValue property when name == "__isabstractmethod__":
+                return PythonAbc.IsAbstract(property)
+                    ? PythonTruthValue.True
+                    : PythonTruthValue.False;
+            // A bound method of a class written in Python answers the function's own
+            // attributes, the marker among them, as CPython's method object delegates.
+            case PythonBoundUserMethodValue boundMethod when name == "__isabstractmethod__":
+                return GetAttributeCore(boundMethod.Function, name, span);
             case PythonPropertyValue property:
                 return PythonBuiltinFunctions.GetPropertyAttribute(property, name, span);
             case PythonStaticMethodValue staticMethod when name == "__func__":
@@ -390,6 +398,12 @@ internal static class ManagedObjectProtocols
             case PythonBuiltinTypeValue { Name: "object" }
                 when PythonBuiltinFunctions.TryGetObjectProtocol(name, out var objectMember):
                 return objectMember;
+            case PythonClassMethodValue classMethod
+                when name == "__isabstractmethod__" && PythonAbc.IsAbstract(classMethod.Function):
+                return PythonTruthValue.True;
+            case PythonStaticMethodValue staticMethod
+                when name == "__isabstractmethod__" && PythonAbc.IsAbstract(staticMethod.Function):
+                return PythonTruthValue.True;
             case PythonFunctionValue function
                 when function.ShadowAttributes is { } shadowed
                     && shadowed.TryGetValue(name, out var shadowedValue):
@@ -420,6 +434,9 @@ internal static class ManagedObjectProtocols
             case PythonProtocolFunctionValue { IsPythonMethod: true } namedFunction
                 when name == "__qualname__":
                 return new PythonTextValue(namedFunction.Name);
+            case PythonProtocolFunctionValue { IsPythonMethod: true, Module: { } ownerModule }
+                when name == "__module__":
+                return new PythonTextValue(ownerModule);
             case PythonProtocolFunctionValue { IsPythonMethod: true } documentedFunction
                 when name == "__doc__":
                 return documentedFunction.Doc is { } functionDoc
@@ -4156,6 +4173,9 @@ internal static class ManagedObjectProtocols
             PythonMethodDescriptorValue => "method_descriptor",
             PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } =>
                 "builtin_function_or_method",
+            // A method the runtime builds for a class written in Python is a function object,
+            // which is what `type(Counter.update)` and `type(abc.abstractmethod)` report.
+            PythonProtocolFunctionValue { IsPythonMethod: true } => "function",
             PythonBuiltinFunctionValue or PythonProtocolFunctionValue =>
                 "builtin_function_or_method",
             PythonBoundMethodValue or PythonBoundUserMethodValue => "method",
