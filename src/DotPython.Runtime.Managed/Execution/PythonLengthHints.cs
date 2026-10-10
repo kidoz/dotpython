@@ -142,6 +142,8 @@ internal static class PythonLengthHints
         var source = (PythonSequenceIteratorSourceValue)iterator.Iterable;
         if (source.Sequence is not { } sequence)
             return PythonWholeNumberValue.Create(0);
+        if (source.Step != 1)
+            return PythonWholeNumberValue.Create(0);
         if (!TryGetLength(sequence, span, out var length))
             return PythonNotImplementedValue.Instance;
         // __len__ may advance or exhaust the iterator, so read its index after the callback.

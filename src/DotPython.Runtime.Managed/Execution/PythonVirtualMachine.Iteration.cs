@@ -40,6 +40,10 @@ internal sealed partial class PythonVirtualMachine
         if (source.Sequence is not { } sequence)
             return (false, PythonNoneValue.Instance);
         CheckProtocolWork(span);
+        // A walk that knows its own bound stops there, which is how `__reversed__` ends on an
+        // empty sequence without ever asking for an out-of-range element.
+        if (source.NextIndex == source.Stop)
+            return (false, PythonNoneValue.Instance);
         if (source.NextIndex == long.MaxValue)
             throw Fault("DPY4003", "iter index too large", span, "OverflowError");
         try
@@ -49,7 +53,7 @@ internal sealed partial class PythonVirtualMachine
                 PythonWholeNumberValue.Create(source.NextIndex),
                 span
             );
-            source.NextIndex++;
+            source.NextIndex += source.Step;
             return (true, value);
         }
         catch (Exception error)

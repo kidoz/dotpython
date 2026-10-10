@@ -1403,6 +1403,17 @@ internal sealed record PythonEnumerateSourceValue(PythonIteratorValue Inner, Big
     internal override string ToDisplayString() => "<enumerate>";
 }
 
+/// <summary>
+/// The walk a mapping view's `__iter__` hands out: the mapping's keys one at a time, with
+/// each value read as its element is produced, as the view's own generator reads them.
+/// </summary>
+internal sealed record PythonMappingViewSourceValue(PythonValue Mapping, bool Items) : PythonValue
+{
+    internal required PythonIteratorValue Inner { get; set; }
+
+    internal override string ToDisplayString() => "<view_iterator>";
+}
+
 internal sealed record PythonZipSourceValue(PythonIteratorValue[] Inners) : PythonValue
 {
     /// <summary>`zip(strict=True)`: unequal lengths raise ValueError instead of truncating.</summary>
@@ -1432,9 +1443,17 @@ internal sealed record PythonFilterSourceValue(
 /// <summary>An index-based sequence cursor with no retained execution context.</summary>
 internal sealed record PythonSequenceIteratorSourceValue : PythonValue
 {
-    internal required PythonManagedObjectValue? Sequence { get; set; }
+    internal required PythonValue? Sequence { get; set; }
 
     internal long NextIndex { get; set; }
+
+    /// <summary>The step the walk takes after each element: 1 forward, -1 for `__reversed__`.</summary>
+    internal long Step { get; init; } = 1;
+
+    /// <summary>The index the walk stops at, exclusive, when the caller knows its own bound —
+    /// the `-1` `reversed(range(len(self)))` ends on.</summary>
+    internal long? Stop { get; init; }
+
     internal int TextOffset { get; set; }
 
     internal override string ToDisplayString() => "<iterator>";

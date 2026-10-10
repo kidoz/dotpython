@@ -6751,10 +6751,48 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             type.Attributes.Remove("__classcell__");
         }
         InitializeMethodResolutionOrder(type, span);
+        InitializeAbstractMethods(type);
         PythonTypeHierarchy.Register(type, PythonBuiltinTypes.GetBases(type));
         InitializeClassAttributeNames(type, span);
         InitializeSubclass(type, [.. keywordNames], [.. keywordValues], span);
         return type;
+    }
+
+    /// <summary>
+    /// The abstract names the class still answers with an abstract base class's stub,
+    /// computed the way `ABCMeta.__new__` computes them: every name the bases report as
+    /// abstract that the class does not resolve to something of its own. A class with no
+    /// abstract base carries no set of its own, which is what keeps an ordinary class free
+    /// of the attribute.
+    /// </summary>
+    private static void InitializeAbstractMethods(PythonManagedTypeValue type)
+    {
+        List<string>? declared = null;
+        foreach (var entry in type.Mro)
+        {
+            if (
+                !entry.Attributes.TryGetValue("__abstractmethods__", out var value)
+                || value is not PythonSetValue names
+            )
+                continue;
+            declared ??= [];
+            foreach (var name in names.Elements)
+            {
+                if (name is PythonTextValue text && !declared.Contains(text.Value))
+                    declared.Add(text.Value);
+            }
+        }
+        if (declared is null)
+            return;
+        type.Attributes["__abstractmethods__"] = new PythonSetValue(
+            declared
+                .Where(name => PythonCollectionsAbc.ResolvesToAbstractStub(type, name))
+                .Select(name => (PythonValue)new PythonTextValue(name))
+                .ToList()
+        )
+        {
+            IsFrozen = true,
+        };
     }
 
     private static void FinalizeClassMetadata(PythonManagedTypeValue type, TextSpan span)

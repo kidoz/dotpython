@@ -2516,6 +2516,20 @@ internal static class ManagedObjectProtocols
                 iterator.IsExhausted = true;
                 break;
             }
+            // A view of a mapping the mixin iterates: the key comes from the mapping's own
+            // walk and the value is read as the element is produced.
+            case PythonMappingViewSourceValue viewSource:
+            {
+                if (!TryGetNext(viewSource.Inner, out var key, span))
+                {
+                    iterator.StopIteration = viewSource.Inner.StopIteration;
+                    iterator.IsExhausted = true;
+                    break;
+                }
+                var item = GetItem(viewSource.Mapping, key, span);
+                value = viewSource.Items ? new PythonTupleValue([key, item]) : item;
+                return true;
+            }
             case PythonEnumerateSourceValue enumerateSource:
                 if (TryGetNext(enumerateSource.Inner, out var element, span))
                 {
