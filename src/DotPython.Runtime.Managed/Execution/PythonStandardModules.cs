@@ -389,6 +389,11 @@ internal static class PythonStandardModules
                 );
             }
         );
+        modules["operator"] = PythonModuleDefinition.Native(
+            "<dotpython operator>",
+            isPackage: false,
+            PythonOperatorModule.Initialize
+        );
         modules["abc"] = PythonModuleDefinition.Native(
             "<dotpython abc>",
             isPackage: false,

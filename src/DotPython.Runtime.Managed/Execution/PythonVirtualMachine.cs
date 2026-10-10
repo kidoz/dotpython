@@ -8300,6 +8300,41 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ? tuple
             : PythonSubclassStorage.Of(value) as PythonTupleValue;
 
+    /// <summary>`operator.neg`, `operator.pos`, `operator.inv` and `operator.invert`.</summary>
+    internal static PythonValue ApplyUnaryOperator(
+        PythonOpCode opCode,
+        PythonValue operand,
+        TextSpan span
+    ) => ApplyUnary(opCode, operand, span);
+
+    /// <summary>`operator.abs`.</summary>
+    internal static PythonValue ApplyAbsoluteOperator(PythonValue operand, TextSpan span) =>
+        Absolute([operand], span);
+
+    /// <summary>
+    /// One of the module's in-place operators: the value's own method when it has one, and
+    /// the plain operator when it does not — which is CPython's rule for an immutable.
+    /// </summary>
+    internal static PythonValue ApplyInPlaceOperator(
+        PythonOpCode opCode,
+        string method,
+        PythonValue left,
+        PythonValue right,
+        TextSpan span
+    )
+    {
+        try
+        {
+            var slot = ManagedObjectProtocols.GetAttribute(left, method, span);
+            return ManagedObjectProtocols.Call(slot, [right], span);
+        }
+        catch (PythonRuntimeException fault)
+            when (fault.PythonExceptionTypeName == "AttributeError")
+        {
+            return ApplyBinary(opCode, left, right, span);
+        }
+    }
+
     /// <summary>Whether a value concatenates with `+` at all.</summary>
     private static bool IsConcatenable(PythonValue value) =>
         value
