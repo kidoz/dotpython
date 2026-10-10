@@ -63,6 +63,9 @@ internal interface IUserObjectDispatcher
 
     void CheckIterationWork(TextSpan span);
 
+    /// <summary>The `__name__` of the module the running frame belongs to.</summary>
+    string? CurrentModuleName();
+
     (bool HasValue, PythonValue Value) StepSequenceIterator(
         PythonSequenceIteratorSourceValue source,
         TextSpan span

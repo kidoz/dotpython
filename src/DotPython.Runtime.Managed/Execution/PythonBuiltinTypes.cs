@@ -415,7 +415,8 @@ internal static class PythonBuiltinTypes
             "str" => value is PythonTextValue || PythonEnum.IsInstanceOfMemberType(value, "str"),
             "list" => value is PythonListValue
                 || PythonSubclassStorage.StorageKindOf(value) == "list",
-            "tuple" => value is PythonTupleValue,
+            "tuple" => value is PythonTupleValue
+                || PythonSubclassStorage.StorageKindOf(value) == "tuple",
             "dict" => value is PythonDictionaryValue
                 || PythonSubclassStorage.StorageKindOf(value) == "dict",
             "set" => value is PythonSetValue { IsFrozen: false },

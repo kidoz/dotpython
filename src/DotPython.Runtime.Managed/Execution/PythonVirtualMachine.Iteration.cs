@@ -68,6 +68,8 @@ internal sealed partial class PythonVirtualMachine
 
     void IUserObjectDispatcher.CheckIterationWork(TextSpan span) => CheckProtocolWork(span);
 
+    string? IUserObjectDispatcher.CurrentModuleName() => CurrentModuleName();
+
     private void CheckProtocolWork(TextSpan span)
     {
         if (_deferredControlFlowCount == 0)

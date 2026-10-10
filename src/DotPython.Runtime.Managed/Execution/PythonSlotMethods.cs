@@ -801,14 +801,19 @@ internal static class PythonSlotMethods
                     {
                         if (arguments.Count != 0)
                             throw Fault($"expected 0 arguments, got {arguments.Count}");
-                        // `object.__str__` is `repr(self)`, so a subclass instance the storage
-                        // stands for answers with its own `__repr__`: `defaultdict` and
-                        // `Counter` print their constructor form, a plain subclass prints the
-                        // builtin's repr it inherits.
+                        // `object.__str__` is `repr(self)`, so a subclass instance answers
+                        // with its own `__repr__`: `defaultdict` and `Counter` print their
+                        // constructor form, a named tuple prints its fields, and a plain
+                        // subclass prints the builtin's repr it inherits.
                         return new PythonTextValue(
-                            receiver is PythonDictionaryValue { Owner: { } owner }
-                                ? owner.ToRepresentationString()
-                                : receiver!.ToDisplayString()
+                            receiver switch
+                            {
+                                PythonDictionaryValue { Owner: { } owner } =>
+                                    owner.ToRepresentationString(),
+                                PythonManagedObjectValue instance =>
+                                    instance.ToRepresentationString(),
+                                _ => receiver!.ToDisplayString(),
+                            }
                         );
                     }
                 )
@@ -1077,7 +1082,8 @@ internal static class PythonSlotMethods
         {
             "list" => other is PythonListValue
                 || PythonSubclassStorage.StorageKindOf(other) == "list",
-            "tuple" => other is PythonTupleValue,
+            "tuple" => other is PythonTupleValue
+                || PythonSubclassStorage.StorageKindOf(other) == "tuple",
             "str" => other is PythonTextValue,
             "bytes" => other is PythonByteSequenceValue,
             "bytearray" => other is PythonByteArrayValue or PythonByteSequenceValue,

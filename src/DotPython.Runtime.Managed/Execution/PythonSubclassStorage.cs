@@ -21,7 +21,7 @@ namespace DotPython.Runtime.Managed.Execution;
 internal static class PythonSubclassStorage
 {
     /// <summary>The builtin storages a class may be built on.</summary>
-    private static readonly string[] Supported = ["dict", "list"];
+    private static readonly string[] Supported = ["dict", "list", "tuple"];
 
     /// <summary>Whether a class may name this builtin as its base.</summary>
     internal static bool Supports(string builtinName) => Array.IndexOf(Supported, builtinName) >= 0;
@@ -37,9 +37,39 @@ internal static class PythonSubclassStorage
         {
             "dict" => new PythonDictionaryValue([]),
             "list" => new PythonListValue([]),
+            "tuple" => new PythonTupleValue([]),
             _ => null,
         };
     }
+
+    /// <summary>
+    /// The storage a class takes when it is constructed with these arguments. A dictionary or
+    /// a list allocates empty and is filled in place, while a tuple is built by its own
+    /// allocator — `tuple.__new__(cls, iterable)` reads the argument the builtin reads — so a
+    /// tuple subclass takes its contents from the constructor's arguments.
+    /// </summary>
+    internal static PythonValue? AllocateFor(
+        PythonManagedTypeValue type,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    ) =>
+        StorageKindOf(type) switch
+        {
+            { } kind when IsAllocating(kind) => Fill(
+                kind,
+                positional,
+                keywordNames,
+                keywordValues,
+                span
+            ),
+            _ => Allocate(type),
+        };
+
+    /// <summary>The storages whose builtin constructor reads the arguments — the tuple's does,
+    /// and the two containers ignore theirs, as CPython's own `__new__` slots do.</summary>
+    internal static bool IsAllocating(string kind) => kind == "tuple";
 
     /// <summary>
     /// The storage built from an instance-call's arguments, which is the builtin's own
@@ -53,7 +83,12 @@ internal static class PythonSubclassStorage
         TextSpan span
     )
     {
-        var type = kind == "dict" ? PythonBuiltinTypes.Dict : PythonBuiltinTypes.List;
+        var type = kind switch
+        {
+            "dict" => PythonBuiltinTypes.Dict,
+            "tuple" => PythonBuiltinTypes.Tuple,
+            _ => PythonBuiltinTypes.List,
+        };
         return keywordNames.Count == 0 || type.ConstructWithKeywords is null
             ? type.Construct(positional, span)
             : type.ConstructWithKeywords(positional, keywordNames, keywordValues, span);
@@ -69,7 +104,7 @@ internal static class PythonSubclassStorage
     /// <summary>The storage behind an instance, or null when it carries none.</summary>
     internal static PythonValue? Of(PythonValue value) =>
         value is PythonManagedObjectValue instance
-        && instance.Payload is PythonDictionaryValue or PythonListValue
+        && instance.Payload is PythonDictionaryValue or PythonListValue or PythonTupleValue
             ? (PythonValue)instance.Payload
             : null;
 

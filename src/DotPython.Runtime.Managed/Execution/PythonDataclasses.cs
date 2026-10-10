@@ -2679,7 +2679,9 @@ internal static class PythonDataclasses
     };
 
     /// <summary>Python 3.14's reserved words, as `keyword.iskeyword` reports them.</summary>
-    private static bool IsKeyword(string name) =>
+    private static bool IsKeyword(string name) => PythonKeywordArguments.IsLanguageKeyword(name);
+
+    private static bool UnusedKeywordList(string name) =>
         name
             is "False"
                 or "None"

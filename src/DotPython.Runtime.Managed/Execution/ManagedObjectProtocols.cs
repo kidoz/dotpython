@@ -268,6 +268,9 @@ internal static class ManagedObjectProtocols
                 );
             case PythonManagedObjectValue instance:
                 return GetInstanceAttribute(instance, name, span);
+            case PythonTupleGetterValue tupleGetter
+                when GetTupleGetterAttribute(tupleGetter, name) is { } getterAttribute:
+                return getterAttribute;
             case PythonSuperProxyValue proxy:
                 if (TryResolveSuperAttribute(proxy, name, out var inherited))
                 {
@@ -405,6 +408,26 @@ internal static class ManagedObjectProtocols
                 return function.Globals.TryGetValue("__name__", out var functionModule)
                     ? functionModule
                     : PythonNoneValue.Instance;
+            case PythonProtocolFunctionValue { IsPythonMethod: true } namedFunction
+                when name == "__name__":
+                return new PythonTextValue(namedFunction.Name);
+            case PythonProtocolFunctionValue
+            {
+                IsPythonMethod: true,
+                DeclaringType: { } functionOwner
+            } namedFunction when name == "__qualname__":
+                return new PythonTextValue($"{functionOwner}.{namedFunction.Name}");
+            case PythonProtocolFunctionValue { IsPythonMethod: true } namedFunction
+                when name == "__qualname__":
+                return new PythonTextValue(namedFunction.Name);
+            case PythonProtocolFunctionValue { IsPythonMethod: true } documentedFunction
+                when name == "__doc__":
+                return documentedFunction.Doc is { } functionDoc
+                    ? new PythonTextValue(functionDoc)
+                    : PythonNoneValue.Instance;
+            case PythonProtocolFunctionValue { IsPythonMethod: true } defaultedFunction
+                when name == "__defaults__":
+                return defaultedFunction.Defaults ?? PythonNoneValue.Instance;
             case PythonFunctionValue function when name == "__dict__":
                 return function.Attributes.Dictionary;
             case PythonFunctionValue function when name == "__annotate__":
@@ -1258,6 +1281,10 @@ internal static class ManagedObjectProtocols
             new PythonProtocolFunctionValue(name, (_, arguments) => implementation(arguments))
         );
 
+    /// <summary>`_tuplegetter.__set__`: a field of a named tuple cannot be written.</summary>
+    internal static PythonRuntimeException TupleFieldNotWritable(TextSpan span) =>
+        Fault("DPY4003", "can't set attribute", span, "AttributeError");
+
     internal static void SetAttribute(
         PythonValue target,
         string name,
@@ -1633,7 +1660,14 @@ internal static class ManagedObjectProtocols
 
         if (hasTypeValue)
         {
-            value = BindDescriptor(typeValue, instance, instance.Type, span, name);
+            // `object.__class__` reports the instance's own class; the entry a builtin base
+            // contributes is not the class of a subclass instance, so it is answered here
+            // rather than bound — a `__class__` a class declares for itself still wins below,
+            // and one the instance carries in its dictionary has already won above.
+            value =
+                name == "__class__" && !DeclaresClassEntry(instance.Type)
+                    ? instance.Type
+                    : BindDescriptor(typeValue, instance, instance.Type, span, name);
             return true;
         }
 
@@ -1645,6 +1679,10 @@ internal static class ManagedObjectProtocols
 
         return false;
     }
+
+    /// <summary>Whether a class or one of its bases declares `__class__` for itself.</summary>
+    private static bool DeclaresClassEntry(PythonManagedTypeValue type) =>
+        type.Mro.Any(entry => entry.Attributes.TryGetValue("__class__", out _));
 
     internal static PythonValue GetInstanceAttribute(
         PythonManagedObjectValue instance,
@@ -1765,6 +1803,8 @@ internal static class ManagedObjectProtocols
             case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
                 descriptor.Set!(instance, value);
                 return true;
+            case PythonTupleGetterValue:
+                throw TupleFieldNotWritable(span);
             case PythonPropertyValue { Setter: null }:
                 throw Fault(
                     "DPY4023",
@@ -1800,6 +1840,8 @@ internal static class ManagedObjectProtocols
             case PythonUnicodeErrorDescriptorValue descriptor:
                 descriptor.Delete(instance, span);
                 return true;
+            case PythonTupleGetterValue:
+                throw Fault("DPY4003", "can't delete attribute", span, "AttributeError");
             case PythonDescriptorValue { IsDataDescriptor: true }:
                 throw Fault(
                     "DPY4023",
@@ -2018,7 +2060,10 @@ internal static class ManagedObjectProtocols
             kind is not null
             && (
                 kind == descriptor.OwnerName
-                || PythonSlotMethods.IsObjectSlot(kind, descriptor.Name)
+                // `object.__str__` is `repr(self)`, asked of the instance so that a class
+                // which declares its own `__repr__` is the one that answers.
+                || descriptor.Name != "__str__"
+                    && PythonSlotMethods.IsObjectSlot(kind, descriptor.Name)
             );
         var receiver = targetsStorage ? PythonSubclassStorage.Of(instance) ?? instance : instance;
         var bound = descriptor.BindDescriptor(receiver, owner, span);
@@ -4098,6 +4143,7 @@ internal static class ManagedObjectProtocols
             PythonTypeMetadataDescriptorValue { Name: "__base__" } => "member_descriptor",
             PythonTypeMetadataDescriptorValue => "getset_descriptor",
             PythonPropertyValue => "property",
+            PythonTupleGetterValue => "_tuplegetter",
             PythonStaticMethodValue => "staticmethod",
             PythonClassMethodValue => "classmethod",
             PythonManagedObjectValue instance => instance.Type.ReportedName,
@@ -4182,6 +4228,7 @@ internal static class ManagedObjectProtocols
             PythonDescriptorValue descriptor => descriptor.IsDataDescriptor,
             PythonPropertyValue
             or PythonTypeMetadataDescriptorValue
+            or PythonTupleGetterValue
             or PythonUnicodeErrorDescriptorValue => true,
             _ => GetManagedType(value) is { } type
                 && (
@@ -4195,6 +4242,7 @@ internal static class ManagedObjectProtocols
             is PythonDescriptorValue
                 or PythonPropertyValue
                 or PythonTypeMetadataDescriptorValue
+                or PythonTupleGetterValue
                 or PythonUnicodeErrorDescriptorValue
                 or PythonProtocolFunctionValue { IsTypeMethodDescriptor: true }
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
@@ -4273,6 +4321,7 @@ internal static class ManagedObjectProtocols
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor =>
                 PythonTypeMethodDescriptors.Bind(descriptor, instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),
+            PythonTupleGetterValue tupleGetter => GetTupleField(tupleGetter, instance),
             PythonPropertyValue property when instance is not null => GetPropertyValue(
                 property,
                 instance,
@@ -4309,6 +4358,83 @@ internal static class ManagedObjectProtocols
     /// class in the instance's dynamic-type MRO (falling back to the defining class's
     /// own MRO when the instance is not a managed object of a related type).
     /// </summary>
+    /// <summary>
+    /// The attributes a `_tuplegetter` answers for itself: its documentation, the module it
+    /// belongs to, and the three descriptor methods, which are what a user calls when the
+    /// field is read or written directly.
+    /// </summary>
+    private static PythonValue? GetTupleGetterAttribute(PythonTupleGetterValue getter, string name)
+    {
+        switch (name)
+        {
+            case "__doc__":
+                return new PythonTextValue(getter.Doc);
+            case "__module__":
+                return new PythonTextValue("collections");
+            case "__get__":
+            case "__set__":
+            case "__delete__":
+                return new PythonBoundMethodValue(
+                    name,
+                    getter,
+                    new PythonProtocolFunctionValue(
+                        name,
+                        (target, arguments) =>
+                        {
+                            var field = target as PythonTupleGetterValue ?? getter;
+                            return name switch
+                            {
+                                "__get__" => arguments.Count != 0
+                                    ? GetTupleField(field, arguments[0])
+                                    : throw Fault(
+                                        "DPY4003",
+                                        "__get__() takes at least 1 argument (0 given)",
+                                        default,
+                                        "TypeError"
+                                    ),
+                                "__set__" => throw TupleFieldNotWritable(default),
+                                _ => throw Fault(
+                                    "DPY4003",
+                                    "can't delete attribute",
+                                    default,
+                                    "AttributeError"
+                                ),
+                            };
+                        }
+                    )
+                )
+                {
+                    IsWrapper = true,
+                };
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// `_tuplegetter.__get__`: the item at the field's index, read from the tuple the
+    /// instance is built on. The descriptor belongs to one class, so the receiver is either
+    /// an instance of it or the class the field was declared for.
+    /// </summary>
+    private static PythonValue GetTupleField(PythonTupleGetterValue getter, PythonValue? instance)
+    {
+        if (instance is null)
+            return getter;
+        var tuple =
+            instance as PythonTupleValue ?? PythonSubclassStorage.Of(instance) as PythonTupleValue;
+        if (tuple is null || getter.Index >= tuple.Elements.Length)
+        {
+            throw Fault(
+                "DPY4023",
+                $"descriptor '{getter.Name}' for 'tuple' objects doesn't apply to a "
+                    + $"'{GetTypeName(instance)}' object",
+                default,
+                "AttributeError"
+            );
+        }
+        return tuple.Elements[getter.Index];
+    }
+
     private static PythonValue GetSuperResolutionType(PythonSuperProxyValue proxy)
     {
         if (
@@ -4492,7 +4618,16 @@ internal static class ManagedObjectProtocols
         return (int)value;
     }
 
-    internal static int GetSequenceIndex(PythonValue index, int count, TextSpan span)
+    /// <summary>
+    /// An index into a sequence of `count` elements, in CPython's own words — the sequence
+    /// names itself, so a tuple index says `tuple indices must be integers or slices, not str`.
+    /// </summary>
+    internal static int GetSequenceIndex(
+        PythonValue index,
+        int count,
+        TextSpan span,
+        string typeName = "tuple"
+    )
     {
         BigInteger value;
         if (UserObjectProtocols.TryConvertToIndex(index, span, out var userIndex))
@@ -4505,7 +4640,13 @@ internal static class ManagedObjectProtocols
         }
         else
         {
-            throw Fault("DPY4011", "Sequence indices must be integers.", span, "TypeError");
+            throw Fault(
+                "DPY4011",
+                $"{typeName} indices must be integers or slices, not "
+                    + ManagedObjectProtocols.GetTypeName(index),
+                span,
+                "TypeError"
+            );
         }
 
         if (value < 0)

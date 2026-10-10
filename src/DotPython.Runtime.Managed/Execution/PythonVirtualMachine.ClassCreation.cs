@@ -470,8 +470,12 @@ internal sealed partial class PythonVirtualMachine
             )
         )
             return created;
-        // A class built on a storage builtin allocates that storage beside its own attributes.
-        var instance = new PythonManagedObjectValue(type, PythonSubclassStorage.Allocate(type));
+        // A class built on a storage builtin allocates that storage beside its own attributes,
+        // taking its contents from the arguments when the builtin's own allocator reads them.
+        var instance = new PythonManagedObjectValue(
+            type,
+            PythonSubclassStorage.AllocateFor(type, arguments, keywordNames, keywordValues, span)
+        );
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
             if (arguments.Length != 0 || keywordNames.Length != 0)

@@ -665,10 +665,17 @@ internal sealed record PythonProtocolFunctionValue(
     /// </summary>
     internal bool IsPythonMethod { get; init; }
 
+    /// <summary>The docstring a function written in Python carries.</summary>
+    internal string? Doc { get; init; }
+
+    /// <summary>The defaults a function written in Python was given, or null for none.</summary>
+    internal PythonValue? Defaults { get; init; }
+
     internal override string ToDisplayString() =>
         IsTypeMethodDescriptor ? $"<method '{Name}' of 'type' objects>"
         : IsPythonMethod && DeclaringType is { } pythonType
             ? $"<function {pythonType}.{Name} at 0x{RuntimeHelpers.GetHashCode(this):x}>"
+        : IsPythonMethod ? $"<function {Name} at 0x{RuntimeHelpers.GetHashCode(this):x}>"
         : DeclaringType is { } declaringType
             ? (IsSlotWrapper ? "<slot wrapper '" : "<method '")
                 + $"{Name}' of '{declaringType}' objects>"
@@ -691,6 +698,20 @@ internal sealed record PythonProtocolFunctionValue(
                 positionalOnly
             ),
         };
+}
+
+/// <summary>
+/// The descriptor a `namedtuple` field is: CPython's `collections._tuplegetter`, which reads
+/// the item at its index out of the tuple its owner is built on and refuses to be written.
+/// </summary>
+internal sealed record PythonTupleGetterValue(string Name, int Index, string Doc) : PythonValue
+{
+    internal override string ToDisplayString() => Representation;
+
+    internal override string ToRepresentationString() => Representation;
+
+    private string Representation =>
+        $"_tuplegetter({Index}, {new PythonTextValue(Doc).ToRepresentationString()})";
 }
 
 internal sealed record PythonBoundMethodValue(

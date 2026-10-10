@@ -167,6 +167,25 @@ internal static class PythonObjectMembers
                     {
                         if (arguments.Count == 0)
                             throw Fault($"{typeName}.__new__(): not enough arguments", span);
+                        if (arguments[0] is PythonManagedTypeValue subclass)
+                        {
+                            // A subclass of a storage builtin allocates that builtin's storage:
+                            // `tuple.__new__(cls, iterable)` is the tuple the class is built on.
+                            if (PythonSubclassStorage.StorageKindOf(subclass) != typeName)
+                                throw Fault(
+                                    $"{typeName}.__new__({subclass.Name}): {subclass.Name} is "
+                                        + $"not a subtype of {typeName}",
+                                    span
+                                );
+                            var takesArguments = typeName is "tuple";
+                            var given = new PythonValue[takesArguments ? arguments.Count - 1 : 0];
+                            for (var index = 0; index < given.Length; index++)
+                                given[index] = arguments[index + 1];
+                            return new PythonManagedObjectValue(
+                                subclass,
+                                PythonSubclassStorage.Fill(typeName, given, [], [], span)
+                            );
+                        }
                         if (arguments[0] is not PythonBuiltinTypeValue cls)
                             throw Fault(
                                 $"{typeName}.__new__(X): X is not a type object "

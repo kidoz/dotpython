@@ -43,6 +43,48 @@ internal static class PythonKeywordArguments
                 span
             );
 
+    /// <summary>
+    /// Whether a name is one of the language's keywords, which is what `namedtuple` and a
+    /// class definition refuse as a name.
+    /// </summary>
+    internal static bool IsLanguageKeyword(string name) =>
+        name
+            is "False"
+                or "None"
+                or "True"
+                or "and"
+                or "as"
+                or "assert"
+                or "async"
+                or "await"
+                or "break"
+                or "class"
+                or "continue"
+                or "def"
+                or "del"
+                or "elif"
+                or "else"
+                or "except"
+                or "finally"
+                or "for"
+                or "from"
+                or "global"
+                or "if"
+                or "import"
+                or "in"
+                or "is"
+                or "lambda"
+                or "nonlocal"
+                or "not"
+                or "or"
+                or "pass"
+                or "raise"
+                or "return"
+                or "try"
+                or "while"
+                or "with"
+                or "yield";
+
     /// <summary>The method form: the bound target stays separate from the parameters.</summary>
     internal static ProtocolKeywordInvoker AdaptMethod(
         string name,

@@ -346,10 +346,7 @@ internal static class PythonStandardModules
         }
     }
 
-    /// <summary>
-    /// The names `collections` publishes, in CPython's own order, less `namedtuple`, which the
-    /// module does not carry yet — a list naming it would break `from collections import *`.
-    /// </summary>
+    /// <summary>The names `collections` publishes, in CPython's own order.</summary>
     private static readonly string[] CollectionsExports =
     [
         "ChainMap",
@@ -360,6 +357,7 @@ internal static class PythonStandardModules
         "UserString",
         "defaultdict",
         "deque",
+        "namedtuple",
     ];
 
     internal static void AddTo(
@@ -380,6 +378,7 @@ internal static class PythonStandardModules
                 globals.SetValue("UserList", PythonUserList.Type);
                 globals.SetValue("ChainMap", PythonChainMap.Type);
                 globals.SetValue("UserString", PythonUserString.Type);
+                globals.SetValue("namedtuple", PythonNamedTuple.Function);
                 globals.SetValue(
                     "__all__",
                     new PythonListValue([
@@ -2061,6 +2060,38 @@ internal static class PythonStandardModules
         )
         {
             return hooked;
+        }
+
+        // A tuple subclass is built from the elements it carries: a tuple's storage is fixed
+        // at construction, so it cannot be filled after the copy exists.
+        if (instance.Payload is PythonTupleValue sourceTuple)
+        {
+            var elements = sourceTuple.Elements;
+            var tupleCopy = new PythonManagedObjectValue(
+                instance.Type,
+                new PythonTupleValue([.. elements])
+            );
+            if (deep)
+            {
+                memo!.Set(instance, tupleCopy, span);
+                var copied = new PythonValue[elements.Length];
+                for (var index = 0; index < elements.Length; index++)
+                    copied[index] = DeepCopy(elements[index], memo, span, mode);
+                tupleCopy = new PythonManagedObjectValue(
+                    instance.Type,
+                    new PythonTupleValue(copied)
+                );
+                memo.Set(instance, tupleCopy, span);
+            }
+            CopyAttributes(
+                instance.Attributes.Dictionary,
+                tupleCopy.Attributes.Dictionary,
+                deep,
+                memo,
+                span,
+                mode
+            );
+            return tupleCopy;
         }
 
         // A storage subclass copies the storage it carries beside its attributes, so the

@@ -5252,9 +5252,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
-        var instance = new PythonManagedObjectValue(type, PythonSubclassStorage.Allocate(type));
+        var instance = new PythonManagedObjectValue(
+            type,
+            PythonSubclassStorage.AllocateFor(type, arguments, [], [], span)
+        );
         if (
             PythonSubclassStorage.StorageKindOf(type) is { } ownKind
+            && !PythonSubclassStorage.IsAllocating(ownKind)
             && (
                 !ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var ownInit)
                 || ownInit is not (PythonFunctionValue or PythonProtocolFunctionValue)
@@ -5274,7 +5278,14 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
-            if (arguments.Length != 0)
+            // A tuple subclass read its arguments in its own allocator, so there is nothing
+            // left for an initializer to take.
+            if (
+                arguments.Length != 0
+                && !PythonSubclassStorage.IsAllocating(
+                    PythonSubclassStorage.StorageKindOf(type) ?? string.Empty
+                )
+            )
             {
                 throw Fault("DPY4009", $"{type.Name}() takes no arguments.", span, "TypeError");
             }
@@ -5367,6 +5378,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         if (!ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var initializer))
         {
+            if (
+                positional.Length == 0
+                || PythonSubclassStorage.IsAllocating(
+                    PythonSubclassStorage.StorageKindOf(type) ?? string.Empty
+                )
+            )
+            {
+                _evaluationStack.Push(instance);
+                return;
+            }
             throw Fault("DPY4009", $"{type.Name}() takes no arguments.", span, "TypeError");
         }
 
@@ -8279,6 +8300,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         TextSpan span
     ) => ApplyBinary(opCode, left, right, span);
 
+    /// <summary>
+    /// The tuple a value is: the value itself, or the storage a tuple subclass instance
+    /// carries, which is the tuple every tuple operation works on.
+    /// </summary>
+    private static PythonTupleValue? AsTuple(PythonValue value) =>
+        value is PythonTupleValue tuple
+            ? tuple
+            : PythonSubclassStorage.Of(value) as PythonTupleValue;
+
     /// <summary>Whether a value concatenates with `+` at all.</summary>
     private static bool IsConcatenable(PythonValue value) =>
         value
@@ -8293,8 +8323,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         (left, right) switch
         {
             (PythonListValue, PythonListValue) => true,
-            (PythonTupleValue, PythonTupleValue) => true,
             (PythonTextValue, PythonTextValue) => true,
+            _ when AsTuple(left) is not null && AsTuple(right) is not null => true,
             _ => ManagedObjectProtocols.TryGetByteContent(left, out _)
                 && ManagedObjectProtocols.TryGetByteContent(right, out _),
         };
@@ -8467,7 +8497,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 return new PythonListValue([.. leftList.Elements, .. rightList.Elements]);
             }
 
-            if (left is PythonTupleValue leftTuple && right is PythonTupleValue rightTuple)
+            if (AsTuple(left) is { } leftTuple && AsTuple(right) is { } rightTuple)
             {
                 if (leftTuple.Elements.Length == 0)
                     return rightTuple;
@@ -8494,24 +8524,24 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (opCode == PythonOpCode.BinaryMultiply)
         {
-            var sequence =
-                left
-                    is PythonListValue
-                        or PythonTupleValue
-                        or PythonTextValue
-                        or PythonByteSequenceValue
-                        or PythonByteArrayValue
-                        or PythonDequeValue
-                    ? left
-                : right
-                    is PythonListValue
-                        or PythonTupleValue
-                        or PythonTextValue
-                        or PythonByteSequenceValue
-                        or PythonByteArrayValue
-                        or PythonDequeValue
-                    ? right
-                : null;
+            var sequence = left switch
+            {
+                PythonListValue
+                or PythonTextValue
+                or PythonByteSequenceValue
+                or PythonByteArrayValue
+                or PythonDequeValue => left,
+                _ when AsTuple(left) is { } repeated => repeated,
+                _ => right switch
+                {
+                    PythonListValue
+                    or PythonTextValue
+                    or PythonByteSequenceValue
+                    or PythonByteArrayValue
+                    or PythonDequeValue => right,
+                    _ => AsTuple(right) is { } fromRight ? (PythonValue)fromRight : null,
+                },
+            };
             if (sequence is not null)
             {
                 var count = PythonSequenceRepetition.GetCount(
