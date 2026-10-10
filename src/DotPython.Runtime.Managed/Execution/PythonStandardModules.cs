@@ -362,6 +362,11 @@ internal static class PythonStandardModules
                 globals.SetValue("OrderedDict", PythonOrderedDict.Type);
             }
         );
+        modules["collections.abc"] = PythonModuleDefinition.Native(
+            "<dotpython collections.abc>",
+            isPackage: false,
+            PythonCollectionsAbc.Initialize
+        );
         modules["types"] = PythonModuleDefinition.Native(
             "<dotpython types>",
             false,

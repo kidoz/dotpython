@@ -5236,6 +5236,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         EnsureClassAllocationSupported(type, span);
+        // An abstract class refuses to be instantiated while any abstract method it declares
+        // is still the stub the class itself carries.
+        if (PythonCollectionsAbc.RefuseInstantiation(type, span) is { } abstractRefusal)
+            throw abstractRefusal;
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(ConstructExceptionInstance(type, arguments, [], [], span));
@@ -6602,7 +6606,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             {
                 var runtimeType = PythonBuiltinTypes.GetRuntimeType(value);
                 return runtimeType is PythonManagedTypeValue instanceType
-                    && instanceType.Mro.Any(current => ReferenceEquals(current, managedType));
+                        && instanceType.Mro.Any(current => ReferenceEquals(current, managedType))
+                    // An abstract base class answers for its registrations and for the
+                    // structural check it declares.
+                    || PythonCollectionsAbc.Matches(value, managedType);
             }
             case PythonExternalObjectValue externalType:
                 return externalType.Protocol.IsInstanceOf(value, span);
@@ -7459,7 +7466,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             _ when PythonTypeProtocols.IsType(classInfo) => ReferenceEquals(cls, classInfo)
                 || PythonBuiltinTypes
                     .GetMro(cls)
-                    .Elements.Any(entry => ReferenceEquals(entry, classInfo)),
+                    .Elements.Any(entry => ReferenceEquals(entry, classInfo))
+                // An abstract base class also answers for what is registered with it and for
+                // the classes its structural check accepts.
+                || classInfo is PythonManagedTypeValue abc
+                    && PythonCollectionsAbc.IsSubclass(cls, abc),
             _ => throw Fault(
                 "DPY4003",
                 "issubclass() arg 2 must be a class, a tuple of classes, or a union",

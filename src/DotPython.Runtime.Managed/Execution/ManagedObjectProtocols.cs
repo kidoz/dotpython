@@ -86,6 +86,12 @@ internal static class ManagedObjectProtocols
             PythonManagedTypeValue type when type.Construct is not null => type.Construct(
                 arguments
             ),
+            // An abstract class refuses to be instantiated while any abstract method it
+            // declares is still the stub the class itself carries.
+            PythonManagedTypeValue type
+                when arguments.Count == 0
+                    && PythonCollectionsAbc.RefuseInstantiation(type, span)
+                        is { } abstractRefusal => throw abstractRefusal,
             PythonManagedTypeValue type when arguments.Count == 0 => new PythonManagedObjectValue(
                 type
             ),

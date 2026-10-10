@@ -449,6 +449,10 @@ internal sealed partial class PythonVirtualMachine
     )
     {
         EnsureClassAllocationSupported(type, span);
+        // An abstract class refuses to be instantiated while any abstract method it declares
+        // is still the stub the class itself carries.
+        if (PythonCollectionsAbc.RefuseInstantiation(type, span) is { } abstractRefusal)
+            throw abstractRefusal;
         if (type.IsMetaclass)
             return InvokeMetaclassConstructor(type, arguments, keywordNames, keywordValues, span);
         if (type.ExceptionBaseName is not null)

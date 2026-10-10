@@ -36,7 +36,16 @@ internal static class PythonSlotMethods
     /// CPython marks a type unhashable.
     /// </summary>
     internal static bool HasNoneHash(string typeName) =>
-        typeName is "list" or "bytearray" or "dict" or "set" or "deque";
+        typeName
+            is "list"
+                or "bytearray"
+                or "dict"
+                or "set"
+                or "deque"
+                or "dict_keys"
+                or "dict_items"
+                or "odict_keys"
+                or "odict_items";
 
     internal static bool TryGet(string typeName, string name, out Slot slot) =>
         Slots.TryGetValue((typeName, name), out slot);
