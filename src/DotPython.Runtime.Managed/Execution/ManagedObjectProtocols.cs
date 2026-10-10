@@ -562,6 +562,17 @@ internal static class ManagedObjectProtocols
                 return (PythonValue?)causeSource.Cause ?? PythonNoneValue.Instance;
             case PythonExceptionValue suppressSource when name == "__suppress_context__":
                 return PythonTruthValue.FromBoolean(suppressSource.SuppressContext);
+            case PythonDictionaryViewValue view
+                when name == "isdisjoint" && PythonDictionaryViews.IsSetLike(view):
+                return new PythonBoundMethodValue(
+                    name,
+                    view,
+                    new PythonProtocolFunctionValue(
+                        name,
+                        (receiver, arguments) =>
+                            PythonDictionaryViews.IsDisjoint(receiver!, arguments, default)
+                    )
+                );
             case PythonListValue
             or PythonRangeValue
             or PythonDictionaryValue
@@ -3183,6 +3194,20 @@ internal static class ManagedObjectProtocols
         }
         if (container is PythonSetValue set)
             return FindSetEntry(set, item, span) >= 0;
+        // A keys view answers membership the way the dictionary does — the item is hashed as
+        // a key, so an unhashable one is refused — and an items view looks the pair up.
+        if (container is PythonDictionaryViewValue view)
+        {
+            switch (view.Kind)
+            {
+                case "dict_keys":
+                    return TryFindDictionaryItem(view.Dictionary, item, out _);
+                case "dict_items":
+                    return item is PythonTupleValue { Elements.Length: 2 } pair
+                        && TryFindDictionaryItem(view.Dictionary, pair.Elements[0], out var found)
+                        && AreEqual(found.Value, pair.Elements[1]);
+            }
+        }
 
         var iterator = GetIterator(container, span, userIteration);
         while (TryGetNext(iterator, out var candidate, span))
@@ -3560,7 +3585,7 @@ internal static class ManagedObjectProtocols
                 span,
                 "TypeError"
             );
-        AddToSetKnownHash(set, value, GetInsertionHash(value, "set element", span), span);
+        AddToSetKnownHash(set, value, GetKeyHash(value, "set element", span), span);
     }
 
     internal static void AddToSetKnownHash(
@@ -3579,7 +3604,7 @@ internal static class ManagedObjectProtocols
         // Python membership/removal accepts a mutable set as a frozenset lookup key.
         if (value is PythonSetValue { IsFrozen: false } mutable)
             value = mutable.Copy(frozen: true, span: span);
-        return FindSetEntry(set, value, ComputePythonHash(value, span), span);
+        return FindSetEntry(set, value, GetKeyHash(value, "set element", span), span);
     }
 
     internal static int FindSetEntry(
@@ -3907,7 +3932,8 @@ internal static class ManagedObjectProtocols
             or PythonDictionaryValue
             or PythonSetValue
             or PythonByteArrayValue
-            or PythonDequeValue => throw Fault(
+            or PythonDequeValue
+            or PythonDictionaryViewValue => throw Fault(
                 "DPY4014",
                 $"unhashable type: '{PythonBoundDisplay.QualifiedTypeName(value)}'",
                 span,
@@ -4553,16 +4579,15 @@ internal static class ManagedObjectProtocols
             );
         }
 
-        SetDictionaryItemKnownHash(
-            dictionary,
-            key,
-            value,
-            GetInsertionHash(key, "dict key", span),
-            span
-        );
+        SetDictionaryItemKnownHash(dictionary, key, value, GetKeyHash(key, "dict key", span), span);
     }
 
-    private static BigInteger GetInsertionHash(PythonValue value, string role, TextSpan span)
+    /// <summary>
+    /// The hash of a dictionary key or set element, with CPython's wording for a value that
+    /// has none: `cannot use 'list' as a dict key (unhashable type: 'list')` on a lookup is
+    /// the same refusal an insertion reports.
+    /// </summary>
+    private static BigInteger GetKeyHash(PythonValue value, string role, TextSpan span)
     {
         try
         {
@@ -4625,7 +4650,7 @@ internal static class ManagedObjectProtocols
         PythonDictionaryValue dictionary,
         PythonValue key,
         out PythonDictionaryItemValue item
-    ) => TryFindDictionaryItem(dictionary, key, ComputePythonHash(key), out item);
+    ) => TryFindDictionaryItem(dictionary, key, GetKeyHash(key, "dict key", default), out item);
 
     internal static bool TryFindDictionaryItem(
         PythonDictionaryValue dictionary,
@@ -4678,6 +4703,11 @@ internal static class ManagedObjectProtocols
         {
             return AreEqual(leftProxy.Mapping, right);
         }
+        // A keys or items view compares as a set; a values view keeps the identity answer.
+        if (PythonDictionaryViews.TryEquality(left, right, out var viewEqual))
+            return viewEqual;
+        if (PythonDictionaryViews.TryEquality(right, left, out var reflectedViewEqual))
+            return reflectedViewEqual;
         if (UserObjectProtocols.TryAreEqual(left, right, out var userEqual))
         {
             return userEqual;

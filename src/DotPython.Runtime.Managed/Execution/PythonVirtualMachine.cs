@@ -8012,6 +8012,23 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         )
             return ManagedObjectProtocols.RichCompareValue(left, right, richComparison, span);
 
+        // A dictionary view orders itself against anything set-like and refuses the rest.
+        if (
+            richComparison
+                is PythonRichComparison.LessThan
+                    or PythonRichComparison.LessThanOrEqual
+                    or PythonRichComparison.GreaterThan
+                    or PythonRichComparison.GreaterThanOrEqual
+            && PythonDictionaryViews.TryCompareOrdered(
+                left,
+                right,
+                richComparison,
+                span,
+                out var viewOrdering
+            )
+        )
+            return PythonTruthValue.FromBoolean(viewOrdering);
+
         if (opCode is PythonOpCode.CompareEqual or PythonOpCode.CompareNotEqual)
         {
             var equal = AreEqual(left, right);
@@ -8068,6 +8085,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             // A deque compares by its contents.
             || left is PythonDequeValue
             || right is PythonDequeValue
+            // A keys or items view compares as the set it exposes.
+            || left is PythonDictionaryViewValue
+            || right is PythonDictionaryViewValue
             // A subclass instance compares as the storage it carries.
             || PythonSubclassStorage.Of(left) is not null
             || PythonSubclassStorage.Of(right) is not null
@@ -8485,6 +8505,11 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             }
         }
 
+        // A dictionary view is set-like, so its operators build a set and take any iterable.
+        if (PythonDictionaryViews.TryApplySetOperation(opCode, left, right, span, out var view))
+        {
+            return view;
+        }
         if (
             opCode == PythonOpCode.BinaryOr
             && TryAsDictionary(left, out var leftDictionary)
