@@ -923,20 +923,69 @@ internal static class PythonBuiltinMethods
                 "TypeError"
             );
 
+        var position = 0;
         foreach (var pair in ManagedObjectProtocols.MaterializeValues(source, span))
         {
-            var elements = ManagedObjectProtocols.MaterializeValues(pair, span);
-            if (elements.Count != 2)
-            {
-                throw Fault(
-                    $"dictionary update sequence element has length {elements.Count}; 2 is required",
-                    "ValueError"
-                );
-            }
-
+            var elements = MaterializeDictionaryElement(pair, position++, span);
             ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], span);
         }
     }
+
+    /// <summary>
+    /// One element of a mapping built from a sequence of pairs: CPython converts it with
+    /// `PySequence_Fast`, so a value that cannot be iterated at all reports `object is not
+    /// iterable` and one that iterates to the wrong length names its position.
+    /// </summary>
+    internal static IReadOnlyList<PythonValue> MaterializeDictionaryElement(
+        PythonValue pair,
+        int position,
+        TextSpan span
+    )
+    {
+        if (!IsIterable(pair))
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "object is not iterable",
+                span,
+                "TypeError"
+            );
+        var elements = ManagedObjectProtocols.MaterializeValues(pair, span);
+        if (elements.Count != 2)
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                $"dictionary update sequence element #{position} has length {elements.Count}; "
+                    + "2 is required",
+                span,
+                "ValueError"
+            );
+        return elements;
+    }
+
+    /// <summary>Whether a value can be iterated at all, which decides that wording.</summary>
+    private static bool IsIterable(PythonValue value) =>
+        value
+            is PythonListValue
+                or PythonTupleValue
+                or PythonDictionaryValue
+                or PythonDictionaryViewValue
+                or PythonTextValue
+                or PythonByteSequenceValue
+                or PythonByteArrayValue
+                or PythonMemoryViewValue
+                or PythonDequeValue
+                or PythonRangeValue
+                or PythonSetValue
+                or PythonMappingProxyValue
+                or PythonIteratorValue
+                or PythonGeneratorValue
+                or PythonFileValue
+                or PythonTemplateValue
+                or PythonExternalObjectValue { Protocol: IPythonExternalIterable }
+        || value is PythonManagedObjectValue instance
+            && (
+                UserObjectProtocols.DefinesSpecialMethod(instance, "__iter__")
+                || UserObjectProtocols.DefinesSpecialMethod(instance, "__getitem__")
+            );
 
     internal static bool SupportsMethods(PythonValue target) =>
         target

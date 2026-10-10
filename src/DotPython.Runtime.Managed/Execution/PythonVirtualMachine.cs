@@ -4020,7 +4020,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 {
                     throw Fault(
                         "DPY4009",
-                        "Keywords must be strings.",
+                        "keywords must be strings",
                         instruction.Span,
                         "TypeError"
                     );
@@ -5253,12 +5253,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             PythonSubclassStorage.StorageKindOf(type) is { } ownKind
             && (
                 !ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var ownInit)
-                || ownInit is not PythonFunctionValue
+                || ownInit is not (PythonFunctionValue or PythonProtocolFunctionValue)
             )
         )
         {
             // A class that defines no `__init__` of its own takes the builtin's constructor,
-            // which fills the storage the class allocated.
+            // which fills the storage the class allocated. A native dict-like — defaultdict,
+            // Counter, OrderedDict — brings its own initializer, which runs instead.
             _evaluationStack.Push(
                 new PythonManagedObjectValue(
                     type,
@@ -5342,7 +5343,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             PythonSubclassStorage.StorageKindOf(type) is { } ownKind
             && (
                 !ManagedObjectProtocols.TryGetTypeAttribute(type, "__init__", out var ownInit)
-                || ownInit is not PythonFunctionValue
+                || ownInit is not (PythonFunctionValue or PythonProtocolFunctionValue)
             )
         )
         {
@@ -6439,7 +6440,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             throw Fault(
                 "DPY4003",
-                $"range() expected 1 to 3 arguments ({arguments.Count} given).",
+                arguments.Count == 0
+                    ? "range expected at least 1 argument, got 0"
+                    : $"range expected at most 3 arguments, got {arguments.Count}",
                 span,
                 "TypeError"
             );
@@ -7915,6 +7918,26 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         };
     }
 
+    /// <summary>
+    /// A value as the dictionary it is or carries: an exact dict, or a subclass instance
+    /// standing on dictionary storage.
+    /// </summary>
+    private static bool TryAsDictionary(PythonValue value, out PythonDictionaryValue dictionary)
+    {
+        if (value is PythonDictionaryValue exact)
+        {
+            dictionary = exact;
+            return true;
+        }
+        if (PythonSubclassStorage.StorageKindOf(value) == "dict")
+        {
+            dictionary = PythonSubclassStorage.Of(value) as PythonDictionaryValue ?? null!;
+            return dictionary is not null;
+        }
+        dictionary = null!;
+        return false;
+    }
+
     private static PythonValue ApplyComparison(
         PythonOpCode opCode,
         PythonValue left,
@@ -8464,10 +8487,13 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
         if (
             opCode == PythonOpCode.BinaryOr
-            && left is PythonDictionaryValue leftDictionary
-            && right is PythonDictionaryValue rightDictionary
+            && TryAsDictionary(left, out var leftDictionary)
+            && TryAsDictionary(right, out var rightDictionary)
         )
         {
+            // The union of two dictionaries builds a plain dict, in the left operand's order.
+            // A subclass instance counts — `Counter(...) | {...}` answers NotImplemented from
+            // its own `__or__`, and this is `dict.__or__`'s answer that follows it.
             var merged = leftDictionary.ShallowCopy(span);
             ManagedObjectProtocols.MergeDictionary(merged, rightDictionary, span);
 

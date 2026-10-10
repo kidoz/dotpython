@@ -211,6 +211,15 @@ internal static class UserObjectProtocols
         value is PythonManagedObjectValue managed
         && ManagedObjectProtocols.TryGetTypeAttribute(managed.Type, name, out _);
 
+    /// <summary>
+    /// Whether the type itself supplies the slot, rather than inheriting one. CPython tries
+    /// the reflected slot of a subclass operand first only when that subclass *overrides*
+    /// it, which is the difference between `Sub(dict) | other` and `Dict | Sub(dict)`.
+    /// </summary>
+    internal static bool OwnsSpecialMethod(PythonValue value, string name) =>
+        value is PythonManagedObjectValue managed
+        && ManagedObjectProtocols.TryGetOwnTypeAttribute(managed.Type, name, out _);
+
     private static bool TryInvoke(
         PythonValue value,
         string name,
@@ -277,7 +286,7 @@ internal static class UserObjectProtocols
             && left is PythonManagedObjectValue leftInstance
             && !ReferenceEquals(rightInstance.Type, leftInstance.Type)
             && rightInstance.Type.Mro.Contains(leftInstance.Type)
-            && DefinesSpecialMethod(right, names.Reflected);
+            && OwnsSpecialMethod(right, names.Reflected);
 
         if (
             reflectedFirst
@@ -333,6 +342,16 @@ internal static class UserObjectProtocols
         if (left is not PythonManagedObjectValue)
             return false;
 
+        // A dictionary subclass unioned with another dictionary is `dict.__or__`'s to
+        // answer — `Counter(...) | {...}` answers NotImplemented and the plain dict's own
+        // union follows — so the pair steps aside for the interpreter as well.
+        if (
+            opCode == PythonOpCode.BinaryOr
+            && PythonSubclassStorage.StorageKindOf(left) == "dict"
+            && PythonSubclassStorage.Resolve(right) is PythonDictionaryValue
+        )
+            return false;
+
         throw ManagedObjectProtocols.Fault(
             "DPY4005",
             $"unsupported operand type(s) for {names.Symbol}: "
@@ -367,6 +386,11 @@ internal static class UserObjectProtocols
             && result is not PythonNotImplementedValue
         )
         {
+            // An in-place slot returns the object it was given, and the builtin slots of a
+            // storage subclass answer for the storage — `d |= {...}` is still the subclass
+            // instance, which is what CPython's `dict.__ior__` returning `self` gives.
+            if (ReferenceEquals(result, PythonSubclassStorage.Of(left)))
+                result = left;
             return true;
         }
 
@@ -468,7 +492,7 @@ internal static class UserObjectProtocols
             && left is PythonManagedObjectValue leftInstance
             && !ReferenceEquals(rightInstance.Type, leftInstance.Type)
             && rightInstance.Type.Mro.Contains(leftInstance.Type)
-            && DefinesSpecialMethod(right, reflectedNames.Forward);
+            && OwnsSpecialMethod(right, reflectedNames.Forward);
 
         if (
             reflectedFirst
@@ -494,6 +518,22 @@ internal static class UserObjectProtocols
         )
         {
             return true;
+        }
+
+        // A dictionary subclass whose `__eq__` declined — `Counter.__eq__` answers
+        // NotImplemented for anything that is not a counter — is compared as the dictionary
+        // it carries, which is `dict.__eq__`'s answer and is applied by the equality switch.
+        if (
+            comparison is PythonRichComparison.Equal or PythonRichComparison.NotEqual
+            && (
+                PythonSubclassStorage.StorageKindOf(left) == "dict"
+                    && right is PythonDictionaryValue
+                || PythonSubclassStorage.StorageKindOf(right) == "dict"
+                    && left is PythonDictionaryValue
+            )
+        )
+        {
+            return false;
         }
 
         switch (comparison)
@@ -671,6 +711,18 @@ internal static class UserObjectProtocols
         out PythonValue result
     ) => TryInvokeOnInstance(target, "__getitem__", [index], span, out result);
 
+    /// <summary>
+    /// Calls the instance's type's `__missing__`, which a miss on a dictionary storage
+    /// consults: `defaultdict` and `Counter` answer a missing key through it, and a user
+    /// subclass of `dict` that defines one sees its own.
+    /// </summary>
+    internal static bool TryInvokeMissing(
+        PythonValue instance,
+        PythonValue key,
+        TextSpan span,
+        out PythonValue result
+    ) => TryInvokeOnInstance(instance, "__missing__", [key], span, out result);
+
     internal static bool TrySetItem(
         PythonValue target,
         PythonValue index,
@@ -748,7 +800,7 @@ internal static class UserObjectProtocols
         {
             throw ManagedObjectProtocols.Fault(
                 "DPY4014",
-                $"unhashable type: '{instance.Type.Name}'",
+                $"unhashable type: '{instance.Type.ReportedName}'",
                 span,
                 "TypeError"
             );

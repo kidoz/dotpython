@@ -792,7 +792,15 @@ internal static class PythonSlotMethods
                     {
                         if (arguments.Count != 0)
                             throw Fault($"expected 0 arguments, got {arguments.Count}");
-                        return new PythonTextValue(receiver!.ToDisplayString());
+                        // `object.__str__` is `repr(self)`, so a subclass instance the storage
+                        // stands for answers with its own `__repr__`: `defaultdict` and
+                        // `Counter` print their constructor form, a plain subclass prints the
+                        // builtin's repr it inherits.
+                        return new PythonTextValue(
+                            receiver is PythonDictionaryValue { Owner: { } owner }
+                                ? owner.ToRepresentationString()
+                                : receiver!.ToDisplayString()
+                        );
                     }
                 )
             );
@@ -897,15 +905,13 @@ internal static class PythonSlotMethods
             "dict",
             "__or__",
             1,
-            (receiver, arguments) =>
-                Binary("dict", receiver, arguments[0], PythonOpCode.BinaryOr, "__or__")
+            (receiver, arguments) => DictionaryUnion(receiver, arguments[0], reflected: false)
         );
         Wrapper(
             "dict",
             "__ror__",
             1,
-            (receiver, arguments) =>
-                Reflected("dict", receiver, arguments[0], PythonOpCode.BinaryOr, "__ror__")
+            (receiver, arguments) => DictionaryUnion(receiver, arguments[0], reflected: true)
         );
         Wrapper(
             "dict",
@@ -1159,6 +1165,45 @@ internal static class PythonSlotMethods
         PythonOpCode opCode,
         string name
     ) => PythonVirtualMachine.ApplyBinaryOperator(opCode, other, receiver, default);
+
+    /// <summary>
+    /// `dict.__or__` and `dict.__ror__`: the union of the two dictionaries, built as a plain
+    /// dict with the left operand's order first. Computing it here rather than re-entering
+    /// the operator is what CPython's `dict_or` does, and what keeps
+    /// `Counter(...) | {...}` — where `Counter.__or__` answers NotImplemented and the dict's
+    /// reflected slot takes over — from dispatching back into itself.
+    /// </summary>
+    private static PythonValue DictionaryUnion(PythonValue self, PythonValue other, bool reflected)
+    {
+        if (!TryAsDictionary(self, out var selfDictionary))
+            return PythonNotImplementedValue.Instance;
+        var rightOperand = reflected ? selfDictionary : other;
+        var leftOperand = reflected ? other : selfDictionary;
+        if (
+            !TryAsDictionary(leftOperand, out var leftDictionary)
+            || !TryAsDictionary(rightOperand, out var rightDictionary)
+        )
+            return PythonNotImplementedValue.Instance;
+        var merged = leftDictionary.ShallowCopy(default);
+        ManagedObjectProtocols.MergeDictionary(merged, rightDictionary, default);
+        return merged;
+    }
+
+    private static bool TryAsDictionary(PythonValue value, out PythonDictionaryValue dictionary)
+    {
+        if (value is PythonDictionaryValue exact)
+        {
+            dictionary = exact;
+            return true;
+        }
+        if (PythonSubclassStorage.StorageKindOf(value) == "dict")
+        {
+            dictionary = PythonSubclassStorage.Of(value) as PythonDictionaryValue ?? null!;
+            return dictionary is not null;
+        }
+        dictionary = null!;
+        return false;
+    }
 
     /// <summary>`__contains__` as a method descriptor, which reports its own arity.</summary>
     private static PythonTruthValue Contains(

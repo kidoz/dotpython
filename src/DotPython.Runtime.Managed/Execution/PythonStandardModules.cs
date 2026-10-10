@@ -354,7 +354,13 @@ internal static class PythonStandardModules
         modules["collections"] = PythonModuleDefinition.Native(
             "<dotpython collections>",
             isPackage: true,
-            globals => globals.SetValue("deque", PythonDequeMethods.Type)
+            globals =>
+            {
+                globals.SetValue("deque", PythonDequeMethods.Type);
+                globals.SetValue("defaultdict", PythonDefaultDict.Type);
+                globals.SetValue("Counter", PythonCounter.Type);
+                globals.SetValue("OrderedDict", PythonOrderedDict.Type);
+            }
         );
         modules["types"] = PythonModuleDefinition.Native(
             "<dotpython types>",
@@ -2024,11 +2030,18 @@ internal static class PythonStandardModules
             return hooked;
         }
 
-        var copy = new PythonManagedObjectValue(instance.Type);
+        // A storage subclass copies the storage it carries beside its attributes, so the
+        // copy is the same kind of dictionary rather than a bare instance.
+        var copy = new PythonManagedObjectValue(
+            instance.Type,
+            PythonSubclassStorage.Allocate(instance.Type)
+        );
         if (deep)
         {
             memo!.Set(instance, copy, span);
         }
+
+        CopyStorage(instance, copy, deep, memo, span, mode);
 
         CopyAttributes(
             instance.Attributes.Dictionary,
@@ -2040,6 +2053,49 @@ internal static class PythonStandardModules
         );
 
         return copy;
+    }
+
+    /// <summary>
+    /// Copies the builtin storage a subclass instance carries: the items of a dictionary,
+    /// or the elements of a list, deep-copied when the caller asked for that.
+    /// </summary>
+    private static void CopyStorage(
+        PythonManagedObjectValue instance,
+        PythonManagedObjectValue copy,
+        bool deep,
+        PythonDeepCopyMemo? memo,
+        TextSpan span,
+        DeepCopyMode mode
+    )
+    {
+        if (
+            PythonSubclassStorage.Of(instance) is not { } source
+            || PythonSubclassStorage.Of(copy) is not { } target
+        )
+            return;
+        // A defaultdict's factory belongs to the copy as well.
+        PythonDictLikeTypes.CopyState(instance, copy);
+        switch (source)
+        {
+            case PythonDictionaryValue sourceDictionary
+                when target is PythonDictionaryValue targetDictionary:
+                foreach (var item in new List<PythonDictionaryItemValue>(sourceDictionary.Items))
+                {
+                    ManagedObjectProtocols.SetDictionaryItem(
+                        targetDictionary,
+                        deep ? DeepCopy(item.Key, memo!, span, mode) : item.Key,
+                        deep ? DeepCopy(item.Value, memo!, span, mode) : item.Value,
+                        span
+                    );
+                }
+                break;
+            case PythonListValue sourceList when target is PythonListValue targetList:
+                foreach (var element in sourceList.Elements)
+                {
+                    targetList.Elements.Add(deep ? DeepCopy(element, memo!, span, mode) : element);
+                }
+                break;
+        }
     }
 
     private static PythonValue CopyException(

@@ -19,7 +19,9 @@ public sealed class SetCachedHashExecutionTests
 
         var copy = source.Copy();
         var frozen = source.Copy(frozen: true);
-        var dictionary = ManagedObjectProtocols.DictionaryFromKeys(frozen, fill, default);
+        var dictionary = Assert.IsType<PythonDictionaryValue>(
+            ManagedObjectProtocols.DictionaryFromKeys(frozen, fill, default)
+        );
 
         Assert.NotSame(source.Elements, copy.Elements);
         Assert.NotSame(source.Entries, copy.Entries);

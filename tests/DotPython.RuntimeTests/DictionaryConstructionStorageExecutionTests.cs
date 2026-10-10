@@ -19,7 +19,9 @@ public sealed class DictionaryConstructionStorageExecutionTests
         source.RemoveItem(removed);
         var fill = new PythonListValue([]);
 
-        var result = ManagedObjectProtocols.DictionaryFromKeys(source, fill, default);
+        var result = Assert.IsType<PythonDictionaryValue>(
+            ManagedObjectProtocols.DictionaryFromKeys(source, fill, default)
+        );
 
         var item = Assert.Single(result.Items);
         Assert.NotSame(source, result);

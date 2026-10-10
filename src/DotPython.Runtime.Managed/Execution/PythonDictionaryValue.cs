@@ -21,6 +21,13 @@ internal sealed record PythonDictionaryValue : PythonValue
     internal int EntryCount => _entries.Count;
     internal int SizeVersion { get; private set; }
 
+    /// <summary>
+    /// The subclass instance this dictionary is the storage of, or null for a dictionary
+    /// that stands on its own. `dict[key]` on a miss asks that instance's type for
+    /// `__missing__`, which is how `defaultdict` and `Counter` answer a missing key.
+    /// </summary>
+    internal PythonManagedObjectValue? Owner { get; set; }
+
     internal PythonDictionaryItemValue? GetEntry(int position) => _entries[position];
 
     private void EnsureKeyKind(PythonValue key, TextSpan span)
@@ -40,6 +47,32 @@ internal sealed record PythonDictionaryValue : PythonValue
         _entries.Add(item);
         _items.Add(item);
         _usable--;
+        SizeVersion++;
+    }
+
+    /// <summary>
+    /// Moves an entry to the front of the order, which is what
+    /// `OrderedDict.move_to_end(key, last=False)` does. The entry keeps its slot in the
+    /// compact table; only its position among the items changes.
+    /// </summary>
+    internal void MoveItemToFront(PythonDictionaryItemValue item)
+    {
+        if (!_entries.Remove(item))
+            return;
+        _entries.Insert(0, item);
+        _items.Remove(item);
+        _items.Insert(0, item);
+        SizeVersion++;
+    }
+
+    /// <summary>Moves an entry to the back of the order.</summary>
+    internal void MoveItemToEnd(PythonDictionaryItemValue item)
+    {
+        if (!_entries.Remove(item))
+            return;
+        _entries.Add(item);
+        _items.Remove(item);
+        _items.Add(item);
         SizeVersion++;
     }
 

@@ -1822,6 +1822,9 @@ internal static class PythonItertools
 
     private static readonly PythonManagedTypeValue ChainType = BuildChain();
 
+    /// <summary>The `itertools.chain` type, which `Counter.elements` hands out.</summary>
+    internal static PythonManagedTypeValue Chain => ChainType;
+
     private static PythonManagedTypeValue BuildChain()
     {
         var type = IteratorType("chain", ChainDoc);

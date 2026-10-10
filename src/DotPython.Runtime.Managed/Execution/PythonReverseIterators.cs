@@ -78,8 +78,11 @@ internal static class PythonReverseIterators
         {
             PythonListValue => "list_reverseiterator",
             PythonRangeValue range => GetRangeTypeName(range),
-            PythonDictionaryValue => "dict_reversekeyiterator",
+            PythonDictionaryValue dictionary => PythonOrderedDict.IsOrderedStorage(dictionary)
+                ? "odict_iterator"
+                : "dict_reversekeyiterator",
             PythonDequeValue => "_deque_reverse_iterator",
+            PythonDictionaryViewValue view when view.DisplayKind != view.Kind => "odict_iterator",
             PythonDictionaryViewValue { Kind: "dict_values" } => "dict_reversevalueiterator",
             PythonDictionaryViewValue { Kind: "dict_items" } => "dict_reverseitemiterator",
             PythonDictionaryViewValue => "dict_reversekeyiterator",

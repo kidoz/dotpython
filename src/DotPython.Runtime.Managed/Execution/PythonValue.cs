@@ -307,9 +307,11 @@ internal sealed record PythonBuiltinFunctionValue(
     /// <summary>
     /// The type object that handed this function out, when one did: `dict.fromkeys` reports
     /// `&lt;built-in method fromkeys of type object at 0x...&gt;`, a function in a module keeps
-    /// reporting `&lt;built-in function fromkeys&gt;`.
+    /// reporting `&lt;built-in function fromkeys&gt;`. A classmethod's body reads it, so a
+    /// subclass the method was reached through can replace it where the function is handed
+    /// out — each access builds its own function, and only that one is rewritten.
     /// </summary>
-    internal PythonValue? BoundTo { get; init; }
+    internal PythonValue? BoundTo { get; set; }
 
     internal override string ToDisplayString() =>
         BoundTo is null ? $"<built-in function {Name}>" : PythonBoundDisplay.Of(Name, BoundTo);
@@ -643,8 +645,33 @@ internal sealed record PythonProtocolFunctionValue(
     /// <summary>The type object that handed this function out, when one did.</summary>
     internal PythonValue? BoundTo { get; init; }
 
+    /// <summary>
+    /// The type whose type object declares this method, for a method the runtime builds
+    /// rather than loads: a static type reports it as `&lt;method 'x' of 'mod.T' objects&gt;`
+    /// and a slot it fills as `&lt;slot wrapper 'x' of 'mod.T' objects&gt;`, which is how
+    /// CPython reports the C methods of `collections`.
+    /// </summary>
+    internal string? DeclaringType { get; init; }
+
+    /// <summary>
+    /// Whether the declaring type fills a slot rather than defining a method, which
+    /// CPython reports as a wrapper at every turn.
+    /// </summary>
+    internal bool IsSlotWrapper { get; init; }
+
+    /// <summary>
+    /// Whether the method belongs to a class written in Python rather than a static type:
+    /// `Counter.update` is a function, with the repr a `def` carries.
+    /// </summary>
+    internal bool IsPythonMethod { get; init; }
+
     internal override string ToDisplayString() =>
         IsTypeMethodDescriptor ? $"<method '{Name}' of 'type' objects>"
+        : IsPythonMethod && DeclaringType is { } pythonType
+            ? $"<function {pythonType}.{Name} at 0x{RuntimeHelpers.GetHashCode(this):x}>"
+        : DeclaringType is { } declaringType
+            ? (IsSlotWrapper ? "<slot wrapper '" : "<method '")
+                + $"{Name}' of '{declaringType}' objects>"
         : BoundTo is null ? $"<built-in function {Name}>"
         : PythonBoundDisplay.Of(Name, BoundTo);
 
@@ -686,10 +713,12 @@ internal sealed record PythonBoundMethodValue(
     internal bool TargetsStorage { get; init; }
 
     internal override string ToDisplayString() =>
-        IsWrapper
+        Function is { IsPythonMethod: true, DeclaringType: { } pythonType }
+            ? $"<bound method {pythonType}.{Name} of {Target.ToRepresentationString()}>"
+        : IsWrapper
             ? $"<method-wrapper '{Name}' of {PythonBoundDisplay.QualifiedTypeName(Target)} object at "
                 + $"0x{RuntimeHelpers.GetHashCode(Target):x}>"
-            : PythonBoundDisplay.Of(Name, Target);
+        : PythonBoundDisplay.Of(Name, Target);
 }
 
 internal sealed record PythonTypeMetadataDescriptorValue(string Name) : PythonValue
@@ -727,7 +756,20 @@ internal sealed record PythonPropertyValue(
     PythonValue? Deleter
 ) : PythonValue
 {
-    internal override string ToDisplayString() => "<property object>";
+    /// <summary>
+    /// The member a native type publishes in place of a property: `default_factory` reports
+    /// `<member 'default_factory' of 'collections.defaultdict' objects>`, which is what the
+    /// C type's own descriptor prints.
+    /// </summary>
+    internal string? MemberDisplay { get; init; }
+
+    internal override string ToDisplayString()
+    {
+        if (MemberDisplay is not { } owner)
+            return "<property object>";
+        var name = Getter is PythonProtocolFunctionValue { Name: var member } ? member : owner;
+        return $"<member '{name}' of '{owner}' objects>";
+    }
 
     public bool Equals(PythonPropertyValue? other) => ReferenceEquals(this, other);
 
@@ -867,6 +909,17 @@ internal sealed record PythonManagedTypeValue : PythonValue
     internal string QualifiedDisplayName =>
         Module is null or "builtins" ? Name : $"{Module}.{QualName ?? Name}";
 
+    /// <summary>
+    /// Whether refusals and refusal messages name this type the way a static C type does,
+    /// with its module in front — `collections.defaultdict` — rather than by the bare name
+    /// a heap type carries. Set by the runtime's own C-shaped types; user classes leave it
+    /// false, as CPython's heap types report their `__name__` alone.
+    /// </summary>
+    internal bool ReportsQualifiedName { get; set; }
+
+    /// <summary>The name this type goes by in a message or a refusal.</summary>
+    internal string ReportedName => ReportsQualifiedName ? QualifiedDisplayName : Name;
+
     public bool Equals(PythonManagedTypeValue? other) => ReferenceEquals(this, other);
 
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
@@ -884,6 +937,10 @@ internal sealed record PythonManagedObjectValue : PythonValue
         ArgumentNullException.ThrowIfNull(type);
         Type = type;
         Payload = payload;
+        // A dictionary storage points back at the instance it belongs to, which is what a
+        // miss on `dict[key]` consults for `__missing__`.
+        if (payload is PythonDictionaryValue storage)
+            storage.Owner = this;
     }
 
     internal PythonAttributeDictionary Attributes { get; set; } = new();
@@ -1477,6 +1534,16 @@ internal sealed record PythonMappingProxyValue(PythonValue Mapping) : PythonValu
 internal sealed record PythonDictionaryViewValue(string Kind, PythonDictionaryValue Dictionary)
     : PythonValue
 {
+    /// <summary>
+    /// The name the view reports: an ordered dictionary's views are `odict_keys`,
+    /// `odict_items` and `odict_values`, while the behaviour behind them is the dictionary's.
+    /// </summary>
+    internal string DisplayKind =>
+        Kind.StartsWith("dict_", StringComparison.Ordinal)
+        && PythonOrderedDict.IsOrderedStorage(Dictionary)
+            ? "odict_" + Kind["dict_".Length..]
+            : Kind;
+
     internal PythonListValue Snapshot =>
         new([.. Dictionary.Items.Select(item => PythonMappingProxies.ViewItem(item, Kind))]);
 
@@ -1486,7 +1553,7 @@ internal sealed record PythonDictionaryViewValue(string Kind, PythonDictionaryVa
             return "...";
         try
         {
-            return $"{Kind}({Snapshot.ToDisplayString()})";
+            return $"{DisplayKind}({Snapshot.ToDisplayString()})";
         }
         finally
         {

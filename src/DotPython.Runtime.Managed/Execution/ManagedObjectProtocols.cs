@@ -100,7 +100,7 @@ internal static class ManagedObjectProtocols
                 ) => UserObjectProtocols.Dispatcher!.Invoke(call, [.. arguments], span),
             PythonManagedObjectValue instance => throw Fault(
                 "DPY4003",
-                $"'{instance.Type.Name}' object is not callable",
+                $"'{instance.Type.ReportedName}' object is not callable",
                 span,
                 "TypeError"
             ),
@@ -438,25 +438,28 @@ internal static class ManagedObjectProtocols
                 return matchArguments;
             case PythonDictionaryValue when name == "fromkeys":
             case PythonBuiltinTypeValue { Name: "dict" } when name == "fromkeys":
-                return BindToType(
-                    new PythonBuiltinFunctionValue(
-                        "fromkeys",
-                        (arguments, callSpan) =>
-                        {
-                            PythonBuiltinFunctions.RequireArgumentCount(
-                                "fromkeys",
-                                arguments,
-                                1,
-                                2,
-                                callSpan
-                            );
-                            var fill =
-                                arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
-                            return DictionaryFromKeys(arguments[0], fill, callSpan);
-                        }
-                    ),
-                    PythonBuiltinTypes.Dict
+            {
+                // The class the method was reached through rides in `BoundTo`, so a subclass
+                // is the class the result belongs to.
+                PythonBuiltinFunctionValue fromKeys = null!;
+                fromKeys = new PythonBuiltinFunctionValue(
+                    "fromkeys",
+                    (arguments, callSpan) =>
+                    {
+                        PythonBuiltinFunctions.RequireArgumentCount(
+                            "fromkeys",
+                            arguments,
+                            1,
+                            2,
+                            callSpan
+                        );
+                        var fill = arguments.Count == 2 ? arguments[1] : PythonNoneValue.Instance;
+                        return DictionaryFromKeys(arguments[0], fill, callSpan, fromKeys.BoundTo);
+                    }
                 );
+                fromKeys.BoundTo = PythonBuiltinTypes.Dict;
+                return fromKeys;
+            }
             case PythonBuiltinTypeValue { Name: "str" } builtin when name == "maketrans":
                 return PythonTextMethods.CreateMakeTrans() with { BoundTo = builtin };
             // `bytearray` inherits both classmethods from `bytes`.
@@ -1551,6 +1554,21 @@ internal static class ManagedObjectProtocols
     private static bool AllowsInstanceDictionary(PythonManagedObjectValue instance) =>
         instance.Type.Slots is not { } layout || layout.AllowsInstanceDictionary;
 
+    /// <summary>
+    /// Whether a class along the instance's resolution order declares `__dict__` itself,
+    /// which is what `class C: __dict__ = 42` does. A builtin's generic entry — the one
+    /// `dict` and `object` contribute — leaves the instance dictionary in charge.
+    /// </summary>
+    private static bool DeclaresDictionary(PythonManagedTypeValue type)
+    {
+        foreach (var entry in type.ResolutionOrder ?? [.. type.Mro])
+        {
+            if (TryGetOwnTypeAttribute(entry, "__dict__", out _))
+                return entry is PythonManagedTypeValue;
+        }
+        return false;
+    }
+
     internal static bool TryGetInstanceAttribute(
         PythonManagedObjectValue instance,
         string name,
@@ -1559,13 +1577,21 @@ internal static class ManagedObjectProtocols
     )
     {
         var hasTypeValue = TryGetTypeAttribute(instance.Type, name, out var typeValue);
+
         if (hasTypeValue && IsDataDescriptor(typeValue) && HasDescriptorGetter(typeValue))
         {
             value = BindDescriptor(typeValue, instance, instance.Type, span, name);
             return true;
         }
 
-        if (name == "__dict__" && !hasTypeValue && AllowsInstanceDictionary(instance))
+        // A value that carries an instance dictionary answers `__dict__` with it. A class
+        // that declares its own `__dict__` — `class C: __dict__ = 42` — answers instead,
+        // while the generic entry a builtin contributes does not.
+        if (
+            name == "__dict__"
+            && AllowsInstanceDictionary(instance)
+            && !DeclaresDictionary(instance.Type)
+        )
         {
             value = instance.Attributes.Dictionary;
             return true;
@@ -1574,6 +1600,18 @@ internal static class ManagedObjectProtocols
         if (instance.Attributes.TryGetValue(name, out value!))
         {
             return true;
+        }
+
+        // The generic `__dict__` a builtin contributes is not an instance's mapping, so a
+        // value that carries no dictionary and declares none answers AttributeError.
+        if (
+            name == "__dict__"
+            && !DeclaresDictionary(instance.Type)
+            && !AllowsInstanceDictionary(instance)
+        )
+        {
+            value = null!;
+            return false;
         }
 
         if (hasTypeValue)
@@ -1598,7 +1636,7 @@ internal static class ManagedObjectProtocols
     ) =>
         TryGetInstanceAttribute(instance, name, span, out var value)
             ? value
-            : throw MissingAttribute(instance.Type.Name, name, span);
+            : throw MissingAttribute(instance.Type.ReportedName, name, span);
 
     /// <summary>`object.__setattr__`: data descriptors and properties, then the instance dictionary.</summary>
     internal static void SetInstanceAttribute(
@@ -1622,13 +1660,13 @@ internal static class ManagedObjectProtocols
         {
             throw Fault(
                 "DPY4022",
-                $"'{instance.Type.Name}' object has no attribute '{name}' and no __dict__ for setting new attributes",
+                $"'{instance.Type.ReportedName}' object has no attribute '{name}' and no __dict__ for setting new attributes",
                 span,
                 "AttributeError"
             );
         }
 
-        if (name == "__dict__" && !TryGetTypeAttribute(instance.Type, name, out _))
+        if (name == "__dict__" && !DeclaresDictionary(instance.Type))
         {
             instance.Attributes = new PythonAttributeDictionary(
                 RequireNamespaceDictionary(value, span)
@@ -1674,13 +1712,13 @@ internal static class ManagedObjectProtocols
                     ? Fault("DPY4022", name, span, "AttributeError")
                     : Fault(
                         "DPY4022",
-                        $"'{instance.Type.Name}' object has no attribute '{name}' and no __dict__ for setting new attributes",
+                        $"'{instance.Type.ReportedName}' object has no attribute '{name}' and no __dict__ for setting new attributes",
                         span,
                         "AttributeError"
                     );
             }
 
-            throw MissingAttribute(instance.Type.Name, name, span);
+            throw MissingAttribute(instance.Type.ReportedName, name, span);
         }
     }
 
@@ -2020,7 +2058,7 @@ internal static class ManagedObjectProtocols
                 ? userLength
                 : throw Fault(
                     "DPY4011",
-                    $"object of type '{instance.Type.Name}' has no len()",
+                    $"object of type '{instance.Type.ReportedName}' has no len()",
                     span,
                     "TypeError"
                 ),
@@ -2817,7 +2855,7 @@ internal static class ManagedObjectProtocols
 
             throw Fault(
                 "DPY4011",
-                $"'{subscriptable.Type.Name}' object is not subscriptable",
+                $"'{subscriptable.Type.ReportedName}' object is not subscriptable",
                 span,
                 "TypeError"
             );
@@ -2920,7 +2958,14 @@ internal static class ManagedObjectProtocols
             case PythonDictionaryValue dictionary
                 when TryFindDictionaryItem(dictionary, index, out var item):
                 return item.Value;
-            case PythonDictionaryValue:
+            case PythonDictionaryValue dictionary:
+                // A subclass storage asks its own type before giving up, exactly as
+                // `dict_subscript` does for a dictionary that is not exactly a dict.
+                if (
+                    dictionary.Owner is { } owner
+                    && UserObjectProtocols.TryInvokeMissing(owner, index, span, out var missing)
+                )
+                    return missing;
                 throw MissingKey(index);
             case PythonExternalObjectValue external:
                 return external.Protocol.GetItem(index, span);
@@ -2977,7 +3022,7 @@ internal static class ManagedObjectProtocols
 
             throw Fault(
                 "DPY4011",
-                $"'{assignable.Type.Name}' object does not support item assignment",
+                $"'{assignable.Type.ReportedName}' object does not support item assignment",
                 span,
                 "TypeError"
             );
@@ -3087,7 +3132,7 @@ internal static class ManagedObjectProtocols
         {
             throw Fault(
                 "DPY4015",
-                $"argument of type '{instance.Type.Name}' is not a container or iterable",
+                $"argument of type '{instance.Type.ReportedName}' is not a container or iterable",
                 span,
                 "TypeError"
             );
@@ -3394,7 +3439,7 @@ internal static class ManagedObjectProtocols
 
             throw Fault(
                 "DPY4011",
-                $"'{deletable.Type.Name}' object doesn't support item deletion",
+                $"'{deletable.Type.ReportedName}' object doesn't support item deletion",
                 span,
                 "TypeError"
             );
@@ -3981,7 +4026,7 @@ internal static class ManagedObjectProtocols
             PythonMappingProxyValue => "mappingproxy",
             PythonSliceValue => "slice",
             PythonSetValue set => set.IsFrozen ? "frozenset" : "set",
-            PythonDictionaryViewValue view => view.Kind,
+            PythonDictionaryViewValue view => view.DisplayKind,
             PythonRangeValue => "range",
             PythonEnumerateSourceValue => "enumerate",
             PythonZipSourceValue => "zip",
@@ -4009,7 +4054,7 @@ internal static class ManagedObjectProtocols
             PythonPropertyValue => "property",
             PythonStaticMethodValue => "staticmethod",
             PythonClassMethodValue => "classmethod",
-            PythonManagedObjectValue instance => instance.Type.Name,
+            PythonManagedObjectValue instance => instance.Type.ReportedName,
             PythonExternalObjectValue { Protocol: IPythonNamedExternalValue named } =>
                 named.TypeName,
             PythonExternalObjectValue => "object",
@@ -4140,6 +4185,19 @@ internal static class ManagedObjectProtocols
         string? attributeName = null
     )
     {
+        // `dict.fromkeys` is a classmethod, so reached through a subclass it builds that
+        // subclass: `D.fromkeys(['x'])` is a D, and `defaultdict.fromkeys('ab')` carries a
+        // None factory. The class rides in the function's `BoundTo`, which its body reads.
+        if (
+            value is PythonBuiltinFunctionValue { Name: "fromkeys" } fromKeysBuiltin
+            && owner is PythonManagedTypeValue declared
+            && PythonSubclassStorage.StorageKindOf(declared) == "dict"
+        )
+        {
+            // The function's own body reads `BoundTo`, so the replacement has to land on the
+            // instance the body closed over rather than on a copy of it.
+            fromKeysBuiltin.BoundTo = declared;
+        }
         if (
             GetManagedType(value) is { } descriptorType
             && TryGetTypeAttribute(descriptorType, "__get__", out var getter)
@@ -4177,8 +4235,15 @@ internal static class ManagedObjectProtocols
             ),
             PythonMethodDescriptorValue descriptor when instance is not null =>
                 BindBuiltinDescriptor(descriptor, instance, owner, span),
+            // A method a native type declares stays unbound when the type object itself is
+            // the access' target, exactly as a C method read from its own type does.
+            PythonProtocolFunctionValue { DeclaringType: not null } function
+                when instance is PythonManagedTypeValue => function,
             PythonProtocolFunctionValue function when instance is not null =>
-                new PythonBoundMethodValue(function.Name, instance, function),
+                new PythonBoundMethodValue(function.Name, instance, function)
+                {
+                    IsWrapper = function.IsSlotWrapper,
+                },
             PythonFunctionValue function when instance is not null =>
                 new PythonBoundUserMethodValue(function.Name, instance, function),
             PythonStaticMethodValue staticMethod => staticMethod.Function,
@@ -4410,15 +4475,32 @@ internal static class ManagedObjectProtocols
         return (int)value;
     }
 
-    internal static PythonDictionaryValue DictionaryFromKeys(
+    /// <summary>
+    /// `dict.fromkeys`: a classmethod, so it builds the class it was reached through —
+    /// `D.fromkeys(['x'])` is a `D`, and `defaultdict.fromkeys('ab')` carries a None
+    /// factory — and every key is set to the fill value in iteration order.
+    /// </summary>
+    internal static PythonValue DictionaryFromKeys(
         PythonValue source,
         PythonValue fill,
-        TextSpan span
+        TextSpan span,
+        PythonValue? owner = null
     )
     {
+        // An exact dictionary allocates its storage directly, which reserves the capacity
+        // fromkeys would otherwise grow into.
+        var target =
+            owner is PythonManagedTypeValue declared
+            && PythonSubclassStorage.StorageKindOf(declared) == "dict"
+            && UserObjectProtocols.Dispatcher is { } dispatcher
+                ? dispatcher.CallType(declared, [], [], [], span)
+                : null;
         if (source is PythonDictionaryValue sourceDictionary)
         {
-            var dictionary = sourceDictionary.CreateFromKeysStorage(span);
+            var dictionary = target is null
+                ? sourceDictionary.CreateFromKeysStorage(span)
+                : PythonSubclassStorage.Of(target) as PythonDictionaryValue
+                    ?? (PythonDictionaryValue)sourceDictionary.CreateFromKeysStorage(span);
             for (var position = 0; position < sourceDictionary.EntryCount; position++)
             {
                 UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
@@ -4426,29 +4508,32 @@ internal static class ManagedObjectProtocols
                 if (item is not null)
                     SetDictionaryItemKnownHash(dictionary, item.Key, fill, item.KeyHash, span);
             }
-            return dictionary;
+            return target ?? dictionary;
         }
         if (source is PythonSetValue sourceSet)
         {
-            var dictionary = PythonDictionaryValue.CreateFromSetStorage(
-                sourceSet.Elements.Count,
-                span
-            );
+            var dictionary = target is null
+                ? PythonDictionaryValue.CreateFromSetStorage(sourceSet.Elements.Count, span)
+                : PythonSubclassStorage.Of(target) as PythonDictionaryValue
+                    ?? PythonDictionaryValue.CreateFromSetStorage(sourceSet.Elements.Count, span);
             for (var position = 0; position < sourceSet.Entries.Count; position++)
             {
                 UserObjectProtocols.Dispatcher?.CheckIterationWork(span);
                 var entry = sourceSet.Entries[position];
                 SetDictionaryItemKnownHash(dictionary, entry.Value, fill, entry.Hash, span);
             }
-            return dictionary;
+            return target ?? dictionary;
         }
-        var result = new PythonDictionaryValue([]);
+        var result = target is null
+            ? new PythonDictionaryValue([])
+            : PythonSubclassStorage.Of(target) as PythonDictionaryValue
+                ?? new PythonDictionaryValue([]);
         var iterator = GetIterator(source, span);
         // Insert before requesting the next key: hashing may change the iterable
         // or fail, and fromkeys never requests a length hint.
         while (TryGetNext(iterator, out var key, span))
             SetDictionaryItem(result, key, fill, span);
-        return result;
+        return target ?? result;
     }
 
     internal static void SetDictionaryItem(

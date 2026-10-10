@@ -155,7 +155,19 @@ internal static class PythonBuiltinFunctions
 
     private static PythonSliceValue Slice(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        RequireArgumentCount("slice", arguments, 1, 3, span);
+        // The slice constructor words its refusals like the other type constructors rather
+        // than like the builtin functions.
+        if (arguments.Count is < 1 or > 3)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                arguments.Count == 0
+                    ? "slice expected at least 1 argument, got 0"
+                    : $"slice expected at most 3 arguments, got {arguments.Count}",
+                span,
+                "TypeError"
+            );
+        }
         return arguments.Count switch
         {
             1 => new PythonSliceValue(

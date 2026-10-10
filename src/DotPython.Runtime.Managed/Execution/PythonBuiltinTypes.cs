@@ -204,7 +204,12 @@ internal static class PythonBuiltinTypes
             PythonIteratorValue { Iterable: PythonRangeValue range } => GetRangeIteratorTypeName(
                 range
             ),
-            PythonIteratorValue { Iterable: PythonDictionaryValue } => "dict_keyiterator",
+            PythonIteratorValue { Iterable: PythonDictionaryValue } dictionaryIterator =>
+                PythonOrderedDict.IteratorName(
+                    dictionaryIterator.Iterable as PythonDictionaryValue ?? null!
+                ),
+            PythonIteratorValue { Iterable: PythonDictionaryViewValue view }
+                when view.DisplayKind != view.Kind => "odict_iterator",
             PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_keys" } } =>
                 "dict_keyiterator",
             PythonIteratorValue { Iterable: PythonDictionaryViewValue { Kind: "dict_values" } } =>
@@ -824,19 +829,14 @@ internal static class PythonBuiltinTypes
             return dictionary;
         }
 
+        var position = 0;
         foreach (var pair in Materialize(arguments[0]))
         {
-            var elements = Materialize(pair);
-            if (elements.Count != 2)
-            {
-                throw Fault(
-                    $"The dictionary update sequence element has length {elements.Count}; "
-                        + "2 is required.",
-                    "ValueError",
-                    span
-                );
-            }
-
+            var elements = PythonBuiltinMethods.MaterializeDictionaryElement(
+                pair,
+                position++,
+                span
+            );
             ManagedObjectProtocols.SetDictionaryItem(dictionary, elements[0], elements[1], span);
         }
 
@@ -864,6 +864,10 @@ internal static class PythonBuiltinTypes
         return dictionary;
     }
 
+    /// <summary>
+    /// The constructors' argument-count check, in the wording CPython's type constructors
+    /// share: `dict expected at most 1 argument, got 2`.
+    /// </summary>
     private static void RequireArguments(
         string name,
         IReadOnlyList<PythonValue> arguments,
@@ -872,15 +876,19 @@ internal static class PythonBuiltinTypes
         TextSpan span
     )
     {
-        if (arguments.Count < minimum || arguments.Count > maximum)
+        if (arguments.Count >= minimum && arguments.Count <= maximum)
         {
-            throw Fault(
-                $"{name}() expected at most {maximum} argument(s), "
-                    + $"but received {arguments.Count}.",
-                "TypeError",
-                span
-            );
+            return;
         }
+
+        var (bound, count) =
+            arguments.Count < minimum ? ("at least", minimum) : ("at most", maximum);
+        throw Fault(
+            $"{name} expected {bound} {count} argument{(count == 1 ? "" : "s")}, "
+                + $"got {arguments.Count}",
+            "TypeError",
+            span
+        );
     }
 
     private static PythonRuntimeException Fault(string message, string pythonType, TextSpan span) =>
