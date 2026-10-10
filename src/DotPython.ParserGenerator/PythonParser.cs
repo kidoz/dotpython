@@ -3613,18 +3613,165 @@ public static class PythonParser
                 return Constant(Advance(), PythonConstantKind.EllipsisLiteral);
             }
 
-            if (Current.Kind == SyntaxTokenKind.FormattedStringLiteral)
+            if (
+                Current.Kind
+                is SyntaxTokenKind.StringLiteral
+                    or SyntaxTokenKind.BytesLiteral
+                    or SyntaxTokenKind.FormattedStringLiteral
+                    or SyntaxTokenKind.TemplateStringLiteral
+            )
             {
-                return ParseFormattedString(Advance());
-            }
-
-            if (Current.Kind == SyntaxTokenKind.TemplateStringLiteral)
-            {
-                return ParseFormattedString(Advance(), isTemplate: true);
+                return ParseAdjacentStrings();
             }
 
             return constantKind is null ? null : Constant(Advance(), constantKind.Value);
         }
+
+        /// <summary>
+        /// A literal, with any adjacent literals folded into it: `"a" "b"` is one string,
+        /// `"a" f"{x}"` is one f-string, and bytes never mix with anything that is not
+        /// bytes, nor a template string with anything that is not a template string.
+        /// </summary>
+        private PythonExpression ParseAdjacentStrings()
+        {
+            var parts = new List<PythonExpression> { ParseStringAtom() };
+            while (
+                Current.Kind
+                    is SyntaxTokenKind.StringLiteral
+                        or SyntaxTokenKind.BytesLiteral
+                        or SyntaxTokenKind.FormattedStringLiteral
+                        or SyntaxTokenKind.TemplateStringLiteral
+            )
+            {
+                parts.Add(ParseStringAtom());
+            }
+
+            return parts.Count == 1 ? parts[0] : FoldStrings(parts);
+        }
+
+        private PythonExpression ParseStringAtom() =>
+            Current.Kind switch
+            {
+                SyntaxTokenKind.StringLiteral => Constant(
+                    Advance(),
+                    PythonConstantKind.StringLiteral
+                ),
+                SyntaxTokenKind.BytesLiteral => Constant(
+                    Advance(),
+                    PythonConstantKind.BytesLiteral
+                ),
+                SyntaxTokenKind.FormattedStringLiteral => ParseFormattedString(Advance()),
+                _ => ParseFormattedString(Advance(), isTemplate: true),
+            };
+
+        private PythonExpression FoldStrings(List<PythonExpression> parts)
+        {
+            var span = TextSpan.FromBounds(parts[0].Span.Start, parts[^1].Span.End);
+            var hasBytes = parts.Exists(part =>
+                part is PythonConstantExpression { ConstantKind: PythonConstantKind.BytesLiteral }
+            );
+            var hasString = parts.Exists(part =>
+                part is PythonConstantExpression { ConstantKind: PythonConstantKind.StringLiteral }
+            );
+            var hasFormatted = parts.Exists(part => part is PythonFormattedStringExpression);
+            var hasTemplate = parts.Exists(part => part is PythonTemplateStringExpression);
+            // A template string joins only other template strings, and bytes join only
+            // bytes; anything else is the mix CPython refuses.
+            if (hasTemplate && (hasBytes || hasString || hasFormatted))
+            {
+                Report("DPY2001", TemplateMixMessage, span);
+                return parts[0];
+            }
+            if (hasBytes && (hasString || hasFormatted))
+            {
+                Report("DPY2001", BytesMixMessage, span);
+                return parts[0];
+            }
+            if (hasTemplate)
+                return FoldInterpolatedStrings(parts, span, isTemplate: true);
+            if (hasFormatted)
+                return FoldInterpolatedStrings(parts, span, isTemplate: false);
+
+            return new PythonConstantExpression(
+                hasBytes ? PythonConstantKind.BytesLiteral : PythonConstantKind.StringLiteral,
+                ((PythonConstantExpression)parts[0]).TokenText,
+                span,
+                [.. parts.Cast<PythonConstantExpression>()]
+            );
+        }
+
+        /// <summary>
+        /// An f-string or template string joined with its neighbours: the interpolated
+        /// strings contribute their parts, and each plain literal contributes itself,
+        /// whole, for the string reader to decode.
+        /// </summary>
+        private static PythonExpression FoldInterpolatedStrings(
+            List<PythonExpression> parts,
+            TextSpan span,
+            bool isTemplate
+        )
+        {
+            var folded = new List<PythonFormattedStringPart>();
+            var isRaw = false;
+            foreach (var part in parts)
+            {
+                switch (part)
+                {
+                    case PythonFormattedStringExpression formatted:
+                        isRaw = formatted.IsRaw;
+                        FoldedParts(folded, formatted.Parts, formatted.IsRaw);
+                        break;
+                    case PythonTemplateStringExpression template:
+                        isRaw = template.IsRaw;
+                        FoldedParts(folded, template.Parts, template.IsRaw);
+                        break;
+                    case PythonConstantExpression literal:
+                        folded.Add(
+                            new PythonFormattedStringLiteralPart(
+                                literal.TokenText,
+                                literal.Span,
+                                PythonFormattedStringPartDecoding.EncodedLiteral
+                            )
+                        );
+                        break;
+                }
+            }
+
+            return isTemplate
+                ? new PythonTemplateStringExpression(folded.AsReadOnly(), isRaw, span)
+                : new PythonFormattedStringExpression(folded.AsReadOnly(), isRaw, span);
+        }
+
+        /// <summary>
+        /// The parts one folded string contributes, with the rawness of the string they
+        /// came from settled on each of them — a raw `rf"a\n"` beside a plain `f"b"` keeps
+        /// its backslash whatever the string they end up in says.
+        /// </summary>
+        private static void FoldedParts(
+            List<PythonFormattedStringPart> folded,
+            IReadOnlyList<PythonFormattedStringPart> parts,
+            bool isRaw
+        )
+        {
+            foreach (var part in parts)
+            {
+                folded.Add(
+                    part is PythonFormattedStringLiteralPart literal
+                        ? literal with
+                        {
+                            Decoding = isRaw
+                                ? PythonFormattedStringPartDecoding.Literal
+                                : PythonFormattedStringPartDecoding.Escaped,
+                        }
+                        : part
+                );
+            }
+        }
+
+        private const string BytesMixMessage = "cannot mix bytes and nonbytes literals";
+
+        private const string TemplateMixMessage =
+            "cannot mix t-string literals with string or bytes literals";
 
         private PythonExpression? ParseParenthesizedOrTuple(SyntaxToken leftParenthesis)
         {

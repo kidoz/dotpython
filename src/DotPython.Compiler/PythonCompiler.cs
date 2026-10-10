@@ -897,11 +897,7 @@ public static class PythonCompiler
                 switch (part)
                 {
                     case PythonFormattedStringLiteralPart literal:
-                        current.Append(
-                            template.IsRaw
-                                ? literal.RawText
-                                : DecodePartEscapes(literal.RawText, literal.Span)
-                        );
+                        current.Append(DecodeLiteralPart(literal, template.IsRaw));
                         break;
                     case PythonFormattedStringInterpolationPart interpolation:
                         statics.Add(current.ToString());
@@ -980,6 +976,36 @@ public static class PythonCompiler
             }
         }
 
+        /// <summary>
+        /// The text a literal part contributes, read the way that part says: as written, by
+        /// the f-string escape rules, by the string reader when a fold brought a whole
+        /// literal in, or as its own string's prefix decides.
+        /// </summary>
+        private string DecodeLiteralPart(PythonFormattedStringLiteralPart literal, bool isRaw) =>
+            literal.Decoding switch
+            {
+                PythonFormattedStringPartDecoding.Literal => literal.RawText,
+                PythonFormattedStringPartDecoding.Escaped => DecodePartEscapes(
+                    literal.RawText,
+                    literal.Span
+                ),
+                PythonFormattedStringPartDecoding.EncodedLiteral => DecodeEncodedLiteral(literal),
+                _ => isRaw ? literal.RawText : DecodePartEscapes(literal.RawText, literal.Span),
+            };
+
+        private string DecodeEncodedLiteral(PythonFormattedStringLiteralPart literal)
+        {
+            try
+            {
+                return PythonLiteralDecoder.DecodeStringLiteral(literal.RawText);
+            }
+            catch (PythonLiteralDecodeException exception)
+            {
+                Report("DPY3003", exception.Message, literal.Span);
+                return literal.RawText;
+            }
+        }
+
         private void CompileFormattedString(PythonFormattedStringExpression formatted)
         {
             var partCount = 0;
@@ -988,9 +1014,7 @@ public static class PythonCompiler
                 switch (part)
                 {
                     case PythonFormattedStringLiteralPart literal:
-                        var decoded = formatted.IsRaw
-                            ? literal.RawText
-                            : DecodePartEscapes(literal.RawText, literal.Span);
+                        var decoded = DecodeLiteralPart(literal, formatted.IsRaw);
                         Emit(
                             PythonOpCode.LoadConstant,
                             AddConstant(new PythonConstant(PythonConstantType.TextValue, decoded)),

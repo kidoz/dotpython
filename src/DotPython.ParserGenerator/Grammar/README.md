@@ -18,5 +18,4 @@ just parser-check
 ```
 
 Generation is offline and deterministic. Changing the grammar or its provenance comments changes
-the embedded SHA-256 fingerprint and must produce a reviewed generated-file diff. Subset version 39
-adds class-header keyword arguments and positional/mapping unpacking using the call argument grammar.
+the embedded SHA-256 fingerprint and must produce a reviewed generated-file diff. Subset version 42 adds adjacent string literals: `atom` accepts a `strings` rule of one or more STRING tokens, the way CPython's `strings: (fstring | string)+` does.

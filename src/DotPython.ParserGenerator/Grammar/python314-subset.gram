@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 41.
+# DotPython executable PEG subset, version 42.
 # Upstream tag: CPython v3.14.7.
 # Upstream commit: 823f0323ee6ec1402088b73bce1a38473cac36dc.
 # Provenance: https://github.com/python/cpython/blob/823f0323ee6ec1402088b73bce1a38473cac36dc/Grammar/python.gram
@@ -93,7 +93,9 @@ arguments: ','.argument+ [',']
 argument: NAME '=' expression | '**' expression | '*' expression | expression [comp_clauses]
 expression_list: ','.star_expression+ [',']
 star_expression: '*' expression | expression
-atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | '...' | list_display | tuple_display | dict_display | group
+atom: NAME | NUMBER | strings | 'None' | 'True' | 'False' | '...' | list_display | tuple_display | dict_display | group
+# Adjacent string literals are one expression, as CPython's `strings: (fstring | string)+` says.
+strings: STRING+
 list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
 tuple_display: '(' ')' | '(' star_expression ',' [expression_list] ')'
 dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'

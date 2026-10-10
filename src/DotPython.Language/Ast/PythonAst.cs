@@ -293,7 +293,13 @@ public sealed record PythonNameExpression(string Name, TextSpan Span) : PythonEx
 public sealed record PythonConstantExpression(
     PythonConstantKind ConstantKind,
     string TokenText,
-    TextSpan Span
+    TextSpan Span,
+    /// <summary>
+    /// The adjacent literals this one stands for, in source order, when a string or
+    /// bytes literal is followed by others: `"a" "b"` is one constant of two parts.
+    /// Null for a literal that stands alone, whose text is <see cref="TokenText"/>.
+    /// </summary>
+    IReadOnlyList<PythonConstantExpression>? ConcatenatedParts = null
 ) : PythonExpression(Span);
 
 public sealed record PythonUnaryExpression(
@@ -394,8 +400,32 @@ public sealed record PythonFormattedStringExpression(
 
 public abstract record PythonFormattedStringPart(TextSpan Span) : PythonNode(Span);
 
-public sealed record PythonFormattedStringLiteralPart(string RawText, TextSpan Span)
-    : PythonFormattedStringPart(Span);
+/// <summary>How a literal part of an f-string or template string is read.</summary>
+public enum PythonFormattedStringPartDecoding
+{
+    /// <summary>The part follows the string it belongs to: literal when that string is
+    /// raw, escape-decoded when it is not.</summary>
+    Expression,
+
+    /// <summary>The text stands as written, which is what a raw string's parts do.</summary>
+    Literal,
+
+    /// <summary>The text's escapes are decoded with the f-string rules.</summary>
+    Escaped,
+
+    /// <summary>
+    /// The text is a whole string literal — prefix, quotes and all — decoded by the
+    /// string reader, which is what an adjacent plain literal contributes to a string it
+    /// was folded into.
+    /// </summary>
+    EncodedLiteral,
+}
+
+public sealed record PythonFormattedStringLiteralPart(
+    string RawText,
+    TextSpan Span,
+    PythonFormattedStringPartDecoding Decoding = PythonFormattedStringPartDecoding.Expression
+) : PythonFormattedStringPart(Span);
 
 public sealed record PythonFormattedStringInterpolationPart(
     PythonExpression Expression,

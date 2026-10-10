@@ -5,8 +5,8 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "28b569c8f55fc6c146f06d17c865d2315c950809601271d23711ac9aa73dc867";
-    internal const int RuleCount = 96;
+    internal const string SourceSha256 = "c5b37549aa00e50bca4996ef0ae5db12d9334224d7f4c100956c0d154921913c";
+    internal const int RuleCount = 97;
 
     private const string GrammarSource = """
         file: [statements] ENDMARKER
@@ -95,7 +95,8 @@ internal static class GeneratedPythonGrammar
         argument: NAME '=' expression | '**' expression | '*' expression | expression [comp_clauses]
         expression_list: ','.star_expression+ [',']
         star_expression: '*' expression | expression
-        atom: NAME | NUMBER | STRING | 'None' | 'True' | 'False' | '...' | list_display | tuple_display | dict_display | group
+        atom: NAME | NUMBER | strings | 'None' | 'True' | 'False' | '...' | list_display | tuple_display | dict_display | group
+        strings: STRING+
         list_display: '[' expression comp_clauses ']' | '[' [expression_list] ']'
         tuple_display: '(' ')' | '(' star_expression ',' [expression_list] ')'
         dict_display: '{' expression ':' expression comp_clauses '}' | '{' expression comp_clauses '}' | '{' [dict_items] '}' | '{' expression_list '}'

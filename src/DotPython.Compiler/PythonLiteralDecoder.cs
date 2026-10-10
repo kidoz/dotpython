@@ -65,11 +65,11 @@ internal static class PythonLiteralDecoder
                 ),
                 PythonConstantKind.StringLiteral => new PythonConstant(
                     PythonConstantType.TextValue,
-                    DecodeString(expression.TokenText)
+                    Concatenated(expression, DecodeString)
                 ),
                 PythonConstantKind.BytesLiteral => new PythonConstant(
                     PythonConstantType.ByteSequence,
-                    DecodeBytes(expression.TokenText)
+                    Concatenated(expression, DecodeBytes)
                 ),
                 PythonConstantKind.FormattedStringLiteral
                 or PythonConstantKind.TemplateStringLiteral => UnsupportedInterpolatedString(
@@ -170,6 +170,38 @@ internal static class PythonLiteralDecoder
             double.Parse(number, NumberStyles.Float, CultureInfo.InvariantCulture)
         );
     }
+
+    /// <summary>
+    /// The value a literal stands for: its own text, or — when adjacent literals were
+    /// folded into it — the parts joined, each decoded by the same reader.
+    /// </summary>
+    private static T Concatenated<T>(PythonConstantExpression expression, Func<string, T> decode)
+    {
+        if (expression.ConcatenatedParts is not { } parts)
+            return decode(expression.TokenText);
+        return expression.ConstantKind switch
+        {
+            PythonConstantKind.BytesLiteral => JoinBytes(
+                parts.Select(part => decode(part.TokenText))
+            ),
+            _ => JoinText(parts.Select(part => decode(part.TokenText))),
+        };
+    }
+
+    private static T JoinText<T>(IEnumerable<T> values) =>
+        typeof(T) == typeof(string)
+            ? (T)(object)string.Concat(values.Cast<string>())
+            : throw new FormatException();
+
+    private static T JoinBytes<T>(IEnumerable<T> values)
+    {
+        var joined = values.Cast<byte[]>().SelectMany(value => value).ToArray();
+        return (T)(object)joined;
+    }
+
+    /// <summary>Decodes one complete string literal, which is what an f-string takes from
+    /// an adjacent plain literal.</summary>
+    internal static string DecodeStringLiteral(string tokenText) => DecodeString(tokenText);
 
     private static string DecodeString(string tokenText)
     {
