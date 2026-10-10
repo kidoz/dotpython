@@ -433,7 +433,20 @@ public sealed record PythonFormattedStringInterpolationPart(
     string? FormatSpecification,
     TextSpan Span,
     string? RawExpression = null
-) : PythonFormattedStringPart(Span);
+) : PythonFormattedStringPart(Span)
+{
+    /// <summary>
+    /// The specification's own parts when it holds nested fields — `f"{x:{width}}"` — so
+    /// the specification is built at run time instead of being a literal.
+    /// </summary>
+    public IReadOnlyList<PythonFormattedStringPart>? SpecificationParts { get; init; }
+
+    /// <summary>
+    /// The source text a `=` makes the field document itself with — `f"{x=}"` reports
+    /// `x=42` — including the `=` and the whitespace around it, as written.
+    /// </summary>
+    public string? SelfDocumenting { get; init; }
+}
 
 public abstract record PythonComprehensionClause(TextSpan Span) : PythonNode(Span);
 

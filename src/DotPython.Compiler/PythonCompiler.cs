@@ -900,6 +900,10 @@ public static class PythonCompiler
                         current.Append(DecodeLiteralPart(literal, template.IsRaw));
                         break;
                     case PythonFormattedStringInterpolationPart interpolation:
+                        // A self-documenting field contributes its own text to the
+                        // template's strings, the way the literal parts do.
+                        if (interpolation.SelfDocumenting is { } text)
+                            current.Append(text);
                         statics.Add(current.ToString());
                         current.Clear();
                         interpolations.Add(interpolation);
@@ -930,10 +934,20 @@ public static class PythonCompiler
                     ),
                     interpolation.Span
                 );
+                // A self-documenting field records the repr conversion the `=` stands for —
+                // but only while it carries no specification, as the source leaves it.
+                var templateConversion = interpolation.Conversion;
+                if (
+                    templateConversion is null
+                    && interpolation.SelfDocumenting is not null
+                    && interpolation.FormatSpecification is null
+                    && interpolation.SpecificationParts is null
+                )
+                    templateConversion = 'r';
                 Emit(
                     PythonOpCode.LoadConstant,
                     AddConstant(
-                        interpolation.Conversion is { } conversion
+                        templateConversion is { } conversion
                             ? new PythonConstant(
                                 PythonConstantType.TextValue,
                                 conversion.ToString()
@@ -942,16 +956,30 @@ public static class PythonCompiler
                     ),
                     interpolation.Span
                 );
-                Emit(
-                    PythonOpCode.LoadConstant,
-                    AddConstant(
-                        new PythonConstant(
-                            PythonConstantType.TextValue,
-                            interpolation.FormatSpecification ?? string.Empty
-                        )
-                    ),
-                    interpolation.Span
-                );
+                // The specification reaches a template as a string, computed when it
+                // holds nested fields of its own.
+                if (interpolation.SpecificationParts is { } templateSpecification)
+                {
+                    CompileSpecificationParts(templateSpecification);
+                }
+                else
+                {
+                    Emit(
+                        PythonOpCode.LoadConstant,
+                        AddConstant(
+                            new PythonConstant(
+                                PythonConstantType.TextValue,
+                                DecodeSpecification(
+                                    interpolation.FormatSpecification ?? string.Empty,
+                                    template.IsRaw,
+                                    interpolation.Span
+                                )
+                            )
+                        ),
+                        interpolation.Span
+                    );
+                }
+
                 Emit(PythonOpCode.MakeInterpolation, 0, interpolation.Span);
             }
 
@@ -1006,6 +1034,105 @@ public static class PythonCompiler
             }
         }
 
+        /// <summary>
+        /// One interpolation: the value it stands for, its conversion, and its format
+        /// specification — which is computed at run time when it holds nested fields —
+        /// leaving the formatted text on the stack. It answers how many stack items the
+        /// string being built gains, which is two when the field documents itself.
+        /// </summary>
+        private int CompileInterpolation(
+            PythonFormattedStringInterpolationPart interpolation,
+            bool isRaw
+        )
+        {
+            var parts = 0;
+            if (interpolation.SelfDocumenting is { } text)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(new PythonConstant(PythonConstantType.TextValue, text)),
+                    interpolation.Span
+                );
+                parts++;
+            }
+
+            CompileExpression(interpolation.Expression);
+            var flags = interpolation.Conversion switch
+            {
+                's' => 1,
+                'r' => 2,
+                'a' => 3,
+                // A self-documenting field reports the value's repr unless it says otherwise.
+                _ => interpolation.SelfDocumenting is null ? 0 : 2,
+            };
+            if (interpolation.SpecificationParts is { } specificationParts)
+            {
+                CompileSpecificationParts(specificationParts);
+                flags |= 4;
+            }
+            else if (interpolation.FormatSpecification is { } specification)
+            {
+                Emit(
+                    PythonOpCode.LoadConstant,
+                    AddConstant(
+                        new PythonConstant(
+                            PythonConstantType.TextValue,
+                            DecodeSpecification(specification, isRaw, interpolation.Span)
+                        )
+                    ),
+                    interpolation.Span
+                );
+                flags |= 4;
+            }
+
+            Emit(PythonOpCode.FormatValue, flags, interpolation.Span);
+            return parts + 1;
+        }
+
+        /// <summary>
+        /// The parts of a format specification, which is what a nested field contributes to
+        /// the specification rather than to the string being written.
+        /// </summary>
+        private void CompileSpecificationParts(IReadOnlyList<PythonFormattedStringPart> parts)
+        {
+            var count = 0;
+            foreach (var part in parts)
+            {
+                switch (part)
+                {
+                    case PythonFormattedStringLiteralPart literal:
+                        Emit(
+                            PythonOpCode.LoadConstant,
+                            AddConstant(
+                                new PythonConstant(
+                                    PythonConstantType.TextValue,
+                                    DecodeLiteralPart(literal, isRaw: false)
+                                )
+                            ),
+                            literal.Span
+                        );
+                        break;
+                    case PythonFormattedStringInterpolationPart interpolation:
+                        CompileInterpolation(interpolation, isRaw: false);
+                        break;
+                }
+
+                count++;
+            }
+
+            if (count > 1)
+            {
+                Emit(PythonOpCode.BuildString, count, parts[0].Span);
+            }
+        }
+
+        /// <summary>
+        /// A format specification's own escapes, which its string's prefix decodes or
+        /// leaves alone.
+        /// </summary>
+        private string DecodeSpecification(string specification, bool isRaw, TextSpan span) =>
+            isRaw ? specification : DecodePartEscapes(specification, span);
+
         private void CompileFormattedString(PythonFormattedStringExpression formatted)
         {
             var partCount = 0;
@@ -1023,31 +1150,7 @@ public static class PythonCompiler
                         partCount++;
                         break;
                     case PythonFormattedStringInterpolationPart interpolation:
-                        CompileExpression(interpolation.Expression);
-                        var flags = interpolation.Conversion switch
-                        {
-                            's' => 1,
-                            'r' => 2,
-                            'a' => 3,
-                            _ => 0,
-                        };
-                        if (interpolation.FormatSpecification is not null)
-                        {
-                            Emit(
-                                PythonOpCode.LoadConstant,
-                                AddConstant(
-                                    new PythonConstant(
-                                        PythonConstantType.TextValue,
-                                        interpolation.FormatSpecification
-                                    )
-                                ),
-                                interpolation.Span
-                            );
-                            flags |= 4;
-                        }
-
-                        Emit(PythonOpCode.FormatValue, flags, interpolation.Span);
-                        partCount++;
+                        partCount += CompileInterpolation(interpolation, formatted.IsRaw);
                         break;
                 }
             }

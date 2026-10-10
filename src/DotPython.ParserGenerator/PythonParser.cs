@@ -3196,6 +3196,207 @@ public static class PythonParser
             return expression;
         }
 
+        /// <summary>
+        /// One replacement field: the expression, its conversion and its format
+        /// specification — which may itself hold nested fields, and may be preceded by a
+        /// `=` that makes the field document itself.
+        /// </summary>
+        private PythonFormattedStringInterpolationPart? ParseHole(
+            string content,
+            int contentOffset,
+            int holeStart,
+            int end,
+            int conversionIndex,
+            int specIndex,
+            bool isRaw
+        )
+        {
+            if (conversionIndex >= 0 && specIndex >= 0 && conversionIndex > specIndex)
+            {
+                // The '!' sits inside the format specification, not before it.
+                conversionIndex = -1;
+            }
+
+            var expressionEnd =
+                conversionIndex >= 0 ? conversionIndex : (specIndex >= 0 ? specIndex : end);
+            var (expressionText, selfDocumenting) = SplitSelfDocumenting(
+                content[holeStart..expressionEnd]
+            );
+            char? conversion = conversionIndex >= 0 ? content[conversionIndex + 1] : null;
+            var specification = specIndex >= 0 ? content[(specIndex + 1)..end] : null;
+            var specificationParts =
+                specification is not null && specification.Contains('{', StringComparison.Ordinal)
+                    ? ParseSpecificationParts(content, contentOffset, specIndex + 1, end, isRaw)
+                    : null;
+            var holeSpan = new TextSpan(contentOffset + holeStart, Math.Max(1, end - holeStart));
+            if (string.IsNullOrWhiteSpace(expressionText))
+            {
+                Report("DPY2019", "The f-string interpolation is missing an expression.", holeSpan);
+                return null;
+            }
+
+            var expression = ParseEmbeddedExpression(expressionText, holeSpan);
+            return expression is null
+                ? null
+                : new PythonFormattedStringInterpolationPart(
+                    expression,
+                    conversion,
+                    specification,
+                    holeSpan,
+                    expressionText
+                )
+                {
+                    SpecificationParts = specificationParts,
+                    SelfDocumenting = selfDocumenting,
+                };
+        }
+
+        /// <summary>
+        /// The parts of a format specification, which is literal text with nested fields of
+        /// its own: `f"{x:{width}}"` pads with one, `f"{x:{fill}{width}}"` with two.
+        /// </summary>
+        private List<PythonFormattedStringPart> ParseSpecificationParts(
+            string content,
+            int contentOffset,
+            int start,
+            int end,
+            bool isRaw
+        )
+        {
+            var parts = new List<PythonFormattedStringPart>();
+            var literalStart = start;
+            var position = start;
+            while (position < end)
+            {
+                if (content[position] != '{')
+                {
+                    // A `}` here closes the field whose specification this is.
+                    if (content[position] == '}')
+                        break;
+                    position++;
+                    continue;
+                }
+
+                if (literalStart < position)
+                {
+                    parts.Add(
+                        new PythonFormattedStringLiteralPart(
+                            content[literalStart..position],
+                            new TextSpan(contentOffset + literalStart, position - literalStart),
+                            PythonFormattedStringPartDecoding.Literal
+                        )
+                    );
+                }
+
+                var holeStart = position + 1;
+                var holeEnd = ScanInterpolation(
+                    content,
+                    holeStart,
+                    out var conversionIndex,
+                    out var specIndex
+                );
+                if (holeEnd < 0 || holeEnd > end)
+                {
+                    Report(
+                        "DPY2019",
+                        "The f-string interpolation is not terminated.",
+                        new TextSpan(contentOffset + position, 1)
+                    );
+                    break;
+                }
+
+                var hole = ParseHole(
+                    content,
+                    contentOffset,
+                    holeStart,
+                    holeEnd,
+                    conversionIndex,
+                    specIndex,
+                    isRaw
+                );
+                if (hole is not null)
+                {
+                    parts.Add(hole);
+                }
+
+                position = holeEnd + 1;
+                literalStart = position;
+            }
+
+            if (literalStart < Math.Min(position, end))
+            {
+                parts.Add(
+                    new PythonFormattedStringLiteralPart(
+                        content[literalStart..Math.Min(position, end)],
+                        new TextSpan(
+                            contentOffset + literalStart,
+                            Math.Min(position, end) - literalStart
+                        ),
+                        PythonFormattedStringPartDecoding.Literal
+                    )
+                );
+            }
+
+            return parts;
+        }
+
+        /// <summary>
+        /// Splits a `=` that documents the field — `f"{x=}"`, `f"{x = }"` — off the
+        /// expression it follows. A `=`, `!`, `<`, `>` or `:` before it, or another `=`
+        /// after it, means it is part of the expression instead.
+        /// </summary>
+        private static (string Expression, string? SelfDocumenting) SplitSelfDocumenting(
+            string text
+        )
+        {
+            var depth = 0;
+            var equals = -1;
+            var position = 0;
+            while (position < text.Length)
+            {
+                var current = text[position];
+                if (current is '\'' or '"')
+                {
+                    var quote = current;
+                    position++;
+                    while (position < text.Length && text[position] != quote)
+                    {
+                        position += text[position] == '\\' ? 2 : 1;
+                    }
+
+                    position++;
+                    continue;
+                }
+
+                if (current is '(' or '[' or '{')
+                {
+                    depth++;
+                }
+                else if (current is ')' or ']' or '}')
+                {
+                    depth--;
+                }
+                else if (current == '=' && depth == 0)
+                {
+                    var previous = position > 0 ? text[position - 1] : '\0';
+                    var next = position + 1 < text.Length ? text[position + 1] : '\0';
+                    if (previous is not ('=' or '!' or '<' or '>' or ':') && next != '=')
+                    {
+                        equals = position;
+                    }
+                }
+
+                position++;
+            }
+
+            if (equals < 0 || text[(equals + 1)..].Trim().Length != 0)
+            {
+                return (text, null);
+            }
+
+            return (text[..equals], text);
+        }
+
         private PythonExpression ParseFormattedString(SyntaxToken token, bool isTemplate = false)
         {
             var quoteIndex = token.Text.IndexOfAny(['\'', '"']);
@@ -3288,59 +3489,18 @@ public static class PythonParser
                     break;
                 }
 
-                if (conversionIndex >= 0 && specIndex >= 0 && conversionIndex > specIndex)
-                {
-                    // The '!' sits inside the format specification, not before it.
-                    conversionIndex = -1;
-                }
-
-                var expressionEnd =
-                    conversionIndex >= 0 ? conversionIndex : (specIndex >= 0 ? specIndex : end);
-
-                var expressionText = content[holeStart..expressionEnd];
-                char? conversion = conversionIndex >= 0 ? content[conversionIndex + 1] : null;
-                string? specification = specIndex >= 0 ? content[(specIndex + 1)..end] : null;
-                var holeSpan = new TextSpan(
-                    contentOffset + holeStart,
-                    Math.Max(1, end - holeStart)
+                var hole = ParseHole(
+                    content,
+                    contentOffset,
+                    holeStart,
+                    end,
+                    conversionIndex,
+                    specIndex,
+                    isRaw
                 );
-                if (
-                    specification is not null
-                    && specification.Contains('{', StringComparison.Ordinal)
-                )
+                if (hole is not null)
                 {
-                    Report(
-                        "DPY2019",
-                        "Nested interpolations in f-string format specifications are not "
-                            + "supported in this runtime slice.",
-                        holeSpan
-                    );
-                    specification = null;
-                }
-
-                if (string.IsNullOrWhiteSpace(expressionText))
-                {
-                    Report(
-                        "DPY2019",
-                        "The f-string interpolation is missing an expression.",
-                        holeSpan
-                    );
-                }
-                else
-                {
-                    var expression = ParseEmbeddedExpression(expressionText, holeSpan);
-                    if (expression is not null)
-                    {
-                        parts.Add(
-                            new PythonFormattedStringInterpolationPart(
-                                expression,
-                                conversion,
-                                specification,
-                                holeSpan,
-                                expressionText
-                            )
-                        );
-                    }
+                    parts.Add(hole);
                 }
 
                 position = end + 1;
@@ -3466,15 +3626,34 @@ public static class PythonParser
             IReadOnlyList<Diagnostic> Diagnostics
         ) ParseEmbedded()
         {
-            SkipNewLines();
+            SkipEmbeddedPadding();
             var expression = ParseExpressionListValue();
-            SkipNewLines();
+            SkipEmbeddedPadding();
             if (expression is not null && Current.Kind != SyntaxTokenKind.EndOfFile)
             {
                 ReportExpected("the end of the interpolated expression", Current.Span);
             }
 
             return (expression, _diagnostics);
+        }
+
+        /// <summary>
+        /// The padding a replacement field's text carries: the field's own line breaks and,
+        /// because the text is read as a module of its own, the indentation of a text that
+        /// opens with whitespace — `f"{ x }"` is as valid as `f"{x}"`.
+        /// </summary>
+        private void SkipEmbeddedPadding()
+        {
+            while (
+                Current.Kind
+                    is SyntaxTokenKind.NonSignificantNewLine
+                        or SyntaxTokenKind.NewLine
+                        or SyntaxTokenKind.Indent
+                        or SyntaxTokenKind.Dedent
+            )
+            {
+                Advance();
+            }
         }
 
         private PythonExpression? ParseSubscript(SyntaxToken leftBracket)

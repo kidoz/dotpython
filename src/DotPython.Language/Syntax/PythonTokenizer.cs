@@ -319,18 +319,23 @@ public static class PythonTokenizer
         {
             var quote = Current;
             var quoteLength = HasRepeatedQuote(_position, quote) ? 3 : 1;
-            var replacementDepth = 0;
+            // One entry per open replacement field: whether it has reached its format
+            // specification, and how deep its expression's brackets go. A `:` only starts a
+            // specification at the field's own level, and a `#` is only a comment while the
+            // expression is being written — inside a specification it is part of the text,
+            // which is what `f"{x:#x}"` needs.
+            var fields = new List<(bool IsSpecification, int Brackets)>();
             _position += quoteLength;
 
             while (_position < _text.Length)
             {
-                if (replacementDepth == 0 && MatchesQuote(_position, quote, quoteLength))
+                if (fields.Count == 0 && MatchesQuote(_position, quote, quoteLength))
                 {
                     _position += quoteLength;
                     return;
                 }
 
-                if (replacementDepth == 0)
+                if (fields.Count == 0)
                 {
                     if (!isRaw && Current == '\\' && Peek(1) == 'N' && Peek(2) == '{')
                     {
@@ -350,7 +355,7 @@ public static class PythonTokenizer
                         }
                         else
                         {
-                            replacementDepth = 1;
+                            fields.Add((false, 0));
                             _position++;
                         }
 
@@ -373,6 +378,22 @@ public static class PythonTokenizer
                     continue;
                 }
 
+                var field = fields[^1];
+                if (field.IsSpecification)
+                {
+                    if (Current == '{')
+                    {
+                        fields.Add((false, 0));
+                    }
+                    else if (Current == '}')
+                    {
+                        fields.RemoveAt(fields.Count - 1);
+                    }
+
+                    AdvanceCodePoint();
+                    continue;
+                }
+
                 if (Current == '#')
                 {
                     ReadComment();
@@ -386,14 +407,35 @@ public static class PythonTokenizer
 
                 if (Current == '{')
                 {
-                    replacementDepth++;
+                    fields.Add((false, 0));
                     _position++;
                     continue;
                 }
 
                 if (Current == '}')
                 {
-                    replacementDepth--;
+                    fields.RemoveAt(fields.Count - 1);
+                    _position++;
+                    continue;
+                }
+
+                if (Current is '(' or '[')
+                {
+                    fields[^1] = (field.IsSpecification, field.Brackets + 1);
+                    _position++;
+                    continue;
+                }
+
+                if (Current is ')' or ']')
+                {
+                    fields[^1] = (field.IsSpecification, Math.Max(0, field.Brackets - 1));
+                    _position++;
+                    continue;
+                }
+
+                if (Current == ':' && field.Brackets == 0)
+                {
+                    fields[^1] = (true, field.Brackets);
                     _position++;
                     continue;
                 }
