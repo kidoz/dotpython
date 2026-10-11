@@ -693,13 +693,22 @@ internal static class PythonRegexModule
         );
 
     private static string RequireText(PythonValue value, TextSpan span) =>
-        value is PythonTextValue text
-            ? text.Value
-            : throw Fault(
+        value switch
+        {
+            PythonTextValue text => text.Value,
+            // Every pattern this slice compiles is a `str`, so the subject it refuses is
+            // the `bytes` one, in Python's own words.
+            PythonByteSequenceValue => throw Fault(
+                "cannot use a string pattern on a bytes-like object",
+                span,
+                "TypeError"
+            ),
+            _ => throw Fault(
                 $"expected string or bytes-like object, got '{ManagedObjectProtocols.GetTypeName(value)}'",
                 span,
                 "TypeError"
-            );
+            ),
+        };
 
     /// <summary>
     /// One search: from `pos` up to `endpos`, anchored at the start for `match` and at

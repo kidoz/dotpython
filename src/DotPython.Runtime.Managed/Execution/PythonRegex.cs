@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text;
+using DotPython.Compiler;
 using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
@@ -165,6 +167,16 @@ internal static class PythonRegex
         internal Node Body { get; } = body;
     }
 
+    /// <summary>`(?(id)yes|no)`: one of two branches, by whether the group matched.</summary>
+    internal sealed class ConditionalNode(int group, Node? yes, Node? no) : Node
+    {
+        internal int Group { get; } = group;
+
+        internal Node? Yes { get; } = yes;
+
+        internal Node? No { get; } = no;
+    }
+
     /// <summary>`(?>…)`: the body matched once, and never given back.</summary>
     internal sealed class AtomicNode(Node body) : Node
     {
@@ -222,6 +234,13 @@ internal static class PythonRegex
         /// <summary>The group count when the look-behind being read opened, if one did.</summary>
         private int? _lookbehindGroups;
 
+        /// <summary>
+        /// The groups a conditional named and where it named them: Python checks these
+        /// once the whole pattern is read, so a conditional may name a group that opens
+        /// later — a backreference may not.
+        /// </summary>
+        private readonly List<(int Group, int Position)> _conditionalRefs = [];
+
         /// <summary>The flags in force where the parser stands, which a scope may change.</summary>
         private PythonRegexFlags _flags = flags;
 
@@ -233,6 +252,13 @@ internal static class PythonRegex
             {
                 // A `)` that no group opened is the only thing that stops a branch.
                 throw new PythonRegexParseError("unbalanced parenthesis", _position);
+            }
+            foreach (var (group, position) in _conditionalRefs)
+            {
+                if (group > _groupCount)
+                {
+                    throw new PythonRegexParseError($"invalid group reference {group}", position);
+                }
             }
             return new Program(_source, _flags, _groupCount, _groupNames, root);
         }
@@ -582,6 +608,9 @@ internal static class PythonRegex
                             $"unknown extension ?P{Current}",
                             start + 1
                         );
+                    case '(':
+                        _position++;
+                        return ParseConditional(start);
                     case 'i' or 'm' or 's' or 'x' or 'a' or 'u' or 'L' or '-':
                         var scoped = ParseFlags(start, out addFlags, out delFlags);
                         if (!scoped)
@@ -626,6 +655,95 @@ internal static class PythonRegex
                 return new AtomicNode(body);
             }
             return new GroupNode(index, name, body);
+        }
+
+        /// <summary>
+        /// `(?(id)yes|no)` and `(?(name)yes|no)`: the branch the group's own matchedness
+        /// picks. A name must already name a group; a number may name one that opens
+        /// later, which Python checks when the pattern ends.
+        /// </summary>
+        private ConditionalNode ParseConditional(int start)
+        {
+            var nameStart = _position;
+            var referred = ReadUntil(')', "group name");
+            int group;
+            if (AllAsciiDigits(referred))
+            {
+                group = int.Parse(referred, CultureInfo.InvariantCulture);
+                if (group == 0)
+                {
+                    throw new PythonRegexParseError("bad group number", nameStart);
+                }
+                if (group is < 0 or > 2147483647)
+                {
+                    throw new PythonRegexParseError($"invalid group reference {group}", nameStart);
+                }
+                _conditionalRefs.Add((group, nameStart));
+            }
+            else
+            {
+                CheckGroupName(referred, nameStart);
+                var found = 0;
+                foreach (var (taken, index) in _groupNames)
+                {
+                    if (taken == referred)
+                    {
+                        found = index;
+                    }
+                }
+                if (found == 0)
+                {
+                    throw new PythonRegexParseError($"unknown group name '{referred}'", nameStart);
+                }
+                group = found;
+            }
+            if (_lookbehindGroups is { } lookbehindGroups && group >= lookbehindGroups)
+            {
+                if (_groupWidths[group] is null)
+                {
+                    throw new PythonRegexParseError("cannot refer to an open group", _position);
+                }
+                throw new PythonRegexParseError(
+                    "cannot refer to group defined in the same lookbehind subpattern",
+                    _position
+                );
+            }
+
+            _depth++;
+            var yes = ParseBranch();
+            Node? no = null;
+            if (Current == '|')
+            {
+                _position++;
+                SkipVerbose();
+                no = ParseBranch();
+                if (Current == '|')
+                {
+                    throw new PythonRegexParseError(
+                        "conditional backref with more than two branches",
+                        _position
+                    );
+                }
+            }
+            _depth--;
+            ExpectClose(start);
+            return new ConditionalNode(
+                group,
+                yes is SequenceNode { Items.Count: 0 } ? null : yes,
+                no is SequenceNode { Items.Count: 0 } ? null : no
+            );
+        }
+
+        private static bool AllAsciiDigits(string value)
+        {
+            foreach (var character in value)
+            {
+                if (!char.IsAsciiDigit(character))
+                {
+                    return false;
+                }
+            }
+            return value.Length > 0;
         }
 
         /// <summary>`(?=…)`, `(?!…)`, `(?&lt;=…)` and `(?&lt;!…)`: the body tests a position.</summary>
@@ -1065,10 +1183,7 @@ internal static class PythonRegex
                 case 'U':
                     return ReadHex(8, start);
                 case 'N':
-                    throw new PythonRegexParseError(
-                        "`\\N{...}` is not supported in this runtime slice",
-                        start
-                    );
+                    return ReadCharacterName(start);
             }
 
             if (value is >= '0' and <= '9')
@@ -1099,6 +1214,41 @@ internal static class PythonRegex
                 throw new PythonRegexParseError($"bad escape \\{value}", start);
             }
             return value;
+        }
+
+        /// <summary>
+        /// `\N{NAME}`: the character the name spells, read through the table a `\N{…}` in
+        /// a string literal reads, in Python's own words where it does not.
+        /// </summary>
+        private char ReadCharacterName(int start)
+        {
+            if (Current != '{')
+            {
+                throw new PythonRegexParseError("missing {", _position);
+            }
+            _position++;
+            var nameStart = _position;
+            while (_position < _pattern.Length && _pattern[_position] != '}')
+            {
+                _position++;
+            }
+            if (_position >= _pattern.Length)
+            {
+                throw _position == nameStart
+                    ? new PythonRegexParseError("missing character name", _position)
+                    : new PythonRegexParseError("missing }, unterminated name", nameStart);
+            }
+            var name = _pattern[nameStart.._position];
+            _position++;
+            if (name.Length == 0)
+            {
+                throw new PythonRegexParseError("missing character name", nameStart);
+            }
+            if (!PythonUnicodeNameIndex.TryGetCodePoint(name, out var codePoint))
+            {
+                throw new PythonRegexParseError($"undefined character name '{name}'", start);
+            }
+            return (char)codePoint;
         }
 
         private char ReadOctal(char first)
@@ -1188,6 +1338,12 @@ internal static class PythonRegex
                 case LookNode:
                 case AnchorNode:
                     return (0, 0);
+                case ConditionalNode conditional:
+                {
+                    var yes = conditional.Yes is null ? (0, 0) : Width(conditional.Yes);
+                    var no = conditional.No is null ? (0, 0) : Width(conditional.No);
+                    return (Math.Min(yes.Item1, no.Item1), Math.Max(yes.Item2, no.Item2));
+                }
                 case RepeatNode repeat:
                 {
                     var (itemMin, itemMax) = Width(repeat.Body);
@@ -1316,6 +1472,7 @@ internal static class PythonRegex
             GroupNode group => MatchGroup(group, state, position, next),
             BackrefNode backref => MatchBackref(backref, state, position, next),
             LookNode look => MatchLook(look, state, position, next),
+            ConditionalNode conditional => MatchConditional(conditional, state, position, next),
             AtomicNode atomic => MatchAtomic(atomic, state, position, next),
             RepeatNode repeat => MatchRepeat(repeat, state, position, next, count: 0),
             AnchorNode anchor => AtAnchor(anchor, state, position) && next(state, position),
@@ -1489,6 +1646,19 @@ internal static class PythonRegex
         Array.Copy(ends, state.Ends, ends.Length);
         state.LastIndex = lastIndex;
         return !found && next(state, position);
+    }
+
+    /// <summary>`(?(id)yes|no)`: the branch the group's own matchedness picks.</summary>
+    private static bool MatchConditional(
+        ConditionalNode conditional,
+        State state,
+        int position,
+        Continuation next
+    )
+    {
+        var branch = state.Starts[conditional.Group] is null ? conditional.No : conditional.Yes;
+        // A branch that was not written stands for nothing at all.
+        return branch is null ? next(state, position) : Match(branch, state, position, next);
     }
 
     /// <summary>`(?>…)`: the body is matched once, and the rest runs from where it ended.</summary>

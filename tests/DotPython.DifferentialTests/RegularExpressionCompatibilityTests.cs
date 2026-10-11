@@ -192,6 +192,26 @@ public sealed class RegularExpressionCompatibilityTests
             report("scoped-unknown", lambda: re.compile(r"(?i-z:a)"))
             report("scoped-late", lambda: re.compile(r"a(?i)"))
             print("scoped", re.compile(r"(?i)(?-i:a)").flags, re.compile(r"(?i:a)").flags, re.compile(r"(?a)a").flags)
+
+            # --- conditional groups and named escapes ----------------------------------
+            print("cond", re.search(r"(a)?b(?(1)c|d)", "bd").span(), re.search(r"(a)?b(?(1)c|d)", "abc").span(), re.search(r"(a)?b(?(1)c|d)", "abd").span())
+            print("cond", re.search(r"(a)?b(?(1)c)", "bd").span(), re.search(r"(?P<n>a)?b(?(n)c|d)", "bc"), re.search(r"(a)(?(1)b|c)", "ab").span())
+            print("cond", re.search(r"(a)?(?(1)(b)c)(d)", "acd").span(), re.search(r"(a)?(?(1)(b)?(?(2)c|d)|e)", "ad").groups())
+            print("cond", re.findall(r"(a)?(?(1)b|c)", "ab c b"), re.sub(r"(a)?(?(1)b|c)", "-", "ab c b"), re.search(r"(a)?b(?(1)c|d)", "abd"))
+            print("cond", re.search(r"(a)?(?(1)b|(c))", "c").groups(), [m.span() for m in re.finditer(r"(a)?b(?(1)c|d)", "bd abc")])
+            print("cond", re.compile(r"(a)?(?(1)ab|c)").groups, re.compile(r"(a)?(?(1)b|(c))(d)").groups, re.search(r"(?(1)a|b)(x)", "ax"))
+            report("cond-zero", lambda: re.compile(r"(?(0)a|b)"))
+            report("cond-missing", lambda: re.compile(r"(?(2)a|b)"))
+            report("cond-name", lambda: re.compile(r"(?(x)a|b)"))
+            report("cond-three", lambda: re.compile(r"(?(1)a|b|c)"))
+            report("cond-cut", lambda: re.compile(r"(?(1"))
+            report("cond-open", lambda: re.compile(r"((?(1)a|b))"))
+            print("name", re.match(r"\N{EM DASH}", "—").span(), re.match(r"[\N{LATIN SMALL LETTER A}-\N{LATIN SMALL LETTER C}]+", "abc").span())
+            print("name", re.match(r"\N{bullet}", "•").span(), re.match(r"\N{Latin small letter a}", "a").span())
+            report("name-nobrace", lambda: re.compile(r"\N"))
+            report("name-empty", lambda: re.compile(r"\N{}"))
+            report("name-unknown", lambda: re.compile(r"\N{NOT A REAL NAME}"))
+            report("name-unterminated", lambda: re.compile(r"\N{EM DASH"))
             """
         );
 }

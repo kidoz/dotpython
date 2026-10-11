@@ -8,8 +8,9 @@ public sealed class RegularExpressionExecutionTests
     /// <summary>
     /// The runtime's own regular-expression engine on CPython's `re` surface: flags,
     /// compiled patterns, matches, the module functions and the errors a bad pattern
-    /// raises — with the named groups, backreferences, lookaround and scoped flags the
-    /// engine reads.
+    /// raises — with named groups, backreferences, lookaround, atomic groups, scoped
+    /// flags, conditional groups and the `\N{…}` named-character escapes the engine
+    /// reads.
     /// </summary>
     [Fact]
     public void TheRegularExpressionModuleMatchesCpython()
@@ -200,6 +201,26 @@ public sealed class RegularExpressionExecutionTests
             report("scoped-unknown", lambda: re.compile(r"(?i-z:a)"))
             report("scoped-late", lambda: re.compile(r"a(?i)"))
             print("scoped", re.compile(r"(?i)(?-i:a)").flags, re.compile(r"(?i:a)").flags, re.compile(r"(?a)a").flags)
+
+            # --- conditional groups and named escapes ----------------------------------
+            print("cond", re.search(r"(a)?b(?(1)c|d)", "bd").span(), re.search(r"(a)?b(?(1)c|d)", "abc").span(), re.search(r"(a)?b(?(1)c|d)", "abd").span())
+            print("cond", re.search(r"(a)?b(?(1)c)", "bd").span(), re.search(r"(?P<n>a)?b(?(n)c|d)", "bc"), re.search(r"(a)(?(1)b|c)", "ab").span())
+            print("cond", re.search(r"(a)?(?(1)(b)c)(d)", "acd").span(), re.search(r"(a)?(?(1)(b)?(?(2)c|d)|e)", "ad").groups())
+            print("cond", re.findall(r"(a)?(?(1)b|c)", "ab c b"), re.sub(r"(a)?(?(1)b|c)", "-", "ab c b"), re.search(r"(a)?b(?(1)c|d)", "abd"))
+            print("cond", re.search(r"(a)?(?(1)b|(c))", "c").groups(), [m.span() for m in re.finditer(r"(a)?b(?(1)c|d)", "bd abc")])
+            print("cond", re.compile(r"(a)?(?(1)ab|c)").groups, re.compile(r"(a)?(?(1)b|(c))(d)").groups, re.search(r"(?(1)a|b)(x)", "ax"))
+            report("cond-zero", lambda: re.compile(r"(?(0)a|b)"))
+            report("cond-missing", lambda: re.compile(r"(?(2)a|b)"))
+            report("cond-name", lambda: re.compile(r"(?(x)a|b)"))
+            report("cond-three", lambda: re.compile(r"(?(1)a|b|c)"))
+            report("cond-cut", lambda: re.compile(r"(?(1"))
+            report("cond-open", lambda: re.compile(r"((?(1)a|b))"))
+            print("name", re.match(r"\N{EM DASH}", "—").span(), re.match(r"[\N{LATIN SMALL LETTER A}-\N{LATIN SMALL LETTER C}]+", "abc").span())
+            print("name", re.match(r"\N{bullet}", "•").span(), re.match(r"\N{Latin small letter a}", "a").span())
+            report("name-nobrace", lambda: re.compile(r"\N"))
+            report("name-empty", lambda: re.compile(r"\N{}"))
+            report("name-unknown", lambda: re.compile(r"\N{NOT A REAL NAME}"))
+            report("name-unterminated", lambda: re.compile(r"\N{EM DASH"))
             """
         );
         Assert.Equal(
@@ -372,7 +393,25 @@ public sealed class RegularExpressionExecutionTests
                 "scoped-locale PatternError bad inline flags: cannot use 'L' flag with a str pattern at position 3",
                 "scoped-unknown PatternError unknown flag at position 4",
                 "scoped-late PatternError global flags not at the start of the expression at position 1",
-                "scoped 34 32 256"
+                "scoped 34 32 256",
+                "cond (0, 2) (0, 3) (1, 3)",
+                "cond (0, 1) None (0, 2)",
+                "cond (2, 3) ('a', None)",
+                "cond ['a', ''] - - b <re.Match object; span=(1, 3), match='bd'>",
+                "cond (None, 'c') [(0, 2), (3, 6)]",
+                "cond 1 3 None",
+                "cond-zero PatternError bad group number at position 3",
+                "cond-missing PatternError invalid group reference 2 at position 3",
+                "cond-name PatternError unknown group name 'x' at position 3",
+                "cond-three PatternError conditional backref with more than two branches at position 8",
+                "cond-cut PatternError missing ), unterminated name at position 3",
+                "cond-open re.compile('((?(1)a|b))')",
+                "name (0, 1) (0, 3)",
+                "name (0, 1) (0, 1)",
+                "name-nobrace PatternError missing { at position 2",
+                "name-empty PatternError missing character name at position 3",
+                "name-unknown PatternError undefined character name 'NOT A REAL NAME' at position 0",
+                "name-unterminated PatternError missing }, unterminated name at position 3"
             ),
             output
         );
@@ -402,30 +441,35 @@ public sealed class RegularExpressionExecutionTests
     }
 
     /// <summary>
-    /// The syntax this slice still does not read: the `\N{…}` named-character escapes
-    /// and the conditional groups `(?(id)…)` are refused where the pattern is read.
+    /// What the slice does not take: `bytes` patterns, which the module refuses in its own
+    /// words — a `bytes` subject beside a `str` pattern is refused in Python's — and the
+    /// `re.DEBUG` flag, which is accepted and carried but prints no disassembly.
     /// </summary>
     [Fact]
-    public void TheUnsupportedPatternSyntaxIsRefused()
+    public void TheSyntaxOutsideTheSliceIsRefused()
     {
         var output = Run(
             """
             import re
-            def report(pattern):
+            def report(label, thunk):
                 try:
-                    re.compile(pattern)
-                    print("ok", repr(pattern))
-                except re.error as error:
-                    print("refused", repr(pattern), error)
-            for pattern in [r"\N{EM DASH}", r"(?(1)a|b)", r"(?(name)a|b)"]:
-                report(pattern)
+                    print(label, thunk())
+                except Exception as error:
+                    print(label, type(error).__name__, error)
+            report("bytes-pattern", lambda: re.compile(b"a"))
+            report("bytes-string", lambda: re.match("a", b"a"))
+            report("bytes-compiled", lambda: re.match(re.compile(b"a"), "a"))
+            report("debug", lambda: repr(re.compile("a", re.DEBUG)))
+            report("debug-flag", lambda: re.compile("a", re.DEBUG).flags)
             """
         );
         Assert.Equal(
             Lines(
-                "refused '\\\\N{EM DASH}' `\\N{...}` is not supported in this runtime slice at position 0",
-                "refused '(?(1)a|b)' unknown extension ?( at position 1",
-                "refused '(?(name)a|b)' unknown extension ?( at position 1"
+                "bytes-pattern TypeError first argument must be string or compiled pattern",
+                "bytes-string TypeError cannot use a string pattern on a bytes-like object",
+                "bytes-compiled TypeError first argument must be string or compiled pattern",
+                "debug re.compile('a', re.DEBUG)",
+                "debug-flag 160"
             ),
             output
         );
