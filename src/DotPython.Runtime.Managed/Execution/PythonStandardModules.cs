@@ -536,6 +536,13 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializeTemplateLibrary
         );
+        // The runtime's own engine, on CPython's `re` surface: named groups, backreferences,
+        // lookaround and scoped flags are the slice's gaps.
+        modules["re"] = PythonModuleDefinition.Native(
+            "<dotpython re>",
+            isPackage: false,
+            PythonRegexModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
