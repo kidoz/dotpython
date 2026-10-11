@@ -368,6 +368,8 @@ internal static class ManagedObjectProtocols
                 return descriptor.GetAttribute(name, span);
             case PythonUnicodeErrorDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
+            case PythonOSErrorDescriptorValue descriptor:
+                return descriptor.GetAttribute(name, span);
             case PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor:
                 return PythonTypeMethodDescriptors.GetAttribute(descriptor, name, span);
             case PythonPropertyValue property when name == "__isabstractmethod__":
@@ -562,6 +564,9 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue { ManagedType: null } unicodeException
                 when PythonUnicodeErrors.TryGet(unicodeException, name, out var unicodeMember):
                 return unicodeMember;
+            case PythonExceptionValue osErrorInstance
+                when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
+                return ReadOSErrorSlot(osErrorInstance, name);
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
                 exceptionDictionary.HasInstanceDictionary = true;
                 return exceptionDictionary.Attributes.Dictionary;
@@ -1415,18 +1420,7 @@ internal static class ManagedObjectProtocols
                     && exceptionInstance.UnicodeErrorState is null
                 )
                 {
-                    exceptionInstance.Message = arguments.Elements.Length switch
-                    {
-                        0 => string.Empty,
-                        1
-                            when PythonBuiltinTypes
-                                .GetMro(PythonBuiltinTypes.GetRuntimeType(exceptionInstance))
-                                .Elements.Any(entry =>
-                                    entry is PythonExceptionTypeValue { Name: "KeyError" }
-                                ) => arguments.Elements[0].ToRepresentationString(),
-                        1 => arguments.Elements[0].ToDisplayString(),
-                        _ => arguments.ToDisplayString(),
-                    };
+                    RefreshMessage(exceptionInstance, arguments.Elements);
                 }
                 return;
             case PythonExceptionValue exceptionInstance when name is "__cause__" or "__context__":
@@ -1451,6 +1445,10 @@ internal static class ManagedObjectProtocols
                 if (value is not PythonTruthValue truth)
                     throw Fault("DPY4003", "attribute value type must be bool", span, "TypeError");
                 exceptionInstance.SuppressContext = truth.Value;
+                return;
+            case PythonExceptionValue osErrorInstance
+                when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
+                WriteOSErrorSlot(osErrorInstance, name, value);
                 return;
             case PythonExceptionValue exceptionInstance:
                 exceptionInstance.HasInstanceDictionary = true;
@@ -1839,6 +1837,9 @@ internal static class ManagedObjectProtocols
             case PythonUnicodeErrorDescriptorValue descriptor:
                 descriptor.Set(instance, value, span);
                 return true;
+            case PythonOSErrorDescriptorValue descriptor:
+                descriptor.Set(instance, value, span);
+                return true;
             case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
                 throw Fault("DPY4023", $"Attribute '{name}' is read-only.", span, "AttributeError");
             case PythonDescriptorValue { IsDataDescriptor: true } descriptor:
@@ -1879,6 +1880,9 @@ internal static class ManagedObjectProtocols
                 descriptor.Delete(instance, span);
                 return true;
             case PythonUnicodeErrorDescriptorValue descriptor:
+                descriptor.Delete(instance, span);
+                return true;
+            case PythonOSErrorDescriptorValue descriptor:
                 descriptor.Delete(instance, span);
                 return true;
             case PythonTupleGetterValue:
@@ -1993,6 +1997,10 @@ internal static class ManagedObjectProtocols
                     span,
                     "AttributeError"
                 );
+            case PythonExceptionValue osErrorInstance
+                when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
+                DeleteOSErrorSlot(osErrorInstance, name);
+                return;
             case PythonExceptionValue exception when exception.Attributes.Remove(name):
                 return;
             case PythonExceptionValue exception:
@@ -2188,7 +2196,18 @@ internal static class ManagedObjectProtocols
         exception.Arguments = [.. arguments];
         if (exception.GroupExceptions is not null || exception.UnicodeErrorState is not null)
             return;
-        exception.Message = arguments.Count switch
+        RefreshMessage(exception, arguments);
+    }
+
+    /// <summary>
+    /// The message an exception's arguments give it: their display, with CPython's
+    /// `KeyError` repr quirk.
+    /// </summary>
+    internal static string ComposeArgumentsMessage(
+        PythonExceptionValue exception,
+        IReadOnlyList<PythonValue> arguments
+    ) =>
+        arguments.Count switch
         {
             0 => string.Empty,
             1
@@ -2200,6 +2219,126 @@ internal static class ManagedObjectProtocols
             1 => arguments[0].ToDisplayString(),
             _ => new PythonTupleValue([.. arguments]).ToDisplayString(),
         };
+
+    /// <summary>
+    /// Recomputes the message for the arguments now on an exception. An `OSError`
+    /// whose slots have taken over `str` — a filename, or both errno and strerror —
+    /// keeps the message its slots give it instead.
+    /// </summary>
+    internal static void RefreshMessage(
+        PythonExceptionValue exception,
+        IReadOnlyList<PythonValue> arguments
+    ) =>
+        exception.Message =
+            exception.OSErrorSlots is { } slots && SlotsDriveMessage(slots)
+                ? ComposeOSErrorMessage(slots)
+                : ComposeArgumentsMessage(exception, arguments);
+
+    /// <summary>
+    /// Whether an `OSError`'s slots are what `str` reports: CPython reaches for them
+    /// once a filename is assigned, or once errno and strerror both are.
+    /// </summary>
+    internal static bool SlotsDriveMessage(OSErrorSlots slots) =>
+        slots.FileName is not null || (slots.Errno is not null && slots.StrError is not null);
+
+    /// <summary>The message an `OSError`'s slots give it, as `str` reports it.</summary>
+    internal static string ComposeOSErrorMessage(OSErrorSlots slots) =>
+        $"[Errno {SlotText(slots.Errno)}] {SlotText(slots.StrError)}"
+        + (
+            slots.FileName is not null
+                ? $": {slots.FileName.ToRepresentationString()}"
+                : string.Empty
+        )
+        + (
+            slots.FileName2 is not null
+                ? $" -> {slots.FileName2.ToRepresentationString()}"
+                : string.Empty
+        );
+
+    /// <summary>An unassigned slot reads as `None`.</summary>
+    private static string SlotText(PythonValue? slot) =>
+        slot is null ? "None" : slot.ToDisplayString();
+
+    /// <summary>
+    /// Rebinds an `OSError`'s slots and message from the arguments it was given — the
+    /// work CPython's `OSError` does on allocation and repeats in `__init__`: two to
+    /// five arguments are an errno, a strerror and up to two filenames, and a filename
+    /// trims `args` to the first two.
+    /// </summary>
+    internal static void ApplyOSErrorShape(
+        PythonExceptionValue exception,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var filename =
+            arguments.Count > 2 && arguments[2] is not PythonNoneValue ? arguments[2] : null;
+        exception.OSErrorSlots = arguments.Count is >= 2 and <= 5
+            ? new OSErrorSlots(
+                arguments[0],
+                arguments[1],
+                filename,
+                filename is not null && arguments.Count > 4 && arguments[4] is not PythonNoneValue
+                    ? arguments[4]
+                    : null
+            )
+            : null;
+        exception.Arguments = exception.OSErrorSlots is { FileName: not null } slots
+            ? [slots.Errno!, slots.StrError!]
+            : [.. arguments];
+        RefreshMessage(exception, exception.EffectiveArguments);
+    }
+
+    internal static bool IsOSErrorSlotName(string name) =>
+        name is "errno" or "strerror" or "filename" or "filename2";
+
+    /// <summary>Whether the exception's type carries `OSError`'s four slots.</summary>
+    internal static bool CarriesOSErrorSlots(PythonExceptionValue exception) =>
+        PythonBuiltinTypes
+            .GetMro(PythonBuiltinTypes.GetRuntimeType(exception))
+            .Elements.Any(entry => entry is PythonExceptionTypeValue { Name: "OSError" });
+
+    internal static PythonValue ReadOSErrorSlot(PythonExceptionValue exception, string name) =>
+        (
+            exception.OSErrorSlots is { } slots
+                ? name switch
+                {
+                    "errno" => slots.Errno,
+                    "strerror" => slots.StrError,
+                    "filename" => slots.FileName,
+                    _ => slots.FileName2,
+                }
+                : null
+        ) ?? PythonNoneValue.Instance;
+
+    internal static void WriteOSErrorSlot(
+        PythonExceptionValue exception,
+        string name,
+        PythonValue value
+    )
+    {
+        var slots = exception.OSErrorSlots ?? new OSErrorSlots(null, null, null, null);
+        exception.OSErrorSlots = name switch
+        {
+            "errno" => slots with { Errno = value },
+            "strerror" => slots with { StrError = value },
+            "filename" => slots with { FileName = value },
+            _ => slots with { FileName2 = value },
+        };
+        RefreshMessage(exception, exception.EffectiveArguments);
+    }
+
+    internal static void DeleteOSErrorSlot(PythonExceptionValue exception, string name)
+    {
+        if (exception.OSErrorSlots is not { } slots)
+            return;
+        exception.OSErrorSlots = name switch
+        {
+            "errno" => slots with { Errno = null },
+            "strerror" => slots with { StrError = null },
+            "filename" => slots with { FileName = null },
+            _ => slots with { FileName2 = null },
+        };
+        RefreshMessage(exception, exception.EffectiveArguments);
     }
 
     /// <summary>A CPython-shaped KeyError carrying the missing key as its argument.</summary>
@@ -4181,7 +4320,8 @@ internal static class ManagedObjectProtocols
                 metaclass.Name,
             PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
-            PythonUnicodeErrorDescriptorValue => "member_descriptor",
+            PythonUnicodeErrorDescriptorValue or PythonOSErrorDescriptorValue =>
+                "member_descriptor",
             PythonTypeMetadataDescriptorValue { Name: "__base__" } => "member_descriptor",
             PythonTypeMetadataDescriptorValue => "getset_descriptor",
             PythonPropertyValue => "property",
@@ -4274,7 +4414,8 @@ internal static class ManagedObjectProtocols
             PythonPropertyValue
             or PythonTypeMetadataDescriptorValue
             or PythonTupleGetterValue
-            or PythonUnicodeErrorDescriptorValue => true,
+            or PythonUnicodeErrorDescriptorValue
+            or PythonOSErrorDescriptorValue => true,
             _ => GetManagedType(value) is { } type
                 && (
                     TryGetTypeAttribute(type, "__set__", out _)
@@ -4289,6 +4430,7 @@ internal static class ManagedObjectProtocols
                 or PythonTypeMetadataDescriptorValue
                 or PythonTupleGetterValue
                 or PythonUnicodeErrorDescriptorValue
+                or PythonOSErrorDescriptorValue
                 or PythonProtocolFunctionValue { IsTypeMethodDescriptor: true }
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
 
@@ -4363,6 +4505,7 @@ internal static class ManagedObjectProtocols
         {
             PythonTypeMetadataDescriptorValue descriptor => descriptor.Get(instance, owner, span),
             PythonUnicodeErrorDescriptorValue descriptor => descriptor.Get(instance, owner, span),
+            PythonOSErrorDescriptorValue descriptor => descriptor.Get(instance, owner, span),
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor =>
                 PythonTypeMethodDescriptors.Bind(descriptor, instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),

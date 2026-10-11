@@ -567,6 +567,21 @@ internal static class PythonStandardModules
             }
         );
 
+    /// <summary>
+    /// `sys.breakpointhook`'s shipped hook. CPython's imports `pdb` and calls its
+    /// `set_trace`; no debugger is part of the managed runtime, so the import is what
+    /// fails — the same `ModuleNotFoundError` a CPython without `pdb` raises.
+    /// </summary>
+    private static PythonBuiltinFunctionValue CreateBreakpointHook() =>
+        new(
+            "breakpointhook",
+            (_, span) => throw MissingDebugger(span),
+            (_, _, _, span) => throw MissingDebugger(span)
+        );
+
+    private static PythonRuntimeException MissingDebugger(TextSpan span) =>
+        new("DPY4020", "No module named 'pdb'", span, "ModuleNotFoundError");
+
     private static void InitializeSys(PythonGlobalNamespace globals)
     {
         var dispatcher = UserObjectProtocols.Dispatcher;
@@ -590,6 +605,9 @@ internal static class PythonStandardModules
         globals.SetValue("stderr", new PythonStreamValue(PythonStreamKind.StandardError));
         globals.SetValue("stdin", new PythonStreamValue(PythonStreamKind.StandardInput));
         globals.SetValue("exit", CreateExitBuiltin("exit"));
+        var breakpointHook = CreateBreakpointHook();
+        globals.SetValue("breakpointhook", breakpointHook);
+        globals.SetValue("__breakpointhook__", breakpointHook);
         var version = PythonLanguageVersion.Current;
         globals.SetValue(
             "version",

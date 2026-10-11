@@ -151,6 +151,14 @@ internal sealed class PythonModuleRegistry
 
     internal bool ContainsAbsolute(string name) => _definitions.ContainsKey(name);
 
+    /// <summary>Whether the module of that name is one other modules may live under.</summary>
+    internal bool IsPackage(string name) =>
+        _packages.Contains(name)
+        || (_definitions.TryGetValue(name, out var definition) && definition.IsPackage);
+
+    internal static string NormalizeModuleName(string name, string currentPackage, TextSpan span) =>
+        NormalizeName(name, currentPackage, span);
+
     internal PythonModuleImport Resolve(string name, string currentPackage, TextSpan span) =>
         ResolveAbsolute(NormalizeName(name, currentPackage, span), span);
 
@@ -320,7 +328,7 @@ internal sealed class PythonModuleRegistry
         {
             throw new PythonRuntimeException(
                 "DPY4025",
-                $"Relative import '{name}' has no known parent package.",
+                "attempted relative import with no known parent package",
                 span
             );
         }
@@ -331,7 +339,7 @@ internal sealed class PythonModuleRegistry
         {
             throw new PythonRuntimeException(
                 "DPY4025",
-                $"Relative import '{name}' goes beyond the top-level package.",
+                "attempted relative import beyond top-level package",
                 span
             );
         }

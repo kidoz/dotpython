@@ -65,9 +65,14 @@ internal static class PythonBuiltinTypes
         );
 
     internal static PythonValue GetExceptionType(string name) =>
-        name == "ExceptionGroup"
-            ? UserObjectProtocols.Dispatcher!.ExceptionGroupType
-            : ExceptionTypes.GetOrAdd(name, static key => new PythonExceptionTypeValue(key));
+        name switch
+        {
+            "ExceptionGroup" => UserObjectProtocols.Dispatcher!.ExceptionGroupType,
+            // Two of the exception names CPython publishes are the `OSError` type
+            // itself under an alias, so both resolve to one type value.
+            "EnvironmentError" or "IOError" => GetExceptionType("OSError"),
+            _ => ExceptionTypes.GetOrAdd(name, static key => new PythonExceptionTypeValue(key)),
+        };
 
     internal static PythonTupleValue GetBases(PythonValue type)
     {

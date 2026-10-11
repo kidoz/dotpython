@@ -27,6 +27,9 @@ internal static class PythonExceptionProtocols
     private static readonly ConcurrentDictionary<string, PythonValue> UnicodeMembers = new(
         StringComparer.Ordinal
     );
+    private static readonly ConcurrentDictionary<string, PythonValue> OSErrorMembers = new(
+        StringComparer.Ordinal
+    );
 
     internal static bool TryGetOwnAttribute(
         PythonExceptionTypeValue type,
@@ -58,6 +61,14 @@ internal static class PythonExceptionProtocols
             value = UnicodeMembers.GetOrAdd(
                 type.Name + "." + name,
                 _ => new PythonUnicodeErrorDescriptorValue(type.Name, name)
+            );
+            return true;
+        }
+        if (type.Name == "OSError" && ManagedObjectProtocols.IsOSErrorSlotName(name))
+        {
+            value = OSErrorMembers.GetOrAdd(
+                name,
+                member => new PythonOSErrorDescriptorValue(type.Name, member)
             );
             return true;
         }
@@ -97,6 +108,7 @@ internal static class PythonExceptionProtocols
             && type.Name
                 is "BaseException"
                     or "BaseExceptionGroup"
+                    or "OSError"
                     or "StopIteration"
                     or "SystemExit"
                     or "UnicodeDecodeError"
@@ -363,6 +375,19 @@ internal static class PythonExceptionProtocols
                 arguments,
                 UserObjectProtocols.Dispatcher?.CurrentSpan ?? span
             );
+            return PythonNoneValue.Instance;
+        }
+        if (owner == "OSError")
+        {
+            // `OSError.__init__` repeats the constructor's work — except on an exact
+            // `OSError`, where CPython's does nothing at all.
+            if (
+                PythonBuiltinTypes.GetRuntimeType(exception)
+                is not PythonExceptionTypeValue { Name: "OSError" }
+            )
+            {
+                ManagedObjectProtocols.ApplyOSErrorShape(exception, arguments);
+            }
             return PythonNoneValue.Instance;
         }
         ManagedObjectProtocols.ApplyBaseExceptionInit(exception, arguments);

@@ -1030,6 +1030,18 @@ internal sealed record PythonExceptionTypeValue(string Name) : PythonValue
     internal override string ToDisplayString() => $"<class '{Name}'>";
 }
 
+/// <summary>
+/// The four assignable slots every `OSError` carries. A null entry is CPython's null
+/// pointer — the slot was never assigned — which `str` treats differently from an
+/// explicit `None`.
+/// </summary>
+internal sealed record OSErrorSlots(
+    PythonValue? Errno,
+    PythonValue? StrError,
+    PythonValue? FileName,
+    PythonValue? FileName2
+);
+
 internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
 {
     private readonly string _originalTypeName = TypeName;
@@ -1058,6 +1070,9 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
     internal bool SuppressContext { get; set; }
 
     internal PythonUnicodeErrors.State? UnicodeErrorState { get; set; }
+
+    /// <summary>The `OSError` slots, for the types that carry them.</summary>
+    internal OSErrorSlots? OSErrorSlots { get; set; }
 
     private IReadOnlyList<PythonExceptionValue>? _groupExceptions;
     private IReadOnlyList<PythonValue>? _groupArguments;

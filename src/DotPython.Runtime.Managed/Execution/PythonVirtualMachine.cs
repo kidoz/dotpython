@@ -24,6 +24,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["BaseException"] = null,
             ["Exception"] = "BaseException",
             ["ArithmeticError"] = "Exception",
+            ["FloatingPointError"] = "ArithmeticError",
             ["LookupError"] = "Exception",
             ["StopIteration"] = "Exception",
             ["StopAsyncIteration"] = "Exception",
@@ -33,6 +34,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["RuntimeError"] = "Exception",
             ["RecursionError"] = "RuntimeError",
             ["NotImplementedError"] = "RuntimeError",
+            ["PythonFinalizationError"] = "RuntimeError",
             ["TypeError"] = "Exception",
             ["ValueError"] = "Exception",
             ["BufferError"] = "Exception",
@@ -43,14 +45,35 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["ImportError"] = "Exception",
             ["ModuleNotFoundError"] = "ImportError",
             ["SyntaxError"] = "Exception",
+            ["IndentationError"] = "SyntaxError",
+            ["TabError"] = "IndentationError",
             ["IndexError"] = "LookupError",
             ["KeyError"] = "LookupError",
+            ["MemoryError"] = "Exception",
+            ["ReferenceError"] = "Exception",
+            ["SystemError"] = "Exception",
             ["OverflowError"] = "ArithmeticError",
             ["ZeroDivisionError"] = "ArithmeticError",
             ["OSError"] = "Exception",
+            // `EnvironmentError` and `IOError` are two more names for the error the
+            // class above is; the aliases are registered as the same type value.
+            ["EnvironmentError"] = "OSError",
+            ["IOError"] = "OSError",
+            ["BlockingIOError"] = "OSError",
+            ["BrokenPipeError"] = "ConnectionError",
+            ["ChildProcessError"] = "OSError",
+            ["ConnectionAbortedError"] = "ConnectionError",
+            ["ConnectionError"] = "OSError",
+            ["ConnectionRefusedError"] = "ConnectionError",
+            ["ConnectionResetError"] = "ConnectionError",
+            ["FileExistsError"] = "OSError",
             ["FileNotFoundError"] = "OSError",
+            ["InterruptedError"] = "OSError",
             ["IsADirectoryError"] = "OSError",
+            ["NotADirectoryError"] = "OSError",
             ["PermissionError"] = "OSError",
+            ["ProcessLookupError"] = "OSError",
+            ["TimeoutError"] = "OSError",
             ["EOFError"] = "Exception",
             ["UnicodeError"] = "ValueError",
             ["UnicodeDecodeError"] = "UnicodeError",
@@ -141,6 +164,28 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["super"] = new PythonBuiltinFunctionValue("super", Super),
             ["next"] = new PythonBuiltinFunctionValue("next", Next),
             ["anext"] = new PythonBuiltinFunctionValue("anext", ANext),
+            ["aiter"] = new PythonBuiltinFunctionValue("aiter", AIter),
+            // `breakpoint` and `__import__` hand their call straight on — the first to
+            // `sys.breakpointhook`, the second to the import system — so both keep the
+            // keywords they were given.
+            ["breakpoint"] = new PythonBuiltinFunctionValue(
+                "breakpoint",
+                (arguments, span) => Breakpoint(arguments, [], [], span),
+                (arguments, names, values, span) => Breakpoint(arguments, names, values, span)
+            ),
+            ["__import__"] = new PythonBuiltinFunctionValue(
+                "__import__",
+                (arguments, span) => ImportBuiltin(arguments, span)
+            ).WithSignature(
+                ["name", "globals", "locals", "fromlist", "level"],
+                [
+                    null,
+                    PythonNoneValue.Instance,
+                    PythonNoneValue.Instance,
+                    new PythonTupleValue([]),
+                    PythonWholeNumberValue.Create(BigInteger.Zero),
+                ]
+            ),
             ["callable"] = new PythonBuiltinFunctionValue("callable", Callable),
             ["delattr"] = new PythonBuiltinFunctionValue("delattr", DeleteAttributeBuiltin),
             ["sum"] = new PythonBuiltinFunctionValue("sum", Sum).WithSignature(
@@ -4020,6 +4065,16 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
         var baseFrameCount = _frameCount;
         PushFunctionFrameWithArguments(function, bound, span);
+        RunFramesAbove(baseFrameCount);
+        return baseFrameCount == 0 ? _result : Pop(span);
+    }
+
+    /// <summary>
+    /// Runs the frames pushed above <paramref name="baseFrameCount"/> — the loop a builtin
+    /// uses to wait for the Python code it runs — leaving that frame's value on the stack.
+    /// </summary>
+    private void RunFramesAbove(int baseFrameCount)
+    {
         while (_frameCount > baseFrameCount)
         {
             try
@@ -4069,8 +4124,6 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 }
             }
         }
-
-        return baseFrameCount == 0 ? _result : Pop(span);
     }
 
     private void ApplyUnpackedCall(PythonInstruction instruction)
@@ -4880,10 +4933,30 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             PythonUnicodeErrors.Initialize(exception, arguments, GetCurrentSpan(CurrentFrame));
             return exception;
         }
+        if (IsExceptionSubclass(type.Name, "OSError"))
+            return CreateOSErrorValue(type.Name, arguments);
         return new(type.Name, ComposeExceptionMessage(type.Name, arguments))
         {
             Arguments = [.. arguments],
         };
+    }
+
+    /// <summary>
+    /// `OSError` and the classes under it: two to five arguments are an errno, a
+    /// strerror and up to two filenames, and a plain `OSError` takes the class its
+    /// errno names.
+    /// </summary>
+    private static PythonExceptionValue CreateOSErrorValue(string typeName, PythonValue[] arguments)
+    {
+        var exception = new PythonExceptionValue(
+            typeName == "OSError" ? MappedOSErrorName(arguments) ?? typeName : typeName,
+            string.Empty
+        )
+        {
+            Arguments = [.. arguments],
+        };
+        ManagedObjectProtocols.ApplyOSErrorShape(exception, arguments);
+        return exception;
     }
 
     private string ComposeExceptionMessage(string typeName, PythonValue[] arguments) =>
@@ -5063,6 +5136,308 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     span,
                     "TypeError"
                 );
+        }
+    }
+
+    /// <summary>`aiter(object)`: the async iterator the object's `__aiter__` returns.</summary>
+    private PythonValue AIter(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 1)
+        {
+            throw Fault(
+                "DPY4003",
+                $"aiter() takes exactly one argument ({arguments.Count} given)",
+                span,
+                "TypeError"
+            );
+        }
+
+        switch (arguments[0])
+        {
+            case PythonGeneratorValue { IsAsyncGenerator: true } asyncGenerator:
+                return asyncGenerator;
+            case PythonManagedObjectValue instance
+                when ManagedObjectProtocols.TryGetInstanceMethod(
+                    instance,
+                    "__aiter__",
+                    out var iteratorMethod
+                ):
+                var iterator = InvokeCallableNested(iteratorMethod, [], span);
+                return IsAsyncIterator(iterator)
+                    ? iterator
+                    : throw Fault(
+                        "DPY4003",
+                        $"aiter() returned not an async iterator of type '"
+                            + $"{ManagedObjectProtocols.GetTypeName(iterator)}'",
+                        span,
+                        "TypeError"
+                    );
+            default:
+                throw Fault(
+                    "DPY4003",
+                    $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}' object is not an async iterable",
+                    span,
+                    "TypeError"
+                );
+        }
+    }
+
+    /// <summary>Whether a value supplies `__anext__`, which is all an async iterator needs.</summary>
+    private static bool IsAsyncIterator(PythonValue value) =>
+        value is PythonGeneratorValue { IsAsyncGenerator: true }
+        || (
+            value is PythonManagedObjectValue instance
+            && ManagedObjectProtocols.TryGetInstanceMethod(instance, "__anext__", out _)
+        );
+
+    /// <summary>
+    /// `breakpoint(*args, **kws)`: hands the call over to `sys.breakpointhook`, which a
+    /// program may replace — with anything, including None, whose call then fails the way
+    /// calling None does anywhere else.
+    /// </summary>
+    private PythonValue Breakpoint(
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        TextSpan span
+    )
+    {
+        var sys = _modules.ResolveAbsolute("sys", span).Module.Globals;
+        return UserObjectProtocols.Dispatcher!.InvokeWithKeywords(
+            sys.TryGetValue("breakpointhook", out var hook) ? hook : PythonNoneValue.Instance,
+            arguments,
+            keywordNames,
+            keywordValues,
+            span
+        );
+    }
+
+    /// <summary>
+    /// `__import__(name, globals=None, locals=None, fromlist=(), level=0)`: the import
+    /// statement's work done by hand. Without a fromlist the top-level module comes back,
+    /// with one the module the name resolves to — and the submodules the fromlist lists
+    /// are imported along the way, as CPython's `_handle_fromlist` does.
+    /// </summary>
+    private PythonModuleValue ImportBuiltin(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count == 0)
+        {
+            throw Fault(
+                "DPY4003",
+                "__import__() missing required argument 'name' (pos 1)",
+                span,
+                "TypeError"
+            );
+        }
+        if (arguments.Count > 5)
+        {
+            throw Fault(
+                "DPY4003",
+                $"__import__() takes at most 5 arguments ({arguments.Count} given)",
+                span,
+                "TypeError"
+            );
+        }
+        if (arguments[0] is not PythonTextValue name)
+        {
+            throw Fault("DPY4003", "module name must be a string", span, "TypeError");
+        }
+        if (name.Value.Length == 0)
+        {
+            throw Fault("DPY4020", "Empty module name", span, "ValueError");
+        }
+
+        // The positional form carries only what the caller passed; the keyword form has
+        // already filled the defaults in.
+        var level = arguments.Count > 4 ? ImportLevel(arguments[4], span) : 0;
+        var absolute = PythonModuleRegistry.NormalizeModuleName(
+            level == 0 ? name.Value : new string('.', level) + name.Value,
+            level == 0 || arguments.Count < 2 ? string.Empty : ImportPackage(arguments[1], span),
+            span
+        );
+        var module = ImportModuleTree(absolute, span);
+        if (arguments.Count > 3 && IsTruthy(arguments[3]))
+        {
+            ImportFromList(module, arguments[3], span);
+            return module;
+        }
+        if (level != 0)
+        {
+            // A relative import has no top level to stop at: the module it resolves to
+            // is what comes back, fromlist or not.
+            return module;
+        }
+
+        var separator = absolute.IndexOf('.', StringComparison.Ordinal);
+        return _modules
+            .ResolveAbsolute(separator < 0 ? absolute : absolute[..separator], span)
+            .Module;
+    }
+
+    /// <summary>`level`, which names how many dots of a relative import to apply.</summary>
+    private static int ImportLevel(PythonValue value, TextSpan span) =>
+        value switch
+        {
+            PythonWholeNumberValue { Value: var amount }
+                when amount >= 0 && amount <= int.MaxValue => (int)amount,
+            PythonWholeNumberValue => throw Fault(
+                "DPY4003",
+                "level must be >= 0",
+                span,
+                "ValueError"
+            ),
+            _ => throw Fault(
+                "DPY4003",
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object cannot be interpreted as an integer",
+                span,
+                "TypeError"
+            ),
+        };
+
+    /// <summary>
+    /// The package a relative import resolves against: the globals' `__package__`, and
+    /// failing that its `__name__` — a package's own name, or a module's parent. Globals
+    /// that name no module at all are the one case CPython reports as a `KeyError`.
+    /// </summary>
+    private string ImportPackage(PythonValue globals, TextSpan span)
+    {
+        if (globals is PythonNoneValue)
+        {
+            // No globals to read the package from at all, which CPython reports the same
+            // way it reports globals that name no module.
+            throw MissingGlobalsName(span);
+        }
+
+        if (
+            PythonNamespaceMapping.TryGet(globals, "__package__", span, out var package)
+            && package is PythonTextValue packageText
+        )
+        {
+            return packageText.Value;
+        }
+
+        if (
+            !PythonNamespaceMapping.TryGet(globals, "__name__", span, out var module)
+            || module is not PythonTextValue moduleName
+        )
+        {
+            throw MissingGlobalsName(span);
+        }
+
+        // A package's own name is the package; a module's is its parent.
+        if (_modules.IsPackage(moduleName.Value))
+        {
+            return moduleName.Value;
+        }
+
+        var separator = moduleName.Value.LastIndexOf('.');
+        return separator < 0 ? string.Empty : moduleName.Value[..separator];
+    }
+
+    /// <summary>
+    /// Globals without a name to resolve a relative import against. `str` of the
+    /// `KeyError` shows the key's repr, as it does for every KeyError.
+    /// </summary>
+    private static PythonRaisedException MissingGlobalsName(TextSpan span)
+    {
+        var key = new PythonTextValue("'__name__' not in globals");
+        return new PythonRaisedException(
+            new PythonExceptionValue("KeyError", key.ToRepresentationString()) { Arguments = [key] }
+        );
+    }
+
+    private PythonModuleValue ImportModuleTree(string name, TextSpan span)
+    {
+        var separator = name.LastIndexOf('.');
+        if (separator > 0)
+        {
+            ImportModuleTree(name[..separator], span);
+        }
+
+        return RunModuleImport(_modules.ResolveAbsolute(name, span), span);
+    }
+
+    /// <summary>
+    /// Runs a module's body to its end, for the imports a builtin performs: the statement
+    /// path lets the module frame run on the main loop, so here the frame is pushed and
+    /// driven forward until it returns.
+    /// </summary>
+    private PythonModuleValue RunModuleImport(PythonModuleImport import, TextSpan span)
+    {
+        if (import.InitializationCode is null)
+        {
+            return import.Module;
+        }
+        if (_nestedCallDepth >= MaximumNestedCallDepth)
+        {
+            throw Fault("DPY4009", "maximum recursion depth exceeded", span, "RecursionError");
+        }
+
+        var baseFrameCount = _frameCount;
+        _evaluationStack.Push(import.Module);
+        PushFrame(
+            import.InitializationCode,
+            import.Module.Globals,
+            _localsCount,
+            0,
+            CreateCells(import.InitializationCode, [], span),
+            initializingModule: import.Module,
+            isModule: true
+        );
+        _nestedCallDepth++;
+        try
+        {
+            RunFramesAbove(baseFrameCount);
+        }
+        finally
+        {
+            _nestedCallDepth--;
+        }
+
+        Pop(span);
+        return import.Module;
+    }
+
+    /// <summary>
+    /// CPython's `_handle_fromlist`: every name a fromlist lists is imported as a
+    /// submodule when the module is a package and does not already carry it, and a name
+    /// that is not a string is refused. A submodule that does not exist is not an error.
+    /// </summary>
+    private void ImportFromList(PythonModuleValue module, PythonValue fromlist, TextSpan span)
+    {
+        if (!_modules.IsPackage(module.Name))
+        {
+            return;
+        }
+
+        foreach (var item in ManagedObjectProtocols.MaterializeValues(fromlist, span))
+        {
+            if (item is not PythonTextValue text)
+            {
+                throw Fault(
+                    "DPY4003",
+                    "Item in ``from list'' must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(item),
+                    span,
+                    "TypeError"
+                );
+            }
+            if (text.Value == "*" || module.Globals.TryGetValue(text.Value, out _))
+            {
+                continue;
+            }
+
+            try
+            {
+                ImportModuleTree(module.Name + "." + text.Value, span);
+            }
+            catch (PythonRuntimeException fault)
+                when (fault.Code == "DPY4020"
+                    || fault.PythonExceptionTypeName == "ModuleNotFoundError"
+                )
+            {
+                // A listed name that is no submodule of the package simply is not imported.
+            }
         }
     }
 

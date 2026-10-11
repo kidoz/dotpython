@@ -37,12 +37,17 @@ public sealed class SubclassIntrospectionCompatibilityTests
                 slice, staticmethod, super, tuple, str, zip, BaseException, bool,
                 BaseExceptionGroup, Exception, GeneratorExit, KeyboardInterrupt,
                 SystemExit, ArithmeticError, AssertionError, AttributeError, EOFError,
-                ImportError, LookupError, NameError, OSError, RuntimeError,
-                StopAsyncIteration, StopIteration, SyntaxError, TypeError, ValueError,
-                ExceptionGroup, OverflowError, ZeroDivisionError, ModuleNotFoundError,
-                IndexError, KeyError, UnboundLocalError, FileNotFoundError,
-                IsADirectoryError, PermissionError, RecursionError, UnicodeError,
-                UnicodeDecodeError, UnicodeEncodeError
+                ImportError, LookupError, MemoryError, NameError, OSError, ReferenceError,
+                RuntimeError, StopAsyncIteration, StopIteration, SyntaxError, SystemError,
+                TypeError, ValueError, ExceptionGroup, FloatingPointError, OverflowError,
+                ZeroDivisionError, ModuleNotFoundError, IndexError, KeyError,
+                UnboundLocalError, BlockingIOError, BrokenPipeError, ChildProcessError,
+                ConnectionError, ConnectionAbortedError, ConnectionRefusedError,
+                ConnectionResetError, FileExistsError, FileNotFoundError,
+                InterruptedError, IsADirectoryError, NotADirectoryError, PermissionError,
+                ProcessLookupError, TimeoutError, PythonFinalizationError, RecursionError,
+                IndentationError, TabError, UnicodeError, UnicodeDecodeError,
+                UnicodeEncodeError, UnicodeTranslateError
             )
             print(len(represented))
             for parent in represented:
