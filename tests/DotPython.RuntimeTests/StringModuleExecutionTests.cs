@@ -23,6 +23,7 @@ public sealed class StringModuleExecutionTests
                     print(label, repr(thunk()))
                 except Exception as error:
                     print(label, type(error).__name__, error)
+            report("capwords-no-args", lambda: string.capwords())
             report("capwords-int", lambda: string.capwords(5))
             report("capwords-empty-sep", lambda: string.capwords("a-b", ""))
             template = string.Template("$name is ${age} and $$10")
@@ -68,6 +69,7 @@ public sealed class StringModuleExecutionTests
                 "digits '0123456789' '0123456789abcdefABCDEF' '01234567'",
                 "sets '!\"#$%&\\'()*+,-./:;<=>?@[\\\\]^_`{|}~' ' \\t\\n\\r\\x0b\\x0c' '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&\\'()*+,-./:;<=>?@[\\\\]^_`{|}~ \\t\\n\\r\\x0b\\x0c'",
                 "capwords 'Hello World! A B' 'A-B' 'A B' '' 'A-B c' 'A B' 'A B' 'A-b'",
+                "capwords-no-args TypeError capwords() missing 1 required positional argument: 's'",
                 "capwords-int AttributeError 'int' object has no attribute 'split'",
                 "capwords-empty-sep ValueError empty separator",
                 "substitute 'x is 3 and $10'",

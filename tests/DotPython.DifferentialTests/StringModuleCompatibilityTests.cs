@@ -20,6 +20,7 @@ public sealed class StringModuleCompatibilityTests
                     print(label, repr(thunk()))
                 except Exception as error:
                     print(label, type(error).__name__, error)
+            report("capwords-no-args", lambda: string.capwords())
             report("capwords-int", lambda: string.capwords(5))
             report("capwords-empty-sep", lambda: string.capwords("a-b", ""))
             template = string.Template("$name is ${age} and $$10")

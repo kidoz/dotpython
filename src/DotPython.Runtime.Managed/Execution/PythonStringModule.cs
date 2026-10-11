@@ -71,7 +71,17 @@ internal static class PythonStringModule
     /// </summary>
     private static PythonValue CapWords(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        var text = arguments[0];
+        // A positional call reaches the body directly, so the argument the parameter
+        // names is checked here; a keyword call is bound before it gets here.
+        var text =
+            arguments.Count > 0
+                ? arguments[0]
+                : throw ManagedObjectProtocols.Fault(
+                    "DPY4003",
+                    "capwords() missing 1 required positional argument: 's'",
+                    span,
+                    "TypeError"
+                );
         var separator =
             arguments.Count > 1 && arguments[1] is not PythonNoneValue ? arguments[1] : null;
         var parts = ManagedObjectProtocols.MaterializeValues(
