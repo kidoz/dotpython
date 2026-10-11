@@ -1042,6 +1042,21 @@ internal sealed record OSErrorSlots(
     PythonValue? FileName2
 );
 
+/// <summary>
+/// The members every `SyntaxError` carries. A null entry is a slot that was never
+/// assigned, which reads as None and leaves `str` without that part of its suffix.
+/// </summary>
+internal sealed record PythonSyntaxErrorSlots(
+    PythonValue? Msg,
+    PythonValue? FileName,
+    PythonValue? LineNo,
+    PythonValue? Offset,
+    PythonValue? Text,
+    PythonValue? EndLineNo,
+    PythonValue? EndOffset,
+    PythonValue? PrintFileAndLine
+);
+
 internal sealed record PythonExceptionValue(string TypeName, string Message) : PythonValue
 {
     private readonly string _originalTypeName = TypeName;
@@ -1073,6 +1088,9 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     /// <summary>The `OSError` slots, for the types that carry them.</summary>
     internal OSErrorSlots? OSErrorSlots { get; set; }
+
+    /// <summary>The `SyntaxError` members, for the types that carry them.</summary>
+    internal PythonSyntaxErrorSlots? SyntaxErrorSlots { get; set; }
 
     private IReadOnlyList<PythonExceptionValue>? _groupExceptions;
     private IReadOnlyList<PythonValue>? _groupArguments;

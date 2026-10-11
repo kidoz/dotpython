@@ -30,6 +30,9 @@ internal static class PythonExceptionProtocols
     private static readonly ConcurrentDictionary<string, PythonValue> OSErrorMembers = new(
         StringComparer.Ordinal
     );
+    private static readonly ConcurrentDictionary<string, PythonValue> SyntaxErrorMembers = new(
+        StringComparer.Ordinal
+    );
 
     internal static bool TryGetOwnAttribute(
         PythonExceptionTypeValue type,
@@ -68,7 +71,23 @@ internal static class PythonExceptionProtocols
         {
             value = OSErrorMembers.GetOrAdd(
                 name,
-                member => new PythonOSErrorDescriptorValue(type.Name, member)
+                member => new PythonExceptionMemberDescriptorValue(
+                    type.Name,
+                    member,
+                    PythonExceptionMemberFamily.OSError
+                )
+            );
+            return true;
+        }
+        if (type.Name == "SyntaxError" && ManagedObjectProtocols.IsSyntaxErrorMemberName(name))
+        {
+            value = SyntaxErrorMembers.GetOrAdd(
+                name,
+                member => new PythonExceptionMemberDescriptorValue(
+                    type.Name,
+                    member,
+                    PythonExceptionMemberFamily.SyntaxError
+                )
             );
             return true;
         }
@@ -110,6 +129,7 @@ internal static class PythonExceptionProtocols
                     or "BaseExceptionGroup"
                     or "OSError"
                     or "StopIteration"
+                    or "SyntaxError"
                     or "SystemExit"
                     or "UnicodeDecodeError"
                     or "UnicodeEncodeError"
@@ -375,6 +395,15 @@ internal static class PythonExceptionProtocols
                 arguments,
                 UserObjectProtocols.Dispatcher?.CurrentSpan ?? span
             );
+            return PythonNoneValue.Instance;
+        }
+        if (owner == "SyntaxError")
+        {
+            // `SyntaxError.__init__` repeats the constructor's work: it rebinds `args` and
+            // the members it is given are the members the exception ends up with.
+            exception.PreserveSpecializedArguments();
+            exception.Arguments = [.. arguments];
+            ManagedObjectProtocols.ApplySyntaxErrorShape(exception, arguments, span);
             return PythonNoneValue.Instance;
         }
         if (owner == "OSError")

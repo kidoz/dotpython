@@ -423,13 +423,13 @@ public sealed class ManagedPythonEngine
         var parseResult = PythonParser.Parse(source);
         if (!parseResult.Success)
         {
-            throw ModuleCompilationFailure(name, parseResult.Diagnostics[0], importSpan);
+            throw ModuleCompilationFailure(name, parseResult.Diagnostics[0], source, importSpan);
         }
 
         var compilation = PythonCompiler.Compile(parseResult.Module, source.FilePath ?? name);
         if (!compilation.Success)
         {
-            throw ModuleCompilationFailure(name, compilation.Diagnostics[0], importSpan);
+            throw ModuleCompilationFailure(name, compilation.Diagnostics[0], source, importSpan);
         }
 
         PythonSourceLocations.Register(compilation.Code, source.FilePath ?? name, source);
@@ -439,13 +439,24 @@ public sealed class ManagedPythonEngine
     private static PythonRuntimeException ModuleCompilationFailure(
         string name,
         Diagnostic diagnostic,
+        SourceText source,
         TextSpan importSpan
-    ) =>
-        new(
-            "DPY4021",
+    )
+    {
+        // The module's own name stands in for a file name, and the `SyntaxError` members
+        // carry the line the failure is on.
+        var value = PythonVirtualMachine.SyntaxErrorValue(
+            PythonVirtualMachine.SyntaxErrorTypeName(diagnostic),
             $"Managed module '{name}' could not be compiled: {diagnostic.Message}",
-            importSpan
+            source.FilePath ?? name,
+            diagnostic.Span,
+            source
         );
+        return new PythonRuntimeException("DPY4021", value.Message, importSpan)
+        {
+            ExceptionValue = value,
+        };
+    }
 
     private static PythonRuntimeException ToRuntimeFault(
         PythonRaisedException raised,

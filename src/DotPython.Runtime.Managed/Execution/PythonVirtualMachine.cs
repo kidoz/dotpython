@@ -4956,10 +4956,30 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
         if (IsExceptionSubclass(type.Name, "OSError"))
             return CreateOSErrorValue(type.Name, arguments);
+        if (IsExceptionSubclass(type.Name, "SyntaxError"))
+            return CreateSyntaxErrorValue(type.Name, arguments, GetCurrentSpan(CurrentFrame));
         return new(type.Name, ComposeExceptionMessage(type.Name, arguments))
         {
             Arguments = [.. arguments],
         };
+    }
+
+    /// <summary>
+    /// `SyntaxError` and the classes under it: the message, and the file, line, offset,
+    /// text and end position a details tuple names.
+    /// </summary>
+    private static PythonExceptionValue CreateSyntaxErrorValue(
+        string typeName,
+        PythonValue[] arguments,
+        TextSpan span
+    )
+    {
+        var exception = new PythonExceptionValue(typeName, string.Empty)
+        {
+            Arguments = [.. arguments],
+        };
+        ManagedObjectProtocols.ApplySyntaxErrorShape(exception, arguments, span);
+        return exception;
     }
 
     /// <summary>

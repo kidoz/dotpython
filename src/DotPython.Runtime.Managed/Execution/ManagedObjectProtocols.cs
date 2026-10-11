@@ -368,7 +368,7 @@ internal static class ManagedObjectProtocols
                 return descriptor.GetAttribute(name, span);
             case PythonUnicodeErrorDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
-            case PythonOSErrorDescriptorValue descriptor:
+            case PythonExceptionMemberDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
             case PythonCodeValue code:
                 return code.GetAttribute(name, span);
@@ -569,6 +569,9 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue osErrorInstance
                 when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
                 return ReadOSErrorSlot(osErrorInstance, name);
+            case PythonExceptionValue syntaxInstance
+                when IsSyntaxErrorMemberName(name) && CarriesSyntaxErrorSlots(syntaxInstance):
+                return ReadSyntaxErrorSlot(syntaxInstance, name);
             case PythonExceptionValue exceptionDictionary when name == "__dict__":
                 exceptionDictionary.HasInstanceDictionary = true;
                 return exceptionDictionary.Attributes.Dictionary;
@@ -1452,6 +1455,10 @@ internal static class ManagedObjectProtocols
                 when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
                 WriteOSErrorSlot(osErrorInstance, name, value);
                 return;
+            case PythonExceptionValue syntaxInstance
+                when IsSyntaxErrorMemberName(name) && CarriesSyntaxErrorSlots(syntaxInstance):
+                WriteSyntaxErrorSlot(syntaxInstance, name, value);
+                return;
             case PythonExceptionValue exceptionInstance:
                 exceptionInstance.HasInstanceDictionary = true;
                 exceptionInstance.Attributes[name] = value;
@@ -1839,7 +1846,7 @@ internal static class ManagedObjectProtocols
             case PythonUnicodeErrorDescriptorValue descriptor:
                 descriptor.Set(instance, value, span);
                 return true;
-            case PythonOSErrorDescriptorValue descriptor:
+            case PythonExceptionMemberDescriptorValue descriptor:
                 descriptor.Set(instance, value, span);
                 return true;
             case PythonDescriptorValue { IsDataDescriptor: true, Set: null }:
@@ -1884,7 +1891,7 @@ internal static class ManagedObjectProtocols
             case PythonUnicodeErrorDescriptorValue descriptor:
                 descriptor.Delete(instance, span);
                 return true;
-            case PythonOSErrorDescriptorValue descriptor:
+            case PythonExceptionMemberDescriptorValue descriptor:
                 descriptor.Delete(instance, span);
                 return true;
             case PythonTupleGetterValue:
@@ -2002,6 +2009,10 @@ internal static class ManagedObjectProtocols
             case PythonExceptionValue osErrorInstance
                 when IsOSErrorSlotName(name) && CarriesOSErrorSlots(osErrorInstance):
                 DeleteOSErrorSlot(osErrorInstance, name);
+                return;
+            case PythonExceptionValue syntaxInstance
+                when IsSyntaxErrorMemberName(name) && CarriesSyntaxErrorSlots(syntaxInstance):
+                DeleteSyntaxErrorSlot(syntaxInstance, name);
                 return;
             case PythonExceptionValue exception when exception.Attributes.Remove(name):
                 return;
@@ -2232,9 +2243,10 @@ internal static class ManagedObjectProtocols
         IReadOnlyList<PythonValue> arguments
     ) =>
         exception.Message =
-            exception.OSErrorSlots is { } slots && SlotsDriveMessage(slots)
+            exception.SyntaxErrorSlots is { } syntax ? ComposeSyntaxErrorMessage(syntax)
+            : exception.OSErrorSlots is { } slots && SlotsDriveMessage(slots)
                 ? ComposeOSErrorMessage(slots)
-                : ComposeArgumentsMessage(exception, arguments);
+            : ComposeArgumentsMessage(exception, arguments);
 
     /// <summary>
     /// Whether an `OSError`'s slots are what `str` reports: CPython reaches for them
@@ -2326,6 +2338,174 @@ internal static class ManagedObjectProtocols
             "filename" => slots with { FileName = value },
             _ => slots with { FileName2 = value },
         };
+        RefreshMessage(exception, exception.EffectiveArguments);
+    }
+
+    /// <summary>Whether the exception's type carries `SyntaxError`'s members.</summary>
+    internal static bool CarriesSyntaxErrorSlots(PythonExceptionValue exception) =>
+        PythonBuiltinTypes
+            .GetMro(PythonBuiltinTypes.GetRuntimeType(exception))
+            .Elements.Any(entry => entry is PythonExceptionTypeValue { Name: "SyntaxError" });
+
+    internal static bool IsSyntaxErrorMemberName(string name) =>
+        name
+            is "msg"
+                or "filename"
+                or "lineno"
+                or "offset"
+                or "text"
+                or "end_lineno"
+                or "end_offset"
+                or "print_file_and_line";
+
+    internal static PythonValue ReadSyntaxErrorSlot(PythonExceptionValue exception, string name) =>
+        (
+            exception.SyntaxErrorSlots is { } members
+                ? name switch
+                {
+                    "msg" => members.Msg,
+                    "filename" => members.FileName,
+                    "lineno" => members.LineNo,
+                    "offset" => members.Offset,
+                    "text" => members.Text,
+                    "end_lineno" => members.EndLineNo,
+                    "end_offset" => members.EndOffset,
+                    _ => members.PrintFileAndLine,
+                }
+                : null
+        ) ?? PythonNoneValue.Instance;
+
+    internal static void WriteSyntaxErrorSlot(
+        PythonExceptionValue exception,
+        string name,
+        PythonValue value
+    )
+    {
+        exception.SyntaxErrorSlots = WithSyntaxErrorSlot(
+            exception.SyntaxErrorSlots ?? EmptySyntaxErrorSlots,
+            name,
+            value
+        );
+        RefreshMessage(exception, exception.EffectiveArguments);
+    }
+
+    internal static void DeleteSyntaxErrorSlot(PythonExceptionValue exception, string name)
+    {
+        if (exception.SyntaxErrorSlots is null)
+        {
+            return;
+        }
+        exception.SyntaxErrorSlots = WithSyntaxErrorSlot(exception.SyntaxErrorSlots, name, null);
+        RefreshMessage(exception, exception.EffectiveArguments);
+    }
+
+    private static readonly PythonSyntaxErrorSlots EmptySyntaxErrorSlots = new(
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    );
+
+    private static PythonSyntaxErrorSlots WithSyntaxErrorSlot(
+        PythonSyntaxErrorSlots members,
+        string name,
+        PythonValue? value
+    ) =>
+        name switch
+        {
+            "msg" => members with { Msg = value },
+            "filename" => members with { FileName = value },
+            "lineno" => members with { LineNo = value },
+            "offset" => members with { Offset = value },
+            "text" => members with { Text = value },
+            "end_lineno" => members with { EndLineNo = value },
+            "end_offset" => members with { EndOffset = value },
+            _ => members with { PrintFileAndLine = value },
+        };
+
+    /// <summary>
+    /// `SyntaxError`'s message: the `msg` with the file and line it has, each part of the
+    /// suffix used only when its member is there — and an unset `msg` reads as `None`, as
+    /// CPython's does.
+    /// </summary>
+    internal static string ComposeSyntaxErrorMessage(PythonSyntaxErrorSlots members)
+    {
+        var message = SlotText(members.Msg);
+        // A filename or line that is None leaves its part of the suffix out, as CPython's
+        // own composition does.
+        var fileName = Present(members.FileName);
+        var lineNo = Present(members.LineNo);
+        if (fileName is not null && lineNo is not null)
+        {
+            return $"{message} ({fileName}, line {lineNo})";
+        }
+        if (fileName is not null)
+        {
+            return $"{message} ({fileName})";
+        }
+        if (lineNo is not null)
+        {
+            return $"{message} (line {lineNo})";
+        }
+        return message;
+    }
+
+    private static string? Present(PythonValue? slot) =>
+        slot is null or PythonNoneValue ? null : slot.ToDisplayString();
+
+    /// <summary>
+    /// Rebinds a `SyntaxError`'s members from the arguments its constructor was given: the
+    /// message, and the file, line, offset, text and end position a 4- or 6-tuple names.
+    /// </summary>
+    internal static void ApplySyntaxErrorShape(
+        PythonExceptionValue exception,
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        var members = EmptySyntaxErrorSlots;
+        if (arguments.Count > 0)
+        {
+            members = members with { Msg = arguments[0] };
+        }
+        if (arguments.Count > 1)
+        {
+            IReadOnlyList<PythonValue> details = arguments[1] is PythonTupleValue tuple
+                ? tuple.Elements
+                : MaterializeValues(arguments[1], span);
+            if (details.Count < 4)
+            {
+                throw Fault(
+                    "DPY4003",
+                    $"function takes at least 4 arguments ({details.Count} given)",
+                    span,
+                    "TypeError"
+                );
+            }
+            if (details.Count == 5)
+            {
+                throw Fault(
+                    "DPY4003",
+                    "end_offset must be provided when end_lineno is provided",
+                    span,
+                    "TypeError"
+                );
+            }
+            members = members with
+            {
+                FileName = details[0],
+                LineNo = details[1],
+                Offset = details[2],
+                Text = details[3],
+                EndLineNo = details.Count > 4 ? details[4] : null,
+                EndOffset = details.Count > 5 ? details[5] : null,
+            };
+        }
+        exception.SyntaxErrorSlots = members;
         RefreshMessage(exception, exception.EffectiveArguments);
     }
 
@@ -4325,7 +4505,7 @@ internal static class ManagedObjectProtocols
                 metaclass.Name,
             PythonManagedTypeValue or PythonBuiltinTypeValue => "type",
             PythonSuperProxyValue => "super",
-            PythonUnicodeErrorDescriptorValue or PythonOSErrorDescriptorValue =>
+            PythonUnicodeErrorDescriptorValue or PythonExceptionMemberDescriptorValue =>
                 "member_descriptor",
             PythonTypeMetadataDescriptorValue { Name: "__base__" } => "member_descriptor",
             PythonTypeMetadataDescriptorValue => "getset_descriptor",
@@ -4420,7 +4600,7 @@ internal static class ManagedObjectProtocols
             or PythonTypeMetadataDescriptorValue
             or PythonTupleGetterValue
             or PythonUnicodeErrorDescriptorValue
-            or PythonOSErrorDescriptorValue => true,
+            or PythonExceptionMemberDescriptorValue => true,
             _ => GetManagedType(value) is { } type
                 && (
                     TryGetTypeAttribute(type, "__set__", out _)
@@ -4435,7 +4615,7 @@ internal static class ManagedObjectProtocols
                 or PythonTypeMetadataDescriptorValue
                 or PythonTupleGetterValue
                 or PythonUnicodeErrorDescriptorValue
-                or PythonOSErrorDescriptorValue
+                or PythonExceptionMemberDescriptorValue
                 or PythonProtocolFunctionValue { IsTypeMethodDescriptor: true }
         || GetManagedType(value) is { } type && TryGetTypeAttribute(type, "__get__", out _);
 
@@ -4510,7 +4690,11 @@ internal static class ManagedObjectProtocols
         {
             PythonTypeMetadataDescriptorValue descriptor => descriptor.Get(instance, owner, span),
             PythonUnicodeErrorDescriptorValue descriptor => descriptor.Get(instance, owner, span),
-            PythonOSErrorDescriptorValue descriptor => descriptor.Get(instance, owner, span),
+            PythonExceptionMemberDescriptorValue descriptor => descriptor.Get(
+                instance,
+                owner,
+                span
+            ),
             PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor =>
                 PythonTypeMethodDescriptors.Bind(descriptor, instance, owner, span),
             PythonDescriptorValue descriptor when instance is not null => descriptor.Get(instance),

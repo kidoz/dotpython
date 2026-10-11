@@ -147,6 +147,11 @@ internal sealed partial class PythonVirtualMachine
         // BaseException allocation initializes only args. The additional builtin
         // value/code fields are populated later by their own initializer slots.
         exception.InitializeSpecializedArguments([]);
+        if (IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("SyntaxError"), span))
+        {
+            ManagedObjectProtocols.ApplySyntaxErrorShape(exception, arguments, span);
+            return exception;
+        }
         if (
             !unicodeError
             && IsSubclassOf(type, PythonBuiltinTypes.GetExceptionType("OSError"), span)

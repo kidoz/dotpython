@@ -365,12 +365,12 @@ internal sealed partial class PythonVirtualMachine
         {
             if (parse.Module.Statements.Count > 1)
             {
-                throw Fault(
-                    "DPY4021",
-                    $"multiple statements found while compiling a single statement "
-                        + $"({fileName}, line {LineOf(source, parse.Module.Statements[0].Span.Start)})",
-                    span,
-                    "SyntaxError"
+                throw SyntaxErrorFault(
+                    "multiple statements found while compiling a single statement",
+                    fileName,
+                    LineOf(source, parse.Module.Statements[0].Span.Start),
+                    source,
+                    span
                 );
             }
             if (parse.Module.Statements.Count == 0)
@@ -447,11 +447,46 @@ internal sealed partial class PythonVirtualMachine
         SourceText source,
         string fileName,
         TextSpan span
+    ) =>
+        SyntaxErrorFault(
+            "invalid syntax",
+            fileName,
+            module.Statements.Count == 0 ? 0 : LineOf(source, module.Statements[0].Span.Start),
+            source,
+            span
+        );
+
+    /// <summary>
+    /// The refusals the compile modes themselves make — an eval that is not one expression,
+    /// a single-statement compile that is more than one — as the `SyntaxError` CPython
+    /// raises for them, in its wording and with its members.
+    /// </summary>
+    private static PythonRuntimeException SyntaxErrorFault(
+        string message,
+        string fileName,
+        int line,
+        SourceText source,
+        TextSpan span
     )
     {
-        var line =
-            module.Statements.Count == 0 ? 0 : LineOf(source, module.Statements[0].Span.Start);
-        return Fault("DPY4021", $"invalid syntax ({fileName}, line {line})", span, "SyntaxError");
+        var value = new PythonExceptionValue("SyntaxError", message)
+        {
+            SyntaxErrorSlots = new PythonSyntaxErrorSlots(
+                new PythonTextValue(message),
+                new PythonTextValue(fileName),
+                PythonWholeNumberValue.Create(line),
+                null,
+                line >= 1 ? new PythonTextValue(LineText(source, line - 1)) : null,
+                null,
+                null,
+                null
+            ),
+        };
+        value.Message = ManagedObjectProtocols.ComposeSyntaxErrorMessage(value.SyntaxErrorSlots!);
+        return new PythonRuntimeException("DPY4021", value.Message, span, "SyntaxError")
+        {
+            ExceptionValue = value,
+        };
     }
 
     private static int LineOf(SourceText source, int position) =>
@@ -463,6 +498,15 @@ internal sealed partial class PythonVirtualMachine
     /// else a plain `SyntaxError`. The parser reports both indentation failures under its
     /// own codes and wording, so the wording tells the two apart.
     /// </summary>
+    internal static string SyntaxErrorTypeName(Diagnostic diagnostic) =>
+        diagnostic.Code switch
+        {
+            "DPY1003" => "TabError",
+            "DPY2006" => "IndentationError",
+            _ when diagnostic.Message == "Expected an indented suite." => "IndentationError",
+            _ => "SyntaxError",
+        };
+
     private static PythonRuntimeException SyntaxFault(
         Diagnostic diagnostic,
         string fileName,
@@ -470,20 +514,56 @@ internal sealed partial class PythonVirtualMachine
         TextSpan span
     )
     {
-        var typeName = diagnostic.Code switch
-        {
-            "DPY1003" => "TabError",
-            "DPY2006" => "IndentationError",
-            _ when diagnostic.Message == "Expected an indented suite." => "IndentationError",
-            _ => "SyntaxError",
-        };
-        return Fault(
-            diagnostic.Code,
-            $"{diagnostic.Message} ({fileName}, line {LineOf(source, diagnostic.Span.Start)})",
-            span,
-            typeName
+        var typeName = SyntaxErrorTypeName(diagnostic);
+        var value = SyntaxErrorValue(
+            typeName,
+            diagnostic.Message,
+            fileName,
+            diagnostic.Span,
+            source
         );
+        return new PythonRuntimeException(diagnostic.Code, value.Message, span, typeName)
+        {
+            ExceptionValue = value,
+        };
     }
+
+    /// <summary>
+    /// A `SyntaxError` carrying the members CPython fills in: the message, the file, the
+    /// line, the column, the line's own text and the end position the failure spans.
+    /// </summary>
+    internal static PythonExceptionValue SyntaxErrorValue(
+        string typeName,
+        string message,
+        string fileName,
+        TextSpan failure,
+        SourceText source
+    )
+    {
+        var start = source.GetLinePosition(failure.Start);
+        var end = source.GetLinePosition(failure.End);
+        var value = new PythonExceptionValue(typeName, message)
+        {
+            SyntaxErrorSlots = new PythonSyntaxErrorSlots(
+                new PythonTextValue(message),
+                new PythonTextValue(fileName),
+                PythonWholeNumberValue.Create(start.Line + 1),
+                PythonWholeNumberValue.Create(start.Character + 1),
+                new PythonTextValue(LineText(source, start.Line)),
+                PythonWholeNumberValue.Create(end.Line + 1),
+                PythonWholeNumberValue.Create(end.Character + 1),
+                null
+            ),
+        };
+        value.Message = ManagedObjectProtocols.ComposeSyntaxErrorMessage(value.SyntaxErrorSlots!);
+        return value;
+    }
+
+    /// <summary>The text of a line, its newline included, as CPython's `text` carries it.</summary>
+    internal static string LineText(SourceText source, int line) =>
+        line >= 0 && line < source.LineCount
+            ? source.GetText(source.GetLineSpan(line))
+            : string.Empty;
 
     /// <summary>
     /// Runs a compiled code object in a frame of its own: the mappings the call named — the
