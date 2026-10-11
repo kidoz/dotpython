@@ -529,7 +529,7 @@ internal static class PythonStandardModules
         modules["string"] = PythonModuleDefinition.Native(
             "<dotpython string>",
             isPackage: true,
-            _ => { }
+            PythonStringModule.Initialize
         );
         modules["string.templatelib"] = PythonModuleDefinition.Native(
             "<dotpython string.templatelib>",
