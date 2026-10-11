@@ -1,6 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Text;
+using DotPython.Language.Text;
 
 namespace DotPython.Runtime.Managed.Execution;
 
@@ -19,7 +19,11 @@ internal enum PythonRegexFlags
     Ascii = 1 << 8,
 }
 
-/// <summary>A pattern that does not compile, with where and in what it failed.</summary>
+/// <summary>
+/// A pattern that does not compile, with where and in what it failed. A position of -1 is
+/// Python's error with no position at all, which is what a look-behind of no fixed width
+/// raises.
+/// </summary>
 [SuppressMessage(
     "Design",
     "CA1032:Implement standard exception constructors",
@@ -37,21 +41,29 @@ internal sealed class PythonRegexParseError(string message, int position) : Exce
 
 /// <summary>
 /// The runtime's own regular-expression engine: a pattern is parsed into a tree and
-/// matched by backtracking, leftmost-first, which is what Python's own engine does. The
-/// syntax this runtime does not implement — named groups, backreferences, lookaround and
-/// scoped flags — is refused where it is parsed.
+/// matched by backtracking, leftmost-first, which is what Python's own engine does.
 /// </summary>
 internal static class PythonRegex
 {
+    /// <summary>What an unbounded width is, the way Python's own parser reports it.</summary>
+    private const int MaxWidth = int.MaxValue;
+
     // -- the compiled pattern ----------------------------------------------------------
 
     internal sealed class Program
     {
-        internal Program(string pattern, PythonRegexFlags flags, int groupCount, Node root)
+        internal Program(
+            string pattern,
+            PythonRegexFlags flags,
+            int groupCount,
+            IReadOnlyList<(string Name, int Index)> groupNames,
+            Node root
+        )
         {
             Pattern = pattern;
             Flags = flags;
             GroupCount = groupCount;
+            GroupNames = groupNames;
             Root = root;
         }
 
@@ -61,6 +73,9 @@ internal static class PythonRegex
 
         /// <summary>Capturing groups, group 0 not counted.</summary>
         internal int GroupCount { get; }
+
+        /// <summary>The named groups, in the order they were opened.</summary>
+        internal IReadOnlyList<(string Name, int Index)> GroupNames { get; }
 
         internal Node Root { get; }
     }
@@ -94,15 +109,19 @@ internal static class PythonRegex
         internal List<Node> Branches { get; } = branches;
     }
 
-    internal sealed class LiteralNode(char value) : Node
+    internal sealed class LiteralNode(char value, PythonRegexFlags flags) : Node
     {
         internal char Value { get; } = value;
+
+        internal PythonRegexFlags Flags { get; } = flags;
     }
 
     /// <summary>A character class: the ranges and the class names its characters satisfy.</summary>
-    internal sealed class ClassNode(bool negated) : Node
+    internal sealed class ClassNode(bool negated, PythonRegexFlags flags) : Node
     {
         internal bool Negated { get; } = negated;
+
+        internal PythonRegexFlags Flags { get; } = flags;
 
         internal List<(char First, char Last)> Ranges { get; } = [];
 
@@ -110,13 +129,45 @@ internal static class PythonRegex
         internal List<char> Predicates { get; } = [];
     }
 
-    internal sealed class AnyCharNode : Node;
+    internal sealed class AnyCharNode(PythonRegexFlags flags) : Node
+    {
+        internal PythonRegexFlags Flags { get; } = flags;
+    }
 
-    /// <summary>A capturing group; group index 0 is a non-capturing one.</summary>
-    internal sealed class GroupNode(int index, Node body) : Node
+    /// <summary>A capturing group with the name it was given, if any.</summary>
+    internal sealed class GroupNode(int index, string? name, Node body) : Node
     {
         internal int Index { get; } = index;
 
+        internal string? Name { get; } = name;
+
+        internal Node Body { get; } = body;
+    }
+
+    /// <summary>`\1` and `(?P=name)`: whatever the group it names took.</summary>
+    internal sealed class BackrefNode(int group, PythonRegexFlags flags) : Node
+    {
+        internal int Group { get; } = group;
+
+        internal PythonRegexFlags Flags { get; } = flags;
+    }
+
+    /// <summary>`(?=…)`, `(?!…)`, `(?<=…)` and `(?<!…)`: a test that takes nothing.</summary>
+    internal sealed class LookNode(int width, bool ahead, bool positive, Node body) : Node
+    {
+        /// <summary>The width a look-behind reads before the position it stands at.</summary>
+        internal int Width { get; } = width;
+
+        internal bool Ahead { get; } = ahead;
+
+        internal bool Positive { get; } = positive;
+
+        internal Node Body { get; } = body;
+    }
+
+    /// <summary>`(?>…)`: the body matched once, and never given back.</summary>
+    internal sealed class AtomicNode(Node body) : Node
+    {
         internal Node Body { get; } = body;
     }
 
@@ -139,9 +190,11 @@ internal static class PythonRegex
         internal bool Possessive { get; } = possessive;
     }
 
-    internal sealed class AnchorNode(char value) : Node
+    internal sealed class AnchorNode(char value, PythonRegexFlags flags) : Node
     {
         internal char Value { get; } = value;
+
+        internal PythonRegexFlags Flags { get; } = flags;
     }
 
     // -- parsing -----------------------------------------------------------------------
@@ -154,27 +207,44 @@ internal static class PythonRegex
         /// <summary>The pattern as written, which is what `Pattern.pattern` reports.</summary>
         private readonly string _source = pattern;
 
+        private readonly List<(string Name, int Index)> _groupNames = [];
+
+        /// <summary>The width of every group that has closed, by its number.</summary>
+        private readonly List<(int Min, int Max)?> _groupWidths = [null];
+
         private int _position;
         private int _groupCount;
+        private int _depth;
+
+        /// <summary>Whether the item being parsed is the very first of the pattern.</summary>
+        private bool _first = true;
+
+        /// <summary>The group count when the look-behind being read opened, if one did.</summary>
+        private int? _lookbehindGroups;
+
+        /// <summary>The flags in force where the parser stands, which a scope may change.</summary>
         private PythonRegexFlags _flags = flags;
 
         internal Program Parse()
         {
             var root = ParseAlternation();
+            SkipVerbose();
             if (_position < _pattern.Length)
             {
                 // A `)` that no group opened is the only thing that stops a branch.
                 throw new PythonRegexParseError("unbalanced parenthesis", _position);
             }
-            return new Program(_source, _flags, _groupCount, root);
+            return new Program(_source, _flags, _groupCount, _groupNames, root);
         }
 
         private Node ParseAlternation()
         {
+            SkipVerbose();
             var branches = new List<Node> { ParseBranch() };
             while (Current == '|')
             {
                 _position++;
+                SkipVerbose();
                 branches.Add(ParseBranch());
             }
             return branches.Count == 1 ? branches[0] : new AlternationNode(branches);
@@ -183,16 +253,35 @@ internal static class PythonRegex
         private Node ParseBranch()
         {
             var items = new List<Node>();
+            SkipVerbose();
             while (_position < _pattern.Length && Current is not ('|' or ')'))
             {
-                items.Add(ParsePiece());
+                var first = _first && items.Count == 0;
+                var piece = ParsePiece();
+                _first = false;
+                if (piece is not null)
+                {
+                    items.Add(piece);
+                    SkipVerbose();
+                    continue;
+                }
+                // A construct that contributed nothing — a comment, or a group of global
+                // flags — leaves the branch as it was.
+                _first = first;
+                SkipVerbose();
             }
             return items.Count == 1 ? items[0] : new SequenceNode(items);
         }
 
-        private Node ParsePiece()
+        /// <summary>One piece, or none when the construct before it contributed nothing.</summary>
+        private Node? ParsePiece()
         {
             var atom = ParseAtom();
+            if (atom is null)
+            {
+                return null;
+            }
+            SkipVerbose();
             var quantifier = _position;
             var minimum = -1;
             var maximum = -1;
@@ -200,12 +289,12 @@ internal static class PythonRegex
             {
                 case '*':
                     minimum = 0;
-                    maximum = int.MaxValue;
+                    maximum = MaxWidth;
                     _position++;
                     break;
                 case '+':
                     minimum = 1;
-                    maximum = int.MaxValue;
+                    maximum = MaxWidth;
                     _position++;
                     break;
                 case '?':
@@ -292,7 +381,7 @@ internal static class PythonRegex
             }
             _position++;
             minimum = first ?? 0;
-            maximum = second ?? int.MaxValue;
+            maximum = second ?? MaxWidth;
             if (minimum > maximum)
             {
                 // Python points at the minimum it read.
@@ -319,7 +408,38 @@ internal static class PythonRegex
 
         private char Current => _position < _pattern.Length ? _pattern[_position] : '\0';
 
-        private Node ParseAtom()
+        /// <summary>
+        /// `re.VERBOSE` ignores unescaped whitespace and `#` comments outside a character
+        /// class, which is read where the flags in force say so — a scope may turn it on
+        /// or off part-way through a pattern.
+        /// </summary>
+        private void SkipVerbose()
+        {
+            if (!_flags.HasFlag(PythonRegexFlags.Verbose))
+            {
+                return;
+            }
+            while (_position < _pattern.Length)
+            {
+                var value = _pattern[_position];
+                if (char.IsWhiteSpace(value))
+                {
+                    _position++;
+                    continue;
+                }
+                if (value == '#')
+                {
+                    while (_position < _pattern.Length && _pattern[_position] != '\n')
+                    {
+                        _position++;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+
+        private Node? ParseAtom()
         {
             var value = Current;
             switch (value)
@@ -332,11 +452,11 @@ internal static class PythonRegex
                     return ParseClass();
                 case '.':
                     _position++;
-                    return new AnyCharNode();
+                    return new AnyCharNode(_flags);
                 case '^':
                 case '$':
                     _position++;
-                    return new AnchorNode(value);
+                    return new AnchorNode(value, _flags);
                 case '\\':
                     return ParseEscape();
                 case '*':
@@ -356,119 +476,423 @@ internal static class PythonRegex
                     throw new PythonRegexParseError("unbalanced parenthesis", _position);
             }
             _position++;
-            return new LiteralNode(value);
-        }
-
-        private Node ParseGroup()
-        {
-            var start = _position;
-            _position++;
-            if (Current != '?')
-            {
-                // The group is numbered where it opens: a nested group inside its body
-                // takes the next index, not this one.
-                var index = ++_groupCount;
-                var body = ParseAlternation();
-                ExpectClose(start);
-                return new GroupNode(index, body);
-            }
-
-            _position++;
-            if (_position >= _pattern.Length)
-            {
-                throw new PythonRegexParseError("unexpected end of pattern", _position);
-            }
-            switch (Current)
-            {
-                case ':':
-                    _position++;
-                    var plain = ParseAlternation();
-                    ExpectClose(start);
-                    return new GroupNode(0, plain);
-                case '#':
-                    while (_position < _pattern.Length && Current != ')')
-                    {
-                        _position++;
-                    }
-                    ExpectClose(start);
-                    return new SequenceNode([]);
-                case 'P':
-                    _position++;
-                    if (_position >= _pattern.Length)
-                    {
-                        throw new PythonRegexParseError("unexpected end of pattern", _position);
-                    }
-                    // `(?P<name>...)` and `(?P=name)` are the syntax this slice does not read.
-                    throw new PythonRegexParseError(
-                        "named groups are not supported in this runtime slice",
-                        start
-                    );
-                case '<'
-                    when _position + 1 < _pattern.Length && _pattern[_position + 1] is '=' or '!':
-                    throw new PythonRegexParseError(
-                        "lookbehind is not supported in this runtime slice",
-                        start
-                    );
-                case '=':
-                case '!':
-                    throw new PythonRegexParseError(
-                        "lookahead is not supported in this runtime slice",
-                        start
-                    );
-                case '>':
-                    throw new PythonRegexParseError(
-                        "atomic groups are not supported in this runtime slice",
-                        start
-                    );
-                case '<':
-                    throw new PythonRegexParseError(
-                        $"unknown extension ?<{_pattern[_position + 1]}",
-                        start + 1
-                    );
-                case 'i' or 'm' or 's' or 'x' or 'a' or 'u' or 'L':
-                    return ParseInlineFlags(start);
-            }
-            throw new PythonRegexParseError($"unknown extension ?{Current}", start + 1);
+            return new LiteralNode(value, _flags);
         }
 
         /// <summary>
-        /// `(?i)` and its like, which set the flags for the whole pattern. Python allows
-        /// them only at the start, and the scoped form `(?i:...)` is not implemented here.
+        /// A group: capturing with an optional name, or one of the extensions — a plain
+        /// `(?:…)`, a comment, a lookaround, an atomic group, a scope of flags, or a
+        /// named backreference. `null` is a group that contributed nothing.
         /// </summary>
-        private SequenceNode ParseInlineFlags(int start)
+        private Node? ParseGroup()
         {
-            if (start != 0)
+            var start = _position;
+            _position++;
+            string? name = null;
+            var capture = true;
+            var atomic = false;
+            var addFlags = PythonRegexFlags.None;
+            var delFlags = PythonRegexFlags.None;
+            var index = 0;
+            var named = false;
+            if (Current == '?')
             {
-                throw new PythonRegexParseError(
-                    "global flags not at the start of the expression",
-                    start
-                );
-            }
-            while (_position < _pattern.Length && Current != ')')
-            {
-                var bit = Current switch
-                {
-                    'i' => PythonRegexFlags.IgnoreCase,
-                    'm' => PythonRegexFlags.Multiline,
-                    's' => PythonRegexFlags.DotAll,
-                    'x' => PythonRegexFlags.Verbose,
-                    'a' => PythonRegexFlags.Ascii,
-                    'u' => PythonRegexFlags.Unicode,
-                    'L' => PythonRegexFlags.Locale,
-                    _ => throw new PythonRegexParseError("missing -, : or )", _position),
-                };
                 _position++;
-                if (Current is ':' or '-')
+                if (_position >= _pattern.Length)
                 {
-                    throw new PythonRegexParseError(
-                        "scoped flags are not supported in this runtime slice",
-                        start
-                    );
+                    throw new PythonRegexParseError("unexpected end of pattern", _position);
                 }
-                _flags |= bit;
+                switch (Current)
+                {
+                    case ':':
+                        capture = false;
+                        _position++;
+                        break;
+                    case '#':
+                        _position++;
+                        while (_position < _pattern.Length && Current != ')')
+                        {
+                            _position++;
+                        }
+                        if (_position >= _pattern.Length)
+                        {
+                            throw new PythonRegexParseError(
+                                "missing ), unterminated comment",
+                                start
+                            );
+                        }
+                        _position++;
+                        return null;
+                    case '=':
+                        _position++;
+                        return ParseLook(start, ahead: true, positive: true);
+                    case '!':
+                        _position++;
+                        return ParseLook(start, ahead: true, positive: false);
+                    case '<':
+                        _position++;
+                        if (_position >= _pattern.Length)
+                        {
+                            throw new PythonRegexParseError("unexpected end of pattern", _position);
+                        }
+                        switch (Current)
+                        {
+                            case '=':
+                                _position++;
+                                return ParseLook(start, ahead: false, positive: true);
+                            case '!':
+                                _position++;
+                                return ParseLook(start, ahead: false, positive: false);
+                            case char other:
+                                throw new PythonRegexParseError(
+                                    $"unknown extension ?<{other}",
+                                    start + 1
+                                );
+                        }
+                    case '>':
+                        atomic = true;
+                        capture = false;
+                        _position++;
+                        break;
+                    case 'P':
+                        _position++;
+                        if (_position >= _pattern.Length)
+                        {
+                            throw new PythonRegexParseError("unexpected end of pattern", _position);
+                        }
+                        if (Current == '<')
+                        {
+                            _position++;
+                            var nameStart = _position;
+                            name = ReadUntil('>', "group name");
+                            CheckGroupName(name, nameStart);
+                            index = OpenGroup(name, nameStart);
+                            named = true;
+                            break;
+                        }
+                        if (Current == '=')
+                        {
+                            _position++;
+                            var refStart = _position;
+                            var referred = ReadUntil(')', "group name");
+                            CheckGroupName(referred, refStart);
+                            return ParseNamedBackref(start, referred, refStart);
+                        }
+                        throw new PythonRegexParseError(
+                            $"unknown extension ?P{Current}",
+                            start + 1
+                        );
+                    case 'i' or 'm' or 's' or 'x' or 'a' or 'u' or 'L' or '-':
+                        var scoped = ParseFlags(start, out addFlags, out delFlags);
+                        if (!scoped)
+                        {
+                            // A group of global flags, which the pattern must open with.
+                            if (!_first || _depth > 0)
+                            {
+                                throw new PythonRegexParseError(
+                                    "global flags not at the start of the expression",
+                                    start
+                                );
+                            }
+                            return null;
+                        }
+                        capture = false;
+                        break;
+                    default:
+                        throw new PythonRegexParseError($"unknown extension ?{Current}", start + 1);
+                }
+            }
+
+            if (capture && !named)
+            {
+                // The group is numbered where it opens: a nested group inside its body
+                // takes the next index, not this one.
+                index = OpenGroup(name: null, nameStart: start);
+            }
+
+            var saved = _flags;
+            _flags = (_flags | addFlags) & ~delFlags;
+            _depth++;
+            var body = ParseAlternation();
+            _depth--;
+            _flags = saved;
+            ExpectClose(start);
+            if (capture)
+            {
+                CloseGroup(index, body);
+            }
+            if (atomic)
+            {
+                return new AtomicNode(body);
+            }
+            return new GroupNode(index, name, body);
+        }
+
+        /// <summary>`(?=…)`, `(?!…)`, `(?&lt;=…)` and `(?&lt;!…)`: the body tests a position.</summary>
+        private LookNode ParseLook(int start, bool ahead, bool positive)
+        {
+            var outer = _lookbehindGroups;
+            if (!ahead && outer is null)
+            {
+                // Python counts group 0 in the record, so a group opened before the
+                // look-behind stays referable and one opened inside it does not.
+                _lookbehindGroups = _groupCount + 1;
+            }
+            _depth++;
+            var body = ParseAlternation();
+            _depth--;
+            if (!ahead && outer is null)
+            {
+                _lookbehindGroups = null;
             }
             ExpectClose(start);
-            return new SequenceNode([]);
+            var width = 0;
+            if (!ahead)
+            {
+                // A look-behind reads a fixed width of text before the position, so the
+                // body it tests has to be one width wide.
+                var (minimum, maximum) = Width(body);
+                if (minimum != maximum)
+                {
+                    throw new PythonRegexParseError("look-behind requires fixed-width pattern", -1);
+                }
+                width = minimum;
+            }
+            return new LookNode(width, ahead, positive, body);
+        }
+
+        /// <summary>
+        /// `(?i)`, `(?i:…)` and their like. Answers whether the flags scope over a group;
+        /// a group of global flags answers false and leaves them in force for good.
+        /// </summary>
+        private bool ParseFlags(int start, out PythonRegexFlags add, out PythonRegexFlags del)
+        {
+            add = PythonRegexFlags.None;
+            del = PythonRegexFlags.None;
+            var adding = Current != '-';
+            while (adding)
+            {
+                var bit = FlagBit(Current);
+                if (bit == PythonRegexFlags.Locale)
+                {
+                    throw new PythonRegexParseError(
+                        "bad inline flags: cannot use 'L' flag with a str pattern",
+                        _position + 1
+                    );
+                }
+                add |= bit;
+                var typeFlags = add & (PythonRegexFlags.Ascii | PythonRegexFlags.Unicode);
+                if (
+                    (bit & (PythonRegexFlags.Ascii | PythonRegexFlags.Unicode)) != 0
+                    && typeFlags != bit
+                )
+                {
+                    throw new PythonRegexParseError(
+                        "bad inline flags: flags 'a', 'u' and 'L' are incompatible",
+                        _position + 1
+                    );
+                }
+                _position++;
+                if (_position >= _pattern.Length)
+                {
+                    throw new PythonRegexParseError("missing -, : or )", _position);
+                }
+                if (Current is ')' or '-' or ':')
+                {
+                    break;
+                }
+                if (!IsFlagChar(Current))
+                {
+                    throw new PythonRegexParseError(
+                        char.IsAsciiLetter(Current) ? "unknown flag" : "missing -, : or )",
+                        _position
+                    );
+                }
+            }
+
+            if (Current == ')')
+            {
+                _position++;
+                _flags |= add;
+                return false;
+            }
+            if (Current == '-')
+            {
+                _position++;
+                if (_position >= _pattern.Length)
+                {
+                    throw new PythonRegexParseError("missing flag", _position);
+                }
+                if (!IsFlagChar(Current))
+                {
+                    throw new PythonRegexParseError(
+                        char.IsAsciiLetter(Current) ? "unknown flag" : "missing flag",
+                        _position
+                    );
+                }
+                while (true)
+                {
+                    var bit = FlagBit(Current);
+                    if (
+                        (
+                            bit
+                            & (
+                                PythonRegexFlags.Ascii
+                                | PythonRegexFlags.Unicode
+                                | PythonRegexFlags.Locale
+                            )
+                        ) != 0
+                    )
+                    {
+                        throw new PythonRegexParseError(
+                            "bad inline flags: cannot turn off flags 'a', 'u' and 'L'",
+                            _position + 1
+                        );
+                    }
+                    del |= bit;
+                    _position++;
+                    if (_position >= _pattern.Length)
+                    {
+                        throw new PythonRegexParseError("missing :", _position);
+                    }
+                    var next = _pattern[_position];
+                    if (next == ':')
+                    {
+                        break;
+                    }
+                    if (!IsFlagChar(next))
+                    {
+                        throw new PythonRegexParseError(
+                            char.IsAsciiLetter(next) ? "unknown flag" : "missing :",
+                            _position
+                        );
+                    }
+                }
+            }
+            if (Current != ':')
+            {
+                throw new PythonRegexParseError("missing :", _position);
+            }
+            if ((add & del) != 0)
+            {
+                throw new PythonRegexParseError(
+                    "bad inline flags: flag turned on and off",
+                    _position
+                );
+            }
+            _position++;
+            return true;
+        }
+
+        private static bool IsFlagChar(char value) =>
+            value is 'i' or 'm' or 's' or 'x' or 'a' or 'u' or 'L';
+
+        private static PythonRegexFlags FlagBit(char value) =>
+            value switch
+            {
+                'i' => PythonRegexFlags.IgnoreCase,
+                'm' => PythonRegexFlags.Multiline,
+                's' => PythonRegexFlags.DotAll,
+                'x' => PythonRegexFlags.Verbose,
+                'a' => PythonRegexFlags.Ascii,
+                'u' => PythonRegexFlags.Unicode,
+                _ => PythonRegexFlags.Locale,
+            };
+
+        /// <summary>Opens a capturing group, refusing a name another group already took.</summary>
+        private int OpenGroup(string? name, int nameStart)
+        {
+            _groupCount++;
+            _groupWidths.Add(null);
+            if (name is null)
+            {
+                return _groupCount;
+            }
+            foreach (var (taken, index) in _groupNames)
+            {
+                if (taken == name)
+                {
+                    throw new PythonRegexParseError(
+                        $"redefinition of group name '{name}' as group {_groupCount}; was group {index}",
+                        nameStart
+                    );
+                }
+            }
+            _groupNames.Add((name, _groupCount));
+            return _groupCount;
+        }
+
+        /// <summary>
+        /// Closes a group, recording the width of what it matched: a reference to it from
+        /// a look-behind is measured by it, which is why Python keeps the same record.
+        /// </summary>
+        private void CloseGroup(int index, Node body) => _groupWidths[index] = Width(body);
+
+        /// <summary>A name Python would accept for a group, or Python's own refusal.</summary>
+        private static void CheckGroupName(string name, int nameStart)
+        {
+            if (!PythonIdentifier.IsIdentifier(name))
+            {
+                throw new PythonRegexParseError($"bad character in group name '{name}'", nameStart);
+            }
+        }
+
+        private BackrefNode ParseNamedBackref(int start, string name, int nameStart)
+        {
+            foreach (var (taken, index) in _groupNames)
+            {
+                if (taken == name)
+                {
+                    return Referenced(index, start);
+                }
+            }
+            throw new PythonRegexParseError($"unknown group name '{name}'", nameStart);
+        }
+
+        /// <summary>A reference to a group that is already closed, or Python's refusal.</summary>
+        private BackrefNode Referenced(int group, int start)
+        {
+            if (_groupWidths[group] is null)
+            {
+                throw new PythonRegexParseError("cannot refer to an open group", start);
+            }
+            if (_lookbehindGroups is { } lookbehindGroups && group >= lookbehindGroups)
+            {
+                throw new PythonRegexParseError(
+                    "cannot refer to group defined in the same lookbehind subpattern",
+                    _position
+                );
+            }
+            return new BackrefNode(group, _flags);
+        }
+
+        /// <summary>Reads up to <paramref name="terminator"/>, the way Python's own reader does.</summary>
+        private string ReadUntil(char terminator, string what)
+        {
+            var result = new StringBuilder();
+            while (true)
+            {
+                if (_position >= _pattern.Length)
+                {
+                    throw result.Length == 0
+                        ? new PythonRegexParseError($"missing {what}", _position)
+                        : new PythonRegexParseError(
+                            $"missing {terminator}, unterminated name",
+                            _position - result.Length
+                        );
+                }
+                var value = _pattern[_position];
+                _position++;
+                if (value == terminator)
+                {
+                    if (result.Length == 0)
+                    {
+                        throw new PythonRegexParseError($"missing {what}", _position - 1);
+                    }
+                    return result.ToString();
+                }
+                result.Append(value);
+            }
         }
 
         private ClassNode ParseClass()
@@ -481,7 +905,7 @@ internal static class PythonRegex
                 negated = true;
                 _position++;
             }
-            var node = new ClassNode(negated);
+            var node = new ClassNode(negated, _flags);
             if (Current == ']')
             {
                 // A `]` first in a class stands for itself.
@@ -502,7 +926,7 @@ internal static class PythonRegex
                     }
                 }
 
-                var first = ReadClassCharacter(inClass: true);
+                var first = ReadClassCharacter();
                 if (
                     Current == '-'
                     && _position + 1 < _pattern.Length
@@ -510,7 +934,7 @@ internal static class PythonRegex
                 )
                 {
                     _position++;
-                    var last = ReadClassCharacter(inClass: true);
+                    var last = ReadClassCharacter();
                     if (first > last)
                     {
                         throw new PythonRegexParseError(
@@ -532,12 +956,12 @@ internal static class PythonRegex
         }
 
         /// <summary>One character of a class, an escape read as the character it stands for.</summary>
-        private char ReadClassCharacter(bool inClass)
+        private char ReadClassCharacter()
         {
             var value = _pattern[_position];
             if (value == '\\')
             {
-                return ReadEscapeCharacter(inClass);
+                return ReadEscapeCharacter(inClass: true);
             }
             _position++;
             return value;
@@ -551,19 +975,61 @@ internal static class PythonRegex
             {
                 case 'd' or 'D' or 'w' or 'W' or 's' or 'S':
                 {
-                    var node = new ClassNode(negated: false);
+                    var node = new ClassNode(negated: false, _flags);
                     node.Predicates.Add(value);
                     return node;
                 }
                 case 'b' or 'B' or 'A' or 'Z' or 'z':
-                    return new AnchorNode(value);
+                    return new AnchorNode(value, _flags);
+                case >= '1' and <= '9':
+                    return ReadGroupReference(start, value);
             }
-            return new LiteralNode(value);
+            return new LiteralNode(value, _flags);
         }
 
         /// <summary>
-        /// The character an escape stands for, or the class name or boundary letter the
-        /// caller reads for itself. An escape Python does not know is refused in its words.
+        /// `\1` and its like: a group reference, or — when three octal digits follow —
+        /// the character they spell, which is the one ambiguity Python reads this way.
+        /// </summary>
+        private Node ReadGroupReference(int start, char first)
+        {
+            var digits = 1;
+            var second = 'x';
+            if (Current is >= '0' and <= '9')
+            {
+                digits = 2;
+                second = Current;
+                _position++;
+                if (
+                    first is >= '0' and <= '7'
+                    && second is >= '0' and <= '7'
+                    && Current is >= '0' and <= '7'
+                )
+                {
+                    var third = Current;
+                    _position++;
+                    var value = (first - '0') * 64 + (second - '0') * 8 + (third - '0');
+                    if (value > 0xFF)
+                    {
+                        throw new PythonRegexParseError(
+                            $"octal escape value \\{first}{second}{third} outside of range 0-0o377",
+                            start
+                        );
+                    }
+                    return new LiteralNode((char)value, _flags);
+                }
+            }
+            var group = digits == 2 ? (first - '0') * 10 + (second - '0') : first - '0';
+            if (group > _groupCount)
+            {
+                throw new PythonRegexParseError($"invalid group reference {group}", start + 1);
+            }
+            return Referenced(group, start);
+        }
+
+        /// <summary>
+        /// The character an escape stands for, or the class name, boundary letter or digit
+        /// the caller reads for itself. An escape Python does not know is refused in its words.
         /// </summary>
         private char ReadEscapeCharacter(bool inClass)
         {
@@ -617,7 +1083,7 @@ internal static class PythonRegex
                     }
                     throw new PythonRegexParseError($"bad escape \\{value}", start);
                 }
-                throw InvalidGroupReference(start);
+                return value;
             }
             if (value is 'd' or 'D' or 'w' or 'W' or 's' or 'S')
             {
@@ -633,20 +1099,6 @@ internal static class PythonRegex
                 throw new PythonRegexParseError($"bad escape \\{value}", start);
             }
             return value;
-        }
-
-        /// <summary>`\12`: the group reference this runtime does not implement.</summary>
-        private PythonRegexParseError InvalidGroupReference(int start)
-        {
-            var end = start + 1;
-            while (end < _pattern.Length && char.IsAsciiDigit(_pattern[end]))
-            {
-                end++;
-            }
-            return new PythonRegexParseError(
-                $"invalid group reference {_pattern[(start + 1)..end]}",
-                start + 1
-            );
         }
 
         private char ReadOctal(char first)
@@ -688,69 +1140,84 @@ internal static class PythonRegex
 
         private void ExpectClose(int start)
         {
+            SkipVerbose();
             if (_position >= _pattern.Length || _pattern[_position] != ')')
             {
                 throw new PythonRegexParseError("missing ), unterminated subpattern", start);
             }
             _position++;
+            _first = false;
+        }
+
+        /// <summary>
+        /// The width a pattern piece matches, as the range Python's own parser computes:
+        /// a repeat of an unbounded count has no upper bound.
+        /// </summary>
+        private (int Min, int Max) Width(Node node)
+        {
+            switch (node)
+            {
+                case SequenceNode sequence:
+                {
+                    var min = 0;
+                    var max = 0;
+                    foreach (var item in sequence.Items)
+                    {
+                        var (itemMin, itemMax) = Width(item);
+                        min += itemMin;
+                        max = max == MaxWidth || itemMax == MaxWidth ? MaxWidth : max + itemMax;
+                    }
+                    return (min, max);
+                }
+                case AlternationNode alternation:
+                {
+                    var min = MaxWidth;
+                    var max = 0;
+                    foreach (var branch in alternation.Branches)
+                    {
+                        var (branchMin, branchMax) = Width(branch);
+                        min = Math.Min(min, branchMin);
+                        max = Math.Max(max, branchMax);
+                    }
+                    return (alternation.Branches.Count == 0 ? 0 : min, max);
+                }
+                case GroupNode group:
+                    return Width(group.Body);
+                case AtomicNode atomic:
+                    return Width(atomic.Body);
+                case LookNode:
+                case AnchorNode:
+                    return (0, 0);
+                case RepeatNode repeat:
+                {
+                    var (itemMin, itemMax) = Width(repeat.Body);
+                    var min = itemMin * repeat.Minimum;
+                    var max =
+                        repeat.Maximum == MaxWidth || itemMax == MaxWidth
+                            ? (itemMax == 0 ? 0 : MaxWidth)
+                            : itemMax * repeat.Maximum;
+                    return (min, max);
+                }
+                case BackrefNode backref:
+                    return _groupWidths[backref.Group] ?? (0, MaxWidth);
+                default:
+                    return (1, 1);
+            }
         }
     }
 
     /// <summary>Parses a pattern with the flags it was given.</summary>
     /// <exception cref="PythonRegexParseError">The pattern is not one this engine reads.</exception>
-    internal static Program Compile(string pattern, PythonRegexFlags flags)
-    {
-        var text = flags.HasFlag(PythonRegexFlags.Verbose) ? VerboseStrip(pattern) : pattern;
-        return new Parser(pattern, text, flags).Parse();
-    }
-
-    /// <summary>`re.VERBOSE` takes unescaped whitespace and comments out of a pattern.</summary>
-    private static string VerboseStrip(string pattern)
-    {
-        var builder = new StringBuilder(pattern.Length);
-        var insideClass = false;
-        for (var index = 0; index < pattern.Length; index++)
-        {
-            var value = pattern[index];
-            if (value == '\\' && index + 1 < pattern.Length)
-            {
-                builder.Append(value).Append(pattern[index + 1]);
-                index++;
-                continue;
-            }
-            if (value == '[')
-            {
-                insideClass = true;
-            }
-            else if (value == ']')
-            {
-                insideClass = false;
-            }
-            if (!insideClass && value == '#')
-            {
-                while (index < pattern.Length && pattern[index] != '\n')
-                {
-                    index++;
-                }
-                continue;
-            }
-            if (!insideClass && char.IsWhiteSpace(value))
-            {
-                continue;
-            }
-            builder.Append(value);
-        }
-        return builder.ToString();
-    }
+    internal static Program Compile(string pattern, PythonRegexFlags flags) =>
+        new Parser(pattern, pattern, flags).Parse();
 
     // -- matching ----------------------------------------------------------------------
 
     private sealed class State
     {
-        internal State(string text, PythonRegexFlags flags, int start, int end, int groups)
+        internal State(string text, int start, int end, int groups)
         {
             Text = text;
-            Flags = flags;
             BoundsStart = start;
             BoundsEnd = end;
             Starts = new int?[groups + 1];
@@ -758,8 +1225,6 @@ internal static class PythonRegex
         }
 
         internal string Text { get; }
-
-        internal PythonRegexFlags Flags { get; }
 
         internal int BoundsStart { get; }
 
@@ -809,7 +1274,7 @@ internal static class PythonRegex
         bool requireEnd
     )
     {
-        var state = new State(text, program.Flags, position, bound, program.GroupCount);
+        var state = new State(text, position, bound, program.GroupCount);
         var end = -1;
         var matched = Match(
             program.Root,
@@ -840,17 +1305,20 @@ internal static class PythonRegex
             SequenceNode sequence => MatchSequence(sequence, 0, state, position, next),
             AlternationNode alternation => MatchAlternation(alternation, state, position, next),
             LiteralNode literal => position < state.BoundsEnd
-                && EqualTo(literal.Value, state.Text[position], state.Flags)
+                && EqualTo(literal.Value, state.Text[position], literal.Flags)
                 && next(state, position + 1),
-            AnyCharNode => position < state.BoundsEnd
-                && (state.Text[position] != '\n' || state.Flags.HasFlag(PythonRegexFlags.DotAll))
+            AnyCharNode any => position < state.BoundsEnd
+                && (state.Text[position] != '\n' || any.Flags.HasFlag(PythonRegexFlags.DotAll))
                 && next(state, position + 1),
             ClassNode characterClass => position < state.BoundsEnd
-                && InClass(characterClass, state.Text[position], state.Flags)
+                && InClass(characterClass, state.Text[position])
                 && next(state, position + 1),
             GroupNode group => MatchGroup(group, state, position, next),
+            BackrefNode backref => MatchBackref(backref, state, position, next),
+            LookNode look => MatchLook(look, state, position, next),
+            AtomicNode atomic => MatchAtomic(atomic, state, position, next),
             RepeatNode repeat => MatchRepeat(repeat, state, position, next, count: 0),
-            AnchorNode anchor => AtAnchor(anchor.Value, state, position) && next(state, position),
+            AnchorNode anchor => AtAnchor(anchor, state, position) && next(state, position),
             _ => next(state, position),
         };
 
@@ -934,6 +1402,117 @@ internal static class PythonRegex
         return matched;
     }
 
+    /// <summary>`\1`: the text the group took, matched again where the pattern stands.</summary>
+    private static bool MatchBackref(
+        BackrefNode backref,
+        State state,
+        int position,
+        Continuation next
+    )
+    {
+        if (
+            state.Starts[backref.Group] is not { } start
+            || state.Ends[backref.Group] is not { } end
+        )
+        {
+            // A group that never matched gives nothing back to refer to.
+            return false;
+        }
+        var length = end - start;
+        if (position + length > state.BoundsEnd)
+        {
+            return false;
+        }
+        for (var index = 0; index < length; index++)
+        {
+            if (!EqualTo(state.Text[start + index], state.Text[position + index], backref.Flags))
+            {
+                return false;
+            }
+        }
+        return next(state, position + length);
+    }
+
+    /// <summary>
+    /// A lookaround: the body is tried at the position the assertion stands at, and what
+    /// it captured stands for the rest of the pattern. A negative one gives nothing back.
+    /// </summary>
+    private static bool MatchLook(LookNode look, State state, int position, Continuation next)
+    {
+        var starts = (int?[])state.Starts.Clone();
+        var ends = (int?[])state.Ends.Clone();
+        var lastIndex = state.LastIndex;
+        var found = false;
+        if (look.Ahead)
+        {
+            found = Match(
+                look.Body,
+                state,
+                position,
+                (_, _) =>
+                {
+                    found = true;
+                    return true;
+                }
+            );
+        }
+        else
+        {
+            var start = position - look.Width;
+            found =
+                start >= 0
+                && Match(
+                    look.Body,
+                    state,
+                    start,
+                    (_, end) =>
+                    {
+                        found = end == position;
+                        return found;
+                    }
+                );
+        }
+        if (look.Positive)
+        {
+            if (found)
+            {
+                // What a lookahead captured stands for the rest of the pattern.
+                return next(state, position);
+            }
+            Array.Copy(starts, state.Starts, starts.Length);
+            Array.Copy(ends, state.Ends, ends.Length);
+            state.LastIndex = lastIndex;
+            return false;
+        }
+        // A negative look gives nothing back, whether its body matched or not.
+        Array.Copy(starts, state.Starts, starts.Length);
+        Array.Copy(ends, state.Ends, ends.Length);
+        state.LastIndex = lastIndex;
+        return !found && next(state, position);
+    }
+
+    /// <summary>`(?>…)`: the body is matched once, and the rest runs from where it ended.</summary>
+    private static bool MatchAtomic(AtomicNode atomic, State state, int position, Continuation next)
+    {
+        var end = -1;
+        if (
+            !Match(
+                atomic.Body,
+                state,
+                position,
+                (_, innerEnd) =>
+                {
+                    end = innerEnd;
+                    return true;
+                }
+            )
+        )
+        {
+            return false;
+        }
+        return next(state, end);
+    }
+
     private static bool MatchRepeat(
         RepeatNode repeat,
         State state,
@@ -1010,11 +1589,16 @@ internal static class PythonRegex
         (inner, innerPosition) =>
             innerPosition != position && MatchRepeat(repeat, inner, innerPosition, next, count + 1);
 
-    private static bool AtAnchor(char anchor, State state, int position)
+    /// <summary>
+    /// The anchors, as `sre` reads them: `^` and `\A` are the start of the <em>string</em>
+    /// (`^` also at a line start under MULTILINE, `pos` never counting as one), and `$`
+    /// and `\Z` are the end of the searched region, `$` also just before a final newline.
+    /// </summary>
+    private static bool AtAnchor(AnchorNode anchor, State state, int position)
     {
         var text = state.Text;
-        var multiline = state.Flags.HasFlag(PythonRegexFlags.Multiline);
-        switch (anchor)
+        var multiline = anchor.Flags.HasFlag(PythonRegexFlags.Multiline);
+        switch (anchor.Value)
         {
             case '^':
                 return position == 0 || (multiline && position > 0 && text[position - 1] == '\n');
@@ -1028,23 +1612,23 @@ internal static class PythonRegex
             case 'z':
                 return position == state.BoundsEnd;
             case 'b':
-                return IsWord(text, position - 1, state.Flags)
-                    != IsWord(text, position, state.Flags);
+                return IsWord(text, position - 1, anchor.Flags)
+                    != IsWord(text, position, anchor.Flags);
             default:
-                return IsWord(text, position - 1, state.Flags)
-                    == IsWord(text, position, state.Flags);
+                return IsWord(text, position - 1, anchor.Flags)
+                    == IsWord(text, position, anchor.Flags);
         }
     }
 
     private static bool IsWord(string text, int position, PythonRegexFlags flags) =>
         position >= 0 && position < text.Length && IsWordCharacter(text[position], flags);
 
-    private static bool InClass(ClassNode node, char value, PythonRegexFlags flags)
+    private static bool InClass(ClassNode node, char value)
     {
         var inside = false;
         foreach (var (first, last) in node.Ranges)
         {
-            if (InRange(first, last, value, flags))
+            if (InRange(first, last, value, node.Flags))
             {
                 inside = true;
                 break;
@@ -1054,7 +1638,7 @@ internal static class PythonRegex
         {
             foreach (var predicate in node.Predicates)
             {
-                if (InPredicate(predicate, value, flags))
+                if (InPredicate(predicate, value, node.Flags))
                 {
                     inside = true;
                     break;

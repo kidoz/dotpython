@@ -8,7 +8,8 @@ public sealed class RegularExpressionExecutionTests
     /// <summary>
     /// The runtime's own regular-expression engine on CPython's `re` surface: flags,
     /// compiled patterns, matches, the module functions and the errors a bad pattern
-    /// raises. Named groups, backreferences, lookaround and scoped flags are the gaps.
+    /// raises — with the named groups, backreferences, lookaround and scoped flags the
+    /// engine reads.
     /// </summary>
     [Fact]
     public void TheRegularExpressionModuleMatchesCpython()
@@ -146,6 +147,59 @@ public sealed class RegularExpressionExecutionTests
             print("errors", isinstance(e, re.error), isinstance(e, Exception), e.lineno, e.colno)
             report("errors-attr", lambda: e.bad)
             print("errors", re.error("x") == re.error("x"), re.error("x") is re.error("x"))
+
+            # --- named groups and backreferences ---------------------------------------
+            m = re.match(r"(?P<first>a)(?P<second>b)(c)", "abc")
+            print("named", m.group("first"), m.group(3), m.groups(), m.groupdict(), m.lastgroup, m.lastindex)
+            print("named", m.group(1, "second"), m.span("first"), m.start("second"), m["first"], m.expand(r"<\g<first>>"))
+            p = re.compile(r"(?P<a>x)(?P<b>y)?")
+            print("named", dict(p.groupindex) if False else "skip", type(p.groupindex).__name__, p.groups, p.groupindex["a"])
+            u = re.match(r"(?P<a>a)(?P<b>b)?", "a")
+            print("named", u.groupdict(), u.groupdict("z"), u.groups("z"), u.lastgroup, u.lastindex)
+            print("named", re.findall(r"(?P<a>a)(?P<b>b)", "abab"), re.split(r"(?P<a>a)", "banana"), re.sub(r"(?P<a>a)", r"[\g<a>]", "ab"))
+            print("named", re.findall(r"(?P<x>a)|(?P<y>b)", "ab"), re.match(r"(?P<a>(?P<b>x))", "x").groupdict())
+            print("named", re.search(r"(?=(?P<a>x))(?P=a)", "x").span(), re.search(r"(?=(?P<a>x))(?P=a)", "x").groupdict())
+            print("named", re.compile(r"(?P<é>x)").groupindex, re.compile(r"(?P<class>x)").groupindex)
+            report("named-unknown", lambda: m.group("nope"))
+            report("named-span-unknown", lambda: m.span("nope"))
+            report("named-dup", lambda: re.compile(r"(?P<n>a)(?P<n>b)"))
+            report("named-badname", lambda: re.compile(r"(?P<1>a)"))
+            report("named-empty", lambda: re.compile(r"(?P<>a)"))
+            report("named-ends", lambda: re.compile(r"(?P"))
+            report("named-ref-missing", lambda: re.compile(r"(?P=a)"))
+            report("named-ref-unknown", lambda: re.compile(r"(?P<n>a)(?P=x)"))
+            report("named-repl-unknown", lambda: re.sub(r"(?P<a>a)", r"\g<nope>", "ab"))
+            report("named-repl-unterminated", lambda: re.sub(r"(?P<a>a)", r"\g<a", "ab"))
+            print("backref", re.search(r"(a)\1", "aa").span(), re.search(r"(a)\1", "ab"), re.search(r"(\w+) \1", "hi hi there").span())
+            print("backref", re.search(r"(?i)(a)\1", "aA").span(), re.search(r"(a+)\1", "aaaa").span(), re.search(r"(?P<n>a)(?P=n)", "aa").span())
+            print("backref", re.search(r"(x)?(a)\1", "a"), re.search(r"(x)?(a)\1", "xax").span(), re.search(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)\11", "abcdefghijkk").span())
+            report("backref-missing", lambda: re.compile(r"a\2"))
+            report("backref-open", lambda: re.compile(r"(a\1)"))
+            print("backref", re.sub(r"(?P<n>a)(?P=n)", r"[\g<n>]", "aa"), re.sub(r"(a)", r"\123", "ab"), repr(re.sub(r"(a)", r"\0", "ab")))
+            report("backref-template-bad", lambda: re.sub(r"(a)", r"\12", "ab"))
+            report("backref-template-missing", lambda: re.sub(r"(a)", r"\8", "ab"))
+            report("backref-lookbehind", lambda: re.compile(r"(?<=(a)\1)b"))
+            print("look", re.search(r"a(?=b)", "ab").span(), re.search(r"a(?=b)", "ac"), re.search(r"a(?!b)", "ac").span())
+            print("look", re.search(r"(?=(a))a\1", "aa").span(), re.findall(r"(?=(a))", "aa"), re.search(r"(a)(?=b)", "ab").groups())
+            print("look", re.search(r"(?<=a)b", "ab").span(), re.search(r"(?<!a)b", "xb").span(), re.search(r"(?<=(a))b", "ab").groups())
+            print("look", re.search(r"(?<=a{2})b", "aab").span(), re.sub(r"(?<=\d)(?=(\d\d\d))", ",", "1234567"))
+            report("look-word", lambda: re.search(r"(?=a+)(a+)\b", "aaab"))
+            print("look", re.search(r"(?=a)a", "a").span(), re.search(r"(?=a)", "a").span(), re.search(r"(?=a)", "b"))
+            report("look-fixed", lambda: re.compile(r"(?<=a+)b"))
+            report("look-fixed-branch", lambda: re.compile(r"(?<=ab|c)b"))
+            report("look-apart", lambda: re.compile(r"(a)(?<=\1)b"))
+            print("atomic", re.search(r"(?>ab|a)b", "ab"), re.search(r"(?>a|ab)b", "ab").span(), re.search(r"a++b", "ab").span())
+            print("atomic", [x.span() for x in re.finditer(r"(?>a|ab)b", "abb")], re.search(r"(?>(a))b", "ab").groups())
+            print("scoped", re.search(r"(?i:ab)", "AB").span(), re.search(r"(?i)a(?-i:B)", "Ab"), re.search(r"(?i)a(?-i:B)", "AB").span(), re.findall(r"(?i:a)b", "AB ab"))
+            print("scoped", re.sub(r"(?i:ab)", "-", "AB ab"), re.split(r"(?i:a)", "bAb"), re.search(r"(?x:a b)", "ab").span())
+            print("scoped", re.search(r"(?s:a.b)", "a\nb").span(), re.search(r"(?m:^b)", "a\nb").span(), sp_span := re.compile(r"(?i:a)").flags)
+            report("scoped-off", lambda: re.compile(r"(?-i)a"))
+            report("scoped-both", lambda: re.compile(r"(?i-i:a)"))
+            report("scoped-type", lambda: re.compile(r"(?a-u:a)"))
+            report("scoped-locale", lambda: re.compile(r"(?L:a)"))
+            report("scoped-unknown", lambda: re.compile(r"(?i-z:a)"))
+            report("scoped-late", lambda: re.compile(r"a(?i)"))
+            print("scoped", re.compile(r"(?i)(?-i:a)").flags, re.compile(r"(?i:a)").flags, re.compile(r"(?a)a").flags)
             """
         );
         Assert.Equal(
@@ -270,7 +324,55 @@ public sealed class RegularExpressionExecutionTests
                 "errors m None None",
                 "errors True True 2 2",
                 "errors-attr AttributeError 'PatternError' object has no attribute 'bad'",
-                "errors False False"
+                "errors False False",
+                "named a c ('a', 'b', 'c') {'first': 'a', 'second': 'b'} None 3",
+                "named ('a', 'b') (0, 1) 1 a <a>",
+                "named skip mappingproxy 2 1",
+                "named {'a': 'a', 'b': None} {'a': 'a', 'b': 'z'} ('a', 'z') a 1",
+                "named [('a', 'b'), ('a', 'b')] ['b', 'a', 'n', 'a', 'n', 'a', ''] [a]b",
+                "named [('a', ''), ('', 'b')] {'a': 'x', 'b': 'x'}",
+                "named (0, 1) {'a': 'x'}",
+                "named {'é': 1} {'class': 1}",
+                "named-unknown IndexError no such group",
+                "named-span-unknown IndexError no such group",
+                "named-dup PatternError redefinition of group name 'n' as group 2; was group 1 at position 12",
+                "named-badname PatternError bad character in group name '1' at position 4",
+                "named-empty PatternError missing group name at position 4",
+                "named-ends PatternError unexpected end of pattern at position 3",
+                "named-ref-missing PatternError unknown group name 'a' at position 4",
+                "named-ref-unknown PatternError unknown group name 'x' at position 12",
+                "named-repl-unknown IndexError unknown group name 'nope'",
+                "named-repl-unterminated PatternError missing >, unterminated name at position 3",
+                "backref (0, 2) None (0, 5)",
+                "backref (0, 2) (0, 4) (0, 2)",
+                "backref None (0, 3) (0, 12)",
+                "backref-missing PatternError invalid group reference 2 at position 2",
+                "backref-open PatternError cannot refer to an open group at position 2",
+                "backref [a] Sb '\\x00b'",
+                "backref-template-bad PatternError invalid group reference 12 at position 1",
+                "backref-template-missing PatternError invalid group reference 8 at position 1",
+                "backref-lookbehind PatternError cannot refer to group defined in the same lookbehind subpattern at position 9",
+                "look (0, 1) None (0, 1)",
+                "look (0, 2) ['a', 'a'] ('a',)",
+                "look (1, 2) (1, 2) ('a',)",
+                "look (2, 3) 1,2,3,4,567",
+                "look-word None",
+                "look (0, 1) (0, 0) None",
+                "look-fixed PatternError look-behind requires fixed-width pattern",
+                "look-fixed-branch PatternError look-behind requires fixed-width pattern",
+                "look-apart re.compile('(a)(?<=\\\\1)b')",
+                "atomic None (0, 2) (0, 2)",
+                "atomic [(0, 2)] ('a',)",
+                "scoped (0, 2) None (0, 2) ['ab']",
+                "scoped - - ['b', 'b'] (0, 2)",
+                "scoped (0, 3) (2, 3) 32",
+                "scoped-off PatternError missing : at position 4",
+                "scoped-both PatternError bad inline flags: flag turned on and off at position 5",
+                "scoped-type PatternError bad inline flags: cannot turn off flags 'a', 'u' and 'L' at position 5",
+                "scoped-locale PatternError bad inline flags: cannot use 'L' flag with a str pattern at position 3",
+                "scoped-unknown PatternError unknown flag at position 4",
+                "scoped-late PatternError global flags not at the start of the expression at position 1",
+                "scoped 34 32 256"
             ),
             output
         );
@@ -300,8 +402,8 @@ public sealed class RegularExpressionExecutionTests
     }
 
     /// <summary>
-    /// The syntax this slice does not read: named groups, backreferences, lookaround,
-    /// atomic groups and scoped flags are refused where the pattern is read.
+    /// The syntax this slice still does not read: the `\N{…}` named-character escapes
+    /// and the conditional groups `(?(id)…)` are refused where the pattern is read.
     /// </summary>
     [Fact]
     public void TheUnsupportedPatternSyntaxIsRefused()
@@ -315,23 +417,15 @@ public sealed class RegularExpressionExecutionTests
                     print("ok", repr(pattern))
                 except re.error as error:
                     print("refused", repr(pattern), error)
-            for pattern in [r"(?P<name>a)", r"(?P=name)", r"(?<=a)b", r"(?<!a)b", r"(?=a)b", r"(?!a)b",
-                            r"(?>ab)", r"(?i:ab)", r"\1", r"\g<name>"]:
+            for pattern in [r"\N{EM DASH}", r"(?(1)a|b)", r"(?(name)a|b)"]:
                 report(pattern)
             """
         );
         Assert.Equal(
             Lines(
-                "refused '(?P<name>a)' named groups are not supported in this runtime slice at position 0",
-                "refused '(?P=name)' named groups are not supported in this runtime slice at position 0",
-                "refused '(?<=a)b' lookbehind is not supported in this runtime slice at position 0",
-                "refused '(?<!a)b' lookbehind is not supported in this runtime slice at position 0",
-                "refused '(?=a)b' lookahead is not supported in this runtime slice at position 0",
-                "refused '(?!a)b' lookahead is not supported in this runtime slice at position 0",
-                "refused '(?>ab)' atomic groups are not supported in this runtime slice at position 0",
-                "refused '(?i:ab)' scoped flags are not supported in this runtime slice at position 0",
-                "refused '\\\\1' invalid group reference 1 at position 1",
-                "refused '\\\\g<name>' bad escape \\g at position 0"
+                "refused '\\\\N{EM DASH}' `\\N{...}` is not supported in this runtime slice at position 0",
+                "refused '(?(1)a|b)' unknown extension ?( at position 1",
+                "refused '(?(name)a|b)' unknown extension ?( at position 1"
             ),
             output
         );

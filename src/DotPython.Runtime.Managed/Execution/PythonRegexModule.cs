@@ -579,11 +579,63 @@ internal static class PythonRegexModule
     /// <summary>A compiled pattern: the program, the text it was read from, its flags.</summary>
     private sealed class PatternState(PythonRegex.Program program, string text, long flags)
     {
+        private PythonDictionaryValue? _groupIndex;
+        private string?[]? _groupNames;
+
         internal PythonRegex.Program Program { get; } = program;
 
         internal string Text { get; } = text;
 
         internal long Flags { get; } = flags;
+
+        /// <summary>The named groups by name, which is what `Pattern.groupindex` reports.</summary>
+        internal PythonDictionaryValue GroupIndex
+        {
+            get
+            {
+                if (_groupIndex is null)
+                {
+                    _groupIndex = new PythonDictionaryValue([]);
+                    foreach (var (name, index) in Program.GroupNames)
+                    {
+                        ManagedObjectProtocols.SetDictionaryItem(
+                            _groupIndex,
+                            new PythonTextValue(name),
+                            Integer(index),
+                            default
+                        );
+                    }
+                }
+                return _groupIndex;
+            }
+        }
+
+        /// <summary>The number a group name names, or none where no group took it.</summary>
+        internal int? NumberOf(string name)
+        {
+            foreach (var (taken, index) in Program.GroupNames)
+            {
+                if (taken == name)
+                {
+                    return index;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>The name of a group, where it has one.</summary>
+        internal string? NameOf(int group)
+        {
+            if (_groupNames is null)
+            {
+                _groupNames = new string?[Program.GroupCount + 1];
+                foreach (var (name, index) in Program.GroupNames)
+                {
+                    _groupNames[index] = name;
+                }
+            }
+            return group >= 0 && group < _groupNames.Length ? _groupNames[group] : null;
+        }
     }
 
     /// <summary>One match: the pattern it came from, the string, and what it captured.</summary>
@@ -613,6 +665,14 @@ internal static class PythonRegexModule
         pattern is PythonManagedObjectValue { Payload: PatternState state }
             ? state
             : throw PatternDescriptor("match", pattern);
+
+    /// <summary>The number a group name names in the pattern this match came from.</summary>
+    private static int? PatternNumber(this MatchState state, string name) =>
+        StateOf(state.Pattern).NumberOf(name);
+
+    /// <summary>The name of a group of the pattern this match came from.</summary>
+    private static string? NameOfPattern(this MatchState state, int group) =>
+        StateOf(state.Pattern).NameOf(group);
 
     private static MatchState MatchOf(PythonValue match) =>
         match is PythonManagedObjectValue { Payload: MatchState state }
@@ -805,7 +865,11 @@ internal static class PythonRegexModule
         type.Attributes["lastgroup"] = ReadOnlyMember(
             "lastgroup",
             "re.Match",
-            _ => PythonNoneValue.Instance,
+            receiver =>
+                MatchOf(receiver).Result.LastIndex is { } index
+                && MatchOf(receiver).NameOfPattern(index) is { } name
+                    ? new PythonTextValue(name)
+                    : PythonNoneValue.Instance,
             named: true
         );
         type.Attributes["re"] = ReadOnlyMember(
@@ -911,7 +975,9 @@ internal static class PythonRegexModule
         type.Attributes["groupindex"] = ReadOnlyMember(
             "groupindex",
             "re.Pattern",
-            _ => new PythonDictionaryValue([]),
+            // Python publishes it read-only, as the mapping proxy `types.MappingProxyType`
+            // makes.
+            receiver => new PythonMappingProxyValue(StateOf(receiver).GroupIndex),
             named: true
         );
         return type;
@@ -1080,7 +1146,23 @@ internal static class PythonRegexModule
     private static PythonValue GroupDict(
         PythonValue? receiver,
         IReadOnlyList<PythonValue> arguments
-    ) => new PythonDictionaryValue([]);
+    )
+    {
+        var state = MatchOf(receiver!);
+        var fallback = arguments.Count > 0 ? arguments[0] : PythonNoneValue.Instance;
+        var found = new PythonDictionaryValue([]);
+        foreach (var (name, index) in state.Program.GroupNames)
+        {
+            var value = GroupText(state, index);
+            ManagedObjectProtocols.SetDictionaryItem(
+                found,
+                new PythonTextValue(name),
+                value is PythonNoneValue ? fallback : value,
+                default
+            );
+        }
+        return found;
+    }
 
     private static PythonValue Span(PythonValue? receiver, IReadOnlyList<PythonValue> arguments)
     {
@@ -1131,7 +1213,9 @@ internal static class PythonRegexModule
         long index;
         try
         {
-            index = group is PythonTextValue ? -1 : RequireIndex(group, default);
+            index = group is PythonTextValue name
+                ? state.PatternNumber(name.Value) ?? -1
+                : RequireIndex(group, default);
         }
         catch (PythonRuntimeException)
         {
@@ -1267,13 +1351,46 @@ internal static class PythonRegexModule
             character = template[position];
             if (char.IsAsciiDigit(character))
             {
-                var (group, end) = ReadGroupNumber(template, position, 2);
-                if (group > state.Program.GroupCount)
+                var number = character - '0';
+                var end = position + 1;
+                if (end < template.Length && char.IsAsciiDigit(template[end]))
                 {
-                    throw TemplateFault($"invalid group reference {group}", start + 1, template);
+                    number = number * 10 + (template[end] - '0');
+                    end++;
+                    if (
+                        character is >= '0' and <= '7'
+                        && template[position + 1] is >= '0' and <= '7'
+                        && end < template.Length
+                        && template[end] is >= '0' and <= '7'
+                    )
+                    {
+                        // Three octal digits spell a character, which is the one escape a
+                        // replacement reads as something other than a group.
+                        WriteOctal(
+                            output,
+                            template,
+                            start,
+                            position,
+                            (character - '0') * 64
+                                + (template[position + 1] - '0') * 8
+                                + (template[end] - '0')
+                        );
+                        position = end + 1;
+                        continue;
+                    }
+                }
+                if (character == '0')
+                {
+                    WriteOctal(output, template, start, position, number);
+                    position = end;
+                    continue;
+                }
+                if (number > state.Program.GroupCount)
+                {
+                    throw TemplateFault($"invalid group reference {number}", start + 1, template);
                 }
                 position = end;
-                Append(output, state, group);
+                Append(output, state, number);
                 continue;
             }
             if (character == 'g')
@@ -1284,16 +1401,50 @@ internal static class PythonRegexModule
                     throw TemplateFault("missing <", position, template);
                 }
                 position++;
-                var (group, end) = ReadGroupNumber(template, position, int.MaxValue);
-                if (end == position || end >= template.Length || template[end] != '>')
+                var nameStart = position;
+                while (position < template.Length && template[position] != '>')
                 {
-                    throw TemplateFault("missing >, unterminated name", position, template);
+                    position++;
                 }
-                if (group > state.Program.GroupCount)
+                if (position >= template.Length)
                 {
-                    throw TemplateFault($"invalid group reference {group}", position, template);
+                    throw position == nameStart
+                        ? TemplateFault("missing group name", nameStart, template)
+                        : TemplateFault("missing >, unterminated name", nameStart, template);
                 }
-                position = end + 1;
+                var name = template[nameStart..position];
+                if (name.Length == 0)
+                {
+                    throw TemplateFault("missing group name", nameStart, template);
+                }
+                position++;
+                var group = 0;
+                if (AllDigits(name))
+                {
+                    group = int.Parse(name, System.Globalization.CultureInfo.InvariantCulture);
+                    if (group > state.Program.GroupCount)
+                    {
+                        throw TemplateFault(
+                            $"invalid group reference {group}",
+                            nameStart,
+                            template
+                        );
+                    }
+                }
+                else
+                {
+                    var found = StateOf(state.Pattern).NumberOf(name);
+                    if (found is null)
+                    {
+                        throw new PythonRaisedException(
+                            new PythonExceptionValue("IndexError", $"unknown group name '{name}'")
+                            {
+                                Arguments = [new PythonTextValue($"unknown group name '{name}'")],
+                            }
+                        );
+                    }
+                    group = found.Value;
+                }
                 Append(output, state, group);
                 continue;
             }
@@ -1334,10 +1485,33 @@ internal static class PythonRegexModule
         return output.ToString();
     }
 
+    /// <summary>An octal escape of a template, which keeps only its lowest byte.</summary>
+    private static void WriteOctal(
+        StringBuilder output,
+        string template,
+        int start,
+        int digitsStart,
+        int value
+    )
+    {
+        if (value > 0xFF)
+        {
+            throw TemplateFault(
+                $"octal escape value \\{template[(start + 1)..(digitsStart + 3)]} outside of range 0-0o377",
+                start,
+                template
+            );
+        }
+        output.Append((char)(value & 0xFF));
+    }
+
     private static void Append(StringBuilder output, MatchState state, int group) =>
         output.Append(
             GroupText(state, group) is PythonTextValue matched ? matched.Value : string.Empty
         );
+
+    /// <summary>Whether a name is a run of ASCII digits, which is what `\g<2>` is.</summary>
+    private static bool AllDigits(string name) => name.Length > 0 && name.All(char.IsAsciiDigit);
 
     /// <summary>The number a run of digits spells, and where the run ended.</summary>
     private static (int Group, int End) ReadGroupNumber(string text, int position, int limit)
@@ -1471,9 +1645,13 @@ internal static class PythonRegexModule
     private static PythonRaisedException TemplateFault(string message, int pos, string template) =>
         ErrorFault(message, template, pos, default);
 
-    /// <summary>The fault a pattern that did not compile raises, with where it went wrong.</summary>
+    /// <summary>
+    /// The fault a pattern that did not compile raises. An error with no position — the
+    /// look-behind of no fixed width, which Python raises after the parse — carries no
+    /// pattern either.
+    /// </summary>
     private static PythonRaisedException ParseFault(PythonRegexParseError error, string pattern) =>
-        ErrorFault(error.Message, pattern, error.Position, default);
+        ErrorFault(error.Message, error.Position < 0 ? null : pattern, error.Position, default);
 
     private static PythonRaisedException ErrorFault(
         string message,
@@ -1490,7 +1668,7 @@ internal static class PythonRegexModule
             value,
             message,
             pattern is null ? PythonNoneValue.Instance : new PythonTextValue(pattern),
-            Integer(pos)
+            pos < 0 ? PythonNoneValue.Instance : Integer(pos)
         );
         return new PythonRaisedException(value);
     }
