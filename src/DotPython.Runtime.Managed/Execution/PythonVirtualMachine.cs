@@ -316,6 +316,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 }
             ),
             ["input"] = new PythonBuiltinFunctionValue("input", Input),
+            // The four names `site` installs: the helper over the runtime's own
+            // reflection, and the three printers, whose texts are the runtime's own.
+            ["help"] = PythonSiteBuiltins.CreateHelp(output),
+            ["copyright"] = PythonSiteBuiltins.CreateCopyright(output),
+            ["credits"] = PythonSiteBuiltins.CreateCredits(output),
+            ["license"] = PythonSiteBuiltins.CreateLicense(output),
         };
         _builtins.Add("type", PythonBuiltinTypes.Type);
         _builtins.Add(
