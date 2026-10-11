@@ -549,6 +549,13 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonRandomModule.Initialize
         );
+        // The clocks and the calendar the host provides, over a `struct_time` that is the
+        // tuple subclass Python's own is.
+        modules["time"] = PythonModuleDefinition.Native(
+            "<dotpython time>",
+            isPackage: false,
+            PythonTimeModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
