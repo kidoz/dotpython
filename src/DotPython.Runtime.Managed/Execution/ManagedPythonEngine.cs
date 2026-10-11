@@ -90,6 +90,51 @@ public sealed class ManagedPythonEngine
             cancellationToken
         );
 
+    /// <summary>
+    /// Binds the interpreter's own names before it runs: the `builtins` module carries the
+    /// table it resolves names against, and the `__main__` namespace answers `__builtins__`
+    /// with that same module.
+    /// </summary>
+    private PythonVirtualMachine PrepareInterpreter(PythonVirtualMachine virtualMachine)
+    {
+        if (_modules.ContainsAbsolute("builtins"))
+        {
+            var module = _modules.ResolveAbsolute("builtins", default).Module;
+            foreach (var (name, value) in virtualMachine.Builtins)
+            {
+                module.Globals.SetValue(name, value);
+            }
+
+            _globals.SetValue("__builtins__", module);
+        }
+
+        return virtualMachine;
+    }
+
+    /// <summary>
+    /// Takes the interpreter's own names back out of the `builtins` module once it has
+    /// stopped: the table belongs to the interpreter that published it, and a finished one
+    /// must not be kept alive — nor its objects — by the module that outlives it. What user
+    /// code put there itself stays.
+    /// </summary>
+    private void ReleaseInterpreter(PythonVirtualMachine virtualMachine)
+    {
+        if (_modules.ContainsAbsolute("builtins"))
+        {
+            var module = _modules.ResolveAbsolute("builtins", default).Module;
+            foreach (var (name, value) in virtualMachine.Builtins)
+            {
+                if (
+                    module.Globals.TryGetValue(name, out var published)
+                    && ReferenceEquals(published, value)
+                )
+                {
+                    module.Globals.RemoveValue(name, value);
+                }
+            }
+        }
+    }
+
     private PythonValue InvokeCore(
         string functionName,
         IReadOnlyList<PythonValue> arguments,
@@ -108,17 +153,19 @@ public sealed class ManagedPythonEngine
         lock (_executionGate)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var virtualMachine = new PythonVirtualMachine(
-                _globals,
-                _modules,
-                output,
-                options.InstructionLimit,
-                enableReturnLocalContinuation,
-                cancellationToken,
-                _searchRoots,
-                options.StandardInput,
-                options.StandardError,
-                options.Arguments
+            var virtualMachine = PrepareInterpreter(
+                new PythonVirtualMachine(
+                    _globals,
+                    _modules,
+                    output,
+                    options.InstructionLimit,
+                    enableReturnLocalContinuation,
+                    cancellationToken,
+                    _searchRoots,
+                    options.StandardInput,
+                    options.StandardError,
+                    options.Arguments
+                )
             );
             try
             {
@@ -127,6 +174,10 @@ public sealed class ManagedPythonEngine
             catch (PythonRaisedException raised)
             {
                 throw ToRuntimeFault(raised, virtualMachine);
+            }
+            finally
+            {
+                ReleaseInterpreter(virtualMachine);
             }
         }
     }
@@ -150,17 +201,19 @@ public sealed class ManagedPythonEngine
         lock (_executionGate)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var virtualMachine = new PythonVirtualMachine(
-                _globals,
-                _modules,
-                output,
-                options.InstructionLimit,
-                enableReturnLocalContinuation: false,
-                cancellationToken,
-                _searchRoots,
-                options.StandardInput,
-                options.StandardError,
-                options.Arguments
+            var virtualMachine = PrepareInterpreter(
+                new PythonVirtualMachine(
+                    _globals,
+                    _modules,
+                    output,
+                    options.InstructionLimit,
+                    enableReturnLocalContinuation: false,
+                    cancellationToken,
+                    _searchRoots,
+                    options.StandardInput,
+                    options.StandardError,
+                    options.Arguments
+                )
             );
             try
             {
@@ -169,6 +222,10 @@ public sealed class ManagedPythonEngine
             catch (PythonRaisedException raised)
             {
                 throw ToRuntimeFault(raised, virtualMachine);
+            }
+            finally
+            {
+                ReleaseInterpreter(virtualMachine);
             }
         }
     }
@@ -265,17 +322,19 @@ public sealed class ManagedPythonEngine
         PythonVirtualMachine? virtualMachine = null;
         try
         {
-            virtualMachine = new PythonVirtualMachine(
-                _globals,
-                _modules,
-                output,
-                options.InstructionLimit,
-                enableReturnLocalContinuation: true,
-                cancellationToken,
-                _searchRoots,
-                options.StandardInput,
-                options.StandardError,
-                options.Arguments
+            virtualMachine = PrepareInterpreter(
+                new PythonVirtualMachine(
+                    _globals,
+                    _modules,
+                    output,
+                    options.InstructionLimit,
+                    enableReturnLocalContinuation: true,
+                    cancellationToken,
+                    _searchRoots,
+                    options.StandardInput,
+                    options.StandardError,
+                    options.Arguments
+                )
             );
             virtualMachine.Execute(PrepareCode(code));
             return new ManagedExecutionResult(source, []);
@@ -324,6 +383,13 @@ public sealed class ManagedPythonEngine
                 source,
                 [new Diagnostic(fault.Code, fault.Message, DiagnosticSeverity.Error, fault.Span)]
             );
+        }
+        finally
+        {
+            if (virtualMachine is { } interpreter)
+            {
+                ReleaseInterpreter(interpreter);
+            }
         }
     }
 

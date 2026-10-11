@@ -70,6 +70,11 @@ internal sealed partial class PythonVirtualMachine
 
     string? IUserObjectDispatcher.CurrentModuleName() => CurrentModuleName();
 
+    /// <summary>The table the interpreter resolves names against.</summary>
+    internal IReadOnlyDictionary<string, PythonValue> Builtins => _builtins;
+
+    IReadOnlyDictionary<string, PythonValue> IUserObjectDispatcher.Builtins => Builtins;
+
     private void CheckProtocolWork(TextSpan span)
     {
         if (_deferredControlFlowCount == 0)

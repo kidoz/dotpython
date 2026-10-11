@@ -262,6 +262,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         _builtins.Add("issubclass", new PythonBuiltinFunctionValue("issubclass", IsSubclass));
         _builtins.Add("Ellipsis", PythonEllipsisValue.Instance);
         _builtins.Add("NotImplemented", PythonNotImplementedValue.Instance);
+        // The singletons the syntax compiles directly, which `builtins` still publishes.
+        _builtins.Add("None", PythonNoneValue.Instance);
+        _builtins.Add("True", PythonTruthValue.True);
+        _builtins.Add("False", PythonTruthValue.False);
         _builtins.Add("object", PythonBuiltinFunctions.Object);
         _builtins.Add("exit", PythonStandardModules.CreateExitBuiltin("exit"));
         _builtins.Add("quit", PythonStandardModules.CreateExitBuiltin("quit"));
@@ -594,6 +598,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 break;
             case PythonOpCode.ImportFrom:
                 ImportFrom(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
+                break;
+            case PythonOpCode.ImportStar:
+                ImportStar(instruction.Span);
                 break;
             case PythonOpCode.LoadAttribute:
                 LoadAttribute(frame.Code.Definition.Names[instruction.Operand], instruction.Span);
@@ -1465,6 +1472,63 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 : string.Empty;
         var import = _modules.Resolve(name, currentPackage, instruction.Span);
         PushModuleImport(import, instruction.Span);
+    }
+
+    /// <summary>
+    /// `from module import *`: every name the module publishes — its `__all__` when it has
+    /// one, and everything else that does not start with an underscore when it has not —
+    /// bound in the module body's own namespace.
+    /// </summary>
+    private void ImportStar(TextSpan span)
+    {
+        var target = Pop(span);
+        if (target is not PythonModuleValue module)
+        {
+            throw Fault("DPY4023", "This value does not expose managed attributes.", span);
+        }
+
+        var globals = CurrentFrame.Globals;
+        if (
+            module.Globals.TryGetValue("__all__", out var exported)
+            && exported is not PythonNoneValue
+        )
+        {
+            foreach (var name in ManagedObjectProtocols.MaterializeValues(exported, span))
+            {
+                if (name is not PythonTextValue text)
+                {
+                    throw Fault(
+                        "DPY4003",
+                        $"Item in {module.Name}.__all__ must be str, not "
+                            + ManagedObjectProtocols.GetTypeName(name),
+                        span,
+                        "TypeError"
+                    );
+                }
+
+                if (!module.Globals.TryGetValue(text.Value, out var value))
+                {
+                    throw Fault(
+                        "DPY4022",
+                        $"module '{module.Name}' has no attribute '{text.Value}'",
+                        span,
+                        "AttributeError"
+                    );
+                }
+
+                globals.SetValue(text.Value, value);
+            }
+
+            return;
+        }
+
+        foreach (var (name, value) in module.Globals.Entries)
+        {
+            if (!name.StartsWith('_'))
+            {
+                globals.SetValue(name, value);
+            }
+        }
     }
 
     private void ImportFrom(string name, TextSpan span)

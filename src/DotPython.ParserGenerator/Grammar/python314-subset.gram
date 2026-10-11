@@ -1,4 +1,4 @@
-# DotPython executable PEG subset, version 42.
+# DotPython executable PEG subset, version 43.
 # Upstream tag: CPython v3.14.7.
 # Upstream commit: 823f0323ee6ec1402088b73bce1a38473cac36dc.
 # Provenance: https://github.com/python/cpython/blob/823f0323ee6ec1402088b73bce1a38473cac36dc/Grammar/python.gram
@@ -29,7 +29,7 @@ global_stmt: 'global' ','.NAME+
 nonlocal_stmt: 'nonlocal' ','.NAME+
 raise_stmt: 'raise' [expression ['from' expression]]
 import_stmt: 'import' ','.dotted_import_alias+
-from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)
+from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+ | '*')
 dotted_import_alias: dotted_name ['as' NAME]
 import_alias: NAME ['as' NAME]
 import_group: '(' ','.import_alias+ [','] ')'

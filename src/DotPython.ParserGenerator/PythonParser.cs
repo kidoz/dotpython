@@ -44,6 +44,7 @@ public static class PythonParser
         private readonly SourceText _source;
         private readonly SyntaxToken[] _tokens;
         private int _functionDepth;
+        private int _classDepth;
         private int _patternLiteralDepth;
         private readonly List<bool> _functionYieldFlags = [];
         private readonly List<bool> _functionAsyncFlags = [];
@@ -1343,6 +1344,7 @@ public static class PythonParser
             var colon = Expect(SyntaxTokenKind.Colon, "':' after the class name");
             var enclosingFunctionDepth = _functionDepth;
             _functionDepth = 0;
+            _classDepth++;
             var enclosingYieldFlags = new List<bool>(_functionYieldFlags);
             _functionYieldFlags.Clear();
             var enclosingAsyncFlags = new List<bool>(_functionAsyncFlags);
@@ -1355,6 +1357,7 @@ public static class PythonParser
             finally
             {
                 _functionDepth = enclosingFunctionDepth;
+                _classDepth--;
                 _functionYieldFlags.Clear();
                 _functionYieldFlags.AddRange(enclosingYieldFlags);
                 _functionAsyncFlags.Clear();
@@ -1754,6 +1757,23 @@ public static class PythonParser
             if (!MatchKeyword("import", out _))
             {
                 ReportExpected("'import' after the module name", Current.Span);
+            }
+
+            if (Match(SyntaxTokenKind.Star, out var star))
+            {
+                // `from module import *` binds the names the module publishes, which only a
+                // module body has room for.
+                if (_functionDepth != 0 || _classDepth != 0)
+                {
+                    Report("DPY2001", "import * only allowed at module level", star.Span);
+                }
+
+                return new PythonFromImportStatement(
+                    moduleName,
+                    Array.Empty<PythonImportAlias>(),
+                    TextSpan.FromBounds(start, star.Span.End),
+                    IsStar: true
+                );
             }
 
             var parenthesized = Match(SyntaxTokenKind.LeftParenthesis, out _);

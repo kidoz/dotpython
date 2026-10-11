@@ -165,7 +165,12 @@ public sealed record PythonImportStatement(IReadOnlyList<PythonImportAlias> Impo
 public sealed record PythonFromImportStatement(
     string ModuleName,
     IReadOnlyList<PythonImportAlias> Imports,
-    TextSpan Span
+    TextSpan Span,
+    /// <summary>
+    /// Whether the statement is `from module import *`, which binds the names the module
+    /// publishes rather than the ones written out.
+    /// </summary>
+    bool IsStar = false
 ) : PythonStatement(Span);
 
 public sealed record PythonImportAlias(string Name, string? Alias, TextSpan Span)

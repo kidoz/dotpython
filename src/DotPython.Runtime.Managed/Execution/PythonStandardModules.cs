@@ -207,9 +207,26 @@ internal static class PythonStandardModules
     /// Creates the `open` builtin: read-only text mode, a capability scoped to the
     /// registered module search roots like the os.path probes.
     /// </summary>
-    internal static PythonBuiltinFunctionValue CreateOpenBuiltin(
-        IReadOnlyList<string> searchRoots
-    ) =>
+    /// <summary>The `open` a set of search roots gets, so the interpreter's own and the one
+    /// `builtins` publishes are the same object.</summary>
+    private static readonly Dictionary<string, PythonBuiltinFunctionValue> OpenBuiltins = new(
+        StringComparer.Ordinal
+    );
+
+    internal static PythonBuiltinFunctionValue CreateOpenBuiltin(IReadOnlyList<string> searchRoots)
+    {
+        var key = string.Join('\0', searchRoots);
+        lock (OpenBuiltins)
+        {
+            if (OpenBuiltins.TryGetValue(key, out var existing))
+                return existing;
+            var created = CreateOpen(searchRoots);
+            OpenBuiltins[key] = created;
+            return created;
+        }
+    }
+
+    private static PythonBuiltinFunctionValue CreateOpen(IReadOnlyList<string> searchRoots) =>
         new(
             "open",
             (arguments, span) =>
@@ -388,6 +405,14 @@ internal static class PythonStandardModules
                     ])
                 );
             }
+        );
+        modules["builtins"] = PythonModuleDefinition.Native(
+            "<dotpython builtins>",
+            isPackage: false,
+            // The names arrive from the running interpreter, which fills this module's
+            // namespace with the table it resolves them against; a `builtins` module of
+            // its own would hold a second copy of every function.
+            _ => { }
         );
         modules["operator"] = PythonModuleDefinition.Native(
             "<dotpython operator>",

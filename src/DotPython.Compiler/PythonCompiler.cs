@@ -2823,6 +2823,13 @@ public static class PythonCompiler
 
         private void CompileFromImportStatement(PythonFromImportStatement statement)
         {
+            if (statement.IsStar)
+            {
+                EmitImportChain(statement.ModuleName, statement.Span);
+                Emit(PythonOpCode.ImportStar, 0, statement.Span);
+                return;
+            }
+
             foreach (var import in statement.Imports)
             {
                 EmitImportChain(statement.ModuleName, statement.Span);

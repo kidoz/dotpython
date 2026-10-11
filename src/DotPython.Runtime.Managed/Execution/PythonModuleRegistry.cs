@@ -200,6 +200,17 @@ internal sealed class PythonModuleRegistry
         var parent = GetLoadedParent(name, span);
         var globals = new PythonGlobalNamespace();
         globals.SetValue("__name__", new PythonTextValue(name));
+        // Every module carries `__builtins__`: the interpreter's `builtins` module in
+        // `__main__`, and — as the import system leaves it — that module's dictionary in
+        // the modules it loads.
+        if (name != "builtins" && _definitions.ContainsKey("builtins"))
+        {
+            globals.SetValue(
+                "__builtins__",
+                ResolveAbsolute("builtins", span).Module.Globals.Dictionary
+            );
+        }
+
         globals.SetValue("__package__", new PythonTextValue(GetPackageName(name)));
         if (Path.IsPathRooted(definition.Origin))
         {

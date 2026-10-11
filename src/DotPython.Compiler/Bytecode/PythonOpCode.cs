@@ -125,4 +125,5 @@ public enum PythonOpCode
     StoreGlobal = 120,
     DeleteGlobal = 121,
     MakeTypeAlias = 122,
+    ImportStar = 123,
 }

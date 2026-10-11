@@ -75,6 +75,12 @@ internal interface IUserObjectDispatcher
     string? CurrentModuleName();
 
     /// <summary>
+    /// The names the interpreter resolves them against, which is what the `builtins`
+    /// module publishes.
+    /// </summary>
+    IReadOnlyDictionary<string, PythonValue> Builtins { get; }
+
+    /// <summary>
     /// Where a call came from: the file and line of the frame `level` steps up from the
     /// running one — level 1 is the caller of a builtin — with the module name and globals
     /// of that frame, which is what `warnings.warn` reports a warning at.

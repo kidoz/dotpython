@@ -5,7 +5,7 @@ namespace DotPython.ParserGenerator.Generation;
 
 internal static class GeneratedPythonGrammar
 {
-    internal const string SourceSha256 = "c5b37549aa00e50bca4996ef0ae5db12d9334224d7f4c100956c0d154921913c";
+    internal const string SourceSha256 = "d3d7a74926c93024cadb092ec84d92066ad16be1a4ecb6845a399c4f44a90ca7";
     internal const int RuleCount = 97;
 
     private const string GrammarSource = """
@@ -33,7 +33,7 @@ internal static class GeneratedPythonGrammar
         nonlocal_stmt: 'nonlocal' ','.NAME+
         raise_stmt: 'raise' [expression ['from' expression]]
         import_stmt: 'import' ','.dotted_import_alias+
-        from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+)
+        from_import_stmt: 'from' relative_module 'import' (import_group | ','.import_alias+ | '*')
         dotted_import_alias: dotted_name ['as' NAME]
         import_alias: NAME ['as' NAME]
         import_group: '(' ','.import_alias+ [','] ')'
