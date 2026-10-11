@@ -543,6 +543,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonRegexModule.Initialize
         );
+        // CPython's own generator, so a seeded stream is the stream CPython produces.
+        modules["random"] = PythonModuleDefinition.Native(
+            "<dotpython random>",
+            isPackage: false,
+            PythonRandomModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>

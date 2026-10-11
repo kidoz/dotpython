@@ -491,6 +491,10 @@ internal static class ManagedObjectProtocols
             case PythonBoundMethodValue { Function.IsTypeMethodDescriptor: true } boundMethod
                 when name == "__self__":
                 return boundMethod.Target;
+            case PythonBoundMethodValue boundMethod when name == "__self__":
+                return boundMethod.Target;
+            case PythonBoundMethodValue boundMethod when name == "__func__":
+                return boundMethod.Function;
             case PythonBuiltinFunctionValue builtinFunction when name == "__name__":
                 return new PythonTextValue(builtinFunction.Name);
             // The runtime's own functions carry no docstrings, so the attribute exists and
