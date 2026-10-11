@@ -95,6 +95,8 @@ public sealed class ManagedPythonEngine
     /// table it resolves names against, and the `__main__` namespace answers `__builtins__`
     /// with that same module.
     /// </summary>
+    private PythonModuleValue? _mainModule;
+
     private PythonVirtualMachine PrepareInterpreter(PythonVirtualMachine virtualMachine)
     {
         if (_modules.ContainsAbsolute("builtins"))
@@ -107,6 +109,11 @@ public sealed class ManagedPythonEngine
 
             _globals.SetValue("__builtins__", module);
         }
+
+        // The running program is a module like any other: `sys.modules` lists it and
+        // `import __main__` finds it, both reading the globals the program runs in.
+        _mainModule ??= new PythonModuleValue("__main__", _globals);
+        _modules.RegisterLoaded("__main__", _mainModule);
 
         return virtualMachine;
     }

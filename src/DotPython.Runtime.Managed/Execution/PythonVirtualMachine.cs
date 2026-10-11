@@ -408,6 +408,19 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
     PythonValue IUserObjectDispatcher.GetIdentity(PythonValue value) => GetIdentityToken(value);
 
+    PythonDictionaryValue IUserObjectDispatcher.Modules => _modules.Modules;
+
+    PythonManagedTypeValue IUserObjectDispatcher.ModuleSpecType => _modules.ModuleSpecType;
+
+    PythonModuleValue IUserObjectDispatcher.ImportModule(
+        string name,
+        string package,
+        TextSpan span
+    ) => ImportModuleValue(name, package, span);
+
+    PythonModuleValue IUserObjectDispatcher.ReloadModule(PythonModuleValue module, TextSpan span) =>
+        ReloadModuleValue(module, span);
+
     PythonValue IUserObjectDispatcher.ConstructType(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
@@ -5385,6 +5398,25 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         return new PythonRaisedException(
             new PythonExceptionValue("KeyError", key.ToRepresentationString()) { Arguments = [key] }
         );
+    }
+
+    /// <summary>
+    /// `importlib.import_module`: the module a name resolves to — the one the name names,
+    /// which is the leaf of a dotted name — with a relative name resolved against the
+    /// package it is given.
+    /// </summary>
+    internal PythonModuleValue ImportModuleValue(string name, string package, TextSpan span) =>
+        ImportModuleTree(PythonModuleRegistry.NormalizeModuleName(name, package, span), span);
+
+    /// <summary>
+    /// `importlib.reload`: runs the module's body again on the module it already is, which
+    /// keeps the namespace it has. A module the runtime initialized natively has no body to
+    /// run and comes back as it stands, as CPython's own reload of a builtin does.
+    /// </summary>
+    internal PythonModuleValue ReloadModuleValue(PythonModuleValue module, TextSpan span)
+    {
+        var import = _modules.Reload(module, span);
+        return import.InitializationCode is null ? module : RunModuleImport(import, span);
     }
 
     private PythonModuleValue ImportModuleTree(string name, TextSpan span)

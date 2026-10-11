@@ -601,6 +601,10 @@ internal static class PythonStandardModules
                 ),
             ])
         );
+        if (dispatcher?.Modules is { } modules)
+        {
+            globals.SetValue("modules", modules);
+        }
         globals.SetValue("stdout", new PythonStreamValue(PythonStreamKind.StandardOutput));
         globals.SetValue("stderr", new PythonStreamValue(PythonStreamKind.StandardError));
         globals.SetValue("stdin", new PythonStreamValue(PythonStreamKind.StandardInput));

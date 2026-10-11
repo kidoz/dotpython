@@ -24,6 +24,13 @@ internal sealed class PythonModuleRegistry
 
     internal PythonManagedTypeValue ExceptionGroupType { get; }
 
+    /// <summary>The mapping `sys.modules` exposes, kept in step as modules load.</summary>
+    internal PythonDictionaryValue Modules { get; } = ManagedObjectProtocols.CreateDictionary();
+
+    /// <summary>The `ModuleSpec` type `importlib.machinery` publishes.</summary>
+    internal PythonManagedTypeValue ModuleSpecType { get; } =
+        new("ModuleSpec") { Module = "importlib.machinery" };
+
     internal PythonModuleRegistry(
         IReadOnlyDictionary<string, PythonModuleDefinition> definitions,
         Func<string, PythonModuleDefinition, TextSpan, PreparedPythonCode> compile
@@ -149,6 +156,56 @@ internal sealed class PythonModuleRegistry
         return type;
     }
 
+    /// <summary>
+    /// Records a module the host itself loaded — the running `__main__` — so an import
+    /// finds it and `sys.modules` lists it.
+    /// </summary>
+    internal void RegisterLoaded(string name, PythonModuleValue module)
+    {
+        // The host registers the running program once per execution, so the entry it
+        // already has is replaced rather than added again.
+        _loaded[name] = new LoadedPythonModule(module, null) { IsInitialized = true };
+        SetModuleEntry(name, module);
+    }
+
+    /// <summary>
+    /// `importlib.reload`: the code that runs a module's body again on the module it
+    /// already is, or none for a module the runtime initialized natively.
+    /// </summary>
+    internal PythonModuleImport Reload(PythonModuleValue module, TextSpan span)
+    {
+        if (
+            !_definitions.TryGetValue(module.Name, out var definition)
+            || definition.Initialize is not null
+        )
+        {
+            return new PythonModuleImport(module, null);
+        }
+        return new PythonModuleImport(module, _compile(module.Name, definition, span));
+    }
+
+    private void SetModuleEntry(string name, PythonModuleValue module) =>
+        ManagedObjectProtocols.SetDictionaryItem(
+            Modules,
+            new PythonTextValue(name),
+            module,
+            default
+        );
+
+    private void ClearModuleEntry(string name)
+    {
+        if (
+            ManagedObjectProtocols.TryFindDictionaryItem(
+                Modules,
+                new PythonTextValue(name),
+                out var item
+            )
+        )
+        {
+            Modules.RemoveItem(item);
+        }
+    }
+
     internal bool ContainsAbsolute(string name) => _definitions.ContainsKey(name);
 
     /// <summary>Whether the module of that name is one other modules may live under.</summary>
@@ -220,6 +277,20 @@ internal sealed class PythonModuleRegistry
         }
 
         globals.SetValue("__package__", new PythonTextValue(GetPackageName(name)));
+        globals.SetValue("__spec__", CreateModuleSpec(name, definition));
+        if (definition.IsPackage)
+        {
+            // A package is a module other modules live under, and `__path__` is where
+            // they — and a fromlist — are looked for. A package the runtime itself holds
+            // has no directory to name.
+            globals.SetValue(
+                "__path__",
+                new PythonListValue([
+                    .. SearchLocations(definition)
+                        .Select(location => (PythonValue)new PythonTextValue(location)),
+                ])
+            );
+        }
         if (Path.IsPathRooted(definition.Origin))
         {
             globals.SetValue("__file__", new PythonTextValue(definition.Origin));
@@ -232,6 +303,7 @@ internal sealed class PythonModuleRegistry
             TypeHierarchy.RegisterModuleTypes(globals);
             var initialized = new LoadedPythonModule(module, parent) { IsInitialized = true };
             _loaded.Add(name, initialized);
+            SetModuleEntry(name, module);
             parent?.Globals.SetValue(GetLeafName(name), module);
             return new PythonModuleImport(module, null);
         }
@@ -247,6 +319,7 @@ internal sealed class PythonModuleRegistry
 
         var code = _compile(name, definition, span);
         _loaded.Add(name, new LoadedPythonModule(module, parent));
+        SetModuleEntry(name, module);
         _initializingCount++;
         return new PythonModuleImport(module, code);
     }
@@ -274,6 +347,7 @@ internal sealed class PythonModuleRegistry
         )
         {
             _loaded.Remove(module.Name);
+            ClearModuleEntry(module.Name);
             _initializingCount--;
             loaded.Parent?.Globals.RemoveValue(GetLeafName(module.Name), module);
         }
@@ -299,6 +373,47 @@ internal sealed class PythonModuleRegistry
             span
         );
     }
+
+    /// <summary>
+    /// The spec a module reports: its name, where it came from, the package it belongs to
+    /// and — for a package — the directories its submodules live in. The runtime loads its
+    /// own modules, so the loader is None where CPython names one.
+    /// </summary>
+    private PythonManagedObjectValue CreateModuleSpec(
+        string name,
+        PythonModuleDefinition definition
+    )
+    {
+        var builtIn = definition.Initialize is not null;
+        var spec = new PythonManagedObjectValue(ModuleSpecType);
+        spec.Attributes["name"] = new PythonTextValue(name);
+        spec.Attributes["loader"] = PythonNoneValue.Instance;
+        spec.Attributes["loader_state"] = PythonNoneValue.Instance;
+        spec.Attributes["origin"] = new PythonTextValue(builtIn ? "built-in" : definition.Origin);
+        spec.Attributes["has_location"] = PythonTruthValue.FromBoolean(
+            !builtIn && Path.IsPathRooted(definition.Origin)
+        );
+        spec.Attributes["parent"] = new PythonTextValue(GetPackageName(name));
+        spec.Attributes["submodule_search_locations"] = definition.IsPackage
+            ? new PythonListValue([
+                .. SearchLocations(definition)
+                    .Select(location => (PythonValue)new PythonTextValue(location)),
+            ])
+            : PythonNoneValue.Instance;
+        spec.Attributes["cached"] = PythonNoneValue.Instance;
+        return spec;
+    }
+
+    /// <summary>The directories a package's submodules live in, by its own origin.</summary>
+    private static List<string> SearchLocations(PythonModuleDefinition definition) =>
+        Path.IsPathRooted(definition.Origin)
+            ?
+            [
+                .. Path.GetDirectoryName(definition.Origin) is { Length: > 0 } directory
+                    ? [directory]
+                    : (IEnumerable<string>)[],
+            ]
+            : [];
 
     private string GetPackageName(string name)
     {

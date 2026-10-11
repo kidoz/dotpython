@@ -80,6 +80,18 @@ internal interface IUserObjectDispatcher
     /// </summary>
     IReadOnlyDictionary<string, PythonValue> Builtins { get; }
 
+    /// <summary>The mapping `sys.modules` exposes, kept in step with the loaded modules.</summary>
+    PythonDictionaryValue Modules { get; }
+
+    /// <summary>The `ModuleSpec` type `importlib.machinery` publishes.</summary>
+    PythonManagedTypeValue ModuleSpecType { get; }
+
+    /// <summary>`importlib.import_module`: the module a name resolves to, fromlist or not.</summary>
+    PythonModuleValue ImportModule(string name, string package, TextSpan span);
+
+    /// <summary>`importlib.reload`: runs a module's body again, on the module it already is.</summary>
+    PythonModuleValue ReloadModule(PythonModuleValue module, TextSpan span);
+
     /// <summary>
     /// Where a call came from: the file and line of the frame `level` steps up from the
     /// running one — level 1 is the caller of a builtin — with the module name and globals

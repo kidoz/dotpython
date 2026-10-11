@@ -37,8 +37,29 @@ internal sealed class PythonModuleCatalog
     /// <summary>Registered module search roots; the capability boundary for filesystem access.</summary>
     internal IReadOnlyList<string> SearchRoots { get; }
 
-    internal static PythonModuleCatalog Empty { get; } =
-        new(new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal));
+    internal static PythonModuleCatalog Empty { get; } = CreateDefault(null);
+
+    /// <summary>
+    /// The modules the runtime itself holds, whichever way a catalog was built: they are
+    /// part of every interpreter, not of what a search path found.
+    /// </summary>
+    private static PythonModuleCatalog CreateDefault(
+        IReadOnlyDictionary<string, SourceText>? sources
+    )
+    {
+        var modules = new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal);
+        if (sources is not null)
+        {
+            foreach (var (name, source) in sources)
+            {
+                ArgumentNullException.ThrowIfNull(source);
+                modules.Add(name, PythonModuleDefinition.FromSource(source));
+            }
+        }
+
+        AddMetadataModules(modules, new Dictionary<string, string>(StringComparer.Ordinal));
+        return new PythonModuleCatalog(modules);
+    }
 
     internal static PythonModuleCatalog Discover(ManagedModuleDiscoveryOptions options)
     {
@@ -58,15 +79,222 @@ internal sealed class PythonModuleCatalog
             return Empty;
         }
 
-        var modules = new Dictionary<string, PythonModuleDefinition>(StringComparer.Ordinal);
-        foreach (var (name, source) in sources)
+        return CreateDefault(sources);
+    }
+
+    private static PythonTextValue ResolveDistributionVersion(
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyDictionary<string, string> versions,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1 || arguments[0] is not PythonTextValue name)
         {
-            ArgumentNullException.ThrowIfNull(source);
-            modules.Add(name, PythonModuleDefinition.FromSource(source));
+            throw new PythonRuntimeException(
+                "DPY4028",
+                "importlib.metadata.version() requires one distribution-name string.",
+                span,
+                "TypeError"
+            );
         }
 
-        return new PythonModuleCatalog(modules);
+        var normalizedName = NormalizeDistributionName(name.Value);
+        if (!versions.TryGetValue(normalizedName, out var version))
+        {
+            throw new PythonRuntimeException(
+                "DPY4028",
+                $"No installed distribution metadata was found for '{name.Value}'.",
+                span,
+                "ModuleNotFoundError"
+            );
+        }
+
+        return new PythonTextValue(version);
     }
+
+    private static string NormalizeDistributionName(string name)
+    {
+        var builder = new StringBuilder(name.Length);
+        var separatorPending = false;
+        foreach (var character in name)
+        {
+            if (character is '-' or '_' or '.')
+            {
+                separatorPending = builder.Length != 0;
+                continue;
+            }
+
+            if (separatorPending)
+            {
+                builder.Append('-');
+                separatorPending = false;
+            }
+
+            builder.Append(char.ToLowerInvariant(character));
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AddModule(
+        Dictionary<string, PythonModuleDefinition> modules,
+        string name,
+        PythonModuleDefinition definition
+    ) => modules[name] = definition;
+
+    private static void AddMetadataModules(
+        Dictionary<string, PythonModuleDefinition> modules,
+        IReadOnlyDictionary<string, string> distributions
+    )
+    {
+        AddModule(
+            modules,
+            "importlib",
+            PythonModuleDefinition.Native(
+                "<dotpython importlib>",
+                isPackage: true,
+                InitializeImportlib
+            )
+        );
+
+        var versions = distributions;
+        AddModule(
+            modules,
+            "importlib.machinery",
+            PythonModuleDefinition.Native(
+                "<dotpython importlib.machinery>",
+                isPackage: false,
+                globals =>
+                {
+                    // The one public name this runtime's import system has: the
+                    // `ModuleSpec` every module reports.
+                    if (UserObjectProtocols.Dispatcher?.ModuleSpecType is { } specType)
+                    {
+                        globals.SetValue("ModuleSpec", specType);
+                        globals.SetValue(
+                            "__all__",
+                            new PythonListValue([new PythonTextValue("ModuleSpec")])
+                        );
+                    }
+                }
+            )
+        );
+        AddModule(
+            modules,
+            "importlib.metadata",
+            PythonModuleDefinition.Native(
+                "<dotpython importlib.metadata>",
+                isPackage: false,
+                globals =>
+                    globals.SetValue(
+                        "version",
+                        new PythonBuiltinFunctionValue(
+                            "version",
+                            (arguments, span) =>
+                                ResolveDistributionVersion(arguments, versions, span)
+                        )
+                    )
+            )
+        );
+    }
+
+    /// <summary>
+    /// `importlib`'s public names: the import done by hand, the reload that runs a
+    /// module's body again, the cache sweep the runtime has no caches to sweep for, and
+    /// the `sys` module CPython's own importlib keeps beside them.
+    /// </summary>
+    private static void InitializeImportlib(PythonGlobalNamespace globals)
+    {
+        var dispatcher = UserObjectProtocols.Dispatcher;
+        globals.SetValue(
+            "import_module",
+            new PythonBuiltinFunctionValue(
+                "import_module",
+                (arguments, span) => ImportModule(arguments, span)
+            ).WithSignature(["name", "package"], [null, PythonNoneValue.Instance])
+        );
+        globals.SetValue(
+            "reload",
+            new PythonBuiltinFunctionValue("reload", (arguments, span) => Reload(arguments, span))
+        );
+        globals.SetValue(
+            "invalidate_caches",
+            new PythonBuiltinFunctionValue("invalidate_caches", (_, _) => PythonNoneValue.Instance)
+        );
+        globals.SetValue(
+            "__all__",
+            new PythonListValue([
+                new PythonTextValue("__import__"),
+                new PythonTextValue("import_module"),
+                new PythonTextValue("invalidate_caches"),
+                new PythonTextValue("reload"),
+            ])
+        );
+        if (dispatcher is { } running)
+        {
+            globals.SetValue("sys", running.ImportModule("sys", string.Empty, default));
+            globals.SetValue("__import__", running.Builtins["__import__"]);
+        }
+    }
+
+    private static PythonModuleValue ImportModule(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments[0] is not PythonTextValue name)
+        {
+            // CPython's own `import_module` asks the name for `startswith`, so anything
+            // else fails the way that call would.
+            throw ManagedObjectProtocols.Fault(
+                "DPY4023",
+                $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}' object has no attribute 'startswith'",
+                span,
+                "AttributeError"
+            );
+        }
+        if (name.Value.Length == 0)
+        {
+            throw ManagedObjectProtocols.Fault("DPY4020", "Empty module name", span, "ValueError");
+        }
+        if (arguments.Count > 2)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "import_module() takes from 1 to 2 positional arguments but "
+                    + $"{arguments.Count} were given",
+                span,
+                "TypeError"
+            );
+        }
+
+        var package =
+            arguments.Count > 1 && arguments[1] is PythonTextValue packageText
+                ? packageText.Value
+                : string.Empty;
+        if (name.Value[0] == '.' && package.Length == 0)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "the 'package' argument is required to perform a relative import for '"
+                    + $"{name.Value}'",
+                span,
+                "TypeError"
+            );
+        }
+
+        return UserObjectProtocols.Dispatcher!.ImportModule(name.Value, package, span);
+    }
+
+    private static PythonModuleValue Reload(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
+        arguments.Count > 0 && arguments[0] is PythonModuleValue module
+            ? UserObjectProtocols.Dispatcher!.ReloadModule(module, span)
+            : throw ManagedObjectProtocols.Fault(
+                "DPY4003",
+                "reload() argument must be a module",
+                span,
+                "TypeError"
+            );
 
     private sealed class Builder
     {
@@ -132,12 +360,20 @@ internal sealed class PythonModuleCatalog
 
         internal Dictionary<string, PythonModuleDefinition> CreateModules()
         {
-            AddMetadataModules();
-            return _modules.ToDictionary(
+            var modules = _modules.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value.Definition,
                 StringComparer.Ordinal
             );
+            AddMetadataModules(
+                modules,
+                _distributions.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.Version,
+                    StringComparer.Ordinal
+                )
+            );
+            return modules;
         }
 
         internal void Discover()
@@ -151,36 +387,6 @@ internal sealed class PythonModuleCatalog
                     depth: 0
                 );
             }
-        }
-
-        private void AddMetadataModules()
-        {
-            AddInternalModule(
-                "importlib",
-                PythonModuleDefinition.Native("<dotpython importlib>", isPackage: true, _ => { })
-            );
-
-            var versions = _distributions.ToDictionary(
-                pair => pair.Key,
-                pair => pair.Value.Version,
-                StringComparer.Ordinal
-            );
-            AddInternalModule(
-                "importlib.metadata",
-                PythonModuleDefinition.Native(
-                    "<dotpython importlib.metadata>",
-                    isPackage: false,
-                    globals =>
-                        globals.SetValue(
-                            "version",
-                            new PythonBuiltinFunctionValue(
-                                "version",
-                                (arguments, span) =>
-                                    ResolveDistributionVersion(arguments, versions, span)
-                            )
-                        )
-                )
-            );
         }
 
         private void AddInternalModule(string name, PythonModuleDefinition definition)
@@ -298,30 +504,6 @@ internal sealed class PythonModuleCatalog
         private bool ShouldSkip(string name, int rootIndex) =>
             !IsDottedModuleName(name) || IsShadowed(name, rootIndex);
 
-        private static string NormalizeDistributionName(string name)
-        {
-            var builder = new StringBuilder(name.Length);
-            var separatorPending = false;
-            foreach (var character in name)
-            {
-                if (character is '-' or '_' or '.')
-                {
-                    separatorPending = builder.Length != 0;
-                    continue;
-                }
-
-                if (separatorPending)
-                {
-                    builder.Append('-');
-                    separatorPending = false;
-                }
-
-                builder.Append(char.ToLowerInvariant(character));
-            }
-
-            return builder.ToString();
-        }
-
         private void ReadDistributionMetadata(DirectoryInfo directory, int rootIndex)
         {
             var metadata = new FileInfo(Path.Combine(directory.FullName, "METADATA"));
@@ -362,36 +544,6 @@ internal sealed class PythonModuleCatalog
             }
 
             AddDistribution(name, version, metadata.FullName, rootIndex);
-        }
-
-        private static PythonTextValue ResolveDistributionVersion(
-            IReadOnlyList<PythonValue> arguments,
-            Dictionary<string, string> versions,
-            TextSpan span
-        )
-        {
-            if (arguments.Count != 1 || arguments[0] is not PythonTextValue name)
-            {
-                throw new PythonRuntimeException(
-                    "DPY4028",
-                    "importlib.metadata.version() requires one distribution-name string.",
-                    span,
-                    "TypeError"
-                );
-            }
-
-            var normalizedName = NormalizeDistributionName(name.Value);
-            if (!versions.TryGetValue(normalizedName, out var version))
-            {
-                throw new PythonRuntimeException(
-                    "DPY4028",
-                    $"No installed distribution metadata was found for '{name.Value}'.",
-                    span,
-                    "ModuleNotFoundError"
-                );
-            }
-
-            return new PythonTextValue(version);
         }
 
         private void ScanDirectory(
