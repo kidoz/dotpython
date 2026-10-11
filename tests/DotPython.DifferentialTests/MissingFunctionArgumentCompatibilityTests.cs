@@ -44,6 +44,26 @@ public sealed class MissingFunctionArgumentCompatibilityTests
     }
 
     [Fact]
+    public async Task PositionalOnlyDefaultsBindWithoutBeingPassed()
+    {
+        await CompatibilityOracle.AssertMatchesAsync(
+            """
+            def one(a=1, /): return a
+            def mixed(a, b=2, /, c=3, *args, d, e=4, **kw): return (a, b, c, args, d, e, kw)
+            def bare(a=1, /, b=2): return (a, b)
+            print(one(), one(9), bare(), bare(8), bare(8, 9))
+            print(mixed(1, d=0), mixed(1, 2, 3, 4, 5, d=6, e=7, z=8))
+            try: one(a=2)
+            except TypeError as error: print(error)
+            try: mixed(1)
+            except TypeError as error: print(error)
+            try: mixed(1, d=0, a=2)
+            except TypeError as error: print(error)
+            """
+        );
+    }
+
+    [Fact]
     public async Task MissingArgumentsUseLexicalFunctionNamesAcrossBindingAndNestedScopes()
     {
         await CompatibilityOracle.AssertMatchesAsync(

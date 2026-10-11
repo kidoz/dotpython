@@ -1216,7 +1216,16 @@ public static class PythonCompiler
             var positionalDefaultCount = 0;
             foreach (var parameter in parameters)
             {
-                if (parameter.Kind != PythonParameterKind.Positional || parameter.Default is null)
+                // Positional-only parameters default exactly as positional ones do, and
+                // their defaults sit in front of them in the tuple, source order.
+                if (
+                    parameter.Kind
+                        is not (
+                            PythonParameterKind.Positional
+                            or PythonParameterKind.PositionalOnly
+                        )
+                    || parameter.Default is null
+                )
                 {
                     continue;
                 }
