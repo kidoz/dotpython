@@ -370,6 +370,8 @@ internal static class ManagedObjectProtocols
                 return descriptor.GetAttribute(name, span);
             case PythonOSErrorDescriptorValue descriptor:
                 return descriptor.GetAttribute(name, span);
+            case PythonCodeValue code:
+                return code.GetAttribute(name, span);
             case PythonProtocolFunctionValue { IsTypeMethodDescriptor: true } descriptor:
                 return PythonTypeMethodDescriptors.GetAttribute(descriptor, name, span);
             case PythonPropertyValue property when name == "__isabstractmethod__":
@@ -4174,6 +4176,8 @@ internal static class ManagedObjectProtocols
             PythonMappingProxyValue proxy => GetPythonHash(proxy.Mapping, span),
             PythonTypeUnionValue union => GetTypeUnionHash(union),
             PythonGenericAliasValue alias => GetGenericAliasHash(alias, span),
+            // A code object hashes by what it compiles to, which is what equality reads.
+            PythonCodeValue code => code.GetHashCode(),
             PythonListValue
             or PythonDictionaryValue
             or PythonSetValue
@@ -4296,6 +4300,7 @@ internal static class ManagedObjectProtocols
             PythonTupleValue => "tuple",
             PythonDictionaryValue => "dict",
             PythonMappingProxyValue => "mappingproxy",
+            PythonCodeValue => "code",
             PythonSliceValue => "slice",
             PythonSetValue set => set.IsFrozen ? "frozenset" : "set",
             PythonDictionaryViewValue view => view.DisplayKind,
@@ -5197,6 +5202,9 @@ internal static class ManagedObjectProtocols
             ),
             (PythonDictionaryValue leftDictionary, PythonDictionaryValue rightDictionary) =>
                 AreDictionariesEqual(leftDictionary, rightDictionary),
+            // A code object compares by what it compiles to, not by identity — the same
+            // rule `compile` documents and CPython's own code objects follow.
+            (PythonCodeValue leftCode, PythonCodeValue rightCode) => leftCode.Equals(rightCode),
             // Union order is not part of identity: `int | str` equals `str | int`.
             (PythonTypeUnionValue leftUnion, PythonTypeUnionValue rightUnion) =>
                 leftUnion.SetEquals(rightUnion),

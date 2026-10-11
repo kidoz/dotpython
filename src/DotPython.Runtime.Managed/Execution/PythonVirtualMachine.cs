@@ -165,6 +165,27 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             ["next"] = new PythonBuiltinFunctionValue("next", Next),
             ["anext"] = new PythonBuiltinFunctionValue("anext", ANext),
             ["aiter"] = new PythonBuiltinFunctionValue("aiter", AIter),
+            ["compile"] = new PythonBuiltinFunctionValue("compile", CompileBuiltin).WithSignature(
+                ["source", "filename", "mode", "flags", "dont_inherit", "optimize"],
+                [
+                    null,
+                    null,
+                    null,
+                    PythonWholeNumberValue.Create(BigInteger.Zero),
+                    PythonTruthValue.FromBoolean(false),
+                    PythonWholeNumberValue.Create(-1),
+                ]
+            ),
+            ["eval"] = new PythonBuiltinFunctionValue("eval", EvalBuiltin).WithSignature(
+                ["source", "globals", "locals"],
+                [null, PythonNoneValue.Instance, PythonNoneValue.Instance],
+                positionalOnly: 1
+            ),
+            ["exec"] = new PythonBuiltinFunctionValue(
+                "exec",
+                (arguments, span) => ExecBuiltin(arguments, [], [], span),
+                (arguments, names, values, span) => ExecBuiltin(arguments, names, values, span)
+            ),
             // `breakpoint` and `__import__` hand their call straight on — the first to
             // `sys.breakpointhook`, the second to the import system — so both keep the
             // keywords they were given.
@@ -8634,6 +8655,9 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             || right is PythonMethodDescriptorValue
             || left is PythonMemberDescriptorValue
             || right is PythonMemberDescriptorValue
+            // A code object compares by what it compiles to.
+            || left is PythonCodeValue
+            || right is PythonCodeValue
         )
         {
             return ManagedObjectProtocols.AreEqual(left, right);

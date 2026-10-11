@@ -29,6 +29,32 @@ public static class PythonCompiler
         return CompileCore(module, codeName, enableReturnLocal: true, enableCallLocal: false);
     }
 
+    /// <summary>
+    /// Compiles one expression into the code object `eval` runs: the expression's value
+    /// is what the code returns, which is the shape `compile(source, filename, 'eval')`
+    /// produces. The module supplies the scope the expression's names bind in.
+    /// </summary>
+    public static PythonCompilationResult CompileExpression(
+        PythonModule module,
+        PythonExpression expression,
+        string codeName = "<module>"
+    )
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(expression);
+        ArgumentException.ThrowIfNullOrWhiteSpace(codeName);
+
+        var binding = PythonSymbolBinder.Bind(module);
+        var diagnostics = new List<Diagnostic>(binding.Diagnostics);
+        return new Compiler(
+            codeName,
+            binding.ModuleScope,
+            diagnostics,
+            enableReturnLocal: true,
+            enableCallLocal: true
+        ).CompileEvaluatedExpression(expression);
+    }
+
     private static PythonCompilationResult CompileCore(
         PythonModule module,
         string codeName,
@@ -80,6 +106,13 @@ public static class PythonCompiler
             _diagnostics = diagnostics;
             _enableReturnLocal = enableReturnLocal;
             _enableCallLocal = enableCallLocal;
+        }
+
+        internal PythonCompilationResult CompileEvaluatedExpression(PythonExpression expression)
+        {
+            CompileExpression(expression);
+            Emit(PythonOpCode.ReturnValue, 0, expression.Span);
+            return new PythonCompilationResult(CreateCodeObject(null), _diagnostics);
         }
 
         internal PythonCompilationResult Compile(PythonModule module)
