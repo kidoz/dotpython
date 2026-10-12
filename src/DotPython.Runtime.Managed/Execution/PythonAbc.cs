@@ -109,31 +109,36 @@ internal static class PythonAbc
     {
         if (_abcClass is { } built)
             return built;
-        var members = new PythonDictionaryValue([]);
-        void Member(string name, PythonValue value) =>
-            ManagedObjectProtocols.SetItem(members, new PythonTextValue(name), value);
-        Member("__module__", new PythonTextValue("abc"));
-        Member(
-            "__doc__",
-            new PythonTextValue(
-                "Helper class that provides a standard way to create an ABC using\n"
-                    + "inheritance.\n"
-            )
-        );
-        Member("__slots__", new PythonTupleValue([]));
-        _abcClass = (PythonManagedTypeValue)
-            UserObjectProtocols.Dispatcher!.CallType(
-                Meta,
-                [
-                    new PythonTextValue("ABC"),
-                    new PythonTupleValue([PythonBuiltinFunctions.Object]),
-                    members,
-                ],
-                [],
-                [],
-                default
+        // The class is the runtime's own, built where a program first asks for it, so the
+        // program's budget does not pay for the build.
+        UserObjectProtocols.Setup(() =>
+        {
+            var members = new PythonDictionaryValue([]);
+            void Member(string name, PythonValue value) =>
+                ManagedObjectProtocols.SetItem(members, new PythonTextValue(name), value);
+            Member("__module__", new PythonTextValue("abc"));
+            Member(
+                "__doc__",
+                new PythonTextValue(
+                    "Helper class that provides a standard way to create an ABC using\n"
+                        + "inheritance.\n"
+                )
             );
-        return _abcClass;
+            Member("__slots__", new PythonTupleValue([]));
+            _abcClass = (PythonManagedTypeValue)
+                UserObjectProtocols.Dispatcher!.CallType(
+                    Meta,
+                    [
+                        new PythonTextValue("ABC"),
+                        new PythonTupleValue([PythonBuiltinFunctions.Object]),
+                        members,
+                    ],
+                    [],
+                    [],
+                    default
+                );
+        });
+        return _abcClass!;
     }
 
     /// <summary>`abc.abstractmethod(funcobj)`: the same object, marked abstract.</summary>

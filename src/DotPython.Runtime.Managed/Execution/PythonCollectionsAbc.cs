@@ -161,12 +161,16 @@ internal static class PythonCollectionsAbc
     /// <summary>
     /// The classes are built once, when the type is first touched, so that a class built on
     /// one of them — `collections.UserDict` on `MutableMapping` — finds it whether or not the
-    /// `collections.abc` module has been imported yet.
+    /// `collections.abc` module has been imported yet. The first touch can happen inside a
+    /// running program, so the build is setup work: the program's budget does not bound it.
     /// </summary>
     static PythonCollectionsAbc()
     {
-        foreach (var definition in Definitions)
-            Build(definition);
+        UserObjectProtocols.Setup(() =>
+        {
+            foreach (var definition in Definitions)
+                Build(definition);
+        });
     }
 
     /// <summary>The classes registered with each base class, per `register`.</summary>

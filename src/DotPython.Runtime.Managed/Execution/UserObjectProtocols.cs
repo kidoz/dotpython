@@ -167,6 +167,38 @@ internal static class UserObjectProtocols
         set => _dispatcher = value;
     }
 
+    [ThreadStatic]
+    private static int _setupDepth;
+
+    /// <summary>
+    /// Whether the thread is inside <see cref="Setup"/>, building a table the runtime
+    /// publishes rather than running the program.
+    /// </summary>
+    internal static bool SetupActive => _setupDepth > 0;
+
+    /// <summary>
+    /// Runs one-time construction of the runtime's own tables — a type's classes, a
+    /// module's globals — with the running program's work accounting suspended: the work
+    /// belongs to no source line, so charging it to the VM that happens to be on this
+    /// thread spends a budget the program never asked it to spend, and letting that budget
+    /// or the program's cancellation stop the construction half way leaves a table a type
+    /// initializer then caches as failed for the rest of the process. With a
+    /// two-hundred-instruction budget, `import collections.abc` used to kill the
+    /// interpreter outright. Every lazy table the runtime publishes is built through this.
+    /// </summary>
+    internal static void Setup(Action build)
+    {
+        _setupDepth++;
+        try
+        {
+            build();
+        }
+        finally
+        {
+            _setupDepth--;
+        }
+    }
+
     private static readonly Dictionary<
         PythonOpCode,
         (string Symbol, string Forward, string Reflected, string InPlace)

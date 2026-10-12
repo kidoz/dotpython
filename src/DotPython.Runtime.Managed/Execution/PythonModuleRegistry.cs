@@ -299,8 +299,14 @@ internal sealed class PythonModuleRegistry
         var module = new PythonModuleValue(name, globals);
         if (definition.Initialize is not null)
         {
-            definition.Initialize(globals);
-            TypeHierarchy.RegisterModuleTypes(globals);
+            // A native module's names, the type tables they hand out and the hierarchy
+            // registration that follows are the runtime's own setup, so the program's
+            // budget does not pay for them.
+            UserObjectProtocols.Setup(() =>
+            {
+                definition.Initialize(globals);
+                TypeHierarchy.RegisterModuleTypes(globals);
+            });
             var initialized = new LoadedPythonModule(module, parent) { IsInitialized = true };
             _loaded.Add(name, initialized);
             SetModuleEntry(name, module);

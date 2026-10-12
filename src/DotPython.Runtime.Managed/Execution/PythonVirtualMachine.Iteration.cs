@@ -77,6 +77,13 @@ internal sealed partial class PythonVirtualMachine
 
     private void CheckProtocolWork(TextSpan span)
     {
+        // The runtime's own setup work is not the program's: it is never charged, and the
+        // program's budget and cancellation cannot stop it (see `UserObjectProtocols.Setup`).
+        if (UserObjectProtocols.SetupActive)
+        {
+            return;
+        }
+
         if (_deferredControlFlowCount == 0)
         {
             _cancellationToken.ThrowIfCancellationRequested();
