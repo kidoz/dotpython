@@ -574,6 +574,16 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonCalendarModule.Initialize
         );
+        modules["fnmatch"] = PythonModuleDefinition.Native(
+            "<dotpython fnmatch>",
+            isPackage: false,
+            PythonFnmatchModule.Initialize
+        );
+        modules["glob"] = PythonModuleDefinition.Native(
+            "<dotpython glob>",
+            isPackage: false,
+            PythonGlobModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
