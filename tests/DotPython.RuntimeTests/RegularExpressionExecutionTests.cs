@@ -456,7 +456,7 @@ public sealed class RegularExpressionExecutionTests
                     print(label, thunk())
                 except Exception as error:
                     print(label, type(error).__name__, error)
-            report("bytes-pattern", lambda: re.compile(b"a"))
+            report("locale-str", lambda: re.compile("a", re.L))
             report("bytes-string", lambda: re.match("a", b"a"))
             report("bytes-compiled", lambda: re.match(re.compile(b"a"), "a"))
             report("debug", lambda: repr(re.compile("a", re.DEBUG)))
@@ -465,9 +465,9 @@ public sealed class RegularExpressionExecutionTests
         );
         Assert.Equal(
             Lines(
-                "bytes-pattern TypeError first argument must be string or compiled pattern",
+                "locale-str ValueError cannot use LOCALE flag with a str pattern",
                 "bytes-string TypeError cannot use a string pattern on a bytes-like object",
-                "bytes-compiled TypeError first argument must be string or compiled pattern",
+                "bytes-compiled TypeError cannot use a bytes pattern on a string-like object",
                 "debug re.compile('a', re.DEBUG)",
                 "debug-flag 160"
             ),
@@ -599,11 +599,13 @@ public sealed class RegularExpressionExecutionTests
     }
 
     /// <summary>
-    /// The recorded gaps: byte-string patterns (and therefore byte subjects and
-    /// replacements) are outside the slice, while `escape(bytes)` works.
+    /// The bytes pattern surface: Latin-1 patterns and subjects with ASCII-only classes
+    /// and case folding, byte groups, `findall`/`finditer`/`split`/`sub`/`subn`, the
+    /// pattern and match attributes, `expand`, the module/compiled mixing refusals, the
+    /// inline-flag error, scanner subjects, and `Pattern[bytes]` aliases.
     /// </summary>
     [Fact]
-    public void TheRuntimePinsItsRemainingRegularExpressionGaps()
+    public void TheBytesPatternSurfaceMatchesPython()
     {
         var output = Run(
             """"
@@ -611,22 +613,150 @@ public sealed class RegularExpressionExecutionTests
             def show(label, fn):
                 try: print(label, "ok", repr(fn()))
                 except Exception as e: print(label, type(e).__name__, e)
-            show("bytes-pattern", lambda: re.compile(b"a"))
-            show("bytes-match", lambda: re.match(b"a", b"a"))
-            show("bytes-sub", lambda: re.sub(b"a", b"x", b"aa"))
-            show("bytes-escape", lambda: re.escape(b"a.b"))
-            show("bytes-constant", lambda: re.compile(b"a").flags if False else "skip")
+            print("escape-bytes", re.escape(b"a.b c*[](){}"), re.escape(b"\xff\x00\x7f"))
+            p = re.compile(b"a(b)?c", re.I)
+            print("bytes-match", p.match(b"AC").groups(), p.search(b"xxabc").group(0))
+            print("bytes-sub", p.sub(b"x", b"abc-ac"), p.sub(b"x", b"abc-ac", count=1))
+            print("bytes-findall", re.findall(b"a+", b"aa b aaa"))
+            print("bytes-split", re.split(b",", b"a,b,,c"))
+            print("bytes-flags", p.flags, p.pattern)
+            print("bytes-repr", repr(p), repr(p.match(b"abc")))
+            print("bytes-string", p.match(b"abc").string, type(p.match(b"abc").string).__name__)
+            show("bytes-int", lambda: p.match(5))
+            show("bytes-strsub", lambda: p.match("abc"))
+            show("str-bytessub", lambda: re.compile("a").match(b"a"))
+            show("bytes-uflag", lambda: re.compile(b"a", re.U))
+            show("bytes-lflag", lambda: re.compile(b"a", re.L).flags)
+            show("bytes-default-flags", lambda: re.compile(b"a").flags)
+            show("bytes-af", lambda: re.compile(b"a", re.A).flags)
+            print("bytes-bytearray", re.compile(b"a").match(bytearray(b"a")).group(0))
+            print("bytes-groups", re.compile(b"(a)(?P<n>b)").match(b"ab").groups(), re.compile(b"(a)(?P<n>b)").match(b"ab").groupdict())
+            print("bytes-expand", re.compile(b"(a)").match(b"a").expand(b"\\1x"))
+            show("expand-str", lambda: re.compile(b"(a)").match(b"a").expand("\\1x"))
+            show("expand-bytes-strpat", lambda: re.compile("(a)").match("a").expand(b"\\1x"))
+            show("sub-str-repl", lambda: re.compile(b"a").sub("x", b"a"))
+            show("sub-bytes-on-str", lambda: re.compile("a").sub(b"x", "a"))
+            def f(m): return "x"
+            def g(m): return b"x"
+            show("sub-fn-str", lambda: re.compile(b"a").sub(f, b"a"))
+            show("sub-fn-bytes", lambda: re.compile("a").sub(g, "a"))
+            print("bytes-finditer", [m.group(0) for m in re.finditer(b"a+", b"aa b aaa")])
+            print("bytes-match-nongroup", re.compile(b"x*").findall(b"abc"))
+            print("bytes-nonascii", re.compile(b"\xff").match(b"\xff"), re.compile(b"[\x80-\xff]+").match(b"\x80\xff"))
+            print("bytes-ci", re.compile(b"\xe9", re.I).match(b"\xc9"))
+            print("bytes-word", re.compile(b"\\w+").match(b"\xe9"), re.compile(b"\\w+", re.A).match(b"\xe9"))
+            print("scanner", re.compile(b"a+").scanner(b"aa b").match().group(0))
+            print("class-sub", re.Pattern[bytes], re.Match[bytes])
+            show("bytes-pattern-attr", lambda: re.compile(b"a").scanner("a"))
+
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            print("cache-distinct", re.compile("a") is re.compile("a"), re.compile(b"a") is re.compile(b"a"), re.compile("a") is re.compile(b"a"))
+            p = re.compile(b"(?P<x>a+)(b)?")
+            m = p.match(b"aa")
+            print("m", m.group(0), m.groups(), m.groups(b"-"), m.groupdict(), m.span(), m.regs)
+            print("idx", m["x"], m[1], m.lastindex, m.lastgroup, m.pos, m.endpos)
+            show("missing", lambda: m.group(3))
+            print("subn", p.subn(b"<\\g<x>>", b"aab b aa"))
+            print("subn-fn", p.subn(lambda mm: b"[" + mm.group(0) + b"]", b"aab b aa"))
+            print("split-groups", p.split(b"aab b aa"))
+            print("split-max", p.split(b"aab b aa", 1))
+            print("finditer", [(mm.span(), mm.group(0)) for mm in p.finditer(b"aab b aa")])
+            print("pos", p.match(b"aa", 1), p.search(b"aa", 1), p.fullmatch(b"aa", 0, 2))
+            print("module", re.match(b"a", b"a").group(0), re.fullmatch(b"a+", b"aaa").group(0), re.search(b"b", b"ab").span())
+            show("mix-compiled", lambda: re.match(re.compile(b"a"), "a"))
+            show("mix-compiled2", lambda: re.match(re.compile("a"), b"a"))
+            print("empty-bytes", re.findall(b"", b"ab"))
+            print("classes", re.findall(b"[^a]+", b"aa\xff\x80cc"))
+            print("nongreedy", re.compile(b"a+?").match(b"aaa").group(0))
+            print("anchors", re.findall(b"^.", b"a\nb", re.M), re.findall(b".", b"\n"))
+            print("escaped-meta", re.match(b"\\.", b"."), re.match(b"\\d+", b"123").group(0))
+            print("bytes-escape-backslash", re.escape(b"\\a"))
+            print("str-escape-backslash", re.escape("\\a"))
+            print("scanner", end=" ")
+            s = re.compile(b"a").scanner(b"baa")
+            show("m0", lambda: s.match())
+            show("s1", lambda: s.search())
+            show("m2", lambda: s.search())
+            show("s3", lambda: s.search())
+            print("expand-none", re.compile(b"(a)?b").match(b"b").expand(b"<\\1>"))
+            print("group-none", re.compile(b"(a)?b").match(b"b").group(1), re.compile(b"(a)?b").match(b"b").groups())
+            show("bytearray-repl", lambda: re.compile(b"a").sub(bytearray(b"x"), b"a"))
+            show("memview", lambda: re.compile(b"a").match(memoryview(b"a")))
+            print("flags", re.compile(b"(?i)a").flags, re.compile(b"(?a)a").flags, re.compile(b"(?u)a") if False else "skip")
+            show("flags-u-inline", lambda: re.compile(b"(?u)a"))
+            print("repr", repr(re.compile(b"(?i)a(b)?")), repr(re.compile(b"a").match(b"a")))
             """"
         );
 
         Assert.Equal(
             string.Join(
                 Environment.NewLine,
-                "bytes-pattern TypeError first argument must be string or compiled pattern",
-                "bytes-match TypeError first argument must be string or compiled pattern",
-                "bytes-sub TypeError first argument must be string or compiled pattern",
-                "bytes-escape ok b'a\\\\.b'",
-                "bytes-constant ok 'skip'",
+                "escape-bytes b'a\\\\.b\\\\ c\\\\*\\\\[\\\\]\\\\(\\\\)\\\\{\\\\}' b'\\xff\\x00\\x7f'",
+                "bytes-match (None,) b'abc'",
+                "bytes-sub b'x-x' b'x-ac'",
+                "bytes-findall [b'aa', b'aaa']",
+                "bytes-split [b'a', b'b', b'', b'c']",
+                "bytes-flags 2 b'a(b)?c'",
+                "bytes-repr re.compile(b'a(b)?c', re.IGNORECASE) <re.Match object; span=(0, 3), match=b'abc'>",
+                "bytes-string b'abc' bytes",
+                "bytes-int TypeError expected string or bytes-like object, got 'int'",
+                "bytes-strsub TypeError cannot use a bytes pattern on a string-like object",
+                "str-bytessub TypeError cannot use a string pattern on a bytes-like object",
+                "bytes-uflag ValueError cannot use UNICODE flag with a bytes pattern",
+                "bytes-lflag ok 4",
+                "bytes-default-flags ok 0",
+                "bytes-af ok 256",
+                "bytes-bytearray b'a'",
+                "bytes-groups (b'a', b'b') {'n': b'b'}",
+                "bytes-expand b'ax'",
+                "expand-str TypeError sequence item 1: expected str instance, bytes found",
+                "expand-bytes-strpat TypeError sequence item 1: expected a bytes-like object, str found",
+                "sub-str-repl TypeError sequence item 0: expected a bytes-like object, str found",
+                "sub-bytes-on-str TypeError sequence item 0: expected str instance, bytes found",
+                "sub-fn-str TypeError sequence item 0: expected a bytes-like object, str found",
+                "sub-fn-bytes TypeError sequence item 0: expected str instance, bytes found",
+                "bytes-finditer [b'aa', b'aaa']",
+                "bytes-match-nongroup [b'', b'', b'', b'']",
+                "bytes-nonascii <re.Match object; span=(0, 1), match=b'\\xff'> <re.Match object; span=(0, 2), match=b'\\x80\\xff'>",
+                "bytes-ci None",
+                "bytes-word None None",
+                "scanner b'aa'",
+                "class-sub re.Pattern[bytes] re.Match[bytes]",
+                "bytes-pattern-attr TypeError cannot use a bytes pattern on a string-like object",
+                "cache-distinct True True False",
+                "m b'aa' (b'aa', None) (b'aa', b'-') {'x': b'aa'} (0, 2) ((0, 2), (0, 2), (-1, -1))",
+                "idx b'aa' b'aa' 1 x 0 2",
+                "missing IndexError no such group",
+                "subn (b'<aa> b <aa>', 2)",
+                "subn-fn (b'[aab] b [aa]', 2)",
+                "split-groups [b'', b'aa', b'b', b' b ', b'aa', None, b'']",
+                "split-max [b'', b'aa', b'b', b' b aa']",
+                "finditer [((0, 3), b'aab'), ((6, 8), b'aa')]",
+                "pos <re.Match object; span=(1, 2), match=b'a'> <re.Match object; span=(1, 2), match=b'a'> <re.Match object; span=(0, 2), match=b'aa'>",
+                "module b'a' b'aaa' (1, 2)",
+                "mix-compiled TypeError cannot use a bytes pattern on a string-like object",
+                "mix-compiled2 TypeError cannot use a string pattern on a bytes-like object",
+                "empty-bytes [b'', b'', b'']",
+                "classes [b'\\xff\\x80cc']",
+                "nongreedy b'a'",
+                "anchors [b'a', b'b'] []",
+                "escaped-meta <re.Match object; span=(0, 1), match=b'.'> b'123'",
+                "bytes-escape-backslash b'\\\\\\\\a'",
+                "str-escape-backslash \\\\a",
+                "scanner m0 ok None",
+                "s1 ok None",
+                "m2 ok None",
+                "s3 ok None",
+                "expand-none b'<>'",
+                "group-none None (None,)",
+                "bytearray-repl ok b'x'",
+                "memview ok <re.Match object; span=(0, 1), match=b'a'>",
+                "flags 2 256 skip",
+                "flags-u-inline PatternError bad inline flags: cannot use 'u' flag with a bytes pattern at position 3",
+                "repr re.compile(b'(?i)a(b)?', re.IGNORECASE) <re.Match object; span=(0, 1), match=b'a'>",
                 ""
             ),
             output

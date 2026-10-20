@@ -101,7 +101,7 @@ internal static class PythonRegexModule
     private static readonly PythonManagedTypeValue PatternType = CreatePatternType();
     private static readonly PythonManagedTypeValue ErrorType = CreateErrorType();
     private static readonly Dictionary<
-        (string Pattern, long Flags),
+        (string Pattern, long Flags, bool Bytes),
         PythonManagedObjectValue
     > Cache = [];
     private static PythonManagedTypeValue? _flagType;
@@ -342,58 +342,185 @@ internal static class PythonRegexModule
             }
             return instance;
         }
-        if (pattern is not PythonTextValue text)
+        string patternText;
+        bool patternBytes;
+        PythonValue source;
+        switch (pattern)
         {
-            throw Fault("first argument must be string or compiled pattern", span, "TypeError");
+            case PythonTextValue text:
+                patternText = text.Value;
+                patternBytes = false;
+                source = text;
+                break;
+            case PythonByteSequenceValue bytes:
+                patternText = Latin1Text(bytes.Value);
+                patternBytes = true;
+                source = bytes;
+                break;
+            default:
+                throw Fault("first argument must be string or compiled pattern", span, "TypeError");
         }
-        return CompileCached(text.Value, Flags(flags, span), span);
+        return CompileCached(patternText, Flags(flags, span), patternBytes, source, span);
     }
 
-    private static PythonManagedObjectValue CompileCached(string text, long flags, TextSpan span)
+    private static PythonManagedObjectValue CompileCached(
+        string text,
+        long flags,
+        bool bytes,
+        PythonValue source,
+        TextSpan span
+    )
     {
-        if (Cache.TryGetValue((text, flags), out var cached))
+        if (Cache.TryGetValue((text, flags, bytes), out var cached))
         {
             return cached;
         }
-        var compiled = CompilePatternText(text, flags, span);
+        var compiled = CompilePatternText(text, flags, bytes, source, span);
         if (Cache.Count >= MaxCache)
         {
             Cache.Clear();
         }
-        Cache[(text, flags)] = compiled;
+        Cache[(text, flags, bytes)] = compiled;
         return compiled;
     }
 
     private static PythonManagedObjectValue CompilePatternText(
         string text,
         long flags,
+        bool bytes,
+        PythonValue source,
         TextSpan span
     )
     {
-        if ((flags & FlagLocale) != 0)
+        if (!bytes && (flags & FlagLocale) != 0)
         {
             throw Fault("cannot use LOCALE flag with a str pattern", span, "ValueError");
+        }
+        if (bytes && (flags & FlagUnicode) != 0)
+        {
+            throw Fault("cannot use UNICODE flag with a bytes pattern", span, "ValueError");
         }
         if ((flags & FlagAscii) != 0 && (flags & FlagUnicode) != 0)
         {
             throw Fault("ASCII and UNICODE flags are incompatible", span, "ValueError");
         }
+        var (inlineAscii, inlineUnicodePosition) = InlineFlagScan(text);
+        if (bytes && inlineUnicodePosition >= 0)
+        {
+            throw ErrorFault(
+                "bad inline flags: cannot use 'u' flag with a bytes pattern",
+                text,
+                inlineUnicodePosition,
+                span
+            );
+        }
         PythonRegex.Program program;
         try
         {
-            program = PythonRegex.Compile(text, (PythonRegexFlags)(flags & int.MaxValue));
+            program = PythonRegex.Compile(
+                text,
+                (PythonRegexFlags)((flags & int.MaxValue) | (bytes ? (long)FlagAscii : 0L))
+            );
         }
         catch (PythonRegexParseError error)
         {
             throw ParseFault(error, text);
         }
         // The flags a pattern reports are the ones it was read with: a `(?i)` written
-        // into the pattern is part of what the compiled pattern says it carries.
+        // into the pattern is part of what the compiled pattern says it carries. A
+        // bytes pattern adds no implicit UNICODE, and the ASCII semantics the engine
+        // needs are not reported unless the caller asked for them.
+        var reported = bytes
+            ? ((long)program.Flags & ~(long)FlagAscii)
+                | (flags & FlagAscii)
+                | (inlineAscii ? (long)FlagAscii : 0L)
+            : ReportedFlags((long)program.Flags);
         return new PythonManagedObjectValue(
             PatternType,
-            new PatternState(program, text, ReportedFlags((long)program.Flags))
+            new PatternState(program, text, reported, bytes, source)
         );
     }
+
+    /// <summary>
+    /// The inline flags a pattern writes, read the way the parser reads them: the run
+    /// after "(?" up to its ":" or ")". Reports whether `a` turns ASCII on, and where a
+    /// `u` would be refused for a bytes pattern.
+    /// </summary>
+    private static (bool Ascii, int UnicodePosition) InlineFlagScan(string text)
+    {
+        var ascii = false;
+        var unicodePosition = -1;
+        for (var index = 0; index + 2 < text.Length; index++)
+        {
+            if (text[index] != '(' || text[index + 1] != '?')
+            {
+                continue;
+            }
+            var position = index + 2;
+            var negated = false;
+            while (position < text.Length && text[position] is not (':' or ')'))
+            {
+                var character = text[position];
+                if (character == '-')
+                {
+                    negated = true;
+                }
+                else if (character == 'a' && !negated)
+                {
+                    ascii = true;
+                }
+                else if (character == 'u' && !negated)
+                {
+                    unicodePosition = position + 1;
+                }
+                position++;
+            }
+        }
+        return (ascii, unicodePosition);
+    }
+
+    private static string Latin1Text(byte[] bytes) => new([.. bytes.Select(value => (char)value)]);
+
+    private static byte[] Latin1Bytes(string text) =>
+        [.. text.Select(character => (byte)character)];
+
+    /// <summary>
+    /// The subject a pattern accepts, decoded Latin-1 for bytes patterns. CPython's bytes
+    /// expressions read every byte as one character of its own, which is exactly that
+    /// decoding, and the pattern is compiled in ASCII mode so classes and case folding
+    /// stay byte-wise.
+    /// </summary>
+    private static string SubjectText(
+        PythonManagedObjectValue pattern,
+        PythonValue value,
+        TextSpan span
+    )
+    {
+        if (!StateOf(pattern).Bytes)
+        {
+            return RequireText(value, span);
+        }
+        return value switch
+        {
+            PythonByteSequenceValue bytes => Latin1Text(bytes.Value),
+            PythonByteArrayValue array => Latin1Text(array.Value),
+            PythonMemoryViewValue view => Latin1Text(view.Bytes),
+            PythonTextValue => throw Fault(
+                "cannot use a bytes pattern on a string-like object",
+                span,
+                "TypeError"
+            ),
+            _ => throw Fault(
+                $"expected string or bytes-like object, got '{ManagedObjectProtocols.GetTypeName(value)}'",
+                span,
+                "TypeError"
+            ),
+        };
+    }
+
+    /// <summary>A piece of text in the type the pattern works in.</summary>
+    private static PythonValue PatternText(PatternState pattern, string text) =>
+        pattern.Bytes ? new PythonByteSequenceValue(Latin1Bytes(text)) : new PythonTextValue(text);
 
     /// <summary>What `Pattern.flags` reports: the flags given, and the implicit UNICODE.</summary>
     private static long ReportedFlags(long flags) =>
@@ -416,7 +543,7 @@ internal static class PythonRegexModule
     )
     {
         var pattern = CompilePattern(arguments[0], arguments.Count > 2 ? arguments[2] : null, span);
-        var text = RequireText(arguments[1], span);
+        var text = SubjectText(pattern, arguments[1], span);
         return Find(pattern, text, 0, null, anchored, whole, span) is { } match
             ? match
             : PythonNoneValue.Instance;
@@ -425,7 +552,7 @@ internal static class PythonRegexModule
     private static PythonValue FindAll(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         var pattern = CompilePattern(arguments[0], arguments.Count > 2 ? arguments[2] : null, span);
-        var text = RequireText(arguments[1], span);
+        var text = SubjectText(pattern, arguments[1], span);
         var found = new List<PythonValue>();
         foreach (var match in Walk(pattern, text, 0, null, span))
         {
@@ -437,7 +564,7 @@ internal static class PythonRegexModule
     private static PythonValue FindIter(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         var pattern = CompilePattern(arguments[0], arguments.Count > 2 ? arguments[2] : null, span);
-        var text = RequireText(arguments[1], span);
+        var text = SubjectText(pattern, arguments[1], span);
         var matches = Walk(pattern, text, 0, null, span).Cast<PythonValue>().ToList();
         return new PythonIteratorValue(new PythonListValue(matches), matches.Count);
     }
@@ -474,7 +601,7 @@ internal static class PythonRegexModule
         bool countResults
     )
     {
-        var text = RequireText(textValue, span);
+        var text = SubjectText(pattern, textValue, span);
         var count = Index(countValue, span);
         var builder = new StringBuilder(text.Length);
         long done = 0;
@@ -495,9 +622,8 @@ internal static class PythonRegexModule
             done++;
         }
         builder.Append(text, last, text.Length - last);
-        return countResults
-            ? new PythonTupleValue([new PythonTextValue(builder.ToString()), Integer(done)])
-            : new PythonTextValue(builder.ToString());
+        var written = PatternText(StateOf(pattern), builder.ToString());
+        return countResults ? new PythonTupleValue([written, Integer(done)]) : written;
     }
 
     private static PythonValue Split(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
@@ -515,7 +641,7 @@ internal static class PythonRegexModule
         TextSpan span
     )
     {
-        var text = RequireText(textValue, span);
+        var text = SubjectText(pattern, textValue, span);
         var maxsplit = Index(maxsplitValue, span);
         var pieces = new List<PythonValue>();
         long done = 0;
@@ -529,7 +655,7 @@ internal static class PythonRegexModule
                 break;
             }
             var matched = MatchOf(match);
-            pieces.Add(new PythonTextValue(text[last..matched.Result.Start]));
+            pieces.Add(PatternText(StateOf(pattern), text[last..matched.Result.Start]));
             for (var group = 1; group <= matched.Program.GroupCount; group++)
             {
                 pieces.Add(GroupText(matched, group));
@@ -538,7 +664,7 @@ internal static class PythonRegexModule
             position = matched.Result.End == matched.Result.Start ? last + 1 : last;
             done++;
         }
-        pieces.Add(new PythonTextValue(text[last..]));
+        pieces.Add(PatternText(StateOf(pattern), text[last..]));
         return new PythonListValue(pieces);
     }
 
@@ -705,7 +831,7 @@ internal static class PythonRegexModule
         var pattern =
             patternValue as PythonManagedObjectValue
             ?? throw PatternDescriptor("scanner", patternValue);
-        var text = RequireText(slots[0]!, span);
+        var text = SubjectText(pattern, slots[0]!, span);
         var pos = Clamp(Index(slots[1], span), text.Length);
         var endpos = slots[2] is null ? text.Length : Clamp(Index(slots[2], span), text.Length);
         return new PythonManagedObjectValue(
@@ -768,7 +894,13 @@ internal static class PythonRegexModule
     // -----------------------------------------------------------------------------
 
     /// <summary>A compiled pattern: the program, the text it was read from, its flags.</summary>
-    private sealed class PatternState(PythonRegex.Program program, string text, long flags)
+    private sealed class PatternState(
+        PythonRegex.Program program,
+        string text,
+        long flags,
+        bool bytes,
+        PythonValue source
+    )
     {
         private PythonDictionaryValue? _groupIndex;
         private string?[]? _groupNames;
@@ -778,6 +910,10 @@ internal static class PythonRegexModule
         internal string Text { get; } = text;
 
         internal long Flags { get; } = flags;
+
+        internal bool Bytes { get; } = bytes;
+
+        internal PythonValue Source { get; } = source;
 
         /// <summary>The named groups by name, which is what `Pattern.groupindex` reports.</summary>
         internal PythonDictionaryValue GroupIndex
@@ -1100,7 +1236,11 @@ internal static class PythonRegexModule
         type.Attributes["string"] = ReadOnlyMember(
             "string",
             "re.Match",
-            receiver => new PythonTextValue(MatchOf(receiver).Text)
+            receiver =>
+            {
+                var state = MatchOf(receiver);
+                return PatternText(StateOf(state.Pattern), state.Text);
+            }
         );
         type.Attributes["regs"] = ReadOnlyMember("regs", "re.Match", Registers, named: true);
         return type;
@@ -1211,7 +1351,7 @@ internal static class PythonRegexModule
         type.Attributes["pattern"] = ReadOnlyMember(
             "pattern",
             "re.Pattern",
-            receiver => new PythonTextValue(StateOf(receiver).Text)
+            receiver => StateOf(receiver).Source
         );
         type.Attributes["flags"] = ReadOnlyMember(
             "flags",
@@ -1255,7 +1395,7 @@ internal static class PythonRegexModule
     )
     {
         var pattern = RequirePattern(receiver);
-        var text = RequireText(arguments[0], default);
+        var text = SubjectText(pattern, arguments[0], default);
         return
             Find(
                 pattern,
@@ -1277,7 +1417,7 @@ internal static class PythonRegexModule
     )
     {
         var pattern = RequirePattern(receiver);
-        var text = RequireText(arguments[0], default);
+        var text = SubjectText(pattern, arguments[0], default);
         var found = new List<PythonValue>();
         foreach (
             var match in Walk(
@@ -1300,7 +1440,7 @@ internal static class PythonRegexModule
     )
     {
         var pattern = RequirePattern(receiver);
-        var text = RequireText(arguments[0], default);
+        var text = SubjectText(pattern, arguments[0], default);
         var matches = Walk(
                 pattern,
                 text,
@@ -1434,10 +1574,33 @@ internal static class PythonRegexModule
     private static PythonValue ExpandMatch(
         PythonValue? receiver,
         IReadOnlyList<PythonValue> arguments
-    ) =>
-        new PythonTextValue(
-            Expand(RequireText(arguments[0], default), MatchOf(receiver!), default)
-        );
+    )
+    {
+        var state = MatchOf(receiver!);
+        var pattern = StateOf(state.Pattern);
+        string template;
+        if (pattern.Bytes)
+        {
+            template = arguments[0] is PythonByteSequenceValue bytes
+                ? Latin1Text(bytes.Value)
+                : throw Fault(
+                    "sequence item 1: expected str instance, bytes found",
+                    default,
+                    "TypeError"
+                );
+        }
+        else
+        {
+            template = arguments[0] is PythonTextValue text
+                ? text.Value
+                : throw Fault(
+                    "sequence item 1: expected a bytes-like object, str found",
+                    default,
+                    "TypeError"
+                );
+        }
+        return PatternText(pattern, Expand(template, state, default));
+    }
 
     private static PythonValue Registers(PythonValue receiver)
     {
@@ -1489,7 +1652,10 @@ internal static class PythonRegexModule
         var start = state.Result.StartOf(group);
         return start is null
             ? PythonNoneValue.Instance
-            : new PythonTextValue(state.Text[start.Value..state.Result.EndOf(group)!.Value]);
+            : PatternText(
+                StateOf(state.Pattern),
+                state.Text[start.Value..state.Result.EndOf(group)!.Value]
+            );
     }
 
     /// <summary>What `findall` yields for one match: the text, a group, or a tuple of groups.</summary>
@@ -1499,10 +1665,11 @@ internal static class PythonRegexModule
         {
             return GroupText(state, 0);
         }
+        var pattern = StateOf(state.Pattern);
         if (state.Program.GroupCount == 1)
         {
             return GroupText(state, 1) is PythonNoneValue
-                ? new PythonTextValue(string.Empty)
+                ? PatternText(pattern, string.Empty)
                 : GroupText(state, 1);
         }
         return new PythonTupleValue([
@@ -1510,9 +1677,7 @@ internal static class PythonRegexModule
                 .Range(1, state.Program.GroupCount)
                 .Select(group => GroupText(state, group))
                 .Select(value =>
-                    value is PythonNoneValue
-                        ? (PythonValue)new PythonTextValue(string.Empty)
-                        : value
+                    value is PythonNoneValue ? PatternText(pattern, string.Empty) : value
                 ),
         ]);
     }
@@ -1521,7 +1686,7 @@ internal static class PythonRegexModule
     {
         var text = state.Text[state.Result.Start..state.Result.End];
         var span = $"({state.Result.Start}, {state.Result.End})";
-        var quoted = new PythonTextValue(text).ToRepresentationString();
+        var quoted = PatternText(StateOf(state.Pattern), text).ToRepresentationString();
         var full = $"<re.Match object; span={span}, match={quoted}>";
         // A match too long to show whole is cut to the first 49 characters of the text
         // as it would have been quoted, and the closing quote goes with the rest.
@@ -1531,7 +1696,7 @@ internal static class PythonRegexModule
     }
 
     private static string RepresentPattern(PatternState state) =>
-        $"re.compile({new PythonTextValue(state.Text).ToRepresentationString()}{FlagSuffix(state.Flags)})";
+        $"re.compile({state.Source.ToRepresentationString()}{FlagSuffix(state.Flags)})";
 
     /// <summary>The flags a pattern prints with, apart from the implicit UNICODE.</summary>
     private static string FlagSuffix(long flags)
@@ -1550,30 +1715,69 @@ internal static class PythonRegexModule
     /// </summary>
     private static string Replacement(PythonValue replacement, PythonValue match, TextSpan span)
     {
-        if (replacement is PythonTextValue text)
+        var state = MatchOf(match);
+        var bytes = StateOf(state.Pattern).Bytes;
+        if (!ManagedObjectProtocols.IsCallable(replacement))
         {
-            return Expand(text.Value, MatchOf(match), span);
-        }
-        if (ManagedObjectProtocols.IsCallable(replacement))
-        {
-            var produced = UserObjectProtocols.Dispatcher!.Invoke(replacement, [match], span);
-            return produced is PythonTextValue producedText
-                ? producedText.Value
-                : throw Fault(
-                    $"sequence item 0: expected str instance, {ManagedObjectProtocols.GetTypeName(produced)} found",
+            var template = replacement switch
+            {
+                PythonTextValue text when !bytes => text.Value,
+                PythonByteSequenceValue sequence when bytes => Latin1Text(sequence.Value),
+                PythonByteArrayValue array when bytes => Latin1Text(array.Value),
+                PythonMemoryViewValue view when bytes => Latin1Text(view.Bytes),
+                PythonByteSequenceValue => throw Fault(
+                    "sequence item 0: expected str instance, bytes found",
                     span,
                     "TypeError"
-                );
+                ),
+                PythonTextValue => throw Fault(
+                    "sequence item 0: expected a bytes-like object, str found",
+                    span,
+                    "TypeError"
+                ),
+                _ when bytes => throw Fault(
+                    "sequence item 0: expected a bytes-like object, "
+                        + $"{ManagedObjectProtocols.GetTypeName(replacement)} found",
+                    span,
+                    "TypeError"
+                ),
+                _ => throw Fault(
+                    "decoding to str: need a bytes-like object, "
+                        + $"{ManagedObjectProtocols.GetTypeName(replacement)} found",
+                    span,
+                    "TypeError"
+                ),
+            };
+            return Expand(template, state, span);
         }
-        // A replacement that is neither text nor callable is read as the pieces of a
-        // string a `join` would take, which is where CPython's own words come from.
-        throw Fault(
-            ManagedObjectProtocols.GetTypeName(replacement) == "bytes"
-                ? "sequence item 0: expected str instance, bytes found"
-                : $"decoding to str: need a bytes-like object, {ManagedObjectProtocols.GetTypeName(replacement)} found",
-            span,
-            "TypeError"
-        );
+        var produced = UserObjectProtocols.Dispatcher!.Invoke(replacement, [match], span);
+        return ReplacementText(produced, bytes, span);
+    }
+
+    /// <summary>A replacement (template or callable result) as the text it contributes.</summary>
+    private static string ReplacementText(PythonValue value, bool bytes, TextSpan span)
+    {
+        if (bytes)
+        {
+            return value switch
+            {
+                PythonByteSequenceValue sequence => Latin1Text(sequence.Value),
+                PythonByteArrayValue array => Latin1Text(array.Value),
+                _ => throw Fault(
+                    "sequence item 0: expected a bytes-like object, "
+                        + $"{ManagedObjectProtocols.GetTypeName(value)} found",
+                    span,
+                    "TypeError"
+                ),
+            };
+        }
+        return value is PythonTextValue text
+            ? text.Value
+            : throw Fault(
+                $"sequence item 0: expected str instance, {ManagedObjectProtocols.GetTypeName(value)} found",
+                span,
+                "TypeError"
+            );
     }
 
     /// <summary>
@@ -1758,7 +1962,12 @@ internal static class PythonRegexModule
 
     private static void Append(StringBuilder output, MatchState state, int group) =>
         output.Append(
-            GroupText(state, group) is PythonTextValue matched ? matched.Value : string.Empty
+            GroupText(state, group) switch
+            {
+                PythonTextValue matched => matched.Value,
+                PythonByteSequenceValue bytes => Latin1Text(bytes.Value),
+                _ => string.Empty,
+            }
         );
 
     /// <summary>Whether a name is a run of ASCII digits, which is what `\g<2>` is.</summary>

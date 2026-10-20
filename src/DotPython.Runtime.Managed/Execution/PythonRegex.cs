@@ -1839,11 +1839,16 @@ internal static class PythonRegex
         {
             return false;
         }
-        var other = IsAsciiUpper(value)
-            ? char.ToLowerInvariant(value)
+        var other =
+            AsciiOnly(flags) ? AsciiFold(value)
+            : IsAsciiUpper(value) ? char.ToLowerInvariant(value)
             : char.ToUpperInvariant(value);
         return other >= first && other <= last;
     }
+
+    /// <summary>ASCII-only case folding: bytes expressions never fold other characters.</summary>
+    private static char AsciiFold(char value) =>
+        value is >= 'A' and <= 'Z' ? (char)(value + ('a' - 'A')) : value;
 
     private static bool IsWordCharacter(char value, PythonRegexFlags flags) =>
         value == '_'
@@ -1868,6 +1873,10 @@ internal static class PythonRegex
         if (!flags.HasFlag(PythonRegexFlags.IgnoreCase))
         {
             return false;
+        }
+        if (AsciiOnly(flags))
+        {
+            return AsciiFold(patternValue) == AsciiFold(textValue);
         }
         return char.ToUpperInvariant(patternValue) == char.ToUpperInvariant(textValue)
             || char.ToLowerInvariant(patternValue) == char.ToLowerInvariant(textValue);

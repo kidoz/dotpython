@@ -263,4 +263,90 @@ public sealed class RegularExpressionCompatibilityTests
             show("endpos2", lambda: re.compile("a+").scanner("aaa", 0, 2).search())
             """"
         );
+
+    [Fact]
+    public Task TheBytesPatternSurfaceMatchesCpython() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            print("escape-bytes", re.escape(b"a.b c*[](){}"), re.escape(b"\xff\x00\x7f"))
+            p = re.compile(b"a(b)?c", re.I)
+            print("bytes-match", p.match(b"AC").groups(), p.search(b"xxabc").group(0))
+            print("bytes-sub", p.sub(b"x", b"abc-ac"), p.sub(b"x", b"abc-ac", count=1))
+            print("bytes-findall", re.findall(b"a+", b"aa b aaa"))
+            print("bytes-split", re.split(b",", b"a,b,,c"))
+            print("bytes-flags", p.flags, p.pattern)
+            print("bytes-repr", repr(p), repr(p.match(b"abc")))
+            print("bytes-string", p.match(b"abc").string, type(p.match(b"abc").string).__name__)
+            show("bytes-int", lambda: p.match(5))
+            show("bytes-strsub", lambda: p.match("abc"))
+            show("str-bytessub", lambda: re.compile("a").match(b"a"))
+            show("bytes-uflag", lambda: re.compile(b"a", re.U))
+            show("bytes-lflag", lambda: re.compile(b"a", re.L).flags)
+            show("bytes-default-flags", lambda: re.compile(b"a").flags)
+            show("bytes-af", lambda: re.compile(b"a", re.A).flags)
+            print("bytes-bytearray", re.compile(b"a").match(bytearray(b"a")).group(0))
+            print("bytes-groups", re.compile(b"(a)(?P<n>b)").match(b"ab").groups(), re.compile(b"(a)(?P<n>b)").match(b"ab").groupdict())
+            print("bytes-expand", re.compile(b"(a)").match(b"a").expand(b"\\1x"))
+            show("expand-str", lambda: re.compile(b"(a)").match(b"a").expand("\\1x"))
+            show("expand-bytes-strpat", lambda: re.compile("(a)").match("a").expand(b"\\1x"))
+            show("sub-str-repl", lambda: re.compile(b"a").sub("x", b"a"))
+            show("sub-bytes-on-str", lambda: re.compile("a").sub(b"x", "a"))
+            def f(m): return "x"
+            def g(m): return b"x"
+            show("sub-fn-str", lambda: re.compile(b"a").sub(f, b"a"))
+            show("sub-fn-bytes", lambda: re.compile("a").sub(g, "a"))
+            print("bytes-finditer", [m.group(0) for m in re.finditer(b"a+", b"aa b aaa")])
+            print("bytes-match-nongroup", re.compile(b"x*").findall(b"abc"))
+            print("bytes-nonascii", re.compile(b"\xff").match(b"\xff"), re.compile(b"[\x80-\xff]+").match(b"\x80\xff"))
+            print("bytes-ci", re.compile(b"\xe9", re.I).match(b"\xc9"))
+            print("bytes-word", re.compile(b"\\w+").match(b"\xe9"), re.compile(b"\\w+", re.A).match(b"\xe9"))
+            print("scanner", re.compile(b"a+").scanner(b"aa b").match().group(0))
+            print("class-sub", re.Pattern[bytes], re.Match[bytes])
+            show("bytes-pattern-attr", lambda: re.compile(b"a").scanner("a"))
+
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            print("cache-distinct", re.compile("a") is re.compile("a"), re.compile(b"a") is re.compile(b"a"), re.compile("a") is re.compile(b"a"))
+            p = re.compile(b"(?P<x>a+)(b)?")
+            m = p.match(b"aa")
+            print("m", m.group(0), m.groups(), m.groups(b"-"), m.groupdict(), m.span(), m.regs)
+            print("idx", m["x"], m[1], m.lastindex, m.lastgroup, m.pos, m.endpos)
+            show("missing", lambda: m.group(3))
+            print("subn", p.subn(b"<\\g<x>>", b"aab b aa"))
+            print("subn-fn", p.subn(lambda mm: b"[" + mm.group(0) + b"]", b"aab b aa"))
+            print("split-groups", p.split(b"aab b aa"))
+            print("split-max", p.split(b"aab b aa", 1))
+            print("finditer", [(mm.span(), mm.group(0)) for mm in p.finditer(b"aab b aa")])
+            print("pos", p.match(b"aa", 1), p.search(b"aa", 1), p.fullmatch(b"aa", 0, 2))
+            print("module", re.match(b"a", b"a").group(0), re.fullmatch(b"a+", b"aaa").group(0), re.search(b"b", b"ab").span())
+            show("mix-compiled", lambda: re.match(re.compile(b"a"), "a"))
+            show("mix-compiled2", lambda: re.match(re.compile("a"), b"a"))
+            print("empty-bytes", re.findall(b"", b"ab"))
+            print("classes", re.findall(b"[^a]+", b"aa\xff\x80cc"))
+            print("nongreedy", re.compile(b"a+?").match(b"aaa").group(0))
+            print("anchors", re.findall(b"^.", b"a\nb", re.M), re.findall(b".", b"\n"))
+            print("escaped-meta", re.match(b"\\.", b"."), re.match(b"\\d+", b"123").group(0))
+            print("bytes-escape-backslash", re.escape(b"\\a"))
+            print("str-escape-backslash", re.escape("\\a"))
+            print("scanner", end=" ")
+            s = re.compile(b"a").scanner(b"baa")
+            show("m0", lambda: s.match())
+            show("s1", lambda: s.search())
+            show("m2", lambda: s.search())
+            show("s3", lambda: s.search())
+            print("expand-none", re.compile(b"(a)?b").match(b"b").expand(b"<\\1>"))
+            print("group-none", re.compile(b"(a)?b").match(b"b").group(1), re.compile(b"(a)?b").match(b"b").groups())
+            show("bytearray-repl", lambda: re.compile(b"a").sub(bytearray(b"x"), b"a"))
+            show("memview", lambda: re.compile(b"a").match(memoryview(b"a")))
+            print("flags", re.compile(b"(?i)a").flags, re.compile(b"(?a)a").flags, re.compile(b"(?u)a") if False else "skip")
+            show("flags-u-inline", lambda: re.compile(b"(?u)a"))
+            print("repr", repr(re.compile(b"(?i)a(b)?")), repr(re.compile(b"a").match(b"a")))
+            """"
+        );
 }
