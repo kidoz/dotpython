@@ -7641,6 +7641,36 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         );
     }
 
+    /// <summary>
+    /// `divmod` on a value of its own type: the method the type defines, or null when it
+    /// defines none and the builtin number handling is the only answer left.
+    /// </summary>
+    private static PythonTupleValue? ApplyUserBinary(
+        IUserObjectDispatcher dispatcher,
+        PythonValue receiver,
+        PythonValue argument,
+        string method,
+        TextSpan span
+    )
+    {
+        if (!ManagedObjectProtocols.TryGetSpecialMethod(receiver, method, out var callable))
+        {
+            return null;
+        }
+        var result = dispatcher.Invoke(callable, [argument], span);
+        if (result is PythonNotImplementedValue)
+        {
+            return null;
+        }
+        return result as PythonTupleValue
+            ?? throw Fault(
+                "DPY4003",
+                $"divmod() returned a non-tuple (type '{ManagedObjectProtocols.GetTypeName(result)}')",
+                span,
+                "TypeError"
+            );
+    }
+
     internal static PythonTupleValue DivideModulo(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
@@ -7690,6 +7720,22 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 new PythonFloatingPointValue(quotient),
                 new PythonFloatingPointValue(leftDouble - quotient * rightDouble),
             ]);
+        }
+
+        // A type of its own answers `__divmod__`, and the other operand `__rdivmod__`,
+        // the way every other operator consults them.
+        if (UserObjectProtocols.Dispatcher is { } dispatcher)
+        {
+            var leftResult = ApplyUserBinary(dispatcher, left, right, "__divmod__", span);
+            if (leftResult is not null)
+            {
+                return leftResult;
+            }
+            var rightResult = ApplyUserBinary(dispatcher, right, left, "__rdivmod__", span);
+            if (rightResult is not null)
+            {
+                return rightResult;
+            }
         }
 
         throw Fault(

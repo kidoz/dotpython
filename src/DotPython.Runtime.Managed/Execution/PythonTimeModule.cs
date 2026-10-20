@@ -200,7 +200,7 @@ internal static class PythonTimeModule
                 self is PythonManagedObjectValue { Attributes: var attributes }
                 && attributes.TryGetValue("tm_zone", out var zone)
                     ? zone
-                    : new PythonTextValue(string.Empty)
+                    : PythonNoneValue.Instance
         );
         type.Attributes["tm_gmtoff"] = ReadOnlyMember(
             "tm_gmtoff",
@@ -288,7 +288,12 @@ internal static class PythonTimeModule
             : "0";
 
     /// <summary>One broken-down time, as the module's own functions work with it.</summary>
-    private sealed record BrokenTime(
+    /// <summary>
+    /// A time broken into the fields `struct_time` carries. The `datetime` module reads
+    /// and writes the same fields through this, so `strftime` and `strptime` answer the
+    /// same way for both modules.
+    /// </summary>
+    internal sealed record BrokenTime(
         long Year,
         long Month,
         long Day,
@@ -298,7 +303,8 @@ internal static class PythonTimeModule
         long Weekday,
         long YearDay,
         long IsDst,
-        string? Zone = null
+        string? Zone = null,
+        long? Offset = null
     )
     {
         internal PythonManagedObjectValue ToValue()
@@ -329,13 +335,20 @@ internal static class PythonTimeModule
 
         /// <summary>The offset the zone stands at for this time's daylight-saving flag.</summary>
         internal long ZoneOffset() =>
-            Zone == "UTC" ? 0
-            : IsDst == 1 ? LocalDaylightOffset()
-            : LocalStandardOffset();
+            Zone == "UTC"
+                ? 0
+                : Offset ?? (IsDst == 1 ? LocalDaylightOffset() : LocalStandardOffset());
 
         /// <summary>The name `%Z` writes, and the offset `%z` writes.</summary>
         internal (string Name, string Offset) ZoneText()
         {
+            // A datetime carries the offset its own zone reports, which is what a
+            // `datetime.timezone` hands out; a `time` module call leaves it unsaid and
+            // the host's own zone answers.
+            if (Offset is { } offset)
+            {
+                return (Zone ?? string.Empty, OffsetText(offset));
+            }
             if (IsDst == 1)
             {
                 return (Zone ?? LocalZoneName(daylight: true), OffsetText(LocalDaylightOffset()));
@@ -349,7 +362,7 @@ internal static class PythonTimeModule
         }
     }
 
-    private static string OffsetText(long seconds)
+    internal static string OffsetText(long seconds)
     {
         var sign = seconds < 0 ? '-' : '+';
         var absolute = Math.Abs(seconds);
@@ -636,7 +649,7 @@ internal static class PythonTimeModule
     /// The C locale's `strftime`. `%z` and `%Z` name the local zone whatever instant the
     /// broken-down time came from, which is what the C library does.
     /// </summary>
-    private static string Format(string format, BrokenTime t)
+    internal static string Format(string format, BrokenTime t)
     {
         var output = new StringBuilder(format.Length + 16);
         for (var index = 0; index < format.Length; index++)
@@ -771,13 +784,13 @@ internal static class PythonTimeModule
     }
 
     /// <summary>A field written to a fixed width, with the host's culture kept out of it.</summary>
-    private static string Pad(long value, string format) =>
+    internal static string Pad(long value, string format) =>
         value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
 
-    private static long FloorDiv(long value, long divisor) =>
+    internal static long FloorDiv(long value, long divisor) =>
         value >= 0 ? value / divisor : -((-value + divisor - 1) / divisor);
 
-    private static long FloorMod(long value, long divisor)
+    internal static long FloorMod(long value, long divisor)
     {
         var remainder = value % divisor;
         return remainder < 0 ? remainder + divisor : remainder;
@@ -803,14 +816,14 @@ internal static class PythonTimeModule
     {
         var text = RequireText(arguments[0], span);
         var format = RequireText(arguments[1], span);
-        return ParseTime(text, format, span);
+        return Parse(text, format, span).ToValue();
     }
 
     /// <summary>
     /// `_strptime` under the C locale: the directives' own matching, then the way Python
     /// settles the ambiguities between a weekday, a week of the year and a Julian day.
     /// </summary>
-    private static PythonManagedObjectValue ParseTime(string text, string format, TextSpan span)
+    internal static BrokenTime Parse(string text, string format, TextSpan span)
     {
         var found = new Dictionary<char, string>();
         var position = 0;
@@ -1031,7 +1044,7 @@ internal static class PythonTimeModule
             weekday.Value,
             julian.Value,
             isDst
-        ).ToValue();
+        );
     }
 
     /// <summary>`_calc_julian_from_U_or_W`: the day of the year a week and a weekday name.</summary>
@@ -1049,7 +1062,7 @@ internal static class PythonTimeModule
             : 1 + weekZeroLength + 7 * (week - 1) + dayOfWeek;
     }
 
-    private static bool IsLeap(long year) => DateTime.IsLeapYear((int)year);
+    internal static bool IsLeap(long year) => DateTime.IsLeapYear((int)year);
 
     private static int IndexOfName(string[] names, string value)
     {
@@ -1253,10 +1266,10 @@ internal static class PythonTimeModule
         return (long)TimeZoneInfo.Local.GetUtcOffset(january).TotalSeconds;
     }
 
-    private static long LocalStandardOffset() => LocalStandardOffsetLong();
+    internal static long LocalStandardOffset() => LocalStandardOffsetLong();
 
     /// <summary>The zone's offset inside its daylight-saving period.</summary>
-    private static long LocalDaylightOffset()
+    internal static long LocalDaylightOffset()
     {
         var zone = TimeZoneInfo.Local;
         if (!zone.SupportsDaylightSavingTime)
@@ -1283,9 +1296,9 @@ internal static class PythonTimeModule
     /// Whether daylight saving is in force this year, which is what the C library's
     /// `daylight` reports — a zone whose rules once had it does not count.
     /// </summary>
-    private static int LocalDaylight() => LocalDaylightOffset() != LocalStandardOffset() ? 1 : 0;
+    internal static int LocalDaylight() => LocalDaylightOffset() != LocalStandardOffset() ? 1 : 0;
 
-    private static string LocalZoneName(bool daylight)
+    internal static string LocalZoneName(bool daylight)
     {
         var zone = TimeZoneInfo.Local;
         return daylight && LocalDaylight() == 1 ? zone.DaylightName : zone.StandardName;

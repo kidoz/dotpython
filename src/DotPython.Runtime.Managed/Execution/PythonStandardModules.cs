@@ -556,6 +556,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonTimeModule.Initialize
         );
+        // The calendar type hierarchy over the same engine: `timedelta` and `date` so far.
+        modules["datetime"] = PythonModuleDefinition.Native(
+            "<dotpython datetime>",
+            isPackage: false,
+            PythonDateTimeModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
