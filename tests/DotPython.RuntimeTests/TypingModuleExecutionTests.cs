@@ -330,6 +330,127 @@ public sealed class TypingModuleExecutionTests
         );
     }
 
+    /// <summary>
+    /// The typing constructs added here: `TypeVar` with its attributes, defaults and
+    /// refusals, `NoDefault`, `Annotated` with its metadata/origin/equality surface, and
+    /// the `overload`/`get_overloads` registry and dummy.
+    /// </summary>
+    [Fact]
+    public void TheCoreTypingConstructsMatchPython()
+    {
+        var output = Run(
+            """"
+            import typing as t
+            def show(l, f):
+                try: print(l, "ok", repr(f()))
+                except Exception as e: print(l, type(e).__name__, e)
+            T = t.TypeVar("T")
+            print("tv", repr(T), T.__name__, T.__bound__, T.__constraints__, T.__covariant__, T.__contravariant__, T.__infer_variance__, t.get_origin(T), t.get_args(T))
+            print("default", repr(t.TypeVar("D", default=3).__default__), repr(t.TypeVar("N").__default__), t.TypeVar("N").__default__ is t.NoDefault)
+            print("eq", T == t.TypeVar("T"), T is T, hash(T) == hash(T))
+            show("tv-bad", lambda: t.TypeVar(5))
+            show("tv-missing", lambda: t.TypeVar())
+            show("tv-con", lambda: (repr(t.TypeVar("C", int, str)), t.TypeVar("C", int, str).__constraints__))
+            show("tv-bound", lambda: t.TypeVar("B", bound=int).__bound__)
+            show("tv-cov", lambda: (t.TypeVar("V", covariant=True).__covariant__, t.TypeVar("W", contravariant=True).__contravariant__))
+            show("tv-default", lambda: t.TypeVar("E", default=None).__default__)
+            show("tv-badkw", lambda: t.TypeVar("X", nope=1))
+            A = t.Annotated[int, "meta", 2]
+            print("ann", repr(A), t.get_origin(A), t.get_args(A), A.__metadata__, A.__origin__)
+            print("ann-eq", A == t.Annotated[int, "meta", 2], A == t.Annotated[str, "meta", 2])
+            show("ann-empty", lambda: t.Annotated[int])
+            show("ann-bad", lambda: t.Annotated[5, "x"])
+            show("ann-attr", lambda: A.nope)
+            @t.overload
+            def f(x: int) -> int: ...
+            @t.overload
+            def f(x: str) -> str: ...
+            def f(x): return x
+            print("overload", len(t.get_overloads(f)), f(3), [g.__name__ for g in t.get_overloads(f)])
+            o = t.overload
+            def g(x): return x
+            print("overload-empty", t.get_overloads(g))
+            show("ov-bare", lambda: t.overload())
+            show("go-bare", lambda: t.get_overloads())
+            show("ov-noncallable", lambda: (t.overload(5).__name__, t.overload(5) is t.overload(5)))
+            d = t.overload(5)
+            show("ov-call", lambda: d())
+            print("ann-no-extras", t.get_type_hints(t.cast(object, None) or (lambda: None)) if False else "skip")
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "tv ~T T None () False False False None ()",
+                "default 3 typing.NoDefault True",
+                "eq False True True",
+                "tv-bad TypeError typevar() argument 'name' must be str, not int",
+                "tv-missing TypeError typevar() missing required argument 'name' (pos 1)",
+                "tv-con ok ('~C', (<class 'int'>, <class 'str'>))",
+                "tv-bound ok <class 'int'>",
+                "tv-cov ok (True, True)",
+                "tv-default ok None",
+                "tv-badkw TypeError typevar() got an unexpected keyword argument 'nope'",
+                "ann typing.Annotated[int, 'meta', 2] typing.Annotated (<class 'int'>, 'meta', 2) ('meta', 2) <class 'int'>",
+                "ann-eq True False",
+                "ann-empty TypeError Annotated[...] should be used with at least two arguments (a type and an annotation).",
+                "ann-bad ok typing.Annotated[5, 'x']",
+                "ann-attr AttributeError type object 'int' has no attribute 'nope'",
+                "overload 2 3 ['f', 'f']",
+                "overload-empty []",
+                "ov-bare TypeError overload() missing 1 required positional argument: 'func'",
+                "go-bare TypeError get_overloads() missing 1 required positional argument: 'func'",
+                "ov-noncallable ok ('_overload_dummy', True)",
+                "ov-call NotImplementedError You should not call an overloaded function. A series of @overload-decorated functions outside a stub module should always be followed by an implementation that is not @overload-ed.",
+                "ann-no-extras skip",
+                ""
+            ),
+            output
+        );
+    }
+
+    /// <summary>
+    /// The recorded gaps: `Generic`, `Protocol`, `ParamSpec`, `TypeVarTuple`, `Unpack` and
+    /// `Concatenate` are still absent, `TypeVar` is a builtin constructor rather than a
+    /// class, and a union operand does not accept a `TypeVar`.
+    /// </summary>
+    [Fact]
+    public void TheRuntimePinsItsRemainingTypingGaps()
+    {
+        var output = Run(
+            """"
+            import typing as t
+            def show(l, f):
+                try: print(l, "ok", repr(f()))
+                except Exception as e: print(l, type(e).__name__, e)
+            print(sorted(n for n in ("TypeVar","Generic","Protocol","Annotated","overload","get_overloads","ParamSpec","TypeVarTuple","Unpack","Concatenate") if hasattr(t,n)))
+            print(type(t.TypeVar).__name__, type(t.TypeVar("T")).__name__, type(t.TypeVar("T")).__module__)
+            T = t.TypeVar("T")
+            show("generic", lambda: t.Generic)
+            show("protocol", lambda: t.Protocol)
+            show("paramspec", lambda: t.ParamSpec)
+            show("union", lambda: int | T)
+            show("generic-class", lambda: type("G", (t.Generic[T],), {}))
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "['Annotated', 'TypeVar', 'get_overloads', 'overload']",
+                "builtin_function_or_method TypeVar typing",
+                "generic AttributeError module 'typing' has no attribute 'Generic'",
+                "protocol AttributeError module 'typing' has no attribute 'Protocol'",
+                "paramspec AttributeError module 'typing' has no attribute 'ParamSpec'",
+                "union TypeError unsupported operand type(s) for |: 'type' and 'TypeVar'",
+                "generic-class AttributeError module 'typing' has no attribute 'Generic'",
+                ""
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         var engine = new ManagedPythonEngine();

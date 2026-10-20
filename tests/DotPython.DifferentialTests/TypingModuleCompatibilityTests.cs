@@ -209,4 +209,47 @@ public sealed class TypingModuleCompatibilityTests
                 print('TypeError:', error)
             """
         );
+
+    [Fact]
+    public Task TheCoreTypingConstructsMatchCpython() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            import typing as t
+            def show(l, f):
+                try: print(l, "ok", repr(f()))
+                except Exception as e: print(l, type(e).__name__, e)
+            T = t.TypeVar("T")
+            print("tv", repr(T), T.__name__, T.__bound__, T.__constraints__, T.__covariant__, T.__contravariant__, T.__infer_variance__, t.get_origin(T), t.get_args(T))
+            print("default", repr(t.TypeVar("D", default=3).__default__), repr(t.TypeVar("N").__default__), t.TypeVar("N").__default__ is t.NoDefault)
+            print("eq", T == t.TypeVar("T"), T is T, hash(T) == hash(T))
+            show("tv-bad", lambda: t.TypeVar(5))
+            show("tv-missing", lambda: t.TypeVar())
+            show("tv-con", lambda: (repr(t.TypeVar("C", int, str)), t.TypeVar("C", int, str).__constraints__))
+            show("tv-bound", lambda: t.TypeVar("B", bound=int).__bound__)
+            show("tv-cov", lambda: (t.TypeVar("V", covariant=True).__covariant__, t.TypeVar("W", contravariant=True).__contravariant__))
+            show("tv-default", lambda: t.TypeVar("E", default=None).__default__)
+            show("tv-badkw", lambda: t.TypeVar("X", nope=1))
+            A = t.Annotated[int, "meta", 2]
+            print("ann", repr(A), t.get_origin(A), t.get_args(A), A.__metadata__, A.__origin__)
+            print("ann-eq", A == t.Annotated[int, "meta", 2], A == t.Annotated[str, "meta", 2])
+            show("ann-empty", lambda: t.Annotated[int])
+            show("ann-bad", lambda: t.Annotated[5, "x"])
+            show("ann-attr", lambda: A.nope)
+            @t.overload
+            def f(x: int) -> int: ...
+            @t.overload
+            def f(x: str) -> str: ...
+            def f(x): return x
+            print("overload", len(t.get_overloads(f)), f(3), [g.__name__ for g in t.get_overloads(f)])
+            o = t.overload
+            def g(x): return x
+            print("overload-empty", t.get_overloads(g))
+            show("ov-bare", lambda: t.overload())
+            show("go-bare", lambda: t.get_overloads())
+            show("ov-noncallable", lambda: (t.overload(5).__name__, t.overload(5) is t.overload(5)))
+            d = t.overload(5)
+            show("ov-call", lambda: d())
+            print("ann-no-extras", t.get_type_hints(t.cast(object, None) or (lambda: None)) if False else "skip")
+            """"
+        );
 }

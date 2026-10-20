@@ -90,6 +90,31 @@ internal static class PythonTyping
             CreateForm(TypingFormKind.Container, "Type", PythonBuiltinTypes.Type, "type")
         );
         globals.SetValue("Callable", CreateForm(TypingFormKind.Callable));
+        globals.SetValue("Annotated", CreateForm(TypingFormKind.Annotated));
+        globals.SetValue("NoDefault", NoDefault);
+        globals.SetValue(
+            "TypeVar",
+            new PythonBuiltinFunctionValue(
+                "TypeVar",
+                (arguments, span) => CreateTypeVar(arguments, [], [], span),
+                (positional, names, values, span) => CreateTypeVar(positional, names, values, span)
+            )
+        );
+        Overloads.Clear();
+        globals.SetValue(
+            "overload",
+            new PythonBuiltinFunctionValue(
+                "overload",
+                (arguments, span) => Overload(arguments, span)
+            )
+        );
+        globals.SetValue(
+            "get_overloads",
+            new PythonBuiltinFunctionValue(
+                "get_overloads",
+                (arguments, span) => GetOverloads(arguments, span)
+            )
+        );
 
         globals.SetValue(
             "cast",
@@ -174,6 +199,7 @@ internal static class PythonTyping
         target switch
         {
             PythonGenericAliasValue alias => alias.Origin,
+            PythonExternalObjectValue { Protocol: AnnotatedAlias annotated } => annotated.Form,
             PythonTypeUnionValue => PythonBuiltinTypes.Union,
             PythonExternalObjectValue { Protocol: TypingForm form } => form.Origin
                 ?? PythonNoneValue.Instance,
@@ -185,6 +211,8 @@ internal static class PythonTyping
         target switch
         {
             PythonGenericAliasValue alias => new PythonTupleValue([.. alias.Arguments]),
+            PythonExternalObjectValue { Protocol: AnnotatedAlias annotated } =>
+                new PythonTupleValue([.. annotated.Arguments]),
             PythonTypeUnionValue union => new PythonTupleValue([.. union.Members]),
             _ => new PythonTupleValue([]),
         };
@@ -239,6 +267,334 @@ internal static class PythonTyping
         return ManagedObjectProtocols.CopyAnnotations(arguments[0], annotations, span);
     }
 
+    /// <summary>`typing.NoDefault`: the sentinel a TypeVar without a default reports.</summary>
+    private static readonly PythonValue NoDefault = new PythonExternalObjectValue(
+        new NoDefaultSentinel()
+    );
+
+    private sealed class NoDefaultSentinel : PythonExternalObjectProtocol
+    {
+        private const string Display = "typing.NoDefault";
+
+        PythonValue PythonExternalObjectProtocol.Call(
+            IReadOnlyList<PythonValue> arguments,
+            TextSpan span
+        ) => throw Error($"Cannot instantiate {Display}", span);
+
+        PythonValue PythonExternalObjectProtocol.CallWithKeywords(
+            IReadOnlyList<PythonValue> arguments,
+            IReadOnlyList<string> keywordNames,
+            IReadOnlyList<PythonValue> keywordValues,
+            TextSpan span
+        ) => throw Error($"Cannot instantiate {Display}", span);
+
+        PythonValue PythonExternalObjectProtocol.GetAttribute(string attribute, TextSpan span) =>
+            attribute == "__module__"
+                ? new PythonTextValue(Module)
+                : throw ManagedObjectProtocols.Fault(
+                    "DPY4022",
+                    $"'{Display}' object has no attribute '{attribute}'",
+                    span,
+                    "AttributeError"
+                );
+
+        PythonValue PythonExternalObjectProtocol.GetItem(PythonValue index, TextSpan span) =>
+            throw Error($"{Display} is not subscriptable", span);
+
+        long PythonExternalObjectProtocol.GetHash(TextSpan span) => 0;
+
+        int PythonExternalObjectProtocol.GetLength(TextSpan span) => 0;
+
+        PythonTruthValue PythonExternalObjectProtocol.RichCompare(
+            PythonValue other,
+            PythonRichComparison comparison,
+            TextSpan span
+        ) =>
+            comparison switch
+            {
+                PythonRichComparison.Equal => PythonTruthValue.FromBoolean(
+                    ReferenceEquals(other, NoDefault)
+                ),
+                PythonRichComparison.NotEqual => PythonTruthValue.FromBoolean(
+                    !ReferenceEquals(other, NoDefault)
+                ),
+                _ => PythonTruthValue.False,
+            };
+
+        bool PythonExternalObjectProtocol.IsInstanceOf(PythonValue value, TextSpan span) => false;
+
+        string PythonExternalObjectProtocol.ToDisplayString() => Display;
+
+        string PythonExternalObjectProtocol.ToRepresentationString() => Display;
+    }
+
+    private sealed record TypeVarState(
+        string NameValue,
+        PythonTupleValue Constraints,
+        PythonValue Bound,
+        bool Covariant,
+        bool Contravariant,
+        bool InferVariance,
+        PythonValue Default
+    );
+
+    private static readonly PythonManagedTypeValue TypeVarType = CreateTypeVarType();
+
+    private static PythonManagedTypeValue CreateTypeVarType()
+    {
+        var type = new PythonManagedTypeValue("TypeVar") { Module = Module };
+        type.Attributes["__module__"] = new PythonTextValue(Module);
+        type.Attributes["__qualname__"] = new PythonTextValue("TypeVar");
+        type.Attributes["__repr__"] = PythonUserTypes.Method(
+            "TypeVar",
+            "__repr__",
+            (self, _) => new PythonTextValue($"~{TypeVarOf(self!).NameValue}")
+        );
+        AddMember("__name__", state => new PythonTextValue(state.NameValue));
+        AddMember("__constraints__", state => state.Constraints);
+        AddMember("__bound__", state => state.Bound);
+        AddMember("__covariant__", state => PythonTruthValue.FromBoolean(state.Covariant));
+        AddMember("__contravariant__", state => PythonTruthValue.FromBoolean(state.Contravariant));
+        AddMember("__infer_variance__", state => PythonTruthValue.FromBoolean(state.InferVariance));
+        AddMember("__default__", state => state.Default);
+        return type;
+
+        void AddMember(string name, Func<TypeVarState, PythonValue> getter) =>
+            type.Attributes[name] = new PythonPropertyValue(
+                new PythonProtocolFunctionValue(
+                    name,
+                    (_, arguments) => getter(TypeVarOf(arguments[0]))
+                ),
+                null,
+                null
+            );
+    }
+
+    private static TypeVarState TypeVarOf(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: TypeVarState state }
+            ? state
+            : throw Error("the value is not a TypeVar", default);
+
+    private static PythonManagedObjectValue CreateTypeVar(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        string? name = null;
+        var constraints = new List<PythonValue>();
+        PythonValue? bound = null;
+        PythonValue? default_ = null;
+        var covariant = false;
+        var contravariant = false;
+        var inferVariance = false;
+        if (positional.Count > 0)
+        {
+            if (positional[0] is not PythonTextValue text)
+            {
+                throw Error(
+                    "typevar() argument 'name' must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(positional[0]),
+                    span
+                );
+            }
+            name = text.Value;
+            constraints.AddRange(positional.Skip(1));
+        }
+        for (var index = 0; index < names.Count; index++)
+        {
+            switch (names[index])
+            {
+                case "bound":
+                    bound = values[index];
+                    break;
+                case "covariant":
+                    covariant = ManagedObjectProtocols.IsTrue(values[index]);
+                    break;
+                case "contravariant":
+                    contravariant = ManagedObjectProtocols.IsTrue(values[index]);
+                    break;
+                case "default":
+                    default_ = values[index];
+                    break;
+                case "infer_variance":
+                    inferVariance = ManagedObjectProtocols.IsTrue(values[index]);
+                    break;
+                default:
+                    throw Error(
+                        $"typevar() got an unexpected keyword argument '{names[index]}'",
+                        span
+                    );
+            }
+        }
+        if (name is null)
+        {
+            throw Error("typevar() missing required argument 'name' (pos 1)", span);
+        }
+        return new PythonManagedObjectValue(
+            TypeVarType,
+            new TypeVarState(
+                name,
+                new PythonTupleValue([.. constraints]),
+                bound ?? PythonNoneValue.Instance,
+                covariant,
+                contravariant,
+                inferVariance,
+                default_ ?? NoDefault
+            )
+        );
+    }
+
+    /// <summary>`Annotated[T, meta, ...]`: the alias keeps its origin form, its arguments and
+    /// the `__metadata__` tuple CPython exposes.</summary>
+    private sealed class AnnotatedAlias(PythonValue form, PythonValue[] arguments)
+        : PythonExternalObjectProtocol
+    {
+        internal PythonValue Form { get; } = form;
+
+        internal PythonValue[] Arguments { get; } = arguments;
+
+        private string Render() =>
+            $"{Form.ToDisplayString()}[{string.Join(", ", Arguments.Select(RenderArgument))}]";
+
+        private static string RenderArgument(PythonValue argument) =>
+            argument switch
+            {
+                PythonManagedTypeValue type => type.QualifiedDisplayName,
+                PythonBuiltinTypeValue type => type.Name,
+                _ => argument.ToRepresentationString(),
+            };
+
+        PythonValue PythonExternalObjectProtocol.Call(
+            IReadOnlyList<PythonValue> arguments,
+            TextSpan span
+        ) => throw Error("Cannot instantiate typing.Annotated", span);
+
+        PythonValue PythonExternalObjectProtocol.CallWithKeywords(
+            IReadOnlyList<PythonValue> arguments,
+            IReadOnlyList<string> keywordNames,
+            IReadOnlyList<PythonValue> keywordValues,
+            TextSpan span
+        ) => throw Error("Cannot instantiate typing.Annotated", span);
+
+        PythonValue PythonExternalObjectProtocol.GetAttribute(string attribute, TextSpan span) =>
+            attribute switch
+            {
+                "__module__" => new PythonTextValue(Module),
+                "__origin__" => Arguments[0],
+                "__metadata__" => new PythonTupleValue([.. Arguments.Skip(1)]),
+                // An Annotated alias answers an unknown attribute from the type it wraps,
+                // which is where CPython's own fallback lands.
+                _ => ManagedObjectProtocols.GetAttribute(Arguments[0], attribute, span),
+            };
+
+        PythonValue PythonExternalObjectProtocol.GetItem(PythonValue index, TextSpan span) =>
+            throw Error("Cannot instantiate typing.Annotated", span);
+
+        long PythonExternalObjectProtocol.GetHash(TextSpan span) =>
+            StringComparer.Ordinal.GetHashCode(Render());
+
+        int PythonExternalObjectProtocol.GetLength(TextSpan span) => Arguments.Length;
+
+        PythonTruthValue PythonExternalObjectProtocol.RichCompare(
+            PythonValue other,
+            PythonRichComparison comparison,
+            TextSpan span
+        )
+        {
+            var equal =
+                other is PythonExternalObjectValue { Protocol: AnnotatedAlias annotated }
+                && Render() == annotated.Render();
+            return comparison switch
+            {
+                PythonRichComparison.Equal => PythonTruthValue.FromBoolean(equal),
+                PythonRichComparison.NotEqual => PythonTruthValue.FromBoolean(!equal),
+                _ => PythonTruthValue.False,
+            };
+        }
+
+        bool PythonExternalObjectProtocol.IsInstanceOf(PythonValue value, TextSpan span) => false;
+
+        string PythonExternalObjectProtocol.ToDisplayString() => Render();
+
+        string PythonExternalObjectProtocol.ToRepresentationString() => Render();
+    }
+
+    private static readonly Dictionary<string, List<PythonValue>> Overloads = new(
+        StringComparer.Ordinal
+    );
+
+    /// <summary>The module and qualname CPython keys its overload registry by.</summary>
+    private static string OverloadKey(PythonValue function)
+    {
+        static string Part(PythonValue value, string name)
+        {
+            try
+            {
+                return
+                    ManagedObjectProtocols.GetAttribute(value, name, default)
+                        is PythonTextValue text
+                    ? text.Value
+                    : string.Empty;
+            }
+            catch (PythonRuntimeException)
+            {
+                return string.Empty;
+            }
+            catch (PythonRaisedException)
+            {
+                return string.Empty;
+            }
+        }
+        return Part(function, "__module__") + "." + Part(function, "__qualname__");
+    }
+
+    private static readonly PythonBuiltinFunctionValue OverloadDummy = new(
+        "_overload_dummy",
+        (_, _) =>
+            throw Error(
+                "You should not call an overloaded function. A series of "
+                    + "@overload-decorated functions outside a stub module should always be "
+                    + "followed by an implementation that is not @overload-ed.",
+                default,
+                "NotImplementedError"
+            )
+    );
+
+    private static PythonBuiltinFunctionValue Overload(
+        IReadOnlyList<PythonValue> arguments,
+        TextSpan span
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw Error("overload() missing 1 required positional argument: 'func'", span);
+        }
+        if (ManagedObjectProtocols.IsCallable(arguments[0]))
+        {
+            var key = OverloadKey(arguments[0]);
+            if (!Overloads.TryGetValue(key, out var list))
+            {
+                list = [];
+                Overloads[key] = list;
+            }
+            list.Add(arguments[0]);
+        }
+        return OverloadDummy;
+    }
+
+    private static PythonListValue GetOverloads(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 1)
+        {
+            throw Error("get_overloads() missing 1 required positional argument: 'func'", span);
+        }
+        return new PythonListValue(
+            Overloads.TryGetValue(OverloadKey(arguments[0]), out var list) ? [.. list] : []
+        );
+    }
+
     private static PythonExternalObjectValue CreateForm(
         TypingFormKind kind,
         string? name = null,
@@ -278,6 +634,9 @@ internal static class PythonTyping
 
         /// <summary>`Callable[[arg, ...], result]`.</summary>
         Callable,
+
+        /// <summary>`Annotated[type, metadata, ...]`.</summary>
+        Annotated,
     }
 
     /// <summary>
@@ -368,6 +727,13 @@ internal static class PythonTyping
                 TypingFormKind.NoReturn or TypingFormKind.Never or TypingFormKind.Self =>
                     throw Error($"typing.{name} is not subscriptable", span),
                 TypingFormKind.Callable => SubscribeCallable(members, index, span),
+                TypingFormKind.Annotated => members.Length >= 2
+                    ? new PythonExternalObjectValue(new AnnotatedAlias(Self, members))
+                    : throw Error(
+                        "Annotated[...] should be used with at least two arguments "
+                            + "(a type and an annotation).",
+                        span
+                    ),
                 // An arity of zero is the unbounded one `Tuple` needs.
                 _ when arity == 0 || members.Length == arity => Alias(index),
                 _ => throw Error(
