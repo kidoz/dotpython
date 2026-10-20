@@ -7764,28 +7764,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             );
         }
 
-        BigInteger? digits = null;
-        if (arguments.Count == 2 && arguments[1] is not PythonNoneValue)
-        {
-            digits = arguments[1] switch
-            {
-                PythonWholeNumberValue whole => whole.Value,
-                PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
-                var other => throw Fault(
-                    "DPY4003",
-                    "'"
-                        + ManagedObjectProtocols.GetTypeName(other)
-                        + "' object cannot be interpreted as an integer.",
-                    span,
-                    "TypeError"
-                ),
-            };
-        }
-
         var number = PromoteTruthValue(arguments[0]);
         switch (number)
         {
             case PythonWholeNumberValue whole:
+            {
+                var digits = RoundDigits(arguments, span);
                 if (digits is null || digits >= 0)
                 {
                     return PythonWholeNumberValue.Create(whole.Value);
@@ -7793,27 +7777,65 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
 
                 var scale = BigInteger.Pow(10, (int)BigInteger.Min(-digits.Value, 64));
                 return PythonWholeNumberValue.Create(RoundHalfToEven(whole.Value, scale) * scale);
-            case PythonFloatingPointValue floating when digits is null:
+            }
+            case PythonFloatingPointValue floating
+                when arguments.Count == 1 || arguments[1] is PythonNoneValue:
                 return PythonWholeNumberValue.Create(
                     new BigInteger(Math.Round(floating.Value, MidpointRounding.ToEven))
                 );
             case PythonFloatingPointValue floating:
+            {
+                var digits = RoundDigits(arguments, span)!.Value;
                 return new PythonFloatingPointValue(
-                    RoundDoubleToDigits(
-                        floating.Value,
-                        (int)BigInteger.Clamp(digits.Value, -323, 323)
-                    )
+                    RoundDoubleToDigits(floating.Value, (int)BigInteger.Clamp(digits, -323, 323))
                 );
+            }
             default:
-                throw Fault(
-                    "DPY4003",
-                    "type "
-                        + ManagedObjectProtocols.GetTypeName(number)
-                        + " doesn't define __round__ method",
-                    span,
-                    "TypeError"
-                );
+            {
+                // `round` on any other object calls its `__round__`, with no digits
+                // when they were omitted or None, and returns its answer unchanged.
+                PythonValue callable;
+                try
+                {
+                    callable = ManagedObjectProtocols.GetAttribute(number, "__round__", span);
+                }
+                catch (PythonRuntimeException exception) when (IsAttributeErrorFault(exception))
+                {
+                    throw Fault(
+                        "DPY4003",
+                        "type "
+                            + ManagedObjectProtocols.GetTypeName(number)
+                            + " doesn't define __round__ method",
+                        span,
+                        "TypeError"
+                    );
+                }
+                return arguments.Count == 2 && arguments[1] is not PythonNoneValue
+                    ? UserObjectProtocols.Dispatcher!.Invoke(callable, [arguments[1]], span)
+                    : UserObjectProtocols.Dispatcher!.Invoke(callable, [], span);
+            }
         }
+    }
+
+    private static BigInteger? RoundDigits(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count != 2 || arguments[1] is PythonNoneValue)
+        {
+            return null;
+        }
+        return arguments[1] switch
+        {
+            PythonWholeNumberValue whole => whole.Value,
+            PythonTruthValue truth => truth.Value ? BigInteger.One : BigInteger.Zero,
+            var other => throw Fault(
+                "DPY4003",
+                "'"
+                    + ManagedObjectProtocols.GetTypeName(other)
+                    + "' object cannot be interpreted as an integer.",
+                span,
+                "TypeError"
+            ),
+        };
     }
 
     private static double RoundDoubleToDigits(double value, int digits)
@@ -7992,9 +8014,39 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             || PromoteTruthValue(arguments[2]) is not PythonWholeNumberValue modulus
         )
         {
+            // A non-numeric base answers through its own three-argument `__pow__`;
+            // the builtin numeric bases keep CPython's third-argument refusal.
+            var ownBase = PromoteTruthValue(arguments[0]);
+            if (
+                ownBase is not (PythonWholeNumberValue or PythonFloatingPointValue)
+                && TryGetPowMethod(ownBase, span, out var powMethod)
+            )
+            {
+                var own = UserObjectProtocols.Dispatcher!.Invoke(
+                    powMethod,
+                    [arguments[1], arguments[2]],
+                    span
+                );
+                if (own is not PythonNotImplementedValue)
+                {
+                    return own;
+                }
+            }
+            if (ownBase is PythonWholeNumberValue or PythonFloatingPointValue)
+            {
+                throw Fault(
+                    "DPY4003",
+                    "pow() 3rd argument not allowed unless all arguments are integers",
+                    span,
+                    "TypeError"
+                );
+            }
             throw Fault(
                 "DPY4003",
-                "pow() 3rd argument not allowed unless all arguments are integers",
+                "unsupported operand type(s) for ** or pow(): "
+                    + $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}', "
+                    + $"'{ManagedObjectProtocols.GetTypeName(arguments[1])}', "
+                    + $"'{ManagedObjectProtocols.GetTypeName(arguments[2])}'",
                 span,
                 "TypeError"
             );
@@ -8034,6 +8086,20 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         return PythonWholeNumberValue.Create(result);
+    }
+
+    private static bool TryGetPowMethod(PythonValue value, TextSpan span, out PythonValue method)
+    {
+        try
+        {
+            method = ManagedObjectProtocols.GetAttribute(value, "__pow__", span);
+            return true;
+        }
+        catch (PythonRuntimeException exception) when (IsAttributeErrorFault(exception))
+        {
+            method = null!;
+            return false;
+        }
     }
 
     private static BigInteger? ModularInverse(BigInteger value, BigInteger modulus)

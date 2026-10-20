@@ -584,6 +584,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonGlobModule.Initialize
         );
+        modules["fractions"] = PythonModuleDefinition.Native(
+            "<dotpython fractions>",
+            isPackage: false,
+            PythonFractionsModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
@@ -1045,21 +1050,21 @@ internal static class PythonStandardModules
             "floor",
             1,
             1,
-            (arguments, span) => RealToInteger(arguments[0], Math.Floor, span)
+            (arguments, span) => RealToInteger(arguments[0], Math.Floor, "__floor__", span)
         );
         MathFunction(
             globals,
             "ceil",
             1,
             1,
-            (arguments, span) => RealToInteger(arguments[0], Math.Ceiling, span)
+            (arguments, span) => RealToInteger(arguments[0], Math.Ceiling, "__ceil__", span)
         );
         MathFunction(
             globals,
             "trunc",
             1,
             1,
-            (arguments, span) => RealToInteger(arguments[0], Math.Truncate, span)
+            (arguments, span) => RealToInteger(arguments[0], Math.Truncate, "__trunc__", span)
         );
         MathFunction(
             globals,
@@ -1254,9 +1259,10 @@ internal static class PythonStandardModules
         return new PythonFloatingPointValue(Math.Sqrt(real));
     }
 
-    private static PythonWholeNumberValue RealToInteger(
+    private static PythonValue RealToInteger(
         PythonValue value,
         Func<double, double> round,
+        string method,
         TextSpan span
     )
     {
@@ -1264,6 +1270,27 @@ internal static class PythonStandardModules
         if (promoted is PythonWholeNumberValue whole)
         {
             return whole;
+        }
+        if (promoted is not PythonFloatingPointValue)
+        {
+            // Any other object answers through `__floor__`, `__ceil__` or `__trunc__`,
+            // and its answer is returned unchanged.
+            PythonValue callable;
+            try
+            {
+                callable = ManagedObjectProtocols.GetAttribute(promoted, method, span);
+            }
+            catch (PythonRuntimeException exception)
+                when (exception.PythonExceptionTypeName == "AttributeError")
+            {
+                throw new PythonRuntimeException(
+                    "DPY4028",
+                    "must be real number, not " + ManagedObjectProtocols.GetTypeName(promoted),
+                    span,
+                    "TypeError"
+                );
+            }
+            return UserObjectProtocols.Dispatcher!.Invoke(callable, [], span);
         }
 
         var real = RequireReal(promoted, span);
@@ -2222,11 +2249,14 @@ internal static class PythonStandardModules
         }
 
         // A storage subclass copies the storage it carries beside its attributes, so the
-        // copy is the same kind of dictionary rather than a bare instance.
-        var copy = new PythonManagedObjectValue(
-            instance.Type,
-            PythonSubclassStorage.Allocate(instance.Type)
-        );
+        // copy is the same kind of dictionary rather than a bare instance. A native
+        // payload (an immutable value record such as a Fraction's fields) is part of the
+        // value, so the copy keeps it.
+        var payload =
+            instance.Payload is PythonValue
+                ? PythonSubclassStorage.Allocate(instance.Type)
+                : instance.Payload;
+        var copy = new PythonManagedObjectValue(instance.Type, payload);
         if (deep)
         {
             memo!.Set(instance, copy, span);
