@@ -324,8 +324,13 @@ internal static class ManagedObjectProtocols
                 return alias.Origin;
             case PythonGenericAliasValue alias when name == "__args__":
                 return new PythonTupleValue([.. alias.Arguments]);
-            case PythonGenericAliasValue when name == "__parameters__":
-                return new PythonTupleValue([]);
+            case PythonGenericAliasValue alias when name == "__parameters__":
+                return new PythonTupleValue([.. PythonTyping.TypeVarArguments(alias.Arguments)]);
+            case PythonGenericAliasValue alias when name == "__mro_entries__":
+                return new PythonBuiltinFunctionValue(
+                    "__mro_entries__",
+                    (_, _) => new PythonTupleValue([alias.Origin])
+                );
             case PythonTypeUnionValue when name == "__origin__":
                 return PythonBuiltinTypes.Union;
             case PythonTypeUnionValue union when name == "__args__":
@@ -3575,6 +3580,23 @@ internal static class ManagedObjectProtocols
                 if (PythonEnum.TryGetTypeItem(type, index, span) is { } enumItem)
                 {
                     return enumItem;
+                }
+                // A class's own subscription wins; then the generic machinery's
+                // `__parameters__` decides whether `Class[args]` is legal at all.
+                if (
+                    type.Attributes.TryGetValue("__parameters__", out var parameters)
+                    && parameters is PythonTupleValue parameterTuple
+                    && (
+                        !type.Attributes.TryGetValue("__class_getitem__", out var placeholder)
+                        || placeholder is PythonProtocolFunctionValue { IsGenericPlaceholder: true }
+                    )
+                )
+                {
+                    return PythonTyping.SubscribeGeneric(type, parameterTuple, index, span);
+                }
+                if (type.Attributes.TryGetValue("__class_getitem__", out var ownClassGetItem))
+                {
+                    return Call(ownClassGetItem, [index], span);
                 }
                 if (TryGetTypeAttribute(type, "__class_getitem__", out var classGetItem))
                 {

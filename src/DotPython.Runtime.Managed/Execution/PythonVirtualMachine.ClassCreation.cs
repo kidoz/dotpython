@@ -216,7 +216,14 @@ internal sealed partial class PythonVirtualMachine
         PythonCell? cell
     )
     {
-        if (construction.OriginalBases is { } originalBases)
+        if (
+            construction.OriginalBases is { } originalBases
+            // A bare `Protocol` base is a plain class in CPython and leaves no
+            // `__orig_bases__` behind; only a parameterized or aliased base records one.
+            && originalBases.Elements.Any(baseValue =>
+                !PythonTyping.IsBareGenericOrProtocolForm(baseValue)
+            )
+        )
             PythonNamespaceMapping.Set(
                 construction.Namespace,
                 "__orig_bases__",
@@ -230,6 +237,14 @@ internal sealed partial class PythonVirtualMachine
             construction.KeywordNames,
             construction.KeywordValues
         );
+        if (result is PythonManagedTypeValue genericType)
+        {
+            PythonTyping.ApplyGenericBases(
+                genericType,
+                construction.OriginalBases,
+                construction.Bases
+            );
+        }
         if (PythonTypeProtocols.IsType(result) && cell is not null)
         {
             if (cell.Value is null)

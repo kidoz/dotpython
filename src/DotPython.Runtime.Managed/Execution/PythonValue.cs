@@ -668,6 +668,13 @@ internal sealed record PythonProtocolFunctionValue(
     /// <summary>The docstring a function written in Python carries.</summary>
     internal string? Doc { get; init; }
 
+    /// <summary>
+    /// Whether the runtime installed this `__class_getitem__` for a generic class. The
+    /// shared stand-in only reports the attribute; subscription itself is resolved from
+    /// the class's own `__parameters__`.
+    /// </summary>
+    internal bool IsGenericPlaceholder { get; init; }
+
     /// <summary>The defaults a function written in Python was given, or null for none.</summary>
     internal PythonValue? Defaults { get; init; }
 

@@ -252,4 +252,80 @@ public sealed class TypingModuleCompatibilityTests
             print("ann-no-extras", t.get_type_hints(t.cast(object, None) or (lambda: None)) if False else "skip")
             """"
         );
+
+    [Fact]
+    public Task UserGenericClassesCarryParametersAndAliases() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import typing as t
+            T = t.TypeVar("T")
+            S = t.TypeVar("S")
+            class G(t.Generic[T]):
+                def __init__(self, x): self.value = x
+            print(G.__parameters__, G.__orig_bases__)
+            print(G[int], t.get_origin(G[int]), t.get_args(G[int]))
+            print(G[int].__args__, G[T].__parameters__)
+            g = G[int](3)
+            print(g.value, type(g).__name__)
+            print(G[int](x=4).value)
+            print(hasattr(G, "__class_getitem__"))
+            class M(t.Generic[T, S]): pass
+            print(M.__parameters__, repr(M[int, str]), M[int, str].__args__)
+            def show(label, f):
+                try: print(label, "ok", repr(f()))
+                except Exception as e: print(label, type(e).__name__, e)
+            show("few", lambda: M[int])
+            show("many", lambda: M[int, str, bytes])
+            show("misc", lambda: G[5])
+            show("generic-args", lambda: t.Generic[5])
+            show("protocol-args", lambda: t.Protocol[5])
+            class H(G[int]): pass
+            print(H.__parameters__, H.__orig_bases__)
+            show("h-sub", lambda: H[int])
+            class K(G[T]): pass
+            print(K.__parameters__, K.__orig_bases__, K[int])
+            class J(G): pass
+            print(J.__parameters__, J.__orig_bases__)
+            show("j-sub", lambda: J[int])
+            try:
+                class L(G[T], t.Generic[S]): pass
+            except Exception as e:
+                print("unlisted", type(e).__name__, e)
+            try:
+                class Bare(t.Generic): pass
+            except Exception as e:
+                print("bare", type(e).__name__, e)
+            """
+        );
+
+    [Fact]
+    public Task ProtocolsMarkTheirSubclassesAndRefuseInstantiation() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """
+            import typing as t
+            T = t.TypeVar("T")
+            class P(t.Protocol):
+                def m(self) -> int: ...
+            print(P._is_protocol, P.__parameters__, hasattr(P, "__orig_bases__"))
+            def show(label, f):
+                try: print(label, "ok", repr(f()))
+                except Exception as e: print(label, type(e).__name__, e)
+            show("instantiate", lambda: P())
+            class Rp(t.Protocol[T]):
+                def m(self) -> T: ...
+            print(Rp.__parameters__, Rp[int], t.get_args(Rp[int]))
+            show("rp-inst", lambda: Rp[int]())
+            class Q(P): pass
+            print(Q._is_protocol, Q.__parameters__, type(Q()).__name__)
+            class R(P, t.Protocol): pass
+            show("r", lambda: R())
+            @t.runtime_checkable
+            class Rt(t.Protocol):
+                def m(self): ...
+            print(Rt._is_runtime_protocol, Rt._is_protocol, t.runtime_checkable(Rt) is Rt)
+            show("rc0", lambda: t.runtime_checkable())
+            show("rc1", lambda: t.runtime_checkable(1))
+            show("rc2", lambda: t.runtime_checkable(Rt, Rt))
+            """
+        );
 }

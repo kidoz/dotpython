@@ -2228,6 +2228,21 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
             return;
         }
 
+        // A parameterized user generic constructs its origin, so `G[int](x)` runs
+        // `G.__init__` exactly as `G(x)` does.
+        if (
+            target is PythonGenericAliasValue
+            {
+                Origin: PythonManagedTypeValue { Construct: null } aliasOrigin
+            }
+        )
+        {
+            var arguments = PopArguments(instruction.Operand, instruction.Span);
+            Pop(instruction.Span);
+            ConstructManagedInstance(aliasOrigin, arguments, instruction.Span);
+            return;
+        }
+
         if (
             target is PythonManagedObjectValue callableInstance
             && TryGetCallMethod(callableInstance, instruction.Span, out var callMethod)
@@ -4270,6 +4285,18 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                     span
                 );
                 return;
+            case PythonGenericAliasValue
+            {
+                Origin: PythonManagedTypeValue { Construct: null } aliasOrigin
+            }:
+                ConstructManagedInstanceWithKeywords(
+                    aliasOrigin,
+                    positional,
+                    keywordNames,
+                    keywordValues,
+                    span
+                );
+                return;
             case PythonBoundUserMethodValue boundMethod:
                 PushBoundArgumentsFrame(
                     boundMethod.Function,
@@ -4876,6 +4903,17 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         if (target is PythonManagedTypeValue { Construct: null } type)
         {
             ConstructManagedInstance(type, [], span);
+            return;
+        }
+
+        if (
+            target is PythonGenericAliasValue
+            {
+                Origin: PythonManagedTypeValue { Construct: null } aliasOrigin
+            }
+        )
+        {
+            ConstructManagedInstance(aliasOrigin, [], span);
             return;
         }
 
@@ -5758,6 +5796,10 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         throw Fault("DPY4003", $"cannot create '{type.Name}' instances", span, "TypeError");
     }
 
+    private static bool IsProtocolClass(PythonManagedTypeValue type) =>
+        type.Attributes.TryGetValue("_is_protocol", out var protocol)
+        && protocol is PythonTruthValue { Value: true };
+
     private void ConstructManagedInstance(
         PythonManagedTypeValue type,
         PythonValue[] arguments,
@@ -5775,6 +5817,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         // is still the stub the class itself carries.
         if (PythonCollectionsAbc.RefuseInstantiation(type, span) is { } abstractRefusal)
             throw abstractRefusal;
+        if (IsProtocolClass(type))
+            throw Fault("DPY4003", "Protocols cannot be instantiated", span, "TypeError");
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(ConstructExceptionInstance(type, arguments, [], [], span));
@@ -5865,6 +5909,8 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         }
 
         EnsureClassAllocationSupported(type, span);
+        if (IsProtocolClass(type))
+            throw Fault("DPY4003", "Protocols cannot be instantiated", span, "TypeError");
         if (type.ExceptionBaseName is not null)
         {
             _evaluationStack.Push(

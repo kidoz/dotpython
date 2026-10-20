@@ -91,6 +91,12 @@ internal static class PythonTyping
         );
         globals.SetValue("Callable", CreateForm(TypingFormKind.Callable));
         globals.SetValue("Annotated", CreateForm(TypingFormKind.Annotated));
+        globals.SetValue("Generic", CreateForm(TypingFormKind.Generic));
+        globals.SetValue("Protocol", CreateForm(TypingFormKind.Protocol));
+        globals.SetValue(
+            "runtime_checkable",
+            new PythonBuiltinFunctionValue("runtime_checkable", RuntimeCheckable)
+        );
         globals.SetValue("NoDefault", NoDefault);
         globals.SetValue(
             "TypeVar",
@@ -595,6 +601,333 @@ internal static class PythonTyping
         );
     }
 
+    /// <summary>
+    /// A class's generic bases: the TypeVars collected from `Generic[...]`/`Protocol[...]`
+    /// and from parameterized bases become its own `__parameters__` (possibly empty, as
+    /// on a subclass of a generic), and a `Protocol` base marks the class. Every generic
+    /// class answers `Class[args]` with a generic alias through the subscription hook.
+    /// </summary>
+    internal static void ApplyGenericBases(
+        PythonManagedTypeValue type,
+        PythonTupleValue? originalBases,
+        PythonTupleValue resolvedBases
+    )
+    {
+        var parameters = new List<PythonValue>();
+        var listed = new List<PythonValue>();
+        var aliased = new List<PythonValue>();
+        var sawForm = false;
+        var sawAlias = false;
+        var protocol = false;
+        var formName = "Generic";
+        if (originalBases is not null)
+        {
+            foreach (var baseValue in originalBases.Elements)
+            {
+                if (
+                    baseValue is PythonExternalObjectValue
+                    {
+                        Protocol: TypingForm { Kind: TypingFormKind.Generic }
+                    }
+                )
+                {
+                    throw Error("Cannot inherit from plain Generic", default);
+                }
+                if (TryGetGenericBase(baseValue, out var isProtocol, out var arguments))
+                {
+                    sawForm = true;
+                    protocol |= isProtocol;
+                    if (isProtocol)
+                    {
+                        formName = "Protocol";
+                    }
+                    listed.AddRange(arguments);
+                    AddTypeVars(parameters, arguments);
+                }
+                else if (
+                    baseValue is PythonGenericAliasValue { Origin: PythonManagedTypeValue } alias
+                )
+                {
+                    sawAlias = true;
+                    AddTypeVars(parameters, alias.Arguments);
+                    aliased.AddRange(TypeVarArguments(alias.Arguments));
+                }
+            }
+        }
+        var inherited = false;
+        var protocolBase = false;
+        foreach (var baseValue in resolvedBases.Elements)
+        {
+            if (
+                baseValue is PythonManagedTypeValue baseType
+                && ManagedObjectProtocols.TryGetTypeAttribute(baseType, "__parameters__", out _)
+            )
+            {
+                inherited = true;
+            }
+            if (
+                baseValue is PythonManagedTypeValue protocolType
+                && protocolType.Attributes.TryGetValue("_is_protocol", out var marker)
+                && marker is PythonTruthValue { Value: true }
+            )
+            {
+                protocolBase = true;
+            }
+        }
+        if (sawForm)
+        {
+            var unlisted = aliased.Where(value => !listed.Contains(value)).ToArray();
+            if (unlisted.Length != 0)
+            {
+                throw Error(
+                    $"Some type variables ({JoinTypeVars(unlisted)}) are not listed in "
+                        + $"{formName}[{JoinTypeVars(listed)}]",
+                    default
+                );
+            }
+        }
+        if (protocol)
+        {
+            type.Attributes["_is_protocol"] = PythonTruthValue.True;
+        }
+        else if (protocolBase)
+        {
+            // A plain subclass of a protocol is concrete: CPython writes False into its
+            // own dictionary rather than letting the marker be inherited.
+            type.Attributes["_is_protocol"] = PythonTruthValue.False;
+        }
+        if (sawForm || sawAlias || inherited)
+        {
+            type.Attributes["__parameters__"] = new PythonTupleValue([.. parameters]);
+            if (!type.Attributes.TryGetValue("__class_getitem__", out _))
+            {
+                type.Attributes["__class_getitem__"] = new PythonProtocolFunctionValue(
+                    "__class_getitem__",
+                    (_, arguments) => PythonGenericAliasValue.Create(type, arguments[0])
+                )
+                {
+                    IsGenericPlaceholder = true,
+                };
+            }
+        }
+    }
+
+    /// <summary>
+    /// `Class[args]` for a generic class: the arguments must match its own
+    /// `__parameters__` in number; a class with none is not generic at all.
+    /// </summary>
+    internal static PythonValue SubscribeGeneric(
+        PythonManagedTypeValue type,
+        PythonTupleValue parameters,
+        PythonValue index,
+        TextSpan span
+    )
+    {
+        var arguments = index is PythonTupleValue tuple ? tuple.Elements : [index];
+        var expected = parameters.Elements.Length;
+        var display = type.ToRepresentationString();
+        if (expected == 0)
+        {
+            throw Error($"{display} is not a generic class", span);
+        }
+        if (arguments.Length != expected)
+        {
+            throw Error(
+                arguments.Length < expected
+                    ? $"Too few arguments for {display}; actual {arguments.Length}, "
+                        + $"expected at least {expected}"
+                    : $"Too many arguments for {display}; actual {arguments.Length}, "
+                        + $"expected {expected}",
+                span
+            );
+        }
+        return PythonGenericAliasValue.Create(type, index);
+    }
+
+    /// <summary>The TypeVars appearing in a type-argument list, in order.</summary>
+    internal static PythonValue[] TypeVarArguments(IReadOnlyList<PythonValue> values)
+    {
+        var result = new List<PythonValue>();
+        foreach (var value in values)
+        {
+            if (IsTypeVar(value))
+            {
+                result.Add(value);
+            }
+            else if (value is PythonGenericAliasValue alias)
+            {
+                result.AddRange(TypeVarArguments(alias.Arguments));
+            }
+        }
+        return [.. result];
+    }
+
+    private static void AddTypeVars(List<PythonValue> target, IReadOnlyList<PythonValue> values)
+    {
+        foreach (var value in TypeVarArguments(values))
+        {
+            if (!target.Contains(value))
+            {
+                target.Add(value);
+            }
+        }
+    }
+
+    private static string JoinTypeVars(IEnumerable<PythonValue> values) =>
+        string.Join(", ", values.Select(value => value.ToRepresentationString()));
+
+    /// <summary>
+    /// Whether a base expression is the unsubscripted `Generic` or `Protocol` name, which
+    /// CPython treats as a plain class base rather than a recorded `__orig_bases__` entry.
+    /// </summary>
+    internal static bool IsBareGenericOrProtocolForm(PythonValue value) =>
+        value
+            is PythonExternalObjectValue
+            {
+                Protocol: TypingForm { Kind: TypingFormKind.Generic or TypingFormKind.Protocol }
+            };
+
+    /// <summary>Whether a base expression is a `Generic[...]`/`Protocol[...]` form.</summary>
+    internal static bool TryGetGenericBase(
+        PythonValue value,
+        out bool protocol,
+        out PythonValue[] arguments
+    )
+    {
+        switch (value)
+        {
+            case PythonExternalObjectValue { Protocol: TypingForm form }
+                when form.Kind is TypingFormKind.Generic or TypingFormKind.Protocol:
+                protocol = form.Kind == TypingFormKind.Protocol;
+                arguments = [];
+                return true;
+            case PythonExternalObjectValue { Protocol: GenericBaseValue generic }:
+                protocol = generic.IsProtocol;
+                arguments = generic.Arguments;
+                return true;
+            default:
+                protocol = false;
+                arguments = [];
+                return false;
+        }
+    }
+
+    private static bool IsTypeVar(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: TypeVarState };
+
+    /// <summary>`runtime_checkable(ProtocolClass)`: marks the class and answers it unchanged.
+    /// Structural `isinstance` checks are not part of this slice.</summary>
+    private static PythonValue RuntimeCheckable(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count == 0)
+        {
+            throw Error("runtime_checkable() missing 1 required positional argument: 'cls'", span);
+        }
+        if (arguments.Count > 1)
+        {
+            throw Error(
+                $"runtime_checkable() takes 1 positional argument but "
+                    + $"{arguments.Count} were given",
+                span
+            );
+        }
+        if (!PythonTypeProtocols.IsType(arguments[0]))
+        {
+            throw Error("issubclass() arg 1 must be a class", span);
+        }
+        if (arguments[0] is PythonManagedTypeValue type)
+        {
+            type.Attributes["_is_runtime_protocol"] = PythonTruthValue.True;
+        }
+        return arguments[0];
+    }
+
+    private sealed class GenericBaseValue(
+        PythonValue form,
+        bool isProtocol,
+        PythonValue[] arguments
+    ) : PythonExternalObjectProtocol
+    {
+        internal PythonValue Form { get; } = form;
+
+        internal bool IsProtocol { get; } = isProtocol;
+
+        internal PythonValue[] Arguments { get; } = arguments;
+
+        private string Render() =>
+            $"{Form.ToDisplayString()}[{string.Join(", ", Arguments.Select(RenderArgument))}]";
+
+        private static string RenderArgument(PythonValue argument) =>
+            argument switch
+            {
+                PythonManagedTypeValue type => type.QualifiedDisplayName,
+                PythonBuiltinTypeValue type => type.Name,
+                _ => argument.ToDisplayString(),
+            };
+
+        PythonValue PythonExternalObjectProtocol.Call(
+            IReadOnlyList<PythonValue> arguments,
+            TextSpan span
+        ) => throw Error($"Cannot instantiate {Render()}", span);
+
+        PythonValue PythonExternalObjectProtocol.CallWithKeywords(
+            IReadOnlyList<PythonValue> arguments,
+            IReadOnlyList<string> keywordNames,
+            IReadOnlyList<PythonValue> keywordValues,
+            TextSpan span
+        ) => throw Error($"Cannot instantiate {Render()}", span);
+
+        PythonValue PythonExternalObjectProtocol.GetAttribute(string attribute, TextSpan span) =>
+            attribute switch
+            {
+                "__module__" => new PythonTextValue(Module),
+                "__origin__" => Form,
+                "__args__" => new PythonTupleValue([.. Arguments]),
+                "__parameters__" => new PythonTupleValue([.. Arguments.Where(IsTypeVar)]),
+                "__mro_entries__" => new PythonBuiltinFunctionValue(
+                    "__mro_entries__",
+                    (_, _) => new PythonTupleValue([PythonBuiltinFunctions.Object])
+                ),
+                _ => throw ManagedObjectProtocols.Fault(
+                    "DPY4022",
+                    $"'{Render()}' object has no attribute '{attribute}'",
+                    span,
+                    "AttributeError"
+                ),
+            };
+
+        PythonValue PythonExternalObjectProtocol.GetItem(PythonValue index, TextSpan span) =>
+            throw Error($"{Render()} is not subscriptable", span);
+
+        long PythonExternalObjectProtocol.GetHash(TextSpan span) =>
+            StringComparer.Ordinal.GetHashCode(Render());
+
+        int PythonExternalObjectProtocol.GetLength(TextSpan span) => Arguments.Length;
+
+        PythonTruthValue PythonExternalObjectProtocol.RichCompare(
+            PythonValue other,
+            PythonRichComparison comparison,
+            TextSpan span
+        )
+        {
+            var equal =
+                other is PythonExternalObjectValue { Protocol: GenericBaseValue generic }
+                && Render() == generic.Render();
+            return comparison switch
+            {
+                PythonRichComparison.Equal => PythonTruthValue.FromBoolean(equal),
+                PythonRichComparison.NotEqual => PythonTruthValue.FromBoolean(!equal),
+                _ => PythonTruthValue.False,
+            };
+        }
+
+        bool PythonExternalObjectProtocol.IsInstanceOf(PythonValue value, TextSpan span) => false;
+
+        string PythonExternalObjectProtocol.ToDisplayString() => Render();
+
+        string PythonExternalObjectProtocol.ToRepresentationString() => Render();
+    }
+
     private static PythonExternalObjectValue CreateForm(
         TypingFormKind kind,
         string? name = null,
@@ -637,6 +970,10 @@ internal static class PythonTyping
 
         /// <summary>`Annotated[type, metadata, ...]`.</summary>
         Annotated,
+
+        /// <summary>`Generic[T, ...]` and `Protocol[T, ...]` bases.</summary>
+        Generic,
+        Protocol,
     }
 
     /// <summary>
@@ -654,6 +991,8 @@ internal static class PythonTyping
     {
         private readonly string _displayName = $"{Module}.{name}";
 
+        internal TypingFormKind Kind { get; } = kind;
+
         /// <summary>The value that wraps this form, needed as the origin of its own aliases.</summary>
         internal PythonValue Self { get; set; } = null!;
 
@@ -662,7 +1001,7 @@ internal static class PythonTyping
         /// itself for `Callable` (whose CPython origin, `collections.abc.Callable`, is not part
         /// of this slice), and null for the forms CPython reports no origin for.
         /// </summary>
-        internal PythonValue? Origin => origin ?? (kind == TypingFormKind.Callable ? Self : null);
+        internal PythonValue? Origin => origin ?? (Kind == TypingFormKind.Callable ? Self : null);
 
         PythonValue PythonExternalObjectProtocol.Call(
             IReadOnlyList<PythonValue> arguments,
@@ -678,7 +1017,7 @@ internal static class PythonTyping
 
         private PythonRuntimeException Instantiate(TextSpan span) =>
             Error(
-                kind switch
+                Kind switch
                 {
                     TypingFormKind.Container =>
                         $"Type {name} cannot be instantiated; use {originName}() instead",
@@ -691,6 +1030,11 @@ internal static class PythonTyping
             attribute switch
             {
                 "__module__" => new PythonTextValue(Module),
+                "__mro_entries__" when Kind is TypingFormKind.Generic or TypingFormKind.Protocol =>
+                    new PythonBuiltinFunctionValue(
+                        "__mro_entries__",
+                        (_, _) => new PythonTupleValue([PythonBuiltinFunctions.Object])
+                    ),
                 "__origin__" when Origin is not null => Origin,
                 _ => throw ManagedObjectProtocols.Fault(
                     "DPY4022",
@@ -703,7 +1047,7 @@ internal static class PythonTyping
         PythonValue PythonExternalObjectProtocol.GetItem(PythonValue index, TextSpan span)
         {
             PythonValue[] members = index is PythonTupleValue tuple ? tuple.Elements : [index];
-            return kind switch
+            return Kind switch
             {
                 TypingFormKind.Optional when members.Length == 1 => PythonTypeUnionValue.Combine(
                     Member(members[0]),
@@ -727,6 +1071,15 @@ internal static class PythonTyping
                 TypingFormKind.NoReturn or TypingFormKind.Never or TypingFormKind.Self =>
                     throw Error($"typing.{name} is not subscriptable", span),
                 TypingFormKind.Callable => SubscribeCallable(members, index, span),
+                TypingFormKind.Generic or TypingFormKind.Protocol => members.All(IsTypeVar)
+                    ? new PythonExternalObjectValue(
+                        new GenericBaseValue(Self, Kind == TypingFormKind.Protocol, members)
+                    )
+                    : throw Error(
+                        $"Parameters to {name}[...] must all be type variables "
+                            + "or parameter specification variables.",
+                        span
+                    ),
                 TypingFormKind.Annotated => members.Length >= 2
                     ? new PythonExternalObjectValue(new AnnotatedAlias(Self, members))
                     : throw Error(
@@ -800,7 +1153,7 @@ internal static class PythonTyping
         /// the remaining special forms are refused the way CPython refuses them.
         /// </summary>
         bool PythonExternalObjectProtocol.IsInstanceOf(PythonValue value, TextSpan span) =>
-            kind switch
+            Kind switch
             {
                 _ when origin is not null => PythonBuiltinTypes.IsInstance(value, origin),
                 _ => throw Error($"typing.{name} cannot be used with isinstance()", span),
@@ -808,7 +1161,12 @@ internal static class PythonTyping
 
         string PythonExternalObjectProtocol.ToDisplayString() => _displayName;
 
-        string PythonExternalObjectProtocol.ToRepresentationString() => _displayName;
+        // `Generic` and `Protocol` are classes in CPython, though the runtime models them
+        // as forms; they alone carry a class repr.
+        string PythonExternalObjectProtocol.ToRepresentationString() =>
+            Kind is TypingFormKind.Generic or TypingFormKind.Protocol
+                ? $"<class '{_displayName}'>"
+                : _displayName;
     }
 
     private static PythonRuntimeException Error(
