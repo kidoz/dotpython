@@ -110,4 +110,54 @@ public sealed class DeferredAnnotationCompatibilityTests
             print(q.__annotations__)
             """
         );
+
+    /// <summary>
+    /// The writable annotation surface: replacement, clearing, invalidation and the
+    /// refusals for values that are not dicts or callables.
+    /// </summary>
+    [Fact]
+    public Task AnnotationsCanBeReplacedClearedAndRecomputed() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            def f(x: int) -> str: pass
+            f.__annotations__ = {"z": 1}
+            print(f.__annotations__, f.__annotate__)
+            try:
+                f.__annotate__(1)
+            except TypeError as e:
+                print(e)
+            f.__annotations__ = None
+            print(f.__annotations__, f.__annotate__)
+            try:
+                f.__annotations__ = 5
+            except TypeError as e:
+                print(e)
+            try:
+                f.__annotate__ = 5
+            except TypeError as e:
+                print(e)
+            try:
+                del f.__annotate__
+            except TypeError as e:
+                print(e)
+            def g(x: int): pass
+            g.__annotate__ = lambda fmt: {"q": 1}
+            print(g.__annotations__)
+            g.__annotate__ = None
+            print(g.__annotations__, g.__annotate__)
+            def h(x: int): pass
+            h.__annotate__ = lambda fmt: 7
+            try:
+                h.__annotations__
+            except TypeError as e:
+                print(e)
+            def k(x: int): pass
+            first = k.__annotations__
+            k.__annotate__ = lambda fmt: {"r": 2}
+            second = k.__annotations__
+            print(first, second, second is k.__annotations__)
+            del k.__annotations__
+            print(k.__annotations__, k.__annotate__)
+            """"
+        );
 }

@@ -1271,7 +1271,7 @@ internal sealed record PythonFunctionValue(
     internal PythonValue? Annotate { get; set; }
 
     /// <summary>The cached `__annotations__` mapping, discarded when `__annotate__` changes.</summary>
-    internal PythonDictionaryValue? Annotations { get; set; }
+    internal PythonValue? Annotations { get; set; }
 
     /// <summary>
     /// The class namespace an annotation body resolves against, or null when the

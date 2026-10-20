@@ -1526,12 +1526,21 @@ internal static class PythonStandardModules
 
         return target switch
         {
-            PythonFunctionValue function => ManagedObjectProtocols.GetFunctionAnnotations(
+            PythonFunctionValue function => ManagedObjectProtocols.CopyAnnotations(
                 function,
+                ManagedObjectProtocols.GetFunctionAnnotations(function, span),
                 span
             ),
-            PythonManagedTypeValue type => ManagedObjectProtocols.GetTypeAnnotations(type, span),
-            PythonModuleValue module => ManagedObjectProtocols.GetModuleAnnotations(module, span),
+            PythonManagedTypeValue type => ManagedObjectProtocols.CopyAnnotations(
+                type,
+                ManagedObjectProtocols.GetTypeAnnotations(type, span),
+                span
+            ),
+            PythonModuleValue module => ManagedObjectProtocols.CopyAnnotations(
+                module,
+                ManagedObjectProtocols.GetModuleAnnotations(module, span),
+                span
+            ),
             _ => throw new PythonRuntimeException(
                 "DPY4038",
                 $"'{ManagedObjectProtocols.GetTypeName(target)}' object does not support annotations.",

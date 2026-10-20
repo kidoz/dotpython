@@ -194,6 +194,78 @@ public sealed class DeferredAnnotationExecutionTests
         );
     }
 
+    /// <summary>
+    /// Assigning `__annotations__` replaces the mapping and drops the annotate body;
+    /// assigning `__annotate__` invalidates the cache, while None keeps it. A body that
+    /// answers a non-dict is refused when the mapping is read.
+    /// </summary>
+    [Fact]
+    public void AnnotationsCanBeReplacedClearedAndRecomputed()
+    {
+        var output = Run(
+            """"
+            def f(x: int) -> str: pass
+            f.__annotations__ = {"z": 1}
+            print(f.__annotations__, f.__annotate__)
+            try:
+                f.__annotate__(1)
+            except TypeError as e:
+                print(e)
+            f.__annotations__ = None
+            print(f.__annotations__, f.__annotate__)
+            try:
+                f.__annotations__ = 5
+            except TypeError as e:
+                print(e)
+            try:
+                f.__annotate__ = 5
+            except TypeError as e:
+                print(e)
+            try:
+                del f.__annotate__
+            except TypeError as e:
+                print(e)
+            def g(x: int): pass
+            g.__annotate__ = lambda fmt: {"q": 1}
+            print(g.__annotations__)
+            g.__annotate__ = None
+            print(g.__annotations__, g.__annotate__)
+            def h(x: int): pass
+            h.__annotate__ = lambda fmt: 7
+            try:
+                h.__annotations__
+            except TypeError as e:
+                print(e)
+            def k(x: int): pass
+            first = k.__annotations__
+            k.__annotate__ = lambda fmt: {"r": 2}
+            second = k.__annotations__
+            print(first, second, second is k.__annotations__)
+            del k.__annotations__
+            print(k.__annotations__, k.__annotate__)
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "{'z': 1} None",
+                "'NoneType' object is not callable",
+                "{} None",
+                "__annotations__ must be set to a dict object",
+                "__annotate__ must be callable or None",
+                "__annotate__ cannot be deleted",
+                "{'q': 1}",
+                "{'q': 1} None",
+                "__annotate__ returned non-dict of type 'int'",
+                "{'x': <class 'int'>} {'r': 2} True",
+                "{} None",
+                ""
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         var engine = new ManagedPythonEngine();

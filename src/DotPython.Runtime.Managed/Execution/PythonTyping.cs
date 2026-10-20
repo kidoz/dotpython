@@ -233,14 +233,10 @@ internal static class PythonTyping
             return new PythonDictionaryValue([]);
         }
 
-        // The runtime caches the evaluated mapping on the object, so hand back a copy the way
-        // CPython hands back a fresh dict.
-        var result = new PythonDictionaryValue([]);
-        foreach (var item in annotations.Items)
-        {
-            ManagedObjectProtocols.SetDictionaryItem(result, item.Key, item.Value, span);
-        }
-        return result;
+        // The runtime caches the evaluated mapping on the object, so hand back a copy the
+        // way CPython hands back a fresh dict; a class or module whose stored mapping is
+        // not a dictionary is refused with the same wording annotationlib uses.
+        return ManagedObjectProtocols.CopyAnnotations(arguments[0], annotations, span);
     }
 
     private static PythonExternalObjectValue CreateForm(

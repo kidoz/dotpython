@@ -828,7 +828,12 @@ internal static class PythonDataclasses
             type.Attributes.TryGetValue("__annotations__", out var directAnnotations)
             && directAnnotations is PythonDictionaryValue annotationMapping
                 ? annotationMapping
-                : ManagedObjectProtocols.GetTypeAnnotations(type, span);
+                : ManagedObjectProtocols.GetTypeAnnotations(type, span) switch
+                {
+                    PythonDictionaryValue direct => direct,
+                    var resolved => PythonSubclassStorage.Of(resolved) as PythonDictionaryValue
+                        ?? new PythonDictionaryValue([]),
+                };
         var classFields = new List<PythonManagedObjectValue>();
         var kwOnlySeen = false;
         var defaultKwOnly = kwOnly;

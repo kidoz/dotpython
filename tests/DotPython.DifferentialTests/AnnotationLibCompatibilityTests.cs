@@ -97,4 +97,33 @@ public sealed class AnnotationLibCompatibilityTests
             print(annotationlib.annotations_to_string({'a': int, 'b': 'q', 'c': None}))
             """
         );
+
+    /// <summary>
+    /// `get_annotations` copies the stored mapping and refuses a class whose stored
+    /// value is neither a dict nor None.
+    /// </summary>
+    [Fact]
+    public Task GetAnnotationsReturnsAFreshMapping() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            import annotationlib
+            def f(x: int): pass
+            a = annotationlib.get_annotations(f)
+            print(a is f.__annotations__, a == f.__annotations__)
+            class C: pass
+            C.__annotations__ = 5
+            try:
+                annotationlib.get_annotations(C)
+            except ValueError as e:
+                print(type(e).__name__, e)
+            C.__annotations__ = None
+            try:
+                annotationlib.get_annotations(C)
+            except ValueError as e:
+                print(type(e).__name__, e)
+            class D: pass
+            d = annotationlib.get_annotations(D)
+            print(d is D.__annotations__, d)
+            """"
+        );
 }
