@@ -12,9 +12,9 @@ public sealed class FractionsModuleExecutionTests
     /// the mixed-mode arithmetic that promotes to float and complex, the comparison and
     /// hashing rules shared with `int` and `float`, `limit_denominator`, the `from_*`
     /// constructors, copy and pickle, and the general and float-style format grammars.
-    /// The `numbers` ABCs and `Decimal` are absent from the runtime, so the MRO stops at
-    /// `object` and `from_decimal` reports the missing module; those local answers are
-    /// pinned at the end.
+    /// The `numbers` ABCs are absent from the runtime, so the MRO stops at `object`;
+    /// that local answer, with `from_decimal` now exercised against the decimal module,
+    /// is pinned at the end.
     /// </summary>
     [Fact]
     public void TheFractionsModuleAnswersAsCpythonDoes()
@@ -122,7 +122,7 @@ public sealed class FractionsModuleExecutionTests
                 "fmt-types '0.125000' '1.000000E+06' '1E-06' '12.34' '12.3400' '0.000000e+00' '0'",
                 "fmt-pad '*******3/4' '3/4*******' '***3/4****' '-******3/4' '      0.75' '0000000.75'",
                 "subfmt ('0.33', '1/3', '1/3')",
-                "local-decimal ModuleNotFoundError: No module named 'decimal'",
+                "local-decimal Fraction(3, 1)",
                 "local-mro (<class 'fractions.Fraction'>, <class 'object'>)",
                 "local-bases (<class 'object'>,)",
                 "local-names ['Fraction']"

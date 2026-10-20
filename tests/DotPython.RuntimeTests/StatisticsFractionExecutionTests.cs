@@ -90,7 +90,7 @@ public sealed class StatisticsFractionExecutionTests
                 "nd-frac NormalDist(mu=0.5, sigma=0.23570226039551584) NormalDist(mu=2.5, sigma=1.2909944487358056)",
                 "harm-extra Fraction(0, 1) 0 StatisticsError: Weighted sum must be positive Fraction(3, 2) 1.5 TypeError: unsupported type TypeError: '<' not supported between instances of 'str' and 'int' TypeError: '<' not supported between instances of 'str' and 'int'",
                 "sumprod -0.11111111111111112",
-                "local-decimal ModuleNotFoundError: No module named 'decimal'"
+                "local-decimal Decimal('0.5')"
             ),
             output
         );

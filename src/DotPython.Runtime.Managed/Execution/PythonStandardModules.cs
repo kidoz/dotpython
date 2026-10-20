@@ -589,6 +589,11 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonFractionsModule.Initialize
         );
+        modules["decimal"] = PythonModuleDefinition.Native(
+            "<dotpython decimal>",
+            isPackage: false,
+            PythonDecimalModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>

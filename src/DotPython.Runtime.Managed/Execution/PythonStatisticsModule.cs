@@ -370,19 +370,51 @@ internal static class PythonStatisticsModule
         Int,
         Float,
         Fraction,
+        Decimal,
     }
 
     private static Kind KindOf(PythonValue value) =>
-        PythonFractionsModule.TryFractionParts(value, out _, out _) ? Kind.Fraction
+        PythonDecimalModule.TryDecimalRatio(value, out _, out _) >= 0 ? Kind.Decimal
+        : PythonFractionsModule.TryFractionParts(value, out _, out _) ? Kind.Fraction
         : value is PythonFloatingPointValue ? Kind.Float
         : Kind.Int;
 
-    /// <summary>`_coerce`: ints join the other type, and Fraction joins float.</summary>
-    private static Kind Coerce(Kind left, Kind right) =>
-        left == right ? left
-        : left == Kind.Int ? right
-        : right == Kind.Int ? left
-        : Kind.Float;
+    private static string KindName(Kind kind) =>
+        kind switch
+        {
+            Kind.Float => "float",
+            Kind.Fraction => "Fraction",
+            Kind.Decimal => "Decimal",
+            _ => "int",
+        };
+
+    /// <summary>
+    /// `_coerce`: ints join the other type, Fraction and float meet at float, and
+    /// Decimal refuses every other type.
+    /// </summary>
+    private static Kind Coerce(Kind left, Kind right, TextSpan span)
+    {
+        if (left == right)
+        {
+            return left;
+        }
+        if (left == Kind.Int)
+        {
+            return right;
+        }
+        if (right == Kind.Int)
+        {
+            return left;
+        }
+        if (
+            (left == Kind.Float && right == Kind.Fraction)
+            || (left == Kind.Fraction && right == Kind.Float)
+        )
+        {
+            return Kind.Float;
+        }
+        throw TypeFault($"don't know how to coerce {KindName(left)} and {KindName(right)}", span);
+    }
 
     /// <summary>`_exact_ratio`: a value's exact numerator and denominator.</summary>
     private static (Ratio Ratio, Special Special) ExactRatio(PythonValue value)
@@ -390,6 +422,21 @@ internal static class PythonStatisticsModule
         if (PythonFractionsModule.TryFractionParts(value, out var numerator, out var denominator))
         {
             return (new Ratio(numerator, denominator), Special.None);
+        }
+        var decimalKind = PythonDecimalModule.TryDecimalRatio(
+            value,
+            out var decimalNumerator,
+            out var decimalDenominator
+        );
+        if (decimalKind >= 0)
+        {
+            return decimalKind switch
+            {
+                1 => (Ratio.Zero, Special.NotANumber),
+                2 => (Ratio.Zero, Special.PositiveInfinity),
+                3 => (Ratio.Zero, Special.NegativeInfinity),
+                _ => (new Ratio(decimalNumerator, decimalDenominator), Special.None),
+            };
         }
         return value switch
         {
@@ -455,6 +502,21 @@ internal static class PythonStatisticsModule
         {
             return new Ratio(numerator, denominator).ToDouble();
         }
+        var decimalKind = PythonDecimalModule.TryDecimalRatio(
+            value,
+            out var decimalNumerator,
+            out var decimalDenominator
+        );
+        if (decimalKind >= 0)
+        {
+            return decimalKind switch
+            {
+                1 => double.NaN,
+                2 => double.PositiveInfinity,
+                3 => double.NegativeInfinity,
+                _ => new Ratio(decimalNumerator, decimalDenominator).ToDouble(),
+            };
+        }
         return value switch
         {
             PythonWholeNumberValue whole => (double)whole.Value,
@@ -473,19 +535,34 @@ internal static class PythonStatisticsModule
         kind switch
         {
             Kind.Fraction => PythonFractionsModule.FromRatio(value.Numerator, value.Denominator),
+            Kind.Decimal => PythonDecimalModule.DecimalFromRatio(
+                value.Numerator,
+                value.Denominator
+            ),
             Kind.Float => new PythonFloatingPointValue(value.ToDouble()),
             _ => value.IsInteger
                 ? PythonWholeNumberValue.Create(value.Numerator / value.Denominator)
                 : new PythonFloatingPointValue(value.ToDouble()),
         };
 
-    private static PythonFloatingPointValue SpecialValue(Special special) =>
-        special switch
+    private static PythonValue SpecialValue(Special special, Kind kind)
+    {
+        if (kind == Kind.Decimal)
+        {
+            return special switch
+            {
+                Special.NotANumber => PythonDecimalModule.DecimalSpecial("NaN", false),
+                Special.PositiveInfinity => PythonDecimalModule.DecimalSpecial("Infinity", false),
+                _ => PythonDecimalModule.DecimalSpecial("Infinity", true),
+            };
+        }
+        return special switch
         {
             Special.NotANumber => new PythonFloatingPointValue(double.NaN),
             Special.PositiveInfinity => new PythonFloatingPointValue(double.PositiveInfinity),
             _ => new PythonFloatingPointValue(double.NegativeInfinity),
         };
+    }
 
     private sealed class ExactSum
     {
@@ -507,14 +584,14 @@ internal static class PythonStatisticsModule
                 return;
             }
             Total = Total.Add(ratio);
-            Kind = Coerce(Kind, KindOf(value));
+            Kind = Coerce(Kind, KindOf(value), default);
         }
 
         /// <summary>Adds an already exact term of the given type.</summary>
         internal void AddRatio(Ratio ratio, Kind kind)
         {
             Count++;
-            Kind = Coerce(Kind, kind);
+            Kind = Coerce(Kind, kind, default);
             Total = Total.Add(ratio);
         }
     }
@@ -536,7 +613,7 @@ internal static class PythonStatisticsModule
         }
         if (sum.SpecialValue != Special.None)
         {
-            return SpecialValue(sum.SpecialValue);
+            return SpecialValue(sum.SpecialValue, sum.Kind);
         }
         return Convert(sum.Total.Divide(new Ratio(sum.Count, BigInteger.One)), sum.Kind);
     }
@@ -552,16 +629,44 @@ internal static class PythonStatisticsModule
             {
                 throw Error("data and weights must be the same length", span);
             }
-            var numerator = SumProdExact(
-                [.. data.Select(value => ToDouble(value, span))],
-                [.. weightValues.Select(value => ToDouble(value, span))]
-            );
+            var productTotal = Ratio.Zero;
+            var productKind = Kind.Int;
+            for (var index = 0; index < data.Count; index++)
+            {
+                var leftKind = KindOf(data[index]);
+                var rightKind = KindOf(weightValues[index]);
+                var termKind = ProductKind(leftKind, rightKind, span);
+                if (termKind == Kind.Float)
+                {
+                    var product = ToDouble(data[index], span) * ToDouble(weightValues[index], span);
+                    productTotal = productTotal.Add(ExactRatio(product).Ratio);
+                }
+                else
+                {
+                    var left = ExactRatio(data[index]);
+                    var right = ExactRatio(weightValues[index]);
+                    if (left.Special != Special.None || right.Special != Special.None)
+                    {
+                        var special = left.Special != Special.None ? left.Special : right.Special;
+                        return SpecialValue(special, productKind);
+                    }
+                    productTotal = productTotal.Add(left.Ratio.Multiply(right.Ratio));
+                }
+                productKind = SumKind(productKind, termKind, span);
+            }
             var denominator = PythonFSum.Sum(weightValues.Select(value => ToDouble(value, span)));
             if (denominator == 0)
             {
                 throw Error("sum of weights must be non-zero", span);
             }
-            return new PythonFloatingPointValue(numerator / denominator);
+            if (productKind == Kind.Decimal)
+            {
+                throw TypeFault(
+                    "unsupported operand type(s) for /: 'decimal.Decimal' and 'float'",
+                    span
+                );
+            }
+            return new PythonFloatingPointValue(productTotal.ToDouble() / denominator);
         }
         if (data.Count == 0)
         {
@@ -571,6 +676,69 @@ internal static class PythonStatisticsModule
             PythonFSum.Sum(data.Select(value => ToDouble(value, span))) / data.Count
         );
     }
+
+    private static Kind ProductKind(Kind left, Kind right, TextSpan span)
+    {
+        if (left == Kind.Int)
+        {
+            return right;
+        }
+        if (right == Kind.Int)
+        {
+            return left;
+        }
+        if (left == right)
+        {
+            return left;
+        }
+        if (
+            (left == Kind.Float && right == Kind.Fraction)
+            || (left == Kind.Fraction && right == Kind.Float)
+        )
+        {
+            return Kind.Float;
+        }
+        throw TypeFault(
+            $"unsupported operand type(s) for *: '{TypeName(left)}' and '{TypeName(right)}'",
+            span
+        );
+    }
+
+    private static Kind SumKind(Kind left, Kind right, TextSpan span)
+    {
+        if (left == right)
+        {
+            return left;
+        }
+        if (left == Kind.Int)
+        {
+            return right;
+        }
+        if (right == Kind.Int)
+        {
+            return left;
+        }
+        if (
+            (left == Kind.Float && right == Kind.Fraction)
+            || (left == Kind.Fraction && right == Kind.Float)
+        )
+        {
+            return Kind.Float;
+        }
+        throw TypeFault(
+            $"unsupported operand type(s) for +: '{TypeName(left)}' and '{TypeName(right)}'",
+            span
+        );
+    }
+
+    private static string TypeName(Kind kind) =>
+        kind switch
+        {
+            Kind.Decimal => "decimal.Decimal",
+            Kind.Fraction => "fractions.Fraction",
+            Kind.Float => "float",
+            _ => "int",
+        };
 
     private static PythonValue GeometricMean(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
@@ -677,13 +845,39 @@ internal static class PythonStatisticsModule
             {
                 return PythonWholeNumberValue.Create(0);
             }
-            var kind = Coerce(KindOf(weight), KindOf(value));
-            if (kind == Kind.Fraction)
+            var leftKind = KindOf(weight);
+            var rightKind = KindOf(value);
+            Kind kind;
+            if (leftKind == Kind.Int)
             {
-                terms.AddRatio(
-                    ExactRatio(weight).Ratio.Divide(ExactRatio(value).Ratio),
-                    Kind.Fraction
+                kind = rightKind;
+            }
+            else if (rightKind == Kind.Int)
+            {
+                kind = leftKind;
+            }
+            else if (leftKind == rightKind)
+            {
+                kind = leftKind;
+            }
+            else if (
+                (leftKind == Kind.Float && rightKind == Kind.Fraction)
+                || (leftKind == Kind.Fraction && rightKind == Kind.Float)
+            )
+            {
+                kind = Kind.Float;
+            }
+            else
+            {
+                throw TypeFault(
+                    $"unsupported operand type(s) for /: '{TypeName(leftKind)}' and "
+                        + $"'{TypeName(rightKind)}'",
+                    span
                 );
+            }
+            if (kind is Kind.Fraction or Kind.Decimal)
+            {
+                terms.AddRatio(ExactRatio(weight).Ratio.Divide(ExactRatio(value).Ratio), kind);
             }
             else
             {
@@ -693,7 +887,7 @@ internal static class PythonStatisticsModule
         }
         if (terms.SpecialValue != Special.None)
         {
-            return SpecialValue(terms.SpecialValue);
+            return SpecialValue(terms.SpecialValue, terms.Kind);
         }
         if (terms.Total.CompareTo(Ratio.Zero) <= 0)
         {
@@ -704,7 +898,8 @@ internal static class PythonStatisticsModule
 
     private static bool IsNumeric(PythonValue value) =>
         value is PythonWholeNumberValue or PythonTruthValue or PythonFloatingPointValue
-        || PythonFractionsModule.TryFractionParts(value, out _, out _);
+        || PythonFractionsModule.TryFractionParts(value, out _, out _)
+        || PythonDecimalModule.TryDecimalRatio(value, out _, out _) >= 0;
 
     private static void RequireComparable(PythonValue value, TextSpan span)
     {
@@ -747,11 +942,11 @@ internal static class PythonStatisticsModule
         var sum = new ExactSum();
         sum.Add(data[middle - 1]);
         sum.Add(data[middle]);
-        var kind = Coerce(KindOf(data[middle - 1]), KindOf(data[middle]));
+        var kind = SumKind(KindOf(data[middle - 1]), KindOf(data[middle]), span);
         // The middle values are divided, so integers produce a float.
         return Convert(
             sum.Total.Divide(new Ratio(2, BigInteger.One)),
-            kind == Kind.Fraction ? Kind.Fraction : Kind.Float
+            kind == Kind.Int ? Kind.Float : kind
         );
     }
 
@@ -901,7 +1096,7 @@ internal static class PythonStatisticsModule
         }
         if (special != Special.None)
         {
-            return SpecialValue(special);
+            return SpecialValue(special, kind);
         }
         return Convert(
             deviation.Divide(new Ratio(sample ? count - 1 : count, BigInteger.One)),
@@ -939,7 +1134,11 @@ internal static class PythonStatisticsModule
                 }
                 var difference = ratio.Add(given.Negate());
                 total = total.Add(difference.Multiply(difference));
-                centreResultKind = Coerce(centreResultKind, Coerce(KindOf(value), centreKind));
+                centreResultKind = Coerce(
+                    centreResultKind,
+                    Coerce(KindOf(value), centreKind, default),
+                    default
+                );
             }
             return (total, data.Count, centreResultKind, special);
         }
@@ -959,7 +1158,7 @@ internal static class PythonStatisticsModule
             }
             sum = sum.Add(ratio);
             squares = squares.Add(ratio.Multiply(ratio));
-            kind = Coerce(kind, KindOf(value));
+            kind = Coerce(kind, KindOf(value), default);
         }
         if (count == 0)
         {
@@ -976,13 +1175,13 @@ internal static class PythonStatisticsModule
     private static PythonValue PStdev(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
         StdevCore(arguments, span, sample: false);
 
-    private static PythonFloatingPointValue StdevCore(
+    private static PythonValue StdevCore(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span,
         bool sample
     )
     {
-        var (deviation, count, _, special) = SumOfSquares(arguments, span);
+        var (deviation, count, kind, special) = SumOfSquares(arguments, span);
         if (sample && count < 2)
         {
             throw Error("stdev requires at least two data points", span);
@@ -995,14 +1194,29 @@ internal static class PythonStatisticsModule
         {
             throw ValueFault("inf or nan encountered in data", span);
         }
-        return new PythonFloatingPointValue(
-            SqrtOfRatio(deviation.Divide(new Ratio(sample ? count - 1 : count, BigInteger.One)))
-        );
+        var meanSquare = deviation.Divide(new Ratio(sample ? count - 1 : count, BigInteger.One));
+        return kind == Kind.Decimal
+            ? PythonDecimalModule.DecimalSqrtOfRatio(meanSquare.Numerator, meanSquare.Denominator)
+            : new PythonFloatingPointValue(SqrtOfRatio(meanSquare));
     }
 
     // -----------------------------------------------------------------------------
     // Relations between two inputs
     // -----------------------------------------------------------------------------
+
+    private static void RefuseDecimalSubtraction(IReadOnlyList<PythonValue> values, TextSpan span)
+    {
+        foreach (var value in values)
+        {
+            if (PythonDecimalModule.TryDecimalRatio(value, out _, out _) >= 0)
+            {
+                throw TypeFault(
+                    "unsupported operand type(s) for -: 'decimal.Decimal' and 'float'",
+                    span
+                );
+            }
+        }
+    }
 
     private static PythonValue Covariance(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
@@ -1020,6 +1234,8 @@ internal static class PythonStatisticsModule
         {
             throw Error("covariance requires at least two data points", span);
         }
+        RefuseDecimalSubtraction(x, span);
+        RefuseDecimalSubtraction(y, span);
         var xbar = PythonFSum.Sum(x.Select(value => ToDouble(value, span))) / count;
         var ybar = PythonFSum.Sum(y.Select(value => ToDouble(value, span))) / count;
         var left = new double[count];
@@ -1068,6 +1284,8 @@ internal static class PythonStatisticsModule
         }
         else
         {
+            RefuseDecimalSubtraction(x, span);
+            RefuseDecimalSubtraction(y, span);
             var xbar = PythonFSum.Sum(x.Select(value => ToDouble(value, span))) / count;
             var ybar = PythonFSum.Sum(y.Select(value => ToDouble(value, span))) / count;
             left = [.. x.Select(value => ToDouble(value, span) - xbar)];
@@ -1107,11 +1325,23 @@ internal static class PythonStatisticsModule
             ybar = 0.0;
         if (proportional)
         {
+            foreach (var value in x.Concat(y))
+            {
+                if (PythonDecimalModule.TryDecimalRatio(value, out _, out _) >= 0)
+                {
+                    throw TypeFault(
+                        "unsupported operand type(s) for +: 'decimal.Decimal' and 'float'",
+                        span
+                    );
+                }
+            }
             left = [.. x.Select(value => ToDouble(value, span))];
             right = [.. y.Select(value => ToDouble(value, span))];
         }
         else
         {
+            RefuseDecimalSubtraction(x, span);
+            RefuseDecimalSubtraction(y, span);
             xbar = PythonFSum.Sum(x.Select(value => ToDouble(value, span))) / count;
             ybar = PythonFSum.Sum(y.Select(value => ToDouble(value, span))) / count;
             left = [.. x.Select(value => ToDouble(value, span) - xbar)];
@@ -1198,8 +1428,8 @@ internal static class PythonStatisticsModule
                 .Ratio.Multiply(new Ratio(n - delta, BigInteger.One))
                 .Add(ExactRatio(upper).Ratio.Multiply(new Ratio(delta, BigInteger.One)))
                 .Divide(new Ratio(n, BigInteger.One));
-            var kind = Coerce(KindOf(lower), KindOf(upper));
-            result.Add(Convert(interpolated, kind == Kind.Fraction ? Kind.Fraction : Kind.Float));
+            var kind = SumKind(KindOf(lower), KindOf(upper), span);
+            result.Add(Convert(interpolated, kind == Kind.Int ? Kind.Float : kind));
         }
         return new PythonListValue(result);
     }
