@@ -464,6 +464,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializePickle
         );
+        modules["io"] = PythonModuleDefinition.Native(
+            "<dotpython io>",
+            isPackage: false,
+            PythonIoModule.Initialize
+        );
         modules["csv"] = PythonModuleDefinition.Native(
             "<dotpython csv>",
             isPackage: false,
