@@ -75,4 +75,114 @@ public sealed class DecimalModuleCompatibilityTests
             show("smaxmin", lambda: D("1.5").max(D("-Inf")), lambda: D("1.5").min(D("Inf")), lambda: D("-Inf").max(D("Inf")), lambda: D("1").max(D("1.0")), lambda: D("1").min(D("1.0")))
             """"
         );
+
+    [Fact]
+    public Task TheContextFlagsAndExtendedMethodsMatchCpython() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            from decimal import *
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            for s in ["1","1.5","0.1","0.0000000000000000000000000001","9.999999999999999999999999999E+999999","1E-1000026","-1E-1000026","-0","0E-1000026","1.2345678901234567890123456789012345"]:
+                d = Decimal(s)
+                show("nextp "+s, lambda d=d: d.next_plus())
+                show("nextm "+s, lambda d=d: d.next_minus())
+            print("sign0", Decimal("0").next_minus().as_tuple(), Decimal("-0").next_plus().as_tuple(), Decimal("0").next_plus().as_tuple(), Decimal("-0").next_minus().as_tuple())
+            show("inf-plus", lambda: Decimal("Infinity").next_plus())
+            show("inf-minus", lambda: Decimal("Infinity").next_minus())
+            show("ninf-plus", lambda: Decimal("-Infinity").next_plus())
+            show("ninf-minus", lambda: Decimal("-Infinity").next_minus())
+            print("toward", Decimal("1").next_toward(Decimal("2")), Decimal("1").next_toward(Decimal("0")), Decimal("1").next_toward(Decimal("1")))
+            print("toward0", Decimal("1").next_toward(Decimal("0")).as_tuple(), Decimal("-1").next_toward(Decimal("0")).as_tuple())
+            show("toward-nan", lambda: Decimal("1").next_toward(Decimal("NaN")))
+            show("toward-snan", lambda: Decimal("1").next_toward(Decimal("sNaN")))
+            print("toint", Decimal("1.9").to_integral_value(), Decimal("-1.9").to_integral_value(), Decimal("1.9").to_integral_exact())
+            for s in ["1E+2","100","1.00","0E+5","-0.0"]:
+                print("toint-"+s, Decimal(s).to_integral_value().as_tuple(), Decimal(s).to_integral_exact().as_tuple())
+            with localcontext() as ctx:
+                ctx.rounding = ROUND_DOWN
+                print("toint-down", Decimal("-1.9").to_integral_value(), Decimal("1.9").to_integral_exact())
+                ctx.rounding = ROUND_FLOOR
+                print("toint-floor", Decimal("1.9").to_integral_value(), Decimal("-1.9").to_integral_value())
+            show("bad-rounding", lambda: Decimal("1.5").to_integral_value(rounding="NOPE"))
+            show("rounding-int", lambda: Decimal("1.5").to_integral_value(rounding=5))
+            show("ctx-int", lambda: Decimal("1.5").to_integral_value(context=5))
+            show("tol-int-inf", lambda: Decimal("Infinity").to_integral_value())
+            show("tol-int-snan", lambda: Decimal("sNaN").to_integral_exact())
+            print("compare", Decimal("1.5").compare(Decimal("1.50")), Decimal("1").compare(Decimal("2")), Decimal("2").compare(Decimal("1")))
+            show("compare-nan", lambda: Decimal("NaN").compare(Decimal("1")))
+            show("compare-snan", lambda: Decimal("sNaN").compare(Decimal("1")))
+            print("ct", Decimal("1").compare_total(Decimal("1.0")), Decimal("1.0").compare_total(Decimal("1")))
+            print("ctm", Decimal("1").compare_total_mag(Decimal("-1")), Decimal("-2").compare_total_mag(Decimal("1")))
+            for a,b in [("NaN","1"),("1","NaN"),("sNaN","NaN"),("NaN","sNaN"),("NaN1","NaN2"),("NaN2","NaN1"),("-NaN","NaN"),("NaN10","NaN2"),("sNaN2","sNaN10"),("Infinity","NaN"),("-Infinity","-NaN"),("NaN","NaN"),("sNaN","sNaN")]:
+                print("ctn", a, b, Decimal(a).compare_total(Decimal(b)))
+            for a,b in [("NaN","1"),("1","NaN"),("-NaN","NaN"),("NaN1","NaN2"),("sNaN","NaN")]:
+                print("ctm2", a, b, Decimal(a).compare_total_mag(Decimal(b)))
+            print("remnear", Decimal("5").remainder_near(Decimal("3")), Decimal("7").remainder_near(Decimal("3")), Decimal("6").remainder_near(Decimal("3")), Decimal("-5").remainder_near(Decimal("3")))
+            print("rem-tie", [(a,b,str(Decimal(a).remainder_near(Decimal(b)))) for a,b in [("5","2"),("7","2"),("-5","2"),("-7","2"),("4","2")]])
+            show("remnear-zero", lambda: Decimal("5").remainder_near(Decimal("0")))
+            show("rem-inf", lambda: Decimal("Infinity").remainder_near(Decimal("2")))
+            show("rem-yinf", lambda: Decimal("2").remainder_near(Decimal("Infinity")))
+            show("rem-nan", lambda: Decimal("NaN").remainder_near(Decimal("2")))
+            show("rem-snan", lambda: Decimal("sNaN").remainder_near(Decimal("2")))
+            print("logb", Decimal("100").logb(), Decimal("0.001").logb(), Decimal("1").logb(), Decimal("Infinity").logb())
+            print("logb-small", Decimal("0.01").logb().as_tuple())
+            show("logb-zero", lambda: Decimal("0").logb())
+            show("logb-nan", lambda: Decimal("NaN").logb())
+            show("logb-snan", lambda: Decimal("sNaN").logb())
+            print("fma", Decimal("2").fma(Decimal("3"), Decimal("4")), Decimal("2").fma(Decimal("3"), Decimal("4"), context=getcontext()))
+            print("fma-round", Decimal("1.23456789012345678901234567").fma(Decimal("1"), Decimal("0")))
+            show("fma-inf", lambda: Decimal("0").fma(Decimal("Infinity"), Decimal("0")))
+            show("fma-inf2", lambda: Decimal("Infinity").fma(Decimal("1"), Decimal("-Infinity")))
+            show("fma-inf3", lambda: Decimal("Infinity").fma(Decimal("0"), Decimal("2")))
+            show("fma-nan", lambda: Decimal("NaN").fma(Decimal("1"), Decimal("2")))
+            show("fma-snan", lambda: Decimal("sNaN").fma(Decimal("1"), Decimal("2")))
+            show("fma-qnan-inf", lambda: Decimal("NaN").fma(Decimal("Infinity"), Decimal("0")))
+            print("fromnum", Decimal.from_number(3.5), Decimal.from_number(5), Decimal.from_number(Decimal("1.2")), Decimal.from_number(True))
+            show("fromnum-str", lambda: Decimal.from_number("1.2"))
+            show("fromnum-none", lambda: Decimal.from_number(None))
+            show("fromnum-missing", lambda: Decimal.from_number())
+            print("compare-arity", end=" ")
+            show("compare-arity", lambda: Decimal("1").compare())
+            show("compare-many", lambda: Decimal("1").compare(Decimal("2"), Decimal("3")))
+            show("fma-missing", lambda: Decimal("1").fma(Decimal("2")))
+            show("next-ctx-int", lambda: Decimal("1").next_plus(context=5))
+            ctx = getcontext()
+            print("ctx-basic", ctx.prec, ctx.rounding, ctx.Emin, ctx.Emax, ctx.capitals, ctx.clamp, ctx.Etiny(), ctx.Etop())
+            print("flags-fresh", {k.__name__: v for k,v in ctx.flags.items()})
+            print("traps-fresh", {k.__name__: v for k,v in ctx.traps.items()})
+            ctx.clear_flags()
+            Decimal("1.999").to_integral_exact()
+            print("after-exact", {k.__name__: v for k,v in ctx.flags.items() if v})
+            ctx.clear_flags()
+            Decimal("1.000").to_integral_exact()
+            print("after-1000", {k.__name__: v for k,v in ctx.flags.items() if v})
+            ctx.clear_flags()
+            Decimal("1.9").to_integral_value()
+            print("after-value", {k.__name__: v for k,v in ctx.flags.items() if v})
+            ctx.clear_flags()
+            with localcontext() as sub:
+                sub.traps[Inexact] = True
+                show("trap-inexact", lambda: Decimal("1.999").to_integral_exact())
+                print("trap-flags", {k.__name__: v for k,v in sub.flags.items() if v})
+            print("outer-flags", {k.__name__: v for k,v in ctx.flags.items() if v})
+            print("traps-back", ctx.traps[Inexact])
+            print("ctx-create", ctx.create_decimal("1.2345678901234567890123456789012345"))
+            print("ctx-create-float", ctx.create_decimal(0.1))
+            ctx.clear_flags()
+            ctx.create_decimal("1.2345678901234567890123456789012345")
+            print("flags-create", {k.__name__: v for k,v in ctx.flags.items() if v})
+            print("ctx-repr", repr(ctx))
+            print("ctx-copy", repr(ctx.copy()))
+
+            show("ctx-kw", lambda: Context(prec=2))
+            show("ctx-prec", lambda: Context(prec=2).prec)
+            show("ctx-add-create", lambda: Context(prec=2).create_decimal("1.2345"))
+            show("quantize-ctx", lambda: Decimal("1.239").quantize(Decimal("0.01"), context=Context(prec=2)))
+            show("quantize-ctx2", lambda: Decimal("1.239").quantize(Decimal("0.01"), context=Context(prec=4)))
+            show("quantize-rounding", lambda: Decimal("1.239").quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+            show("quantize-bad-rounding", lambda: Decimal("1.239").quantize(Decimal("0.01"), rounding="NOPE"))
+            """"
+        );
 }

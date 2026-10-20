@@ -24,7 +24,15 @@ internal static class PythonDecimalModule
         _currentContext = null;
         globals.SetValue("Decimal", DecimalType);
         globals.SetValue("DecimalTuple", DecimalTupleType);
-        globals.SetValue("Context", ContextType);
+        globals.SetValue(
+            "Context",
+            new PythonBuiltinFunctionValue(
+                "Context",
+                (arguments, span) => ContextConstructor(arguments, [], [], span),
+                (positional, names, values, span) =>
+                    ContextConstructor(positional, names, values, span)
+            )
+        );
         globals.SetValue("getcontext", GetContextFunction());
         globals.SetValue(
             "setcontext",
@@ -91,6 +99,10 @@ internal static class PythonDecimalModule
         internal int Clamp;
 
         internal int Capitals = 1;
+
+        internal PythonDictionaryValue? SignalFlags;
+
+        internal PythonDictionaryValue? SignalTraps;
     }
 
     [ThreadStatic]
@@ -111,6 +123,56 @@ internal static class PythonDecimalModule
         type.Attributes["Emax"] = ContextProperty("Emax");
         type.Attributes["clamp"] = ContextProperty("clamp");
         type.Attributes["capitals"] = ContextProperty("capitals");
+        type.Attributes["flags"] = ContextProperty("flags");
+        type.Attributes["traps"] = ContextProperty("traps");
+        type.Attributes["clear_flags"] = Method(
+            "Context",
+            "clear_flags",
+            (self, _) =>
+            {
+                var context = ContextOf(self!);
+                EnsureSignalMaps(context);
+                foreach (var name in SignalNames)
+                {
+                    WriteSignalState(context.SignalFlags!, name, false);
+                }
+                return PythonNoneValue.Instance;
+            }
+        );
+        type.Attributes["Etiny"] = Method(
+            "Context",
+            "Etiny",
+            (self, _) => PythonWholeNumberValue.Create(Etiny(ContextOf(self!)))
+        );
+        type.Attributes["Etop"] = Method(
+            "Context",
+            "Etop",
+            (self, _) =>
+                PythonWholeNumberValue.Create(ContextOf(self!).Emax - ContextOf(self!).Prec + 1)
+        );
+        type.Attributes["create_decimal"] = Method(
+            "Context",
+            "create_decimal",
+            (self, arguments) =>
+            {
+                var context = ContextOf(self!);
+                var created = NewDecimal(DecimalType, [.. arguments], [], [], default);
+                var state = DecimalOf(created);
+                if (state.Special != Special.Finite)
+                {
+                    return Copy(state);
+                }
+                return Copy(
+                    RoundToPrecision(
+                        state.Sign,
+                        state.Coefficient,
+                        state.Exponent,
+                        default,
+                        context
+                    )
+                );
+            }
+        );
         type.Attributes["copy"] = Method(
             "Context",
             "copy",
@@ -122,15 +184,27 @@ internal static class PythonDecimalModule
             (self, _) =>
             {
                 var context = ContextOf(self!);
+                EnsureSignalMaps(context);
                 return Text(
                     $"Context(prec={context.Prec}, rounding={context.Rounding}, "
                         + $"Emin={context.Emin}, Emax={context.Emax}, "
                         + $"capitals={context.Capitals}, clamp={context.Clamp}, "
-                        + "flags=[], traps=[])"
+                        + $"flags={SignalList(context.SignalFlags!)}, "
+                        + $"traps={SignalList(context.SignalTraps!)})"
                 );
             }
         );
         return type;
+    }
+
+    private static string SignalList(PythonDictionaryValue map)
+    {
+        var enabled = map
+            .Items.Where(item => ManagedObjectProtocols.IsTrue(item.Value))
+            .Select(item =>
+                item.Key is PythonManagedTypeValue type ? type.Name : item.Key.ToDisplayString()
+            );
+        return "[" + string.Join(", ", enabled) + "]";
     }
 
     private static PythonPropertyValue ContextProperty(string name) =>
@@ -153,7 +227,11 @@ internal static class PythonDecimalModule
                         var context when name == "clamp" => PythonWholeNumberValue.Create(
                             context.Clamp
                         ),
-                        var context => PythonWholeNumberValue.Create(context.Capitals),
+                        var context when name == "capitals" => PythonWholeNumberValue.Create(
+                            context.Capitals
+                        ),
+                        var context when name == "flags" => FlagsOf(context),
+                        var context => TrapsOf(context),
                     }
             ),
             new PythonProtocolFunctionValue(
@@ -180,8 +258,14 @@ internal static class PythonDecimalModule
                         case "clamp":
                             context.Clamp = (int)RequireInteger(arguments[1], default);
                             break;
-                        default:
+                        case "capitals":
                             context.Capitals = (int)RequireInteger(arguments[1], default);
+                            break;
+                        case "flags":
+                            context.SignalFlags = RequireSignalMap(arguments[1]);
+                            break;
+                        default:
+                            context.SignalTraps = RequireSignalMap(arguments[1]);
                             break;
                     }
                     return PythonNoneValue.Instance;
@@ -204,7 +288,215 @@ internal static class PythonDecimalModule
             Emax = context.Emax,
             Clamp = context.Clamp,
             Capitals = context.Capitals,
+            SignalFlags = CloneSignalMap(context.SignalFlags),
+            SignalTraps = CloneSignalMap(context.SignalTraps),
         };
+
+    private static PythonDictionaryValue? CloneSignalMap(PythonDictionaryValue? source)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+        var copy = new PythonDictionaryValue([]);
+        foreach (var item in source.Items)
+        {
+            ManagedObjectProtocols.SetDictionaryItem(copy, item.Key, item.Value, default);
+        }
+        return copy;
+    }
+
+    private static readonly string[] SignalNames =
+    [
+        "InvalidOperation",
+        "FloatOperation",
+        "DivisionByZero",
+        "Overflow",
+        "Underflow",
+        "Subnormal",
+        "Inexact",
+        "Rounded",
+        "Clamped",
+    ];
+
+    private static readonly string[] DefaultTraps =
+    [
+        "InvalidOperation",
+        "DivisionByZero",
+        "Overflow",
+    ];
+
+    private static void EnsureSignalMaps(DecimalContext context)
+    {
+        if (context.SignalFlags is not null)
+        {
+            return;
+        }
+        context.SignalFlags = new PythonDictionaryValue([]);
+        context.SignalTraps = new PythonDictionaryValue([]);
+        foreach (var name in SignalNames)
+        {
+            var key = SignalKey(name);
+            ManagedObjectProtocols.SetDictionaryItem(
+                context.SignalFlags,
+                key,
+                PythonTruthValue.False,
+                default
+            );
+            ManagedObjectProtocols.SetDictionaryItem(
+                context.SignalTraps,
+                key,
+                PythonTruthValue.FromBoolean(Array.IndexOf(DefaultTraps, name) >= 0),
+                default
+            );
+        }
+    }
+
+    private static PythonValue SignalKey(string name) =>
+        ExceptionTypes.TryGetValue(name, out var type) ? type : Text(name);
+
+    private static bool SignalState(PythonDictionaryValue map, string name)
+    {
+        foreach (var item in map.Items)
+        {
+            if (item.Key is PythonManagedTypeValue type && type.Name == name)
+            {
+                return ManagedObjectProtocols.IsTrue(item.Value);
+            }
+        }
+        return false;
+    }
+
+    private static void WriteSignalState(PythonDictionaryValue map, string name, bool value)
+    {
+        foreach (var item in map.Items)
+        {
+            if (item.Key is PythonManagedTypeValue type && type.Name == name)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    map,
+                    item.Key,
+                    PythonTruthValue.FromBoolean(value),
+                    default
+                );
+                return;
+            }
+        }
+    }
+
+    private static void RecordSignal(DecimalContext context, string name)
+    {
+        EnsureSignalMaps(context);
+        WriteSignalState(context.SignalFlags!, name, true);
+    }
+
+    private static bool IsTrapped(DecimalContext context, string name)
+    {
+        EnsureSignalMaps(context);
+        return SignalState(context.SignalTraps!, name);
+    }
+
+    private static PythonDictionaryValue FlagsOf(DecimalContext context)
+    {
+        EnsureSignalMaps(context);
+        return context.SignalFlags!;
+    }
+
+    private static PythonDictionaryValue TrapsOf(DecimalContext context)
+    {
+        EnsureSignalMaps(context);
+        return context.SignalTraps!;
+    }
+
+    private static PythonDictionaryValue RequireSignalMap(PythonValue value) =>
+        value as PythonDictionaryValue ?? throw TypeFault("the argument must be a dictionary");
+
+    private static PythonManagedObjectValue ContextConstructor(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        string[] parameters =
+        [
+            "prec",
+            "rounding",
+            "Emin",
+            "Emax",
+            "capitals",
+            "clamp",
+            "flags",
+            "traps",
+            "_ignored_flags",
+        ];
+        if (positional.Count > parameters.Length)
+        {
+            throw TypeFault(
+                $"Context() takes at most {parameters.Length} arguments ({positional.Count} given)",
+                span
+            );
+        }
+        var slots = new PythonValue?[parameters.Length];
+        for (var index = 0; index < positional.Count; index++)
+        {
+            slots[index] = positional[index];
+        }
+        for (var index = 0; index < names.Count; index++)
+        {
+            var slot = Array.IndexOf(parameters, names[index]);
+            if (slot < 0)
+            {
+                throw TypeFault(
+                    $"Context() got an unexpected keyword argument '{names[index]}'",
+                    span
+                );
+            }
+            if (slots[slot] is not null)
+            {
+                throw TypeFault(
+                    $"Context() got multiple values for argument '{names[index]}'",
+                    span
+                );
+            }
+            slots[slot] = values[index];
+        }
+        var context = new DecimalContext();
+        EnsureSignalMaps(context);
+        if (slots[0] is not null and not PythonNoneValue)
+        {
+            context.Prec = (int)RequireInteger(slots[0]!, span);
+        }
+        if (slots[1] is not null and not PythonNoneValue)
+        {
+            context.Rounding = RoundingArgument(slots[1], context);
+        }
+        if (slots[2] is not null and not PythonNoneValue)
+        {
+            context.Emin = (int)RequireInteger(slots[2]!, span);
+        }
+        if (slots[3] is not null and not PythonNoneValue)
+        {
+            context.Emax = (int)RequireInteger(slots[3]!, span);
+        }
+        if (slots[4] is not null and not PythonNoneValue)
+        {
+            context.Capitals = (int)RequireInteger(slots[4]!, span);
+        }
+        if (slots[5] is not null and not PythonNoneValue)
+        {
+            context.Clamp = (int)RequireInteger(slots[5]!, span);
+        }
+        if (slots[6] is not null and not PythonNoneValue)
+        {
+            context.SignalFlags = RequireSignalMap(slots[6]!);
+        }
+        if (slots[7] is not null and not PythonNoneValue)
+        {
+            context.SignalTraps = RequireSignalMap(slots[7]!);
+        }
+        return ContextValue(context);
+    }
 
     private static PythonManagedObjectValue ContextValue(DecimalContext context) =>
         new(ContextType, context);
@@ -456,6 +748,108 @@ internal static class PythonDecimalModule
                 return Copy(state with { Sign = other.Sign });
             }
         );
+        type.Attributes["next_plus"] = MethodWithKeywords(
+            "Decimal",
+            "next_plus",
+            (self, arguments) => NextDirection(self!, arguments, [], [], default, plus: true),
+            (self, positional, names, values) =>
+                NextDirection(self!, positional, names, values, default, plus: true)
+        );
+        type.Attributes["next_minus"] = MethodWithKeywords(
+            "Decimal",
+            "next_minus",
+            (self, arguments) => NextDirection(self!, arguments, [], [], default, plus: false),
+            (self, positional, names, values) =>
+                NextDirection(self!, positional, names, values, default, plus: false)
+        );
+        type.Attributes["next_toward"] = MethodWithKeywords(
+            "Decimal",
+            "next_toward",
+            (self, arguments) => NextToward(self!, arguments, [], [], default),
+            (self, positional, names, values) =>
+                NextToward(self!, positional, names, values, default)
+        );
+        type.Attributes["to_integral_value"] = MethodWithKeywords(
+            "Decimal",
+            "to_integral_value",
+            (self, arguments) => ToIntegral(self!, arguments, [], [], default, exact: false),
+            (self, positional, names, values) =>
+                ToIntegral(self!, positional, names, values, default, exact: false)
+        );
+        type.Attributes["to_integral_exact"] = MethodWithKeywords(
+            "Decimal",
+            "to_integral_exact",
+            (self, arguments) => ToIntegral(self!, arguments, [], [], default, exact: true),
+            (self, positional, names, values) =>
+                ToIntegral(self!, positional, names, values, default, exact: true)
+        );
+        type.Attributes["compare"] = MethodWithKeywords(
+            "Decimal",
+            "compare",
+            (self, arguments) =>
+                CompareMethod(self!, arguments, [], [], default, total: false, magnitude: false),
+            (self, positional, names, values) =>
+                CompareMethod(
+                    self!,
+                    positional,
+                    names,
+                    values,
+                    default,
+                    total: false,
+                    magnitude: false
+                )
+        );
+        type.Attributes["compare_total"] = MethodWithKeywords(
+            "Decimal",
+            "compare_total",
+            (self, arguments) =>
+                CompareMethod(self!, arguments, [], [], default, total: true, magnitude: false),
+            (self, positional, names, values) =>
+                CompareMethod(
+                    self!,
+                    positional,
+                    names,
+                    values,
+                    default,
+                    total: true,
+                    magnitude: false
+                )
+        );
+        type.Attributes["compare_total_mag"] = MethodWithKeywords(
+            "Decimal",
+            "compare_total_mag",
+            (self, arguments) =>
+                CompareMethod(self!, arguments, [], [], default, total: true, magnitude: true),
+            (self, positional, names, values) =>
+                CompareMethod(
+                    self!,
+                    positional,
+                    names,
+                    values,
+                    default,
+                    total: true,
+                    magnitude: true
+                )
+        );
+        type.Attributes["remainder_near"] = MethodWithKeywords(
+            "Decimal",
+            "remainder_near",
+            (self, arguments) => RemainderNear(self!, arguments, [], [], default),
+            (self, positional, names, values) =>
+                RemainderNear(self!, positional, names, values, default)
+        );
+        type.Attributes["logb"] = MethodWithKeywords(
+            "Decimal",
+            "logb",
+            (self, arguments) => Logb(self!, arguments, [], [], default),
+            (self, positional, names, values) => Logb(self!, positional, names, values, default)
+        );
+        type.Attributes["fma"] = MethodWithKeywords(
+            "Decimal",
+            "fma",
+            (self, arguments) => Fma(self!, arguments, [], [], default),
+            (self, positional, names, values) => Fma(self!, positional, names, values, default)
+        );
         type.Attributes["quantize"] = MethodWithKeywords(
             "Decimal",
             "quantize",
@@ -481,6 +875,55 @@ internal static class PythonDecimalModule
                                     + $"'{ManagedObjectProtocols.GetTypeName(arguments[0])}'"
                             )
                     )
+            )
+        );
+        type.Attributes["from_number"] = new PythonClassMethodValue(
+            Method(
+                "Decimal",
+                "from_number",
+                (cls, arguments) =>
+                {
+                    if (arguments.Count != 1)
+                    {
+                        throw TypeFault(
+                            $"Decimal.from_number() takes exactly one argument ({arguments.Count} given)"
+                        );
+                    }
+                    var value = arguments[0];
+                    DecimalState state;
+                    switch (value)
+                    {
+                        case PythonManagedObjectValue { Payload: DecimalState decimalValue }:
+                            state = decimalValue;
+                            break;
+                        case PythonWholeNumberValue whole:
+                            state = new DecimalState(
+                                whole.Value.Sign < 0 ? 1 : 0,
+                                BigInteger.Abs(whole.Value),
+                                0,
+                                Special.Finite,
+                                string.Empty
+                            );
+                            break;
+                        case PythonTruthValue truth:
+                            state = new DecimalState(
+                                0,
+                                truth.Value ? BigInteger.One : BigInteger.Zero,
+                                0,
+                                Special.Finite,
+                                string.Empty
+                            );
+                            break;
+                        case PythonFloatingPointValue floating:
+                            state = FromDoubleWithSignal(floating.Value, default);
+                            break;
+                        default:
+                            throw TypeFault(
+                                $"conversion from {ManagedObjectProtocols.GetTypeName(value)} to Decimal is not supported"
+                            );
+                    }
+                    return CopyTo(cls!, state);
+                }
             )
         );
         type.Attributes["__getattr__"] = Method(
@@ -1341,10 +1784,12 @@ internal static class PythonDecimalModule
         int sign,
         BigInteger coefficient,
         long exponent,
-        TextSpan span
+        TextSpan span,
+        DecimalContext? contextOverride = null,
+        bool recordSignals = true
     )
     {
-        var context = ContextOf(CurrentContext());
+        var context = contextOverride ?? ContextOf(CurrentContext());
         var etiny = Etiny(context);
         if (coefficient.IsZero)
         {
@@ -1361,7 +1806,7 @@ internal static class PythonDecimalModule
         var adjusted = exponent + digits - 1;
         if (adjusted > context.Emax)
         {
-            throw Signal("Overflow", span);
+            throw Signal("Overflow", span, context);
         }
         var exponentMin = digits + exponent - context.Prec;
         if (exponentMin < etiny)
@@ -1390,7 +1835,11 @@ internal static class PythonDecimalModule
             var roundedAdjusted = roundedExponent + (rounded.IsZero ? 1 : 1) - 1;
             if (roundedAdjusted > context.Emax)
             {
-                throw Signal("Overflow", span);
+                throw Signal("Overflow", span, context);
+            }
+            if (recordSignals)
+            {
+                RecordRounding(!coefficient.IsZero, context, span);
             }
             return new DecimalState(sign, rounded, roundedExponent, Special.Finite, string.Empty);
         }
@@ -1405,7 +1854,29 @@ internal static class PythonDecimalModule
                 exponentMin += 1;
             }
         }
+        if (recordSignals)
+        {
+            RecordRounding(!remainder.IsZero, context, span);
+        }
         return new DecimalState(sign, quotient, exponentMin, Special.Finite, string.Empty);
+    }
+
+    private static void RecordRounding(bool inexact, DecimalContext context, TextSpan span)
+    {
+        EnsureSignalMaps(context);
+        WriteSignalState(context.SignalFlags!, "Rounded", true);
+        if (inexact)
+        {
+            WriteSignalState(context.SignalFlags!, "Inexact", true);
+        }
+        if (inexact && IsTrapped(context, "Inexact"))
+        {
+            throw Signal("Inexact", span, context);
+        }
+        if (IsTrapped(context, "Rounded"))
+        {
+            throw Signal("Rounded", span, context);
+        }
     }
 
     private static PythonValue Power(PythonValue self, PythonValue exponent, TextSpan span)
@@ -1701,7 +2172,15 @@ internal static class PythonDecimalModule
     )
     {
         PythonValue? target = positional.Count > 0 ? positional[0] : null;
-        string? rounding = null;
+        PythonValue? roundingValue = positional.Count > 1 ? positional[1] : null;
+        PythonValue? contextValue = positional.Count > 2 ? positional[2] : null;
+        if (positional.Count > 3)
+        {
+            throw TypeFault(
+                $"quantize() takes at most 3 arguments ({positional.Count + 1} given)",
+                span
+            );
+        }
         for (var index = 0; index < keywordNames.Count; index++)
         {
             switch (keywordNames[index])
@@ -1710,9 +2189,10 @@ internal static class PythonDecimalModule
                     target = keywordValues[index];
                     break;
                 case "rounding":
-                    rounding = keywordValues[index] is PythonTextValue text ? text.Value : null;
+                    roundingValue = keywordValues[index];
                     break;
                 case "context":
+                    contextValue = keywordValues[index];
                     break;
                 default:
                     throw TypeFault(
@@ -1747,12 +2227,12 @@ internal static class PythonDecimalModule
         {
             throw Signal("InvalidOperation", span);
         }
-        var context = ContextOf(CurrentContext());
-        var mode = rounding ?? context.Rounding;
+        var context = ContextArgument(contextValue) ?? ContextOf(CurrentContext());
+        var mode = RoundingArgument(roundingValue, context);
         var rescaled = Rescale(state, targetState.Exponent, mode, span);
         if (Digits(rescaled.Coefficient).Length > context.Prec)
         {
-            throw Signal("InvalidOperation", span);
+            throw Signal("InvalidOperation", span, context);
         }
         return Copy(rescaled);
     }
@@ -1911,6 +2391,580 @@ internal static class PythonDecimalModule
         return left.Sign == 0
             ? left.Exponent.CompareTo(right.Exponent)
             : right.Exponent.CompareTo(left.Exponent);
+    }
+
+    // -----------------------------------------------------------------------------
+    // Context-aware methods
+    // -----------------------------------------------------------------------------
+
+    private static readonly string[] ValidRoundings =
+    [
+        "ROUND_CEILING",
+        "ROUND_FLOOR",
+        "ROUND_UP",
+        "ROUND_DOWN",
+        "ROUND_HALF_UP",
+        "ROUND_HALF_DOWN",
+        "ROUND_HALF_EVEN",
+        "ROUND_05UP",
+    ];
+
+    private static PythonValue?[] BindDecimalCall(
+        string name,
+        int required,
+        string[] parameters,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        _ = name;
+        if (positional.Count > parameters.Length)
+        {
+            throw TypeFault(
+                $"function takes at most {parameters.Length + 1} arguments "
+                    + $"({positional.Count + 1} given)",
+                span
+            );
+        }
+        var slots = new PythonValue?[parameters.Length];
+        for (var index = 0; index < positional.Count; index++)
+        {
+            slots[index] = positional[index];
+        }
+        for (var index = 0; index < names.Count; index++)
+        {
+            var slot = Array.IndexOf(parameters, names[index]);
+            if (slot < 0)
+            {
+                throw TypeFault(
+                    $"function got an unexpected keyword argument '{names[index]}'",
+                    span
+                );
+            }
+            if (slots[slot] is not null)
+            {
+                throw TypeFault(
+                    $"argument for function given by name ('{names[index]}') and position ({slot + 1})",
+                    span
+                );
+            }
+            slots[slot] = values[index];
+        }
+        for (var index = 0; index < required; index++)
+        {
+            if (slots[index] is null)
+            {
+                throw TypeFault(
+                    $"function missing required argument '{parameters[index]}' (pos {index + 1})",
+                    span
+                );
+            }
+        }
+        return slots;
+    }
+
+    private static DecimalContext? ContextArgument(PythonValue? value)
+    {
+        if (value is null or PythonNoneValue)
+        {
+            return null;
+        }
+        return value is PythonManagedObjectValue { Payload: DecimalContext context }
+            ? context
+            : throw TypeFault("optional argument must be a context");
+    }
+
+    private static string RoundingArgument(PythonValue? value, DecimalContext context) =>
+        value switch
+        {
+            null or PythonNoneValue => context.Rounding,
+            PythonTextValue text when Array.IndexOf(ValidRoundings, text.Value) >= 0 => text.Value,
+            _ => throw TypeFault(
+                "valid values for rounding are:\n"
+                    + "  [ROUND_CEILING, ROUND_FLOOR, ROUND_UP, ROUND_DOWN,\n"
+                    + "   ROUND_HALF_UP, ROUND_HALF_DOWN, ROUND_HALF_EVEN,\n"
+                    + "   ROUND_05UP]"
+            ),
+        };
+
+    private static BigInteger Pow10(long power) => BigInteger.Pow(10, (int)power);
+
+    private static PythonManagedObjectValue NextDirection(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span,
+        bool plus
+    )
+    {
+        var slots = BindDecimalCall("next", 0, ["context"], positional, names, values, span);
+        var context = ContextArgument(slots[0]) ?? ContextOf(CurrentContext());
+        var state = DecimalOf(self);
+        if (state.Special == Special.SNaN)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (state.Special == Special.NaN)
+        {
+            return Copy(state);
+        }
+        var largest = new DecimalState(
+            state.Sign,
+            Pow10(context.Prec) - 1,
+            context.Emax - context.Prec + 1,
+            Special.Finite,
+            string.Empty
+        );
+        if (state.Special == Special.Infinity)
+        {
+            return Copy(
+                plus ? (state.Sign == 0 ? state : largest) : (state.Sign == 1 ? state : largest)
+            );
+        }
+        if (state.Coefficient.IsZero)
+        {
+            return Copy(
+                new DecimalState(
+                    plus ? 0 : 1,
+                    BigInteger.One,
+                    Etiny(context),
+                    Special.Finite,
+                    string.Empty
+                )
+            );
+        }
+        var roundedState = RoundToPrecision(
+            state.Sign,
+            state.Coefficient,
+            state.Exponent,
+            span,
+            context,
+            recordSignals: false
+        );
+        var comparison = CompareStates(roundedState, state);
+        if ((plus && comparison > 0) || (!plus && comparison < 0))
+        {
+            return Copy(roundedState);
+        }
+        var adjusted = Adjusted(roundedState);
+        var ulp = Math.Max(adjusted - context.Prec + 1, Etiny(context));
+        var increaseMagnitude = plus ^ (roundedState.Sign == 1);
+        (BigInteger Value, long Exponent) CandidateAt(long exponent)
+        {
+            if (exponent >= roundedState.Exponent)
+            {
+                var delta = Pow10(exponent - roundedState.Exponent);
+                return (
+                    roundedState.Coefficient + (increaseMagnitude ? delta : -delta),
+                    roundedState.Exponent
+                );
+            }
+            var atScale = roundedState.Coefficient * Pow10(roundedState.Exponent - exponent);
+            return (atScale + (increaseMagnitude ? 1 : -1), exponent);
+        }
+        var candidate = CandidateAt(ulp);
+        if (
+            !increaseMagnitude
+            && ulp - 1 >= Etiny(context)
+            && candidate.Exponent + Digits(candidate.Value).Length - 1 < adjusted
+            && Digits(candidate.Value).Length < context.Prec
+        )
+        {
+            ulp -= 1;
+            candidate = CandidateAt(ulp);
+        }
+        if (candidate.Value.IsZero)
+        {
+            return Copy(
+                new DecimalState(
+                    roundedState.Sign,
+                    BigInteger.Zero,
+                    candidate.Exponent,
+                    Special.Finite,
+                    string.Empty
+                )
+            );
+        }
+        if (candidate.Exponent + Digits(candidate.Value).Length - 1 > context.Emax)
+        {
+            return Copy(
+                new DecimalState(
+                    roundedState.Sign,
+                    BigInteger.Zero,
+                    0,
+                    Special.Infinity,
+                    string.Empty
+                )
+            );
+        }
+        return Copy(
+            new DecimalState(
+                roundedState.Sign,
+                candidate.Value,
+                candidate.Exponent,
+                Special.Finite,
+                string.Empty
+            )
+        );
+    }
+
+    private static PythonManagedObjectValue NextToward(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = BindDecimalCall(
+            "next_toward",
+            1,
+            ["other", "context"],
+            positional,
+            names,
+            values,
+            span
+        );
+        var left = DecimalOf(self);
+        var right = DecimalOf(RequireDecimal(slots[0]!));
+        var context = ContextArgument(slots[1]) ?? ContextOf(CurrentContext());
+        if (left.Special == Special.SNaN || right.Special == Special.SNaN)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (left.Special == Special.NaN || right.Special == Special.NaN)
+        {
+            return Copy(left.Special == Special.NaN ? left : right);
+        }
+        var order = CompareStates(left, right);
+        if (order == 0)
+        {
+            return Copy(left);
+        }
+        return NextDirection(self, [ContextValue(context)], [], [], span, plus: order < 0);
+    }
+
+    private static PythonManagedObjectValue ToIntegral(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span,
+        bool exact
+    )
+    {
+        var slots = BindDecimalCall(
+            "to_integral",
+            0,
+            ["rounding", "context"],
+            positional,
+            names,
+            values,
+            span
+        );
+        var context = ContextArgument(slots[1]) ?? ContextOf(CurrentContext());
+        var rounding = RoundingArgument(slots[0], context);
+        var state = DecimalOf(self);
+        if (state.Special == Special.SNaN)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (state.Special != Special.Finite || state.Exponent >= 0)
+        {
+            return Copy(state);
+        }
+        var drop = -state.Exponent;
+        var power = Pow10(drop);
+        var quotient = BigInteger.DivRem(state.Coefficient, power, out var remainder);
+        if (ShouldRoundUp(state.Sign, quotient, remainder, power, rounding))
+        {
+            quotient += 1;
+        }
+        if (exact)
+        {
+            RecordRounding(!remainder.IsZero, context, span);
+        }
+        return Copy(new DecimalState(state.Sign, quotient, 0, Special.Finite, string.Empty));
+    }
+
+    private static PythonManagedObjectValue CompareMethod(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span,
+        bool total,
+        bool magnitude
+    )
+    {
+        var slots = BindDecimalCall(
+            "compare",
+            1,
+            ["other", "context"],
+            positional,
+            names,
+            values,
+            span
+        );
+        var left = DecimalOf(self);
+        var right = DecimalOf(RequireDecimal(slots[0]!));
+        var context = ContextArgument(slots[1]) ?? ContextOf(CurrentContext());
+        var leftNaN = left.Special is Special.NaN or Special.SNaN;
+        var rightNaN = right.Special is Special.NaN or Special.SNaN;
+        if (!total)
+        {
+            if (left.Special == Special.SNaN || right.Special == Special.SNaN)
+            {
+                throw Signal("InvalidOperation", span, context);
+            }
+            if (leftNaN || rightNaN)
+            {
+                return Copy(new DecimalState(0, BigInteger.Zero, 0, Special.NaN, string.Empty));
+            }
+        }
+        if (magnitude)
+        {
+            left = left with { Sign = 0 };
+            right = right with { Sign = 0 };
+        }
+        var order = total ? CompareTotalPublic(left, right) : CompareStates(left, right);
+        return Copy(
+            new DecimalState(
+                order < 0 ? 1 : 0,
+                new BigInteger(Math.Abs(order)),
+                0,
+                Special.Finite,
+                string.Empty
+            )
+        );
+    }
+
+    private static int CompareTotalPublic(DecimalState left, DecimalState right)
+    {
+        var leftNaN = left.Special is Special.NaN or Special.SNaN;
+        var rightNaN = right.Special is Special.NaN or Special.SNaN;
+        if (leftNaN || rightNaN)
+        {
+            if (left.Sign != right.Sign)
+            {
+                return left.Sign == 1 ? -1 : 1;
+            }
+            if (leftNaN && rightNaN)
+            {
+                if (left.Special != right.Special)
+                {
+                    return left.Special == Special.SNaN ? -1 : 1;
+                }
+                var payload = ComparePayload(left.Payload, right.Payload);
+                return left.Sign == 1 ? -payload : payload;
+            }
+            if (leftNaN)
+            {
+                return left.Sign == 1 ? -1 : 1;
+            }
+            return right.Sign == 1 ? 1 : -1;
+        }
+        return CompareTotal(left, right);
+    }
+
+    private static int ComparePayload(string left, string right)
+    {
+        var leftDigits = left.TrimStart('0');
+        var rightDigits = right.TrimStart('0');
+        if (leftDigits.Length != rightDigits.Length)
+        {
+            return leftDigits.Length < rightDigits.Length ? -1 : 1;
+        }
+        return string.CompareOrdinal(leftDigits, rightDigits) switch
+        {
+            < 0 => -1,
+            > 0 => 1,
+            _ => 0,
+        };
+    }
+
+    private static PythonManagedObjectValue RemainderNear(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = BindDecimalCall(
+            "remainder_near",
+            1,
+            ["other", "context"],
+            positional,
+            names,
+            values,
+            span
+        );
+        var left = DecimalOf(self);
+        var right = DecimalOf(RequireDecimal(slots[0]!));
+        var context = ContextArgument(slots[1]) ?? ContextOf(CurrentContext());
+        if (left.Special == Special.SNaN || right.Special == Special.SNaN)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (left.Special == Special.NaN || right.Special == Special.NaN)
+        {
+            return Copy(new DecimalState(0, BigInteger.Zero, 0, Special.NaN, string.Empty));
+        }
+        if (left.Special == Special.Infinity)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (right.Special == Special.Infinity)
+        {
+            return Copy(left);
+        }
+        if (right.Coefficient.IsZero)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        var exponent = Math.Min(left.Exponent, right.Exponent);
+        var leftInt =
+            (left.Sign == 1 ? -left.Coefficient : left.Coefficient)
+            * Pow10(left.Exponent - exponent);
+        var rightInt =
+            (right.Sign == 1 ? -right.Coefficient : right.Coefficient)
+            * Pow10(right.Exponent - exponent);
+        var numerator = BigInteger.Abs(leftInt);
+        var denominator = BigInteger.Abs(rightInt);
+        var quotient = BigInteger.DivRem(numerator, denominator, out var remainder);
+        if (remainder * 2 > denominator || (remainder * 2 == denominator && !quotient.IsEven))
+        {
+            quotient += 1;
+        }
+        if (Digits(quotient).Length > context.Prec)
+        {
+            throw Signal("DivisionImpossible", span, context);
+        }
+        var signedQuotient = (left.Sign ^ right.Sign) == 1 ? -quotient : quotient;
+        var result = leftInt - (signedQuotient * rightInt);
+        var sign = result.Sign < 0 ? 1 : 0;
+        return Copy(RoundToPrecision(sign, BigInteger.Abs(result), exponent, span, context));
+    }
+
+    private static PythonManagedObjectValue Logb(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = BindDecimalCall("logb", 0, ["context"], positional, names, values, span);
+        var context = ContextArgument(slots[0]) ?? ContextOf(CurrentContext());
+        var state = DecimalOf(self);
+        if (state.Special == Special.SNaN)
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (state.Special == Special.NaN)
+        {
+            return Copy(state);
+        }
+        if (state.Special == Special.Infinity)
+        {
+            return Copy(state);
+        }
+        if (state.Coefficient.IsZero)
+        {
+            throw Signal("DivisionByZero", span, context);
+        }
+        var adjusted = Adjusted(state);
+        return Copy(
+            new DecimalState(
+                adjusted < 0 ? 1 : 0,
+                BigInteger.Abs(adjusted),
+                0,
+                Special.Finite,
+                string.Empty
+            )
+        );
+    }
+
+    private static PythonManagedObjectValue Fma(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = BindDecimalCall(
+            "fma",
+            2,
+            ["other", "third", "context"],
+            positional,
+            names,
+            values,
+            span
+        );
+        var left = DecimalOf(self);
+        var right = DecimalOf(RequireDecimal(slots[0]!));
+        var third = DecimalOf(RequireDecimal(slots[1]!));
+        var context = ContextArgument(slots[2]) ?? ContextOf(CurrentContext());
+        if (
+            left.Special == Special.SNaN
+            || right.Special == Special.SNaN
+            || third.Special == Special.SNaN
+        )
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (
+            left.Special == Special.NaN
+            || right.Special == Special.NaN
+            || third.Special == Special.NaN
+        )
+        {
+            return Copy(new DecimalState(0, BigInteger.Zero, 0, Special.NaN, string.Empty));
+        }
+        var leftInfinity = left.Special == Special.Infinity;
+        var rightInfinity = right.Special == Special.Infinity;
+        var thirdInfinity = third.Special == Special.Infinity;
+        if (
+            (leftInfinity && right.Coefficient.IsZero) || (rightInfinity && left.Coefficient.IsZero)
+        )
+        {
+            throw Signal("InvalidOperation", span, context);
+        }
+        if (leftInfinity || rightInfinity)
+        {
+            var sign = left.Sign ^ right.Sign;
+            if (thirdInfinity && third.Sign != sign)
+            {
+                throw Signal("InvalidOperation", span, context);
+            }
+            return Copy(new DecimalState(sign, BigInteger.Zero, 0, Special.Infinity, string.Empty));
+        }
+        if (thirdInfinity)
+        {
+            return Copy(third);
+        }
+        var productSign = left.Sign ^ right.Sign;
+        var productCoefficient = left.Coefficient * right.Coefficient;
+        var productExponent = left.Exponent + right.Exponent;
+        if (productCoefficient.IsZero)
+        {
+            productSign = 0;
+        }
+        var exponent = Math.Min(productExponent, third.Exponent);
+        var productInt =
+            (productSign == 1 ? -productCoefficient : productCoefficient)
+            * Pow10(productExponent - exponent);
+        var thirdInt =
+            (third.Sign == 1 ? -third.Coefficient : third.Coefficient)
+            * Pow10(third.Exponent - exponent);
+        var sum = productInt + thirdInt;
+        var sumSign = sum.Sign < 0 ? 1 : 0;
+        return Copy(RoundToPrecision(sumSign, BigInteger.Abs(sum), exponent, span, context));
     }
 
     private static PythonTextValue Format(PythonValue self, PythonValue specValue)
@@ -2266,15 +3320,15 @@ internal static class PythonDecimalModule
         return result;
     }
 
-    private static PythonRaisedException Signal(string signal, TextSpan span = default)
+    private static PythonRaisedException Signal(
+        string signal,
+        TextSpan span = default,
+        DecimalContext? context = null
+    )
     {
-        var exception = signal switch
-        {
-            "DivisionByZero" => "DivisionByZero",
-            "Overflow" => "Overflow",
-            "Underflow" => "Underflow",
-            _ => "InvalidOperation",
-        };
+        var exception = ExceptionTypes.ContainsKey(signal) ? signal : "InvalidOperation";
+        RecordSignal(context ?? ContextOf(CurrentContext()), exception);
+        _ = span;
         return new PythonRaisedException(
             new PythonExceptionValue(exception, $"[<class 'decimal.{signal}'>]")
             {
@@ -2341,7 +3395,7 @@ internal static class PythonDecimalModule
                 Special.Finite,
                 string.Empty
             ),
-            PythonFloatingPointValue floating => FromDouble(floating.Value),
+            PythonFloatingPointValue floating => FromDoubleWithSignal(floating.Value, span),
             PythonManagedObjectValue { Payload: DecimalState existing } => existing,
             PythonTupleValue tuple => FromTuple(tuple.Elements, span),
             PythonListValue list => FromTuple(list.Elements, span),
@@ -2449,6 +3503,18 @@ internal static class PythonDecimalModule
                 : BigInteger.Parse(digits, CultureInfo.InvariantCulture);
         var resultExponent = exponent - fracPart.Length;
         return new DecimalState(sign, coefficient, resultExponent, Special.Finite, string.Empty);
+    }
+
+    private static DecimalState FromDoubleWithSignal(double value, TextSpan span)
+    {
+        var context = ContextOf(CurrentContext());
+        EnsureSignalMaps(context);
+        WriteSignalState(context.SignalFlags!, "FloatOperation", true);
+        if (IsTrapped(context, "FloatOperation"))
+        {
+            throw Signal("FloatOperation", span, context);
+        }
+        return FromDouble(value);
     }
 
     private static DecimalState FromDouble(double value)
