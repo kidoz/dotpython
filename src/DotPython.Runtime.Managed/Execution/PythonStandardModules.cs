@@ -562,6 +562,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonDateTimeModule.Initialize
         );
+        // The measures over exact rational arithmetic, with the normal distribution.
+        modules["statistics"] = PythonModuleDefinition.Native(
+            "<dotpython statistics>",
+            isPackage: false,
+            PythonStatisticsModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
@@ -1017,6 +1023,7 @@ internal static class PythonStandardModules
         globals.SetValue("nan", new PythonFloatingPointValue(double.NaN));
 
         MathFunction(globals, "sqrt", 1, 1, (arguments, span) => Sqrt(arguments[0], span));
+        MathFunction(globals, "fsum", 1, 1, FSum);
         MathFunction(
             globals,
             "floor",
@@ -1411,6 +1418,17 @@ internal static class PythonStandardModules
         }
 
         return new PythonFloatingPointValue(Math.Sqrt(sum));
+    }
+
+    /// <summary>`math.fsum`: the correctly-rounded sum of the values.</summary>
+    private static PythonValue FSum(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        var numbers = new List<double>();
+        foreach (var value in ManagedObjectProtocols.MaterializeValues(arguments[0], span))
+        {
+            numbers.Add(RequireReal(value, span));
+        }
+        return new PythonFloatingPointValue(PythonFSum.Sum(numbers));
     }
 
     private static PythonValue IsClose(IReadOnlyList<PythonValue> arguments, TextSpan span)
