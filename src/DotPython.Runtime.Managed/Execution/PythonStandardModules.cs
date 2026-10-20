@@ -226,142 +226,333 @@ internal static class PythonStandardModules
         }
     }
 
+    private static readonly string[] OpenParameters =
+    [
+        "file",
+        "mode",
+        "buffering",
+        "encoding",
+        "errors",
+        "newline",
+        "closefd",
+        "opener",
+    ];
+
     private static PythonBuiltinFunctionValue CreateOpen(IReadOnlyList<string> searchRoots) =>
         new(
             "open",
-            (arguments, span) =>
-            {
-                if (arguments.Count == 0)
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        "open() missing required argument 'file' (pos 1)",
-                        span,
-                        "TypeError"
-                    );
-                }
-
-                if (arguments.Count > 2)
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        "open() arguments beyond file and mode are not supported in this runtime slice.",
-                        span
-                    );
-                }
-
-                if (!PythonPathlib.TryConvertPathArgument(arguments[0], span, out var path))
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        $"expected str, bytes or os.PathLike object, not {ManagedObjectProtocols.GetTypeName(arguments[0])}",
-                        span,
-                        "TypeError"
-                    );
-                }
-
-                var mode = "r";
-                if (arguments.Count == 2)
-                {
-                    if (arguments[1] is not PythonTextValue modeText)
-                    {
-                        throw new PythonRuntimeException(
-                            "DPY4037",
-                            $"open() argument 'mode' must be str, not {ManagedObjectProtocols.GetTypeName(arguments[1])}",
-                            span,
-                            "TypeError"
-                        );
-                    }
-
-                    mode = modeText.Value;
-                }
-
-                ValidateOpenMode(mode, span);
-                var fullPath = Path.GetFullPath(path);
-                if (!IsWithinSearchRoots(fullPath, searchRoots))
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        "open() outside the registered module search roots is not permitted in this runtime slice.",
-                        span,
-                        "PermissionError"
-                    );
-                }
-
-                if (Directory.Exists(fullPath))
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        $"[Errno 21] Is a directory: '{path}'",
-                        span,
-                        "IsADirectoryError"
-                    );
-                }
-
-                if (!File.Exists(fullPath))
-                {
-                    throw new PythonRuntimeException(
-                        "DPY4037",
-                        $"[Errno 2] No such file or directory: '{path}'",
-                        span,
-                        "FileNotFoundError"
-                    );
-                }
-
-                string content;
-                try
-                {
-                    if (new FileInfo(fullPath).Length > MaximumOpenFileLength)
-                    {
-                        throw new PythonRuntimeException(
-                            "DPY4037",
-                            $"open() beyond the {MaximumOpenFileLength} byte limit is not supported in this runtime slice.",
-                            span
-                        );
-                    }
-
-                    content = File.ReadAllText(fullPath);
-                }
-                catch (IOException exception)
-                {
-                    throw new PythonRuntimeException("DPY4037", exception.Message, span, "OSError");
-                }
-
-                // Universal newlines: text mode translates both CRLF and lone CR.
-                content = content
-                    .Replace("\r\n", "\n", StringComparison.Ordinal)
-                    .Replace('\r', '\n');
-                return new PythonFileValue(path, mode, content);
-            }
+            (arguments, span) => Open(arguments, [], [], searchRoots, span),
+            (arguments, names, values, span) => Open(arguments, names, values, searchRoots, span)
         );
 
-    private static void ValidateOpenMode(string mode, TextSpan span)
+    private static PythonFileValue Open(
+        IReadOnlyList<PythonValue> arguments,
+        IReadOnlyList<string> keywordNames,
+        IReadOnlyList<PythonValue> keywordValues,
+        IReadOnlyList<string> searchRoots,
+        TextSpan span
+    )
     {
-        // CPython-invalid modes get CPython's ValueError; CPython-valid modes beyond
-        // the read-only text subset are a restriction of this slice.
+        var slots = PythonKeywordArguments.Bind(
+            "open",
+            OpenParameters,
+            0,
+            arguments,
+            keywordNames,
+            keywordValues,
+            span
+        );
+        if (slots[0] is null)
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                "open() missing required argument 'file' (pos 1)",
+                span,
+                "TypeError"
+            );
+        }
+        if (!PythonPathlib.TryConvertPathArgument(slots[0]!, span, out var path))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                $"expected str, bytes or os.PathLike object, not {ManagedObjectProtocols.GetTypeName(slots[0]!)}",
+                span,
+                "TypeError"
+            );
+        }
+        var mode = RequireTextOption(slots[1], "mode", "r", span);
+        var binary = ParseOpenMode(mode, span);
+        var encoding = OptionalTextOption(slots[3], "encoding", span);
+        var errors = OptionalTextOption(slots[4], "errors", span);
+        var newline = OpenNewline(slots[5], span);
+        if (binary && encoding is not null)
+        {
+            throw ValueError("binary mode doesn't take an encoding argument", span);
+        }
+        if (binary && errors is not null)
+        {
+            throw ValueError("binary mode doesn't take an errors argument", span);
+        }
+        if (binary && newline is not null)
+        {
+            throw ValueError("binary mode doesn't take a newline argument", span);
+        }
+        var buffering = -1;
+        if (slots[2] is { } bufferingValue)
+        {
+            buffering = (int)
+                BigInteger.Clamp(
+                    PythonBuiltinFunctions.RequireIndex(bufferingValue, span),
+                    int.MinValue,
+                    int.MaxValue
+                );
+            if (buffering < -1)
+            {
+                throw ValueError("invalid buffering size", span);
+            }
+        }
+        if (!binary && buffering == 0)
+        {
+            throw ValueError("can't have unbuffered text I/O", span);
+        }
+        var closeFd = slots[6] is null || ManagedObjectProtocols.IsTrue(slots[6]!);
+        if (!closeFd)
+        {
+            throw ValueError("Cannot use closefd=False with file name", span);
+        }
+        if (slots[7] is not null and not PythonNoneValue)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4037",
+                "open() with an opener is not supported in this runtime slice.",
+                span,
+                "NotImplementedError"
+            );
+        }
+        var kind = binary ? (buffering == 0 ? "FileIO" : "BufferedReader") : "TextIOWrapper";
+        return OpenReadable(searchRoots, path, mode, binary, kind, encoding, errors, newline, span);
+    }
+
+    /// <summary>
+    /// Reads a capability-scoped file into a handle. Text handles decode the bytes up
+    /// front with the named codec and handler; binary handles keep them.
+    /// </summary>
+    internal static PythonFileValue OpenReadable(
+        IReadOnlyList<string> searchRoots,
+        string path,
+        string mode,
+        bool binary,
+        string kind,
+        string? encoding,
+        string? errors,
+        string? newline,
+        TextSpan span
+    )
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!IsWithinSearchRoots(fullPath, searchRoots))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                "open() outside the registered module search roots is not permitted in this runtime slice.",
+                span,
+                "PermissionError"
+            );
+        }
+        var target = ResolveReadTarget(fullPath);
+        if (target is not null && !IsWithinSearchRoots(target, searchRoots))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                "open() outside the registered module search roots is not permitted in this runtime slice.",
+                span,
+                "PermissionError"
+            );
+        }
+        if (Directory.Exists(fullPath))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                $"[Errno 21] Is a directory: '{path}'",
+                span,
+                "IsADirectoryError"
+            );
+        }
+        if (!File.Exists(fullPath))
+        {
+            throw new PythonRuntimeException(
+                "DPY4037",
+                $"[Errno 2] No such file or directory: '{path}'",
+                span,
+                "FileNotFoundError"
+            );
+        }
+        byte[] bytes;
+        try
+        {
+            if (new FileInfo(fullPath).Length > MaximumOpenFileLength)
+            {
+                throw new PythonRuntimeException(
+                    "DPY4037",
+                    $"open() beyond the {MaximumOpenFileLength} byte limit is not supported in this runtime slice.",
+                    span
+                );
+            }
+            bytes = File.ReadAllBytes(fullPath);
+        }
+        catch (IOException exception)
+        {
+            throw new PythonRuntimeException("DPY4037", exception.Message, span, "OSError");
+        }
+        if (binary)
+        {
+            return new PythonFileValue(path, mode, string.Empty)
+            {
+                IsBinary = true,
+                BinaryContent = bytes,
+                Kind = kind,
+            };
+        }
+        var decodeName = encoding ?? "utf-8";
+        // Resolving up front reports an unknown codec even for an empty file, as
+        // TextIOWrapper does.
+        _ = PythonTextCodecs.Resolve(decodeName, span);
+        var text = PythonTextCodecs.Decode(bytes, decodeName, errors ?? "strict", span);
+        return new PythonFileValue(path, mode, text)
+        {
+            Newline = newline,
+            EncodingName = encoding ?? "UTF-8",
+            Errors = errors ?? "strict",
+            Kind = kind,
+        };
+    }
+
+    /// <summary>
+    /// The canonical target of a symlink, so a link under a search root cannot read a
+    /// file outside it. Null when the path is not a link.
+    /// </summary>
+    private static string? ResolveReadTarget(string fullPath)
+    {
+        try
+        {
+            return new FileInfo(fullPath).ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Validates an open mode and reports whether it is binary.</summary>
+    private static bool ParseOpenMode(string mode, TextSpan span)
+    {
         var seen = new HashSet<char>();
         foreach (var character in mode)
         {
             if (!"rwxab+t".Contains(character, StringComparison.Ordinal) || !seen.Add(character))
             {
-                throw new PythonRuntimeException(
-                    "DPY4037",
-                    $"invalid mode: '{mode}'",
-                    span,
-                    "ValueError"
-                );
+                throw ValueError($"invalid mode: '{mode}'", span);
             }
         }
-
-        if (mode is not ("r" or "rt" or "tr"))
+        var binary = seen.Contains('b');
+        var text = seen.Contains('t');
+        var readers = seen.Contains('r') ? 1 : 0;
+        var writers =
+            (seen.Contains('w') ? 1 : 0)
+            + (seen.Contains('x') ? 1 : 0)
+            + (seen.Contains('a') ? 1 : 0);
+        if (readers + writers != 1)
         {
-            throw new PythonRuntimeException(
-                "DPY4037",
-                $"open() mode '{mode}' is not supported in this runtime slice.",
+            throw ValueError(
+                "Must have exactly one of create/read/write/append mode and at most one plus",
                 span
             );
         }
+        if (text && binary)
+        {
+            throw ValueError("can't have text and binary mode at once", span);
+        }
+        if (writers != 0 || seen.Contains('+'))
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4061",
+                $"open() mode '{mode}' requires a filesystem write capability that this "
+                    + "runtime slice does not provide.",
+                span,
+                "PermissionError"
+            );
+        }
+        return binary;
     }
+
+    private static string RequireTextOption(
+        PythonValue? value,
+        string name,
+        string fallback,
+        TextSpan span
+    )
+    {
+        if (value is null)
+        {
+            return fallback;
+        }
+        if (value is not PythonTextValue text)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4037",
+                $"open() argument '{name}' must be str, not "
+                    + $"{ManagedObjectProtocols.GetTypeName(value)}",
+                span,
+                "TypeError"
+            );
+        }
+        return text.Value;
+    }
+
+    private static string? OptionalTextOption(PythonValue? value, string name, TextSpan span)
+    {
+        if (value is null or PythonNoneValue)
+        {
+            return null;
+        }
+        if (value is not PythonTextValue text)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4037",
+                $"open() argument '{name}' must be str or None, not "
+                    + $"{ManagedObjectProtocols.GetTypeName(value)}",
+                span,
+                "TypeError"
+            );
+        }
+        return text.Value;
+    }
+
+    private static string? OpenNewline(PythonValue? value, TextSpan span)
+    {
+        if (value is null or PythonNoneValue)
+        {
+            return null;
+        }
+        if (value is not PythonTextValue text)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4037",
+                "open() argument 'newline' must be str or None, not "
+                    + $"{ManagedObjectProtocols.GetTypeName(value)}",
+                span,
+                "TypeError"
+            );
+        }
+        if (text.Value is not ("" or "\n" or "\r" or "\r\n"))
+        {
+            throw ValueError($"illegal newline value: {text.Value}", span);
+        }
+        return text.Value;
+    }
+
+    private static PythonRuntimeException ValueError(string message, TextSpan span) =>
+        ManagedObjectProtocols.Fault("DPY4037", message, span, "ValueError");
 
     /// <summary>The names `collections` publishes, in CPython's own order.</summary>
     private static readonly string[] CollectionsExports =

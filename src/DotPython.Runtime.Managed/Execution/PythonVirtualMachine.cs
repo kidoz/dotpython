@@ -5701,6 +5701,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
     private static (bool, PythonValue) NextFileLine(PythonFileValue file, TextSpan span)
     {
         ManagedObjectProtocols.EnsureFileOpen(file, span);
+        if (file.IsBinary)
+        {
+            return file.ReadLineBytes() is { } bytes
+                ? (true, PythonByteSequenceValue.Create(bytes))
+                : (false, PythonNoneValue.Instance);
+        }
         return file.ReadLine() is { } line
             ? (true, new PythonTextValue(line))
             : (false, PythonNoneValue.Instance);

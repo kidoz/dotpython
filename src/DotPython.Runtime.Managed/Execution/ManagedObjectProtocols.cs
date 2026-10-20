@@ -759,88 +759,313 @@ internal static class ManagedObjectProtocols
                     )
                 );
             case PythonFileValue nameFile when name == "name":
-                return new PythonTextValue(nameFile.Name);
+                return nameFile.Name.Length == 0
+                    ? throw Fault(
+                        "DPY4022",
+                        "'_io.BytesIO' object has no attribute 'name'",
+                        span,
+                        "AttributeError"
+                    )
+                    : new PythonTextValue(nameFile.Name);
             case PythonFileValue modeFile when name == "mode":
+                if (!modeFile.HasMode)
+                {
+                    throw Fault(
+                        "DPY4022",
+                        "'_io.TextIOWrapper' object has no attribute 'mode'",
+                        span,
+                        "AttributeError"
+                    );
+                }
+                if (modeFile.Name.Length == 0)
+                {
+                    throw Fault(
+                        "DPY4022",
+                        "'_io.BytesIO' object has no attribute 'mode'",
+                        span,
+                        "AttributeError"
+                    );
+                }
                 return new PythonTextValue(modeFile.Mode);
+            case PythonFileValue kindFile when name == "closefd" && kindFile.Kind == "FileIO":
+                return PythonTruthValue.FromBoolean(kindFile.CloseFd);
             case PythonFileValue closedFile when name == "closed":
                 return PythonTruthValue.FromBoolean(closedFile.IsClosed);
-            case PythonFileValue readFile when name == "read":
-                return new PythonBoundMethodValue(
-                    "read",
+            case PythonFileValue encodingFile when name == "encoding" && !encodingFile.IsBinary:
+                return new PythonTextValue(encodingFile.EncodingName);
+            case PythonFileValue errorsFile when name == "errors" && !errorsFile.IsBinary:
+                return new PythonTextValue(errorsFile.Errors);
+            case PythonFileValue newlinesFile when name == "newlines" && !newlinesFile.IsBinary:
+                return newlinesFile.Newlines;
+            case PythonFileValue readFile when name is "read" or "read1":
+                return FileMethod(
                     readFile,
-                    new PythonProtocolFunctionValue(
-                        "read",
-                        (_, readArguments) =>
+                    "read",
+                    (file, readArguments) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        if (readArguments.Count > 1)
                         {
-                            EnsureFileOpen(readFile, span);
-                            if (readArguments.Count > 1)
-                            {
-                                throw Fault(
-                                    "DPY4037",
-                                    $"read expected at most 1 argument, got {readArguments.Count}",
-                                    span,
-                                    "TypeError"
-                                );
-                            }
-
-                            var count = -1;
-                            if (readArguments.Count == 1)
-                            {
-                                count = readArguments[0] switch
-                                {
-                                    PythonNoneValue => -1,
-                                    PythonWholeNumberValue size => size.Value.Sign < 0
-                                        ? -1
-                                        : (int)BigInteger.Min(size.Value, int.MaxValue),
-                                    var other => throw Fault(
-                                        "DPY4037",
-                                        $"argument should be integer or None, not '{GetTypeName(other)}'",
-                                        span,
-                                        "TypeError"
-                                    ),
-                                };
-                            }
-
-                            return new PythonTextValue(readFile.Read(count));
+                            throw Fault(
+                                "DPY4037",
+                                $"read expected at most 1 argument, got {readArguments.Count}",
+                                span,
+                                "TypeError"
+                            );
                         }
-                    )
+                        var count = FileSize(readArguments, span);
+                        return file.IsBinary
+                            ? PythonByteSequenceValue.Create(file.ReadBytes(count))
+                            : new PythonTextValue(file.Read(count));
+                    }
                 );
             case PythonFileValue readLineFile when name == "readline":
-                return new PythonBoundMethodValue(
-                    "readline",
+                return FileMethod(
                     readLineFile,
-                    new PythonProtocolFunctionValue(
-                        "readline",
-                        (_, _) =>
+                    "readline",
+                    (file, readArguments) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        if (readArguments.Count > 1)
                         {
-                            EnsureFileOpen(readLineFile, span);
-                            return new PythonTextValue(readLineFile.ReadLine() ?? string.Empty);
+                            throw Fault(
+                                "DPY4037",
+                                $"readline expected at most 1 argument, got {readArguments.Count}",
+                                span,
+                                "TypeError"
+                            );
                         }
-                    )
+                        var size = FileSize(readArguments, span);
+                        if (file.IsBinary)
+                        {
+                            return PythonByteSequenceValue.Create(file.ReadLineBytes(size) ?? []);
+                        }
+                        return new PythonTextValue(file.ReadLine(size) ?? string.Empty);
+                    }
                 );
             case PythonFileValue readLinesFile when name == "readlines":
-                return new PythonBoundMethodValue(
-                    "readlines",
+                return FileMethod(
                     readLinesFile,
-                    new PythonProtocolFunctionValue(
-                        "readlines",
-                        (_, _) =>
+                    "readlines",
+                    (file, readArguments) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        if (readArguments.Count > 1)
                         {
-                            EnsureFileOpen(readLinesFile, span);
-                            var lines = new List<PythonValue>();
-                            while (readLinesFile.ReadLine() is { } line)
+                            throw Fault(
+                                "DPY4037",
+                                $"readlines expected at most 1 argument, got {readArguments.Count}",
+                                span,
+                                "TypeError"
+                            );
+                        }
+                        _ = FileSize(readArguments, span);
+                        var lines = new List<PythonValue>();
+                        if (file.IsBinary)
+                        {
+                            while (file.ReadLineBytes() is { } line)
+                            {
+                                lines.Add(PythonByteSequenceValue.Create(line));
+                            }
+                        }
+                        else
+                        {
+                            while (file.ReadLine() is { } line)
                             {
                                 lines.Add(new PythonTextValue(line));
                             }
-
-                            return new PythonListValue(lines);
                         }
-                    )
+                        return new PythonListValue(lines);
+                    }
+                );
+            case PythonFileValue nextFile when name == "__next__":
+                return FileMethod(
+                    nextFile,
+                    "__next__",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        if (file.IsBinary)
+                        {
+                            if (file.ReadLineBytes() is { } bytes)
+                            {
+                                return PythonByteSequenceValue.Create(bytes);
+                            }
+                        }
+                        else if (file.ReadLine() is { } text)
+                        {
+                            return new PythonTextValue(text);
+                        }
+                        throw new PythonRaisedException(
+                            CreateStopIteration(PythonNoneValue.Instance)
+                        );
+                    }
+                );
+            case PythonFileValue seekFile when name == "seek":
+                return FileMethod(
+                    seekFile,
+                    "seek",
+                    (file, seekArguments) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        if (seekArguments.Count == 0 || seekArguments.Count > 2)
+                        {
+                            throw Fault(
+                                "DPY4037",
+                                "seek() takes exactly one argument (0 given)",
+                                span,
+                                "TypeError"
+                            );
+                        }
+                        var offset = (long)
+                            BigInteger.Clamp(
+                                PythonBuiltinFunctions.RequireIndex(seekArguments[0], span),
+                                long.MinValue,
+                                long.MaxValue
+                            );
+                        var whence =
+                            seekArguments.Count == 2
+                                ? (int)
+                                    BigInteger.Clamp(
+                                        PythonBuiltinFunctions.RequireIndex(seekArguments[1], span),
+                                        int.MinValue,
+                                        int.MaxValue
+                                    )
+                                : 0;
+                        if (whence is not (0 or 1 or 2))
+                        {
+                            throw Fault(
+                                "DPY4037",
+                                $"invalid whence ({whence}, should be 0, 1 or 2)",
+                                span,
+                                "ValueError"
+                            );
+                        }
+                        var length = file.IsBinary
+                            ? file.BinaryContent.Length
+                            : file.Content.Length;
+                        var basePosition = whence switch
+                        {
+                            1 => file.Position,
+                            2 => length,
+                            _ => 0,
+                        };
+                        var target = basePosition + offset;
+                        if (target < 0)
+                        {
+                            throw Fault(
+                                "DPY4037",
+                                $"negative seek position {target}",
+                                span,
+                                "ValueError"
+                            );
+                        }
+                        file.Position = (int)Math.Min(target, int.MaxValue);
+                        return PythonWholeNumberValue.Create(file.Position);
+                    }
+                );
+            case PythonFileValue tellFile when name == "tell":
+                return FileMethod(
+                    tellFile,
+                    "tell",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonWholeNumberValue.Create(file.Position);
+                    }
+                );
+            case PythonFileValue flushFile when name == "flush":
+                return FileMethod(
+                    flushFile,
+                    "flush",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonNoneValue.Instance;
+                    }
+                );
+            case PythonFileValue readableFile when name == "readable":
+                return FileMethod(
+                    readableFile,
+                    "readable",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonTruthValue.True;
+                    }
+                );
+            case PythonFileValue writableFile when name == "writable":
+                return FileMethod(
+                    writableFile,
+                    "writable",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonTruthValue.False;
+                    }
+                );
+            case PythonFileValue seekableFile when name == "seekable":
+                return FileMethod(
+                    seekableFile,
+                    "seekable",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonTruthValue.True;
+                    }
+                );
+            case PythonFileValue isattyFile when name == "isatty":
+                return FileMethod(
+                    isattyFile,
+                    "isatty",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        return PythonTruthValue.False;
+                    }
+                );
+            case PythonFileValue filenoFile when name == "fileno":
+                return FileMethod(
+                    filenoFile,
+                    "fileno",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        throw Fault(
+                            "DPY4037",
+                            "fileno() is not supported in this runtime slice "
+                                + "(file descriptors are out of scope).",
+                            span,
+                            "NotImplementedError"
+                        );
+                    }
+                );
+            case PythonFileValue writeFile when name is "write" or "writelines":
+                return FileMethod(
+                    writeFile,
+                    name,
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        throw PythonIoModule.UnsupportedOperation(
+                            file.IsBinary ? name : "not writable"
+                        );
+                    }
+                );
+            case PythonFileValue truncateFile when name == "truncate":
+                return FileMethod(
+                    truncateFile,
+                    "truncate",
+                    (file, _) =>
+                    {
+                        EnsureFileOpen(file, span);
+                        throw PythonIoModule.UnsupportedOperation("truncate");
+                    }
                 );
             case PythonFileValue:
                 throw Fault(
                     "DPY4022",
-                    $"'_io.TextIOWrapper' object has no attribute '{name}'",
+                    $"'_io.{GetTypeName((PythonFileValue)target)}' object has no attribute '{name}'",
                     span,
                     "AttributeError"
                 );
@@ -2968,6 +3193,39 @@ internal static class ManagedObjectProtocols
         return created;
     }
 
+    private static PythonBoundMethodValue FileMethod(
+        PythonFileValue file,
+        string name,
+        Func<PythonFileValue, IReadOnlyList<PythonValue>, PythonValue> invoke
+    ) =>
+        new(
+            name,
+            file,
+            new PythonProtocolFunctionValue(name, (_, arguments) => invoke(file, arguments))
+        );
+
+    /// <summary>The optional size argument of a file read: `None` or a negative count
+    /// reads to the end.</summary>
+    private static int FileSize(IReadOnlyList<PythonValue> arguments, TextSpan span)
+    {
+        if (arguments.Count == 0 || arguments[0] is PythonNoneValue)
+        {
+            return -1;
+        }
+        return arguments[0] switch
+        {
+            PythonWholeNumberValue size => size.Value.Sign < 0
+                ? -1
+                : (int)BigInteger.Min(size.Value, int.MaxValue),
+            var other => throw Fault(
+                "DPY4037",
+                $"argument should be integer or None, not '{GetTypeName(other)}'",
+                span,
+                "TypeError"
+            ),
+        };
+    }
+
     internal static void EnsureFileOpen(PythonFileValue file, TextSpan span)
     {
         if (file.IsClosed)
@@ -3001,7 +3259,15 @@ internal static class ManagedObjectProtocols
             case PythonFileValue file:
             {
                 EnsureFileOpen(file, span);
-                if (file.ReadLine() is { } line)
+                if (file.IsBinary)
+                {
+                    if (file.ReadLineBytes() is { } bytes)
+                    {
+                        value = PythonByteSequenceValue.Create(bytes);
+                        return true;
+                    }
+                }
+                else if (file.ReadLine() is { } line)
                 {
                     value = new PythonTextValue(line);
                     return true;
@@ -4691,7 +4957,7 @@ internal static class ManagedObjectProtocols
             PythonMapSourceValue => "map",
             PythonFilterSourceValue => "filter",
             PythonGeneratorValue generatorValue => generatorValue.TypeName,
-            PythonFileValue => "TextIOWrapper",
+            PythonFileValue file => file.Kind,
             PythonStreamValue => "TextIOWrapper",
             PythonTemplateValue => "Template",
             PythonInterpolationValue => "Interpolation",

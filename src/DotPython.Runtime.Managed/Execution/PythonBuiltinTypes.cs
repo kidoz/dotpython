@@ -175,6 +175,8 @@ internal static class PythonBuiltinTypes
             PythonTypeUnionValue => Union,
             PythonGenericAliasValue => GenericAlias,
             PythonTypeAliasValue => TypeAliasType,
+            PythonFileValue file => GetIOType(file.Kind),
+            PythonStreamValue => GetIOType("TextIOWrapper"),
             PythonManagedObjectValue instance
                 when ReferenceEquals(instance.Type, PythonBuiltinFunctions.ObjectType) =>
                 PythonBuiltinFunctions.Object,
@@ -185,6 +187,14 @@ internal static class PythonBuiltinTypes
                 ? constructorType
                 : CreateOpaque(GetRuntimeTypeName(value)),
         };
+
+    private static readonly ConcurrentDictionary<string, PythonBuiltinTypeValue> IOTypes = new(
+        StringComparer.Ordinal
+    );
+
+    /// <summary>The `_io` type a file-backed handle reports, kept stable per kind.</summary>
+    internal static PythonBuiltinTypeValue GetIOType(string name) =>
+        IOTypes.GetOrAdd(name, static kind => CreateOpaque(kind) with { ModuleName = "_io" });
 
     internal static string GetRuntimeTypeName(PythonValue value) =>
         value switch

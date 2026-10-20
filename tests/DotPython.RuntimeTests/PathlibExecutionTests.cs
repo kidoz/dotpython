@@ -392,7 +392,7 @@ public sealed class PathlibExecutionTests
                     "read_text latin-1 " + TextOptionRefusal("read_text", "encoding"),
                     "read_text replace " + TextOptionRefusal("read_text", "errors"),
                     "read_text newline " + TextOptionRefusal("read_text", "newline"),
-                    "open latin-1 " + TextOptionRefusal("Path.open", "encoding"),
+                    "open latin-1 allowed",
                     "walk follow_symlinks NotImplementedError: PosixPath.walk() does not support "
                         + "follow_symlinks=True in this runtime slice (symlinks are out of scope).",
                     "walk on_error NotImplementedError: PosixPath.walk() does not support on_error "
@@ -463,19 +463,20 @@ public sealed class PathlibExecutionTests
             );
             Assert.False(written.Success);
             Assert.Contains(
-                "open() mode 'w' is not supported in this runtime slice.",
+                "open() mode 'w' requires a filesystem write capability that this runtime "
+                    + "slice does not provide.",
                 written.Diagnostics.Select(diagnostic => diagnostic.Message).ToArray()
             );
 
-            var binary = ExecuteIn(
+            var binary = RunIn(
                 directory,
-                "from pathlib import Path\nPath(root, 'a.txt').open('rb')\n"
+                """
+                from pathlib import Path
+                f = Path(root, 'a.txt').open('rb')
+                print(type(f).__name__, f.mode, repr(f.read(1)))
+                """
             );
-            Assert.False(binary.Success);
-            Assert.Contains(
-                "open() mode 'rb' is not supported in this runtime slice.",
-                binary.Diagnostics.Select(diagnostic => diagnostic.Message).ToArray()
-            );
+            Assert.Equal("BufferedReader rb b'h'" + Environment.NewLine, binary);
         }
         finally
         {

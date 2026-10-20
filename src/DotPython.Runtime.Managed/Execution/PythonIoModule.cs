@@ -27,6 +27,34 @@ internal static class PythonIoModule
 
     internal static void Initialize(PythonGlobalNamespace globals)
     {
+        var roots = UserObjectProtocols.Dispatcher?.SearchRoots ?? [];
+        globals.SetValue(
+            "FileIO",
+            new PythonBuiltinFunctionValue(
+                "FileIO",
+                (arguments, span) => NewFileIo(arguments, [], [], roots, span),
+                (positional, names, values, span) =>
+                    NewFileIo(positional, names, values, roots, span)
+            )
+        );
+        globals.SetValue(
+            "BufferedReader",
+            new PythonBuiltinFunctionValue(
+                "BufferedReader",
+                (arguments, span) => NewBufferedReader(arguments, [], [], span),
+                (positional, names, values, span) =>
+                    NewBufferedReader(positional, names, values, span)
+            )
+        );
+        globals.SetValue(
+            "TextIOWrapper",
+            new PythonBuiltinFunctionValue(
+                "TextIOWrapper",
+                (arguments, span) => NewTextIo(arguments, [], [], span),
+                (positional, names, values, span) => NewTextIo(positional, names, values, span)
+            )
+        );
+        globals.SetValue("open", PythonStandardModules.CreateOpenBuiltin(roots));
         globals.SetValue("SEEK_SET", PythonWholeNumberValue.Create(0));
         globals.SetValue("SEEK_CUR", PythonWholeNumberValue.Create(1));
         globals.SetValue("SEEK_END", PythonWholeNumberValue.Create(2));
@@ -57,6 +85,8 @@ internal static class PythonIoModule
 
     private static PythonRuntimeException ValueError(string message) =>
         Fault("ValueError", message);
+
+    internal static PythonRaisedException UnsupportedOperation(string name) => Unsupported(name);
 
     private static PythonRaisedException Unsupported(string name) =>
         new(
@@ -204,6 +234,224 @@ internal static class PythonIoModule
             state.Buffer.AddRange(bytes);
         }
         return new PythonManagedObjectValue(BytesIoType, state);
+    }
+
+    private static PythonFileValue NewFileIo(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        IReadOnlyList<string> roots,
+        TextSpan span
+    )
+    {
+        var slots = PythonKeywordArguments.Bind(
+            "FileIO",
+            ["file", "mode", "closefd", "opener"],
+            0,
+            positional,
+            names,
+            values,
+            span,
+            typeStyleErrors: true
+        );
+        if (slots[0] is null)
+        {
+            throw Fault("TypeError", "FileIO() missing required argument 'file' (pos 1)");
+        }
+        if (!PythonPathlib.TryConvertPathArgument(slots[0]!, span, out var path))
+        {
+            throw Fault(
+                "NotImplementedError",
+                "FileIO() supports path names only in this runtime slice "
+                    + "(file descriptors are out of scope)."
+            );
+        }
+        var mode = "r";
+        if (slots[1] is { } modeValue)
+        {
+            if (modeValue is not PythonTextValue modeText)
+            {
+                throw Fault(
+                    "TypeError",
+                    "FileIO() argument 'mode' must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(modeValue)
+                );
+            }
+            mode = modeText.Value;
+        }
+        if (mode is not ("r" or "rb"))
+        {
+            foreach (var character in mode)
+            {
+                if (!"rwxab+".Contains(character, StringComparison.Ordinal))
+                {
+                    throw Fault("ValueError", $"invalid mode: '{mode}'");
+                }
+            }
+            if (mode.IndexOfAny(['w', 'x', 'a', '+']) >= 0)
+            {
+                throw Fault(
+                    "PermissionError",
+                    $"FileIO() mode '{mode}' requires a filesystem write capability that "
+                        + "this runtime slice does not provide."
+                );
+            }
+            throw Fault("ValueError", $"invalid mode: '{mode}'");
+        }
+        if (slots[2] is { } closeFdValue && !ManagedObjectProtocols.IsTrue(closeFdValue))
+        {
+            throw Fault("ValueError", "Cannot use closefd=False with file name");
+        }
+        if (slots[3] is { } opener && opener is not PythonNoneValue)
+        {
+            throw Fault(
+                "NotImplementedError",
+                "FileIO() with an opener is not supported in this runtime slice."
+            );
+        }
+        return PythonStandardModules.OpenReadable(
+            roots,
+            path,
+            "rb",
+            binary: true,
+            kind: "FileIO",
+            encoding: null,
+            errors: null,
+            newline: null,
+            span
+        );
+    }
+
+    private static PythonFileValue NewBufferedReader(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = PythonKeywordArguments.Bind(
+            "BufferedReader",
+            ["raw"],
+            0,
+            positional,
+            names,
+            values,
+            span
+        );
+        if (slots[0] is null)
+        {
+            throw Fault("TypeError", "BufferedReader() missing required argument 'raw' (pos 1)");
+        }
+        var (bytes, position, name, mode) = BufferSource(slots[0]!, span);
+        return new PythonFileValue(name, mode, string.Empty)
+        {
+            IsBinary = true,
+            BinaryContent = bytes,
+            Position = position,
+            Kind = "BufferedReader",
+        };
+    }
+
+    private static PythonFileValue NewTextIo(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        var slots = PythonKeywordArguments.Bind(
+            "TextIOWrapper",
+            ["buffer", "encoding", "errors", "newline"],
+            0,
+            positional,
+            names,
+            values,
+            span
+        );
+        if (slots[0] is null)
+        {
+            throw Fault("TypeError", "TextIOWrapper() missing required argument 'buffer' (pos 1)");
+        }
+        var (bytes, position, name, mode) = BufferSource(slots[0]!, span);
+        var encoding = OptionalName(slots[1], "encoding", span);
+        var errors = OptionalName(slots[2], "errors", span);
+        var newline = TextIoNewline(slots[3], span);
+        var decodeName = encoding ?? "utf-8";
+        _ = PythonTextCodecs.Resolve(decodeName, span);
+        var payload = position <= 0 ? bytes : bytes[position..];
+        var text = PythonTextCodecs.Decode(payload, decodeName, errors ?? "strict", span);
+        return new PythonFileValue(name, mode, text)
+        {
+            Newline = newline,
+            EncodingName = encoding ?? "UTF-8",
+            Errors = errors ?? "strict",
+            Kind = "TextIOWrapper",
+            HasMode = false,
+        };
+    }
+
+    /// <summary>The bytes, position, name and mode behind a binary buffer object.</summary>
+    private static (byte[] Bytes, int Position, string Name, string Mode) BufferSource(
+        PythonValue value,
+        TextSpan span
+    ) =>
+        value switch
+        {
+            PythonFileValue { IsBinary: true } file => (
+                file.BinaryContent,
+                file.Position,
+                file.Name,
+                file.Mode
+            ),
+            PythonManagedObjectValue { Payload: BytesIoState state } => (
+                [.. state.Buffer],
+                (int)Math.Min(state.Position, state.Buffer.Count),
+                string.Empty,
+                string.Empty
+            ),
+            _ => throw Fault(
+                "AttributeError",
+                $"'{ManagedObjectProtocols.GetTypeName(value)}' object has no attribute "
+                    + "'readable'"
+            ),
+        };
+
+    private static string? OptionalName(PythonValue? value, string name, TextSpan span)
+    {
+        if (value is null or PythonNoneValue)
+        {
+            return null;
+        }
+        if (value is not PythonTextValue text)
+        {
+            throw Fault(
+                "TypeError",
+                $"TextIOWrapper() argument '{name}' must be str or None, not "
+                    + ManagedObjectProtocols.GetTypeName(value)
+            );
+        }
+        return text.Value;
+    }
+
+    private static string? TextIoNewline(PythonValue? value, TextSpan span)
+    {
+        if (value is null or PythonNoneValue)
+        {
+            return null;
+        }
+        if (value is not PythonTextValue text)
+        {
+            throw Fault(
+                "TypeError",
+                "TextIOWrapper() argument 'newline' must be str or None, not "
+                    + ManagedObjectProtocols.GetTypeName(value)
+            );
+        }
+        if (text.Value is not ("" or "\n" or "\r" or "\r\n"))
+        {
+            throw ValueError($"illegal newline value: {text.Value}");
+        }
+        return text.Value;
     }
 
     private static (PythonValue? Initial, PythonValue? Option) BindConstructor(
@@ -589,7 +837,11 @@ internal static class PythonIoModule
 
     /// <summary>Translates reading the raw text, taking at most <paramref name="size"/>
     /// characters; consumed is the raw length those characters came from.</summary>
-    private static (string Text, int Consumed) TranslateRead(string? newline, string raw, long size)
+    internal static (string Text, int Consumed) TranslateRead(
+        string? newline,
+        string raw,
+        long size
+    )
     {
         if (newline is not null)
         {
@@ -623,7 +875,7 @@ internal static class PythonIoModule
         return text;
     }
 
-    private static int LineBoundary(string? newline, string raw, long size)
+    internal static int LineBoundary(string? newline, string raw, long size)
     {
         var limit = size < 0 ? raw.Length : (int)Math.Min(size, raw.Length);
         if (newline == "\n")

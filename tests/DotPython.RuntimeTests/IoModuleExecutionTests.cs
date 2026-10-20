@@ -149,9 +149,9 @@ public sealed class IoModuleExecutionTests
     }
 
     /// <summary>
-    /// The recorded gap: only the in-memory streams, the seek constants and
-    /// `UnsupportedOperation` are published; the file-backed `io` classes and `io.open`
-    /// are absent, and the stream constructors are builtin functions rather than classes.
+    /// The published surface: the in-memory streams, the read-only file-backed classes,
+    /// the seek constants, `UnsupportedOperation` and `io.open`, with constructors that
+    /// are builtin functions rather than classes.
     /// </summary>
     [Fact]
     public void TheRuntimePinsItsOwnIoGaps()
@@ -173,11 +173,11 @@ public sealed class IoModuleExecutionTests
         Assert.Equal(
             string.Join(
                 Environment.NewLine,
-                "['BytesIO', 'DEFAULT_BUFFER_SIZE', 'SEEK_CUR', 'SEEK_END', 'SEEK_SET', 'StringIO', 'UnsupportedOperation']",
+                "['BufferedReader', 'BytesIO', 'DEFAULT_BUFFER_SIZE', 'FileIO', 'SEEK_CUR', 'SEEK_END', 'SEEK_SET', 'StringIO', 'TextIOWrapper', 'UnsupportedOperation', 'open']",
                 "builtin_function_or_method StringIO _io",
-                "textwrapper AttributeError module 'io' has no attribute 'TextIOWrapper'",
-                "open AttributeError module 'io' has no attribute 'open'",
-                "fileio AttributeError module 'io' has no attribute 'FileIO'",
+                "textwrapper ok <built-in function TextIOWrapper>",
+                "open ok <built-in function open>",
+                "fileio ok <built-in function FileIO>",
                 ""
             ),
             output

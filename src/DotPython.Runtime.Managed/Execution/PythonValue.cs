@@ -1792,24 +1792,107 @@ internal sealed record PythonIteratorValue(PythonValue Iterable, int ExpectedCol
         + $"0x{RuntimeHelpers.GetHashCode(this):x}>";
 }
 
-/// <summary>A read-only text file handle over content snapshotted at open time.</summary>
+/// <summary>
+/// A read-only file handle over content snapshotted at open time. Text handles keep the
+/// decoded text and apply their newline mode as they read; binary handles keep the bytes.
+/// </summary>
 internal sealed record PythonFileValue(string Name, string Mode, string Content) : PythonValue
 {
     internal int Position { get; set; }
 
     internal bool IsClosed { get; set; }
 
-    /// <summary>Reads up to the next newline (inclusive); null at end of file.</summary>
-    internal string? ReadLine()
+    /// <summary>Whether reads answer `bytes` rather than `str`.</summary>
+    internal bool IsBinary { get; init; }
+
+    /// <summary>The bytes behind a binary handle.</summary>
+    internal byte[] BinaryContent { get; init; } = [];
+
+    /// <summary>
+    /// The newline mode: null translates universal newlines on read (the default), the
+    /// empty string splits lines universally without translating, and a concrete sequence
+    /// splits only on itself.
+    /// </summary>
+    internal string? Newline { get; init; }
+
+    internal string EncodingName { get; init; } = "UTF-8";
+
+    internal string Errors { get; init; } = "strict";
+
+    /// <summary>The io class the handle reports: `TextIOWrapper`, `BufferedReader` or `FileIO`.</summary>
+    internal string Kind { get; init; } = "TextIOWrapper";
+
+    internal bool CloseFd { get; init; } = true;
+
+    /// <summary>
+    /// Whether the handle reports a `mode`. `open` and the buffered classes do; a
+    /// TextIOWrapper built directly from a buffer does not, as CPython's own.
+    /// </summary>
+    internal bool HasMode { get; init; } = true;
+
+    private static readonly string[] NewlineKinds = ["\r", "\n", "\r\n"];
+
+    private readonly HashSet<string> _newlines = [];
+
+    /// <summary>
+    /// The newline sequences a universal-newline read has seen: None, the one sequence,
+    /// or the three in CPython's order.
+    /// </summary>
+    internal PythonValue Newlines
+    {
+        get
+        {
+            if (_newlines.Count == 0)
+            {
+                return PythonNoneValue.Instance;
+            }
+            if (_newlines.Count == 1)
+            {
+                return new PythonTextValue(_newlines.First());
+            }
+            return new PythonTupleValue([
+                .. NewlineKinds
+                    .Where(_newlines.Contains)
+                    .Select(value => (PythonValue)new PythonTextValue(value)),
+            ]);
+        }
+    }
+
+    /// <summary>Reads up to the next line (inclusive, at most <paramref name="size"/>
+    /// characters); null at end of file.</summary>
+    internal string? ReadLine(int size = -1)
     {
         if (Position >= Content.Length)
         {
             return null;
         }
+        var raw = Content[Position..];
+        var boundary = PythonIoModule.LineBoundary(Newline, raw, size);
+        var (text, consumed) = PythonIoModule.TranslateRead(Newline, raw[..boundary], size);
+        NoteNewlines(raw.AsSpan(0, consumed));
+        Position += consumed;
+        return text;
+    }
 
-        var newlineIndex = Content.IndexOf('\n', Position);
-        var end = newlineIndex < 0 ? Content.Length : newlineIndex + 1;
-        var line = Content[Position..end];
+    /// <summary>Reads up to the next newline in binary content; null at end of file.</summary>
+    internal byte[]? ReadLineBytes(int size = -1)
+    {
+        if (Position >= BinaryContent.Length)
+        {
+            return null;
+        }
+        var limit =
+            size < 0 ? BinaryContent.Length : Math.Min(BinaryContent.Length, Position + size);
+        var end = limit;
+        for (var index = Position; index < limit; index++)
+        {
+            if (BinaryContent[index] == (byte)'\n')
+            {
+                end = index + 1;
+                break;
+            }
+        }
+        var line = BinaryContent[Position..end];
         Position = end;
         return line;
     }
@@ -1817,15 +1900,73 @@ internal sealed record PythonFileValue(string Name, string Mode, string Content)
     /// <summary>Reads at most <paramref name="count"/> characters; negative reads the rest.</summary>
     internal string Read(int count)
     {
-        var end =
-            count < 0 || Position + count > Content.Length ? Content.Length : Position + count;
-        var text = Content[Position..end];
-        Position = end;
+        if (Position >= Content.Length)
+        {
+            return string.Empty;
+        }
+        var raw = Content[Position..];
+        var (text, consumed) = PythonIoModule.TranslateRead(Newline, raw, count);
+        NoteNewlines(raw.AsSpan(0, consumed));
+        Position += consumed;
         return text;
     }
 
+    /// <summary>Reads at most <paramref name="count"/> bytes; negative reads the rest.</summary>
+    internal byte[] ReadBytes(int count)
+    {
+        if (Position >= BinaryContent.Length)
+        {
+            return [];
+        }
+        var end =
+            count < 0 || Position + count > BinaryContent.Length
+                ? BinaryContent.Length
+                : Position + count;
+        var bytes = BinaryContent[Position..end];
+        Position = end;
+        return bytes;
+    }
+
+    /// <summary>Tracks the newline sequences a universal-newline read consumed.</summary>
+    private void NoteNewlines(ReadOnlySpan<char> raw)
+    {
+        if (Newline is not (null or ""))
+        {
+            return;
+        }
+        for (var index = 0; index < raw.Length; index++)
+        {
+            if (raw[index] == '\r')
+            {
+                if (index + 1 < raw.Length && raw[index + 1] == '\n')
+                {
+                    _newlines.Add("\r\n");
+                    index++;
+                }
+                else
+                {
+                    _newlines.Add("\r");
+                }
+            }
+            else if (raw[index] == '\n')
+            {
+                _newlines.Add("\n");
+            }
+        }
+    }
+
     internal override string ToDisplayString() =>
-        $"<_io.TextIOWrapper name='{Name}' mode='{Mode}' encoding='UTF-8'>";
+        Kind switch
+        {
+            "FileIO" =>
+                $"<_io.FileIO name='{Name}' mode='{Mode}' closefd={(CloseFd ? "True" : "False")}>",
+            "BufferedReader" => Name.Length == 0
+                ? "<_io.BufferedReader>"
+                : $"<_io.BufferedReader name='{Name}'>",
+            _ when Name.Length == 0 => $"<_io.TextIOWrapper encoding='{EncodingName}'>",
+            _ when !HasMode => $"<_io.TextIOWrapper name='{Name}' " + $"encoding='{EncodingName}'>",
+            _ => $"<_io.TextIOWrapper name='{Name}' mode='{Mode}' " + $"encoding='{EncodingName}'>",
+        };
 }
 
 internal static class PythonRepresentationGuard

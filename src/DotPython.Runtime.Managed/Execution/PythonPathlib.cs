@@ -3359,7 +3359,7 @@ internal sealed class PathValue : PythonExternalObjectProtocol, IPythonNamedExte
 
     private PythonFileValue Open(PythonValue?[] slots, TextSpan span)
     {
-        var mode = "r";
+        var positional = new List<PythonValue> { Text(Str) };
         if (slots[0] is not null)
         {
             if (slots[0] is not PythonTextValue modeText)
@@ -3372,26 +3372,34 @@ internal sealed class PathValue : PythonExternalObjectProtocol, IPythonNamedExte
                     "TypeError"
                 );
             }
-
-            mode = modeText.Value;
+            positional.Add(modeText);
         }
-
-        if (slots[1] is not null and not PythonNoneValue)
+        var names = new List<string>();
+        var values = new List<PythonValue>();
+        var options = new[] { "buffering", "encoding", "errors", "newline" };
+        for (var index = 0; index < options.Length; index++)
         {
-            if (slots[1] is not PythonWholeNumberValue buffering || buffering.Value != -1)
+            if (slots[index + 1] is { } value)
             {
-                throw ManagedObjectProtocols.Fault(
-                    "DPY4037",
-                    "Path.open() does not support the 'buffering' argument beyond its "
-                        + "default (-1) in this runtime slice.",
-                    span,
-                    "NotImplementedError"
-                );
+                names.Add(options[index]);
+                values.Add(value);
             }
         }
-
-        RequireTextOptions("Path.open", slots[2], slots[3], slots[4], span);
-        var file = ManagedObjectProtocols.Call(Context.OpenBuiltin, [Text(Str), Text(mode)], span);
+        var dispatcher =
+            UserObjectProtocols.Dispatcher
+            ?? throw ManagedObjectProtocols.Fault(
+                "DPY4037",
+                "open() is only available while a program is running.",
+                span,
+                "RuntimeError"
+            );
+        var file = dispatcher.InvokeWithKeywords(
+            Context.OpenBuiltin,
+            positional,
+            names,
+            values,
+            span
+        );
         return file is PythonFileValue opened
             ? opened
             : throw new PythonRuntimeException(
@@ -3406,7 +3414,7 @@ internal sealed class PathValue : PythonExternalObjectProtocol, IPythonNamedExte
         _ = FullPath("read_text", span);
         var file = ManagedObjectProtocols.Call(Context.OpenBuiltin, [Text(Str), Text("r")], span);
         return file is PythonFileValue opened
-            ? new PythonTextValue(opened.Content)
+            ? new PythonTextValue(opened.Read(-1))
             : throw new PythonRuntimeException(
                 "DPY4037",
                 "open() did not return a file object.",

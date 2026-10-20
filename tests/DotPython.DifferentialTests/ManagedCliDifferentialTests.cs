@@ -1069,6 +1069,108 @@ public sealed class ManagedCliDifferentialTests
         return new ReferenceResult(process.ExitCode, standardOutput);
     }
 
+    [Fact]
+    public void ScriptFileReads_MatchReferencePythonForBinaryTextAndIoClasses()
+    {
+        var python = FindReferencePython();
+        if (python is null)
+        {
+            Assert.Skip(
+                $"A Python {ReferenceVersion} executable is required for this differential test."
+            );
+        }
+
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"dotpython-file-io-differential-{Guid.NewGuid():N}"
+        );
+        Directory.CreateDirectory(directory);
+        var scriptPath = Path.Combine(directory, "main.py");
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "data.txt"), "alpha\nbeta\ngamma");
+            File.WriteAllText(Path.Combine(directory, "crlf.txt"), "a\r\nb\rc\n");
+            File.WriteAllBytes(
+                Path.Combine(directory, "latin.txt"),
+                [0x68, 0xe9, 0x6c, 0x6c, 0x6f, 0x0a]
+            );
+            File.WriteAllBytes(Path.Combine(directory, "bin.dat"), [0x00, 0x01, 0x0a, 0xff]);
+            var script = """
+                import io
+                base = "__BASE__"
+                def show(label, action):
+                    try: print(label, "ok", action())
+                    except Exception as error: print(label, type(error).__name__, error)
+
+                b = open(base + "/bin.dat", "rb")
+                print("bin", type(b).__name__, type(b).__module__, repr(b), b.name, b.mode, b.closed, b.readable(), b.writable(), b.seekable())
+                print("bin-read", repr(b.read(3)), b.tell(), repr(b.read()), repr(b.read(1)))
+                b.seek(0)
+                print("bin-lines", repr(b.readline()), repr(b.readlines()))
+                b.seek(0)
+                print("bin-iter", [repr(item) for item in b])
+                show("bin-encoding", lambda: b.encoding)
+                f = open(base + "/data.txt")
+                print("text", type(f).__name__, type(f).__module__, repr(f), f.name, f.mode, f.encoding, f.errors, f.newlines, f.closed)
+                print("text-read", repr(f.read(3)), f.tell(), repr(f.read(2)), repr(f.read()))
+                f.seek(0)
+                print("text-lines", repr(f.readline()), repr(f.readline(2)), repr(f.readline()), repr(f.readline()))
+                f.seek(0)
+                print("text-readlines", repr(f.readlines()))
+                f.seek(0)
+                print("text-iter", [repr(item) for item in f])
+                print("text-newlines", repr(f.newlines))
+                for newline in (None, "", "\n", "\r", "\r\n"):
+                    handle = open(base + "/crlf.txt", newline=newline)
+                    print("nl", repr(newline), repr(handle.read()), repr(handle.newlines))
+                for newline in (None, ""):
+                    handle = open(base + "/crlf.txt", newline=newline)
+                    print("nl-lines", repr(newline), [repr(item) for item in handle], repr(handle.newlines))
+                print("latin", repr(open(base + "/latin.txt", encoding="latin-1").read()), repr(open(base + "/latin.txt", encoding="latin-1").encoding))
+                print("replace", repr(open(base + "/latin.txt", encoding="utf-8", errors="replace").read()))
+                show("unknown-encoding", lambda: open(base + "/data.txt", encoding="no-such"))
+                show("seek-neg", lambda: open(base + "/data.txt").seek(-1))
+                show("seek-whence", lambda: open(base + "/data.txt").seek(0, 5))
+                show("write", lambda: open(base + "/data.txt").write("x"))
+                show("truncate", lambda: open(base + "/data.txt").truncate())
+                show("closefd", lambda: open(base + "/data.txt", closefd=False))
+                show("buffering-text", lambda: open(base + "/data.txt", buffering=0))
+                show("binary-encoding", lambda: open(base + "/data.txt", "rb", encoding="utf-8"))
+                show("bad-newline", lambda: open(base + "/data.txt", newline="x"))
+                show("bad-mode", lambda: open(base + "/data.txt", "rq"))
+                show("bad-combo", lambda: open(base + "/data.txt", "rbt"))
+                raw = io.FileIO(base + "/bin.dat", "rb")
+                print("fileio", type(raw).__name__, type(raw).__module__, repr(raw), raw.name, raw.mode, repr(raw.read(2)), raw.tell(), raw.closefd)
+                buf = io.BufferedReader(io.FileIO(base + "/bin.dat", "rb"))
+                print("buffered", type(buf).__name__, repr(buf), repr(buf.read()), buf.name)
+                tw = io.TextIOWrapper(io.BytesIO(b"h\xe9llo\n"), encoding="latin-1")
+                print("textio", type(tw).__name__, repr(tw), repr(tw.read()), tw.encoding)
+                tw2 = io.TextIOWrapper(io.BytesIO(b"a\r\nb\n"), newline="")
+                print("textio-nl", [repr(item) for item in tw2])
+                """.Replace("__BASE__", directory, StringComparison.Ordinal);
+            File.WriteAllText(scriptPath, script);
+            var reference = RunReferenceScript(python, scriptPath);
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            var exitCode = DotPythonCommand.Run(
+                [scriptPath],
+                TextReader.Null,
+                output,
+                error,
+                TestContext.Current.CancellationToken
+            );
+
+            Assert.Equal(reference.ExitCode, exitCode);
+            Assert.Equal(reference.StandardOutput, output.ToString());
+            Assert.Equal(string.Empty, error.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static ReferenceResult RunReferenceScript(string executable, string scriptPath)
     {
         var startInfo = new ProcessStartInfo(executable)
