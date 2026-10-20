@@ -609,6 +609,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonDecimalModule.Initialize
         );
+        // Exception formatting over the frames the VM captures as it unwinds.
+        modules["traceback"] = PythonModuleDefinition.Native(
+            "<dotpython traceback>",
+            isPackage: false,
+            PythonTracebackModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
@@ -707,6 +713,57 @@ internal static class PythonStandardModules
                 : OperatingSystem.IsMacOS() ? "darwin"
                 : OperatingSystem.IsLinux() ? "linux"
                 : "unknown"
+            )
+        );
+        globals.SetValue(
+            "exception",
+            new PythonBuiltinFunctionValue(
+                "exception",
+                (arguments, span) =>
+                {
+                    if (arguments.Count != 0)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4003",
+                            $"exception() takes no arguments ({arguments.Count} given)",
+                            span,
+                            "TypeError"
+                        );
+                    }
+                    return UserObjectProtocols.Dispatcher?.CurrentException
+                        ?? (PythonValue)PythonNoneValue.Instance;
+                }
+            )
+        );
+        globals.SetValue(
+            "exc_info",
+            new PythonBuiltinFunctionValue(
+                "exc_info",
+                (arguments, span) =>
+                {
+                    if (arguments.Count != 0)
+                    {
+                        throw new PythonRuntimeException(
+                            "DPY4003",
+                            $"exc_info() takes no arguments ({arguments.Count} given)",
+                            span,
+                            "TypeError"
+                        );
+                    }
+                    if (UserObjectProtocols.Dispatcher?.CurrentException is not { } exception)
+                    {
+                        return new PythonTupleValue([
+                            PythonNoneValue.Instance,
+                            PythonNoneValue.Instance,
+                            PythonNoneValue.Instance,
+                        ]);
+                    }
+                    return new PythonTupleValue([
+                        PythonBuiltinTypes.GetRuntimeType(exception),
+                        exception,
+                        PythonTracebacks.Get(exception),
+                    ]);
+                }
             )
         );
         globals.SetValue("maxsize", PythonWholeNumberValue.Create(long.MaxValue));

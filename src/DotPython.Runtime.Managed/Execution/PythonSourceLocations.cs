@@ -29,19 +29,32 @@ internal static class PythonSourceLocations
         lock (Sources)
         {
             Sources[fileName] = source;
-            RegisterCode(code, new Module(fileName, source));
+            RegisterNested(code, new Module(fileName, source));
         }
     }
 
-    private static void RegisterCode(PythonCodeObject code, Module module)
+    /// <summary>
+    /// Registers code compiled by `compile`/`exec` without publishing its source to the
+    /// line lookup: CPython's `linecache` never learns a `compile()` string, so a frame
+    /// from one prints its File line without source text.
+    /// </summary>
+    internal static void RegisterCode(PythonCodeObject code, string fileName, SourceText source)
+    {
+        lock (Sources)
+        {
+            RegisterNested(code, new Module(fileName, source));
+        }
+    }
+
+    private static void RegisterNested(PythonCodeObject code, Module module)
     {
         Codes.AddOrUpdate(code, module);
         if (code.AnnotateCode is { } annotate)
-            RegisterCode(annotate, module);
+            RegisterNested(annotate, module);
         foreach (var constant in code.Constants)
         {
             if (constant.Value is PythonCodeObject nested)
-                RegisterCode(nested, module);
+                RegisterNested(nested, module);
         }
     }
 
@@ -70,10 +83,38 @@ internal static class PythonSourceLocations
         return false;
     }
 
+    /// <summary>
+    /// The source line a traceback frame shows, taken from the unit the frame's code was
+    /// compiled with. CPython's `linecache` serves real files and a `-c` command's
+    /// `<string>`; every other synthetic name has no source text.
+    /// </summary>
+    internal static string? TryGetLineForCode(PythonCodeObject code, int line)
+    {
+        if (line <= 0 || !Codes.TryGetValue(code, out var module))
+        {
+            return null;
+        }
+        if (
+            module.FileName.Length == 0
+            || (module.FileName.StartsWith('<') && module.FileName != "<string>")
+        )
+        {
+            return null;
+        }
+        return line <= module.Source.LineCount
+            ? module.Source.GetText(module.Source.GetLineSpan(line - 1))
+            : null;
+    }
+
     /// <summary>The source line a warning is about, read the way `linecache` reads it.</summary>
     internal static string? TryGetLine(string fileName, int line)
     {
         if (line <= 0)
+            return null;
+        // CPython's `linecache` knows the source of a `-c` command under `<string>`;
+        // every other synthetic name (`<stdin>`, `<test>`, `compile()` strings) has none,
+        // so those frames print the File line without source text.
+        if (fileName.Length == 0 || (fileName.StartsWith('<') && fileName != "<string>"))
             return null;
         SourceText? source;
         lock (Sources)

@@ -399,7 +399,7 @@ internal sealed partial class PythonVirtualMachine
             {
                 throw SyntaxFault(compilation.Diagnostics[0], fileName, source, span);
             }
-            PythonSourceLocations.Register(compilation.Code, fileName, source);
+            PythonSourceLocations.RegisterCode(compilation.Code, fileName, source);
             return new PythonCodeValue(compilation.Code, fileName);
         }
 
@@ -433,7 +433,7 @@ internal sealed partial class PythonVirtualMachine
         {
             throw SyntaxFault(compilation.Diagnostics[0], fileName, source, span);
         }
-        PythonSourceLocations.Register(compilation.Code, fileName, source);
+        PythonSourceLocations.RegisterCode(compilation.Code, fileName, source);
         return new PythonCodeValue(compilation.Code, fileName);
     }
 

@@ -74,6 +74,9 @@ internal interface IUserObjectDispatcher
     /// <summary>The `__name__` of the module the running frame belongs to.</summary>
     string? CurrentModuleName();
 
+    /// <summary>The exception the running frame is handling, if any.</summary>
+    PythonExceptionValue? CurrentException { get; }
+
     /// <summary>
     /// The names the interpreter resolves them against, which is what the `builtins`
     /// module publishes.

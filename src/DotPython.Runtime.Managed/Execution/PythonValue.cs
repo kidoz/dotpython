@@ -1081,9 +1081,19 @@ internal sealed record PythonExceptionValue(string TypeName, string Message) : P
 
     internal bool HasInstanceDictionary { get; set; }
 
-    // Private traceback identity for except* reraising; public traceback objects
-    // remain outside the represented exception API.
+    // Private traceback identity for except* reraising.
     internal object? TracebackIdentity { get; set; }
+
+    /// <summary>The frames this exception passed through, innermost first.</summary>
+    internal IReadOnlyList<PythonTracebackFrame>? TracebackFrames { get; set; }
+
+    /// <summary>A traceback assigned through `__traceback__`/`with_traceback`, or null
+    /// when the public chain derives from <see cref="TracebackFrames"/>.</summary>
+    internal PythonValue? TracebackOverride { get; set; }
+
+    /// <summary>The chain built from <see cref="TracebackFrames"/>, kept so repeated
+    /// `__traceback__` reads answer the same object.</summary>
+    internal PythonValue? TracebackCache { get; set; }
 
     internal PythonExceptionValue? Cause { get; set; }
 

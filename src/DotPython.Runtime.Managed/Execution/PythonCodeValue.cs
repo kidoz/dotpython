@@ -13,6 +13,14 @@ namespace DotPython.Runtime.Managed.Execution;
 internal sealed record PythonCodeValue(PythonCodeObject Definition, string FileName) : PythonValue
 {
     /// <summary>
+    /// The name this view of the code reports. A module code object is compiled under its
+    /// file or module name but CPython reports every module body as `<module>`.
+    /// </summary>
+    internal string? NameOverride { get; init; }
+
+    private string ReportedName => NameOverride ?? Definition.Name;
+
+    /// <summary>
     /// The attributes the runtime can answer for a code object. The ones a compiled
     /// definition does not carry — the byte code itself, the line tables, the stack size
     /// and the flags — are absent rather than guessed at.
@@ -20,7 +28,7 @@ internal sealed record PythonCodeValue(PythonCodeObject Definition, string FileN
     internal PythonValue GetAttribute(string name, TextSpan span) =>
         name switch
         {
-            "co_name" or "co_qualname" => new PythonTextValue(Definition.Name),
+            "co_name" or "co_qualname" => new PythonTextValue(ReportedName),
             "co_filename" => new PythonTextValue(FileName),
             "co_firstlineno" => PythonWholeNumberValue.Create(1),
             "co_argcount" => Count(Definition.PositionalParameterCount),
@@ -200,6 +208,6 @@ internal sealed record PythonCodeValue(PythonCodeObject Definition, string FileN
     }
 
     internal override string ToDisplayString() =>
-        $"<code object {Definition.Name} at 0x{RuntimeHelpers.GetHashCode(this):x}, "
+        $"<code object {ReportedName} at 0x{RuntimeHelpers.GetHashCode(this):x}, "
         + $"file \"{FileName}\", line 1>";
 }

@@ -642,9 +642,17 @@ internal static class ManagedObjectProtocols
                     name
                 );
             case PythonExceptionValue exceptionInstance
-                when name is not ("__cause__" or "__context__" or "__suppress_context__")
+                when name
+                    is not (
+                        "__cause__"
+                        or "__context__"
+                        or "__suppress_context__"
+                        or "__traceback__"
+                    )
                     && exceptionInstance.Attributes.TryGetValue(name, out var exceptionAttribute):
                 return exceptionAttribute;
+            case PythonExceptionValue tracebackSource when name == "__traceback__":
+                return PythonTracebacks.Get(tracebackSource);
             case PythonExceptionValue contextSource when name == "__context__":
                 return (PythonValue?)contextSource.Context ?? PythonNoneValue.Instance;
             case PythonExceptionValue causeSource when name == "__cause__":
@@ -683,22 +691,30 @@ internal static class ManagedObjectProtocols
                 when name == "__length_hint__" && PythonLengthHints.SupportsIterator(iterator):
                 return new PythonBoundMethodValue(name, iterator, PythonLengthHints.IteratorMethod);
             case PythonExceptionValue tracebackSource when name == "with_traceback":
-                // The managed model does not carry traceback objects; the method
-                // accepts and ignores its argument, returning the exception itself.
                 return new PythonBoundMethodValue(
                     "with_traceback",
                     tracebackSource,
                     new PythonProtocolFunctionValue(
                         "with_traceback",
                         (_, tracebackArguments) =>
-                            tracebackArguments.Count == 1
-                                ? tracebackSource
-                                : throw Fault(
+                        {
+                            if (tracebackArguments.Count != 1)
+                            {
+                                throw Fault(
                                     "DPY4003",
-                                    $"with_traceback() takes exactly one argument ({tracebackArguments.Count} given).",
+                                    "BaseException.with_traceback() takes exactly one "
+                                        + $"argument ({tracebackArguments.Count} given)",
                                     default,
                                     "TypeError"
-                                )
+                                );
+                            }
+                            PythonTracebacks.Assign(
+                                tracebackSource,
+                                tracebackArguments[0],
+                                default
+                            );
+                            return tracebackSource;
+                        }
                     )
                 );
             case PythonExceptionValue missingAttributeException:
@@ -1493,6 +1509,9 @@ internal static class ManagedObjectProtocols
                     RefreshMessage(exceptionInstance, arguments.Elements);
                 }
                 return;
+            case PythonExceptionValue tracebackInstance when name == "__traceback__":
+                PythonTracebacks.Assign(tracebackInstance, value, span);
+                return;
             case PythonExceptionValue exceptionInstance when name is "__cause__" or "__context__":
                 if (value is not (PythonExceptionValue or PythonNoneValue))
                     throw Fault(
@@ -2137,6 +2156,8 @@ internal static class ManagedObjectProtocols
                 throw Fault("DPY4023", "cannot delete __dict__", span, "TypeError");
             case PythonExceptionValue when name == "args":
                 throw Fault("DPY4023", "args may not be deleted", span, "TypeError");
+            case PythonExceptionValue when name == "__traceback__":
+                throw Fault("DPY4003", "__traceback__ may not be deleted", span, "TypeError");
             case PythonExceptionValue when name is "__cause__" or "__context__":
                 throw Fault("DPY4003", name + " may not be deleted", span, "TypeError");
             case PythonExceptionValue when name == "__suppress_context__":

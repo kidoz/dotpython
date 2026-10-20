@@ -1080,7 +1080,15 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 }
                 else
                 {
-                    raised.AddTracebackFrame(frame.Code.Definition.Name, GetCurrentSpan(frame));
+                    var tracebackSpan = GetCurrentSpan(frame);
+                    raised.AddTracebackFrame(
+                        frame.IsModule ? "<module>" : frame.Code.Definition.Name,
+                        tracebackSpan,
+                        frame.TracebackToken,
+                        frame.Code.Definition,
+                        frame.Globals.Dictionary,
+                        SnapshotTracebackLocals(ref frame, tracebackSpan)
+                    );
                 }
             }
             while (true)
@@ -1221,7 +1229,7 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
         {
             _evaluationStack.Push(PythonBuiltinTypes.GetRuntimeType(raised.Value));
             _evaluationStack.Push(raised.Value);
-            _evaluationStack.Push(PythonNoneValue.Instance);
+            _evaluationStack.Push(PythonTracebacks.Get(raised.Value));
             return;
         }
 
@@ -3160,6 +3168,56 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 "TypeError"
             );
         }
+    }
+
+    /// <summary>
+    /// The locals a traceback frame reports: module frames share their globals, class
+    /// bodies their namespace, and function frames a snapshot of the bound slots and
+    /// free cells.
+    /// </summary>
+    private PythonDictionaryValue SnapshotTracebackLocals(ref PythonFrame frame, TextSpan span)
+    {
+        if (frame.ClassNamespace is PythonDictionaryValue classDictionary)
+        {
+            return classDictionary;
+        }
+        if (frame.IsModule)
+        {
+            return frame.Globals.Dictionary;
+        }
+        var dictionary = ManagedObjectProtocols.CreateDictionary();
+        var definition = frame.Code.Definition;
+        for (var index = 0; index < frame.LocalsCount; index++)
+        {
+            var cellIndex = frame.Code.GetLocalCellIndex(index);
+            var value =
+                cellIndex >= 0 && (uint)cellIndex < (uint)frame.Cells.Length
+                    ? frame.Cells[cellIndex].Value
+                    : _locals[frame.LocalsBase + index];
+            if (value is not null)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    new PythonTextValue(definition.VariableNames[index]),
+                    value,
+                    span
+                );
+            }
+        }
+        for (var index = 0; index < definition.FreeVariableNames.Count; index++)
+        {
+            var value = frame.Cells[definition.CellVariableNames.Count + index].Value;
+            if (value is not null)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    dictionary,
+                    new PythonTextValue(definition.FreeVariableNames[index]),
+                    value,
+                    span
+                );
+            }
+        }
+        return dictionary;
     }
 
     private PythonValue CurrentFrameLocals(TextSpan span)
@@ -9738,7 +9796,12 @@ internal sealed partial class PythonVirtualMachine : IUserObjectDispatcher
                 restoredState?.ActiveExceptions ?? new Stack<PythonRaisedException>();
             ExceptionBlocks = restoredState?.ExceptionBlocks ?? [];
             PendingFinalies = restoredState?.PendingFinalies ?? new Stack<PythonPendingFinally>();
+            TracebackToken = new object();
         }
+
+        /// <summary>Identifies this activation, so a traceback does not merge a recursive
+        /// call into the frame below it.</summary>
+        internal object TracebackToken { get; }
 
         internal bool IsModule { get; }
 

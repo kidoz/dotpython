@@ -4,6 +4,23 @@ namespace DotPython.Runtime.Managed.Execution;
 
 internal sealed partial class PythonVirtualMachine
 {
+    PythonExceptionValue? IUserObjectDispatcher.CurrentException
+    {
+        get
+        {
+            // The exception being handled belongs to the innermost handler on the frame
+            // stack, so a helper called from an `except` block still sees it.
+            for (var index = _frameCount - 1; index >= 0; index--)
+            {
+                if (_frames[index].ActiveExceptions.TryPeek(out var active))
+                {
+                    return active.Value;
+                }
+            }
+            return null;
+        }
+    }
+
     (bool HasValue, PythonValue Value) IUserObjectDispatcher.StepUserIterator(
         PythonValue nextMethod,
         TextSpan span
