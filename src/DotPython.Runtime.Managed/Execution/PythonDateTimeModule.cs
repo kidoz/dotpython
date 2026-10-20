@@ -31,6 +31,25 @@ internal static class PythonDateTimeModule
         globals.SetValue("MAXYEAR", PythonWholeNumberValue.Create(MaxYear));
         globals.SetValue("timedelta", TimedeltaType);
         globals.SetValue("date", DateType);
+        globals.SetValue("datetime", DateTimeType);
+        globals.SetValue("time", TimeType);
+        globals.SetValue("tzinfo", TzInfoType);
+        globals.SetValue("timezone", TimezoneType);
+        globals.SetValue("UTC", Utc);
+        globals.SetValue(
+            "__all__",
+            new PythonTupleValue([
+                new PythonTextValue("date"),
+                new PythonTextValue("datetime"),
+                new PythonTextValue("time"),
+                new PythonTextValue("timedelta"),
+                new PythonTextValue("timezone"),
+                new PythonTextValue("tzinfo"),
+                new PythonTextValue("MINYEAR"),
+                new PythonTextValue("MAXYEAR"),
+                new PythonTextValue("UTC"),
+            ])
+        );
     }
 
     // -----------------------------------------------------------------------------
@@ -179,6 +198,14 @@ internal static class PythonDateTimeModule
 
     private static DateOnly FromOrdinal(long ordinal) => DateOnly.FromDayNumber((int)(ordinal - 1));
 
+    /// <summary>A `datetime.timezone`: the offset it stands at and the name it answers.</summary>
+    private sealed record FixedZone(long OffsetSeconds, string? Name);
+
+    /// <summary>Whether a value follows the `tzinfo` protocol.</summary>
+    private static bool IsTzInfo(PythonValue value) =>
+        value is PythonManagedObjectValue { Type: { } type }
+        && type.Mro.Any(entry => ReferenceEquals(entry, TzInfoType));
+
     // -----------------------------------------------------------------------------
     // Validating the fields, in CPython's words
     // -----------------------------------------------------------------------------
@@ -280,7 +307,7 @@ internal static class PythonDateTimeModule
         for (var index = 0; index < keywordNames.Count; index++)
         {
             var slot = Array.IndexOf(parameters, keywordNames[index]);
-            if (slot < 0 || slot >= keywordable)
+            if (slot < 0)
             {
                 unknown ??= keywordNames[index];
                 continue;
@@ -342,8 +369,26 @@ internal static class PythonDateTimeModule
 
     private static readonly PythonManagedTypeValue TimedeltaType = CreateTimedeltaType();
     private static readonly PythonManagedTypeValue DateType = CreateDateType();
+    private static readonly PythonManagedTypeValue DateTimeType = CreateDateTimeType();
+    private static readonly PythonManagedTypeValue TimeType = CreateTimeType();
+    private static readonly PythonManagedTypeValue TzInfoType = CreateTzInfoType();
+    private static readonly PythonManagedTypeValue TimezoneType = CreateTimezoneType();
+    private static PythonManagedObjectValue? _utc;
     private static readonly PythonManagedTypeValue IsoCalendarDateType =
         CreateIsoCalendarDateType();
+
+    /// <summary>
+    /// The zone instance the module publishes, built once after `timezone` exists; the
+    /// class attribute points at the same object.
+    /// </summary>
+    private static PythonManagedObjectValue Utc => _utc ??= CreateUtc();
+
+    private static PythonManagedObjectValue CreateUtc()
+    {
+        var value = new PythonManagedObjectValue(TimezoneType, new FixedZone(0, "UTC"));
+        TimezoneType.Attributes["utc"] = value;
+        return value;
+    }
 
     /// <summary>
     /// A member a `date`, a `time` or a `datetime` publishes without letting it be written:
@@ -675,7 +720,10 @@ internal static class PythonDateTimeModule
 
     private static PythonValue ScaleDelta(PythonValue self, IReadOnlyList<PythonValue> arguments)
     {
-        if (arguments.Count != 1 || arguments[0] is PythonTextValue)
+        if (
+            arguments.Count != 1
+            || arguments[0] is PythonTextValue or PythonManagedObjectValue { Payload: Delta }
+        )
         {
             return PythonNotImplementedValue.Instance;
         }
@@ -1073,6 +1121,63 @@ internal static class PythonDateTimeModule
                     : PythonNotImplementedValue.Instance
         );
 
+    /// <summary>The `tzinfo` a constructor accepts, or null for `None`.</summary>
+    private static PythonValue? RequireTzInfo(PythonValue value, TextSpan span)
+    {
+        if (value is PythonNoneValue)
+        {
+            return null;
+        }
+        if (!IsTzInfo(value))
+        {
+            throw TypeFault(
+                "tzinfo argument must be None or of a tzinfo subclass, not type "
+                    + $"'{ManagedObjectProtocols.GetTypeName(value)}'",
+                span
+            );
+        }
+        return value;
+    }
+
+    /// <summary>`isoformat()`'s clock half, in each `timespec` the call may name.</summary>
+    private static string IsoTime(Stamp stamp, string timespec) =>
+        timespec switch
+        {
+            "hours" => $"{stamp.Hour:00}",
+            "minutes" => $"{stamp.Hour:00}:{stamp.Minute:00}",
+            "seconds" => $"{stamp.Hour:00}:{stamp.Minute:00}:{stamp.Second:00}",
+            "milliseconds" =>
+                $"{stamp.Hour:00}:{stamp.Minute:00}:{stamp.Second:00}.{stamp.Microsecond / 1000:000}",
+            "microseconds" =>
+                $"{stamp.Hour:00}:{stamp.Minute:00}:{stamp.Second:00}.{stamp.Microsecond:000000}",
+            _ => $"{stamp.Hour:00}:{stamp.Minute:00}:{stamp.Second:00}"
+                + (stamp.Microsecond == 0 ? string.Empty : $".{stamp.Microsecond:000000}"),
+        };
+
+    /// <summary>The seconds a `tzinfo`'s offset answers stand at.</summary>
+    private static long OffsetSeconds(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: Delta delta }
+            ? (long)(delta.Total / MicrosecondsPerSecond)
+            : throw TypeFault("offset must be a timedelta");
+
+    /// <summary>`isoformat()`'s zone half: nothing for a naive value, `±HH:MM[:SS]` otherwise.</summary>
+    private static string IsoOffset(PythonValue? offset)
+    {
+        if (offset is null or PythonNoneValue)
+        {
+            return string.Empty;
+        }
+        var seconds = OffsetSeconds(offset);
+        var sign = seconds < 0 ? '-' : '+';
+        var absolute = Math.Abs(seconds);
+        var hours = absolute / 3600;
+        var minutes = absolute % 3600 / 60;
+        var rest = absolute % 60;
+        return rest == 0
+            ? $"{sign}{hours:00}:{minutes:00}"
+            : $"{sign}{hours:00}:{minutes:00}:{rest:00}";
+    }
+
     /// <summary>A method of no arguments, checking its arity before it answers.</summary>
     private static PythonValue Bare(
         string owner,
@@ -1193,7 +1298,25 @@ internal static class PythonDateTimeModule
     /// no zone, so `%Z`/`%z` write nothing and the daylight-saving flag is unknown.
     /// </summary>
     private static PythonTimeModule.BrokenTime BrokenTimeOf(Stamp stamp) =>
-        new(
+        BrokenTimeOf(stamp, isDst: -1);
+
+    /// <summary>The same fields with a daylight-saving flag the caller decides.</summary>
+    private static PythonTimeModule.BrokenTime BrokenTimeOf(Stamp stamp, long isDst)
+    {
+        string? zone = null;
+        long? offset = null;
+        if (stamp.Tzinfo is { } tzinfo)
+        {
+            zone = CallTzInfo(tzinfo, "tzname", stamp, StampValueOf(stamp)) is PythonTextValue text
+                ? text.Value
+                : string.Empty;
+            offset =
+                CallTzInfo(tzinfo, "utcoffset", stamp, StampValueOf(stamp)) is { } value
+                && value is not PythonNoneValue
+                    ? OffsetSeconds(value)
+                    : null;
+        }
+        return new PythonTimeModule.BrokenTime(
             stamp.Year,
             stamp.Month,
             stamp.Day,
@@ -1202,8 +1325,11 @@ internal static class PythonDateTimeModule
             stamp.Second,
             WeekdayOf(stamp),
             stamp.Civil.DayOfYear,
-            -1
+            isDst,
+            zone,
+            offset
         );
+    }
 
     private static string FormatStamp(Stamp stamp, string format) =>
         PythonTimeModule.Format(format, BrokenTimeOf(stamp));
@@ -1622,5 +1748,1786 @@ internal static class PythonDateTimeModule
             self is PythonManagedObjectValue { Type: { } type } ? type : DateType,
             new Stamp(moved.Year, moved.Month, moved.Day, 0, 0, 0, 0, null, 0)
         );
+    }
+
+    // -----------------------------------------------------------------------------
+    // tzinfo and timezone
+    // -----------------------------------------------------------------------------
+
+    private static PythonManagedTypeValue CreateTzInfoType()
+    {
+        var type = new PythonManagedTypeValue("tzinfo") { Module = "datetime" };
+        type.Attributes["__module__"] = new PythonTextValue("datetime");
+        type.Attributes["__qualname__"] = new PythonTextValue("tzinfo");
+        type.Attributes["__doc__"] = new PythonTextValue(
+            "Abstract base class for time zone info objects."
+        );
+        type.Attributes["__slots__"] = new PythonTupleValue([]);
+        type.Attributes["utcoffset"] = Method(
+            "tzinfo",
+            "utcoffset",
+            (self, arguments) => NotImplementedOverride("utcoffset", self!, arguments)
+        );
+        type.Attributes["dst"] = Method(
+            "tzinfo",
+            "dst",
+            (self, arguments) => NotImplementedOverride("dst", self!, arguments)
+        );
+        type.Attributes["tzname"] = Method(
+            "tzinfo",
+            "tzname",
+            (self, arguments) => NotImplementedOverride("tzname", self!, arguments)
+        );
+        type.Attributes["fromutc"] = Method(
+            "tzinfo",
+            "fromutc",
+            (self, arguments) => NotImplementedOverride("fromutc", self!, arguments)
+        );
+        return type;
+    }
+
+    /// <summary>The refusal a `tzinfo` subclass that overrides nothing gives.</summary>
+    private static PythonValue NotImplementedOverride(
+        string name,
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        _ = self;
+        _ = arguments;
+        throw Fault($"tzinfo subclass must override {name}()", default, "NotImplementedError");
+    }
+
+    private static FixedZone ZoneOf(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: FixedZone zone }
+            ? zone
+            : throw TypeFault("the value is not a datetime.timezone");
+
+    /// <summary>The `dt` argument the zone methods accept: a datetime or None.</summary>
+    private static PythonValue? RequireDateTimeOrNone(
+        string name,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw TypeFault($"{name}() takes exactly one argument");
+        }
+        var argument = arguments[0];
+        if (argument is PythonNoneValue)
+        {
+            return null;
+        }
+        if (argument is not PythonManagedObjectValue { Payload: Stamp })
+        {
+            throw TypeFault(
+                $"{name}(dt) argument must be a datetime instance or None, not "
+                    + $"{ManagedObjectProtocols.GetTypeName(argument)}"
+            );
+        }
+        return argument;
+    }
+
+    private static PythonManagedTypeValue CreateTimezoneType()
+    {
+        var type = new PythonManagedTypeValue(
+            "timezone",
+            bases: [TzInfoType],
+            linearizedBases: TzInfoType.Mro
+        )
+        {
+            Module = "datetime",
+        };
+        type.Attributes["__module__"] = new PythonTextValue("datetime");
+        type.Attributes["__qualname__"] = new PythonTextValue("timezone");
+        type.Attributes["__doc__"] = new PythonTextValue(
+            "Fixed offset from UTC implementation of tzinfo."
+        );
+        type.Attributes["__new__"] = Method(
+            "timezone",
+            "__new__",
+            (_, arguments) => NewTimezone(arguments),
+            (_, positional, names, values) =>
+                NewTimezone(BindTimezone(WithoutClass(positional), names, values))
+        );
+        type.Attributes["utcoffset"] = Method(
+            "timezone",
+            "utcoffset",
+            (self, arguments) =>
+            {
+                RequireDateTimeOrNone("utcoffset", arguments);
+                return DeltaValue(Delta.Of(ZoneOf(self!).OffsetSeconds * MicrosecondsPerSecond));
+            }
+        );
+        type.Attributes["dst"] = Method(
+            "timezone",
+            "dst",
+            (self, arguments) =>
+            {
+                RequireDateTimeOrNone("dst", arguments);
+                _ = self;
+                return PythonNoneValue.Instance;
+            }
+        );
+        type.Attributes["tzname"] = Method(
+            "timezone",
+            "tzname",
+            (self, arguments) =>
+            {
+                RequireDateTimeOrNone("tzname", arguments);
+                var zone = ZoneOf(self!);
+                return new PythonTextValue(ZoneName(zone));
+            }
+        );
+        type.Attributes["fromutc"] = Method(
+            "timezone",
+            "fromutc",
+            (self, arguments) =>
+            {
+                var instant = RequireDateTimeOrNone("fromutc", arguments);
+                if (instant is null)
+                {
+                    throw TypeFault("fromutc() argument must be a datetime instance");
+                }
+                return FromUtc(self!, instant);
+            }
+        );
+        type.Attributes["__repr__"] = Method(
+            "timezone",
+            "__repr__",
+            (self, _) => new PythonTextValue(RepresentTimezone(ZoneOf(self!)))
+        );
+        type.Attributes["__str__"] = Method(
+            "timezone",
+            "__str__",
+            (self, _) => new PythonTextValue(ZoneName(ZoneOf(self!)))
+        );
+        type.Attributes["min"] = new PythonManagedObjectValue(
+            type,
+            new FixedZone(-(23 * 3600 + 59 * 60), null)
+        );
+        type.Attributes["max"] = new PythonManagedObjectValue(
+            type,
+            new FixedZone(23 * 3600 + 59 * 60, null)
+        );
+        return type;
+    }
+
+    private static PythonValue[] BindTimezone(
+        PythonValue[] positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    )
+    {
+        var slots = BindArguments(
+            ["offset", "name"],
+            0,
+            0,
+            [null, PythonNoneValue.Instance],
+            positional,
+            names,
+            values
+        );
+        return [.. slots.Select(slot => slot ?? PythonNoneValue.Instance)];
+    }
+
+    private static PythonManagedObjectValue NewTimezone(IReadOnlyList<PythonValue> callArguments)
+    {
+        var arguments = WithoutClass(callArguments);
+        if (arguments.Length is < 1 or > 2)
+        {
+            throw TypeFault(
+                arguments.Length == 0
+                    ? "function missing required argument 'offset' (pos 1)"
+                    : $"function takes at most 2 arguments ({arguments.Length} given)"
+            );
+        }
+        if (arguments[0] is not PythonManagedObjectValue { Payload: Delta offset })
+        {
+            throw TypeFault(
+                "timezone() argument 1 must be datetime.timedelta, not "
+                    + ManagedObjectProtocols.GetTypeName(arguments[0])
+            );
+        }
+        var seconds = (long)(offset.Total / MicrosecondsPerSecond);
+        if (seconds <= -24 * 3600 || seconds >= 24 * 3600)
+        {
+            throw ValueFault(
+                "offset must be a timedelta strictly between "
+                    + "-timedelta(hours=24) and timedelta(hours=24), not "
+                    + $"{RepresentDelta(offset)}"
+            );
+        }
+        string? name = null;
+        if (arguments.Length == 2 && arguments[1] is not PythonNoneValue)
+        {
+            if (arguments[1] is not PythonTextValue text)
+            {
+                throw TypeFault(
+                    "timezone() argument 2 must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(arguments[1])
+                );
+            }
+            name = text.Value;
+        }
+        return new PythonManagedObjectValue(TimezoneType, new FixedZone(seconds, name));
+    }
+
+    /// <summary>`timezone.tzname`: the name it was given, or the `UTC±HH:MM` form.</summary>
+    private static string ZoneName(FixedZone zone)
+    {
+        if (zone.Name is not null)
+        {
+            return zone.Name;
+        }
+        if (zone.OffsetSeconds == 0)
+        {
+            return "UTC";
+        }
+        var sign = zone.OffsetSeconds < 0 ? '-' : '+';
+        var absolute = Math.Abs(zone.OffsetSeconds);
+        var hours = absolute / 3600;
+        var minutes = absolute % 3600 / 60;
+        var seconds = absolute % 60;
+        return seconds == 0
+            ? $"UTC{sign}{hours:00}:{minutes:00}"
+            : $"UTC{sign}{hours:00}:{minutes:00}:{seconds:00}";
+    }
+
+    private static string RepresentTimezone(FixedZone zone) =>
+        zone.OffsetSeconds == 0 && zone.Name == "UTC"
+            ? "datetime.timezone.utc"
+            : "datetime.timezone("
+                + RepresentDelta(Delta.Of(zone.OffsetSeconds * MicrosecondsPerSecond))
+                + (
+                    zone.Name is null
+                        ? string.Empty
+                        : $", {new PythonTextValue(zone.Name).ToRepresentationString()}"
+                )
+                + ")";
+
+    private static PythonManagedObjectValue FromUtc(PythonValue self, PythonValue instant)
+    {
+        var stamp = StampOf(instant, "datetime");
+        if (stamp.Tzinfo is null || !ReferenceEquals(stamp.Tzinfo, self))
+        {
+            throw ValueFault("fromutc: dt.tzinfo is not self");
+        }
+        var zone = ZoneOf(self);
+        var moved = stamp
+            .Civil.ToDateTime(new TimeOnly((int)stamp.Hour, (int)stamp.Minute, (int)stamp.Second))
+            .AddTicks(stamp.Microsecond * 10)
+            .AddSeconds(zone.OffsetSeconds);
+        return new PythonManagedObjectValue(
+            DateTimeType,
+            new Stamp(
+                moved.Year,
+                moved.Month,
+                moved.Day,
+                moved.Hour,
+                moved.Minute,
+                moved.Second,
+                (int)(moved.Ticks % TimeSpan.TicksPerSecond) / 10,
+                self,
+                0
+            )
+        );
+    }
+
+    // -----------------------------------------------------------------------------
+    // time
+    // -----------------------------------------------------------------------------
+
+    private static readonly string[] TimeParameters =
+    [
+        "hour",
+        "minute",
+        "second",
+        "microsecond",
+        "tzinfo",
+        "fold",
+    ];
+
+    private static readonly PythonValue?[] TimeDefaults =
+    [
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonNoneValue.Instance,
+        PythonWholeNumberValue.Create(0),
+    ];
+
+    private static PythonManagedTypeValue CreateTimeType()
+    {
+        var type = new PythonManagedTypeValue("time") { Module = "datetime" };
+        type.Attributes["__module__"] = new PythonTextValue("datetime");
+        type.Attributes["__qualname__"] = new PythonTextValue("time");
+        type.Attributes["__doc__"] = new PythonTextValue("Time with time zone.");
+        type.Attributes["__new__"] = Method(
+            "time",
+            "__new__",
+            (_, arguments) =>
+            {
+                var values = WithoutClass(arguments);
+                if (values.Length > TimeParameters.Length)
+                {
+                    throw TypeFault(
+                        $"function takes at most {TimeParameters.Length} arguments "
+                            + $"({values.Length} given)"
+                    );
+                }
+                if (values.Length > TimeParameters.Length - 1)
+                {
+                    throw TypeFault(
+                        $"function takes at most {TimeParameters.Length - 1} positional "
+                            + $"arguments ({values.Length} given)"
+                    );
+                }
+                return NewTime(values);
+            },
+            (_, positional, names, values) => NewTime(BindTime(positional, names, values))
+        );
+        type.Attributes["hour"] = ReadOnlyMember(
+            "time",
+            "hour",
+            stamp => PythonWholeNumberValue.Create(stamp.Hour)
+        );
+        type.Attributes["minute"] = ReadOnlyMember(
+            "time",
+            "minute",
+            stamp => PythonWholeNumberValue.Create(stamp.Minute)
+        );
+        type.Attributes["second"] = ReadOnlyMember(
+            "time",
+            "second",
+            stamp => PythonWholeNumberValue.Create(stamp.Second)
+        );
+        type.Attributes["microsecond"] = ReadOnlyMember(
+            "time",
+            "microsecond",
+            stamp => PythonWholeNumberValue.Create(stamp.Microsecond)
+        );
+        type.Attributes["tzinfo"] = ReadOnlyMember(
+            "time",
+            "tzinfo",
+            stamp => stamp.Tzinfo ?? PythonNoneValue.Instance
+        );
+        type.Attributes["fold"] = ReadOnlyMember(
+            "time",
+            "fold",
+            stamp => PythonWholeNumberValue.Create(stamp.Fold)
+        );
+        type.Attributes["min"] = new PythonManagedObjectValue(
+            type,
+            new Stamp(1, 1, 1, 0, 0, 0, 0, null, 0)
+        );
+        type.Attributes["max"] = new PythonManagedObjectValue(
+            type,
+            new Stamp(1, 1, 1, 23, 59, 59, 999_999, null, 0)
+        );
+        type.Attributes["resolution"] = DeltaValue(new Delta(0, 0, 1));
+        type.Attributes["isoformat"] = Method(
+            "time",
+            "isoformat",
+            (self, arguments) =>
+            {
+                var stamp = StampOf(self!, "time");
+                return new PythonTextValue(
+                    IsoTime(stamp, TimespecArgument("isoformat", arguments))
+                        + TimeOffsetSuffix(stamp)
+                );
+            }
+        );
+        type.Attributes["strftime"] = Method(
+            "time",
+            "strftime",
+            (self, arguments) =>
+                new PythonTextValue(FormatStamp(StampOf(self!, "time"), RequireFormat(arguments)))
+        );
+        type.Attributes["strptime"] = ClassMethod(
+            "time",
+            "strptime",
+            (cls, arguments) => TimeStrptime(cls!, arguments)
+        );
+        type.Attributes["fromisoformat"] = ClassMethod(
+            "time",
+            "fromisoformat",
+            (cls, arguments) => TimeFromIsoFormat(cls!, arguments)
+        );
+        type.Attributes["utcoffset"] = TimeZoneMethod("utcoffset");
+        type.Attributes["dst"] = TimeZoneMethod("dst");
+        type.Attributes["tzname"] = TimeZoneMethod("tzname");
+        type.Attributes["replace"] = Method(
+            "time",
+            "replace",
+            (self, arguments) => ReplaceTime(self!, arguments, [], []),
+            (self, _, names, values) => ReplaceTime(self!, [], names, values)
+        );
+        type.Attributes["__repr__"] = Method(
+            "time",
+            "__repr__",
+            (self, _) => new PythonTextValue(RepresentTime(StampOf(self!, "time")))
+        );
+        type.Attributes["__str__"] = Method(
+            "time",
+            "__str__",
+            (self, _) =>
+            {
+                var stamp = StampOf(self!, "time");
+                return new PythonTextValue(IsoTime(stamp, "auto") + TimeOffsetSuffix(stamp));
+            }
+        );
+        type.Attributes["__format__"] = Method(
+            "time",
+            "__format__",
+            (self, arguments) => FormatTime(self!, arguments)
+        );
+        type.Attributes["__hash__"] = Method(
+            "time",
+            "__hash__",
+            (self, _) => PythonWholeNumberValue.Create(StampOf(self!, "time").Clock)
+        );
+        AddTimeComparisons(type);
+        return type;
+    }
+
+    private static PythonManagedObjectValue TimeValue(Stamp stamp) => new(TimeType, stamp);
+
+    private static PythonValue[] BindTime(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    ) =>
+        [
+            .. BindArguments(
+                    TimeParameters,
+                    0,
+                    1,
+                    TimeDefaults,
+                    WithoutClass(positional),
+                    names,
+                    values
+                )
+                .Select((slot, index) => slot ?? TimeDefaults[index] ?? PythonNoneValue.Instance),
+        ];
+
+    private static PythonManagedObjectValue NewTime(IReadOnlyList<PythonValue> callArguments)
+    {
+        var arguments = WithoutClass(callArguments);
+        if (arguments.Length > TimeParameters.Length)
+        {
+            throw TypeFault(
+                $"function takes at most {TimeParameters.Length} arguments ({arguments.Length} given)"
+            );
+        }
+
+        var hour = arguments.Length > 0 ? RequireLong(arguments[0], default) : 0;
+        var minute = arguments.Length > 1 ? RequireLong(arguments[1], default) : 0;
+        var second = arguments.Length > 2 ? RequireLong(arguments[2], default) : 0;
+        var microsecond = arguments.Length > 3 ? RequireLong(arguments[3], default) : 0;
+        var tzinfo = arguments.Length > 4 ? RequireTzInfo(arguments[4], default) : null;
+        var fold = arguments.Length > 5 ? RequireLong(arguments[5], default) : 0;
+        ValidateTime(hour, minute, second, microsecond, fold);
+        return Instantiate(
+            ClassOf(arguments),
+            TimeType,
+            new Stamp(1, 1, 1, hour, minute, second, microsecond, tzinfo, (int)fold)
+        );
+    }
+
+    private static PythonProtocolFunctionValue TimeZoneMethod(string name) =>
+        Method(
+            "time",
+            name,
+            (self, arguments) =>
+            {
+                RequireBare("time", name, arguments);
+                var stamp = StampOf(self!, "time");
+                return stamp.Tzinfo is null
+                    ? PythonNoneValue.Instance
+                    : CallTzInfo(stamp.Tzinfo, name, stamp, self!);
+            }
+        );
+
+    /// <summary>`tzinfo.utcoffset(dt)` and its siblings, called with the value that carries the zone.</summary>
+    private static PythonValue CallTzInfo(
+        PythonValue tzinfo,
+        string name,
+        Stamp stamp,
+        PythonValue instance
+    )
+    {
+        _ = stamp;
+        if (
+            ManagedObjectProtocols.TryGetSpecialMethod(tzinfo, name, out var method)
+            && UserObjectProtocols.Dispatcher is { } dispatcher
+        )
+        {
+            return dispatcher.Invoke(method, [instance], default);
+        }
+        return PythonNoneValue.Instance;
+    }
+
+    private static void AddTimeComparisons(PythonManagedTypeValue type)
+    {
+        type.Attributes["__eq__"] = TimeComparison("__eq__", order => order == 0, equality: true);
+        type.Attributes["__ne__"] = TimeComparison("__ne__", order => order != 0, equality: true);
+        type.Attributes["__lt__"] = TimeComparison("__lt__", order => order < 0, equality: false);
+        type.Attributes["__le__"] = TimeComparison("__le__", order => order <= 0, equality: false);
+        type.Attributes["__gt__"] = TimeComparison("__gt__", order => order > 0, equality: false);
+        type.Attributes["__ge__"] = TimeComparison("__ge__", order => order >= 0, equality: false);
+    }
+
+    /// <summary>
+    /// `time` compares by its wall fields; an aware and a naive time are never equal and
+    /// never ordered, and two aware times in different zones are unequal even when their
+    /// fields agree.
+    /// </summary>
+    private static PythonProtocolFunctionValue TimeComparison(
+        string name,
+        Func<int, bool> decide,
+        bool equality
+    ) =>
+        Method(
+            "time",
+            name,
+            (self, arguments) =>
+            {
+                if (
+                    arguments.Count != 1
+                    || arguments[0] is not PythonManagedObjectValue { Payload: Stamp other }
+                )
+                {
+                    return PythonNotImplementedValue.Instance;
+                }
+                var own = StampOf(self!, "time");
+                if (own.IsAware != other.IsAware)
+                {
+                    return NotComparableTime(name, equality, throws: true);
+                }
+                var order = own.Clock.CompareTo(other.Clock);
+                if (
+                    own.IsAware
+                    && own.Tzinfo is { } leftZone
+                    && other.Tzinfo is { } rightZone
+                    && !ReferenceEquals(leftZone, rightZone)
+                )
+                {
+                    var leftOffset = CallTzInfo(leftZone, "utcoffset", own, self!);
+                    var rightOffset = CallTzInfo(rightZone, "utcoffset", other, arguments[0]);
+                    if (!SameOffset(leftOffset, rightOffset))
+                    {
+                        return NotComparableTime(name, equality, throws: false);
+                    }
+                }
+                return PythonTruthValue.FromBoolean(decide(order));
+            }
+        );
+
+    private static PythonTruthValue NotComparableTime(string name, bool equality, bool throws)
+    {
+        if (!equality && throws)
+        {
+            throw TypeFault("can't compare offset-naive and offset-aware times");
+        }
+        return PythonTruthValue.FromBoolean(name == "__ne__");
+    }
+
+    private static bool SameOffset(PythonValue left, PythonValue right) =>
+        left is PythonManagedObjectValue { Payload: Delta leftDelta }
+        && right is PythonManagedObjectValue { Payload: Delta rightDelta }
+            ? leftDelta.Total == rightDelta.Total
+            : left is PythonNoneValue && right is PythonNoneValue;
+
+    private static string TimespecArgument(string name, IReadOnlyList<PythonValue> arguments)
+    {
+        var timespec = "auto";
+        if (arguments.Count > 1)
+        {
+            throw TypeFault($"{name}() takes at most 1 argument ({arguments.Count} given)");
+        }
+        if (arguments.Count == 1)
+        {
+            if (arguments[0] is not PythonTextValue text)
+            {
+                throw TypeFault(
+                    $"isoformat() argument must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(arguments[0])
+                );
+            }
+            timespec = text.Value
+                is "auto"
+                    or "hours"
+                    or "minutes"
+                    or "seconds"
+                    or "milliseconds"
+                    or "microseconds"
+                ? text.Value
+                : throw ValueFault("Unknown timespec value");
+        }
+        return timespec;
+    }
+
+    private static string TimeOffsetSuffix(Stamp stamp) =>
+        stamp.Tzinfo is null
+            ? string.Empty
+            : IsoOffset(CallTzInfo(stamp.Tzinfo, "utcoffset", stamp, TimeValue(stamp)));
+
+    private static PythonTextValue FormatTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var spec = arguments.Count == 1 && arguments[0] is PythonTextValue text ? text.Value : null;
+        if (spec is null)
+        {
+            throw TypeFault(
+                "__format__() argument 1 must be str, not "
+                    + (
+                        arguments.Count != 1 ? "nothing"
+                        : arguments[0] is PythonNoneValue ? "None"
+                        : ManagedObjectProtocols.GetTypeName(arguments[0])
+                    )
+            );
+        }
+        var stamp = StampOf(self, "time");
+        return new PythonTextValue(
+            spec.Length == 0
+                ? IsoTime(stamp, "auto") + TimeOffsetSuffix(stamp)
+                : FormatStamp(stamp, spec)
+        );
+    }
+
+    private static PythonManagedObjectValue TimeStrptime(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count != 2)
+        {
+            throw TypeFault("strptime() takes exactly 2 arguments");
+        }
+        if (arguments[0] is not PythonTextValue text || arguments[1] is not PythonTextValue format)
+        {
+            throw TypeFault("strptime() argument 1 must be str");
+        }
+        var parsed = PythonTimeModule.Parse(text.Value, format.Value, default);
+        return Instantiate(
+            cls,
+            TimeType,
+            new Stamp(1, 1, 1, parsed.Hour, parsed.Minute, parsed.Second, 0, null, 0)
+        );
+    }
+
+    private static PythonManagedObjectValue TimeFromIsoFormat(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var text = RequireTextArgument(arguments, "fromisoformat");
+        var (hour, minute, second, microsecond, tzinfo) = ParseIsoTime(text);
+        return Instantiate(
+            cls,
+            TimeType,
+            new Stamp(1, 1, 1, hour, minute, second, microsecond, tzinfo, 0)
+        );
+    }
+
+    private static PythonManagedObjectValue ReplaceTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    )
+    {
+        var stamp = StampOf(self, "time");
+        var fields = ReplaceBind(positional, names, values, TimeParameters);
+        var hour = fields[0] is null ? stamp.Hour : RequireLong(fields[0]!, default);
+        var minute = fields[1] is null ? stamp.Minute : RequireLong(fields[1]!, default);
+        var second = fields[2] is null ? stamp.Second : RequireLong(fields[2]!, default);
+        var microsecond = fields[3] is null ? stamp.Microsecond : RequireLong(fields[3]!, default);
+        var tzinfo = fields[4] is null ? stamp.Tzinfo : RequireTzInfo(fields[4]!, default);
+        var fold = fields[5] is null ? stamp.Fold : (int)RequireLong(fields[5]!, default);
+        ValidateTime(hour, minute, second, microsecond, fold);
+        return new PythonManagedObjectValue(
+            self is PythonManagedObjectValue { Type: { } type } ? type : TimeType,
+            new Stamp(1, 1, 1, hour, minute, second, microsecond, tzinfo, fold)
+        );
+    }
+
+    private static string RepresentTime(Stamp stamp)
+    {
+        var parts = new List<string>
+        {
+            stamp.Hour.ToString(CultureInfo.InvariantCulture),
+            stamp.Minute.ToString(CultureInfo.InvariantCulture),
+        };
+        if (stamp.Second != 0 || stamp.Microsecond != 0)
+        {
+            parts.Add(stamp.Second.ToString(CultureInfo.InvariantCulture));
+        }
+        if (stamp.Microsecond != 0)
+        {
+            parts.Add(stamp.Microsecond.ToString(CultureInfo.InvariantCulture));
+        }
+        var text = $"datetime.time({string.Join(", ", parts)}";
+        if (stamp.Tzinfo is { } tzinfo)
+        {
+            text += $", tzinfo={tzinfo.ToRepresentationString()}";
+        }
+        if (stamp.Fold != 0)
+        {
+            text += $", fold={stamp.Fold}";
+        }
+        return text + ")";
+    }
+
+    /// <summary>The time forms `fromisoformat` reads, with their optional offset.</summary>
+    private static (
+        long Hour,
+        long Minute,
+        long Second,
+        long Microsecond,
+        PythonValue? Tzinfo
+    ) ParseIsoTime(string text)
+    {
+        var whole = text;
+        if (text.StartsWith('T'))
+        {
+            text = text[1..];
+        }
+        PythonValue? tzinfo = null;
+        var offsetAt = text.IndexOfAny(['+', '-', 'Z', 'z'], 1);
+        if (offsetAt >= 0)
+        {
+            var offsetText = text[offsetAt..];
+            text = text[..offsetAt];
+            tzinfo = ParseIsoOffset(offsetText, whole);
+        }
+        var clock = text.Replace(":", string.Empty, StringComparison.Ordinal);
+        var fraction = 0L;
+        var dot = clock.IndexOf('.', StringComparison.Ordinal);
+        if (dot >= 0)
+        {
+            var digits = clock[(dot + 1)..];
+            clock = clock[..dot];
+            fraction = long.Parse(digits.PadRight(6, '0')[..6], CultureInfo.InvariantCulture);
+        }
+        if (clock.Length is not (4 or 6) || !clock.All(char.IsAsciiDigit))
+        {
+            throw ValueFault($"Invalid isoformat string: '{whole}'");
+        }
+        var hour = long.Parse(clock[..2], CultureInfo.InvariantCulture);
+        var minute = long.Parse(clock[2..4], CultureInfo.InvariantCulture);
+        var second = clock.Length == 6 ? long.Parse(clock[4..], CultureInfo.InvariantCulture) : 0;
+        ValidateTime(hour, minute, second, fraction, 0);
+        return (hour, minute, second, fraction, tzinfo);
+    }
+
+    /// <summary>`+HH:MM`, `+HHMM`, `+HH` and `Z` from `fromisoformat`, as a fixed zone.</summary>
+    private static PythonManagedObjectValue ParseIsoOffset(string text, string whole)
+    {
+        if (text is "Z" or "z")
+        {
+            return new PythonManagedObjectValue(TimezoneType, new FixedZone(0, "UTC"));
+        }
+        var sign = text[0] == '-' ? -1 : 1;
+        var digits = text[1..].Replace(":", string.Empty, StringComparison.Ordinal);
+        if (digits.Length is not (2 or 4 or 6) || !digits.All(char.IsAsciiDigit))
+        {
+            throw ValueFault($"Invalid isoformat string: '{whole}'");
+        }
+        var hours = long.Parse(digits[..2], CultureInfo.InvariantCulture);
+        var minutes =
+            digits.Length >= 4 ? long.Parse(digits[2..4], CultureInfo.InvariantCulture) : 0;
+        var seconds =
+            digits.Length == 6 ? long.Parse(digits[4..], CultureInfo.InvariantCulture) : 0;
+        return new PythonManagedObjectValue(
+            TimezoneType,
+            new FixedZone(sign * (hours * 3600 + minutes * 60 + seconds), null)
+        );
+    }
+
+    // -----------------------------------------------------------------------------
+    // datetime
+    // -----------------------------------------------------------------------------
+
+    private static readonly string[] DateTimeConstructorParameters =
+    [
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "microsecond",
+        "tzinfo",
+        "fold",
+    ];
+
+    private static readonly PythonValue?[] DateTimeConstructorDefaults =
+    [
+        null,
+        null,
+        null,
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonWholeNumberValue.Create(0),
+        PythonNoneValue.Instance,
+        PythonWholeNumberValue.Create(0),
+    ];
+
+    private static PythonManagedTypeValue CreateDateTimeType()
+    {
+        var type = new PythonManagedTypeValue(
+            "datetime",
+            bases: [DateType],
+            linearizedBases: DateType.Mro
+        )
+        {
+            Module = "datetime",
+        };
+        type.Attributes["__module__"] = new PythonTextValue("datetime");
+        type.Attributes["__qualname__"] = new PythonTextValue("datetime");
+        type.Attributes["__doc__"] = new PythonTextValue(
+            "datetime(year, month, day[, hour[, minute[, second[, microsecond[,tzinfo]]]]])"
+        );
+        type.Attributes["__new__"] = Method(
+            "datetime",
+            "__new__",
+            (_, arguments) =>
+            {
+                var values = WithoutClass(arguments);
+                if (values.Length > DateTimeConstructorParameters.Length)
+                {
+                    throw TypeFault(
+                        $"function takes at most {DateTimeConstructorParameters.Length} "
+                            + $"arguments ({values.Length} given)"
+                    );
+                }
+                if (values.Length > DateTimeConstructorParameters.Length - 1)
+                {
+                    throw TypeFault(
+                        $"function takes at most {DateTimeConstructorParameters.Length - 1} "
+                            + $"positional arguments ({values.Length} given)"
+                    );
+                }
+                return NewDateTime(values);
+            },
+            (_, positional, names, values) =>
+                NewDateTime(BindDateTimeConstructor(positional, names, values))
+        );
+        type.Attributes["hour"] = ReadOnlyMember(
+            "datetime",
+            "hour",
+            stamp => PythonWholeNumberValue.Create(stamp.Hour)
+        );
+        type.Attributes["minute"] = ReadOnlyMember(
+            "datetime",
+            "minute",
+            stamp => PythonWholeNumberValue.Create(stamp.Minute)
+        );
+        type.Attributes["second"] = ReadOnlyMember(
+            "datetime",
+            "second",
+            stamp => PythonWholeNumberValue.Create(stamp.Second)
+        );
+        type.Attributes["microsecond"] = ReadOnlyMember(
+            "datetime",
+            "microsecond",
+            stamp => PythonWholeNumberValue.Create(stamp.Microsecond)
+        );
+        type.Attributes["tzinfo"] = ReadOnlyMember(
+            "datetime",
+            "tzinfo",
+            stamp => stamp.Tzinfo ?? PythonNoneValue.Instance
+        );
+        type.Attributes["fold"] = ReadOnlyMember(
+            "datetime",
+            "fold",
+            stamp => PythonWholeNumberValue.Create(stamp.Fold)
+        );
+        type.Attributes["min"] = new PythonManagedObjectValue(
+            type,
+            new Stamp(1, 1, 1, 0, 0, 0, 0, null, 0)
+        );
+        type.Attributes["max"] = new PythonManagedObjectValue(
+            type,
+            new Stamp(9999, 12, 31, 23, 59, 59, 999_999, null, 0)
+        );
+        type.Attributes["resolution"] = DeltaValue(new Delta(0, 0, 1));
+        type.Attributes["now"] = ClassMethod(
+            "datetime",
+            "now",
+            (cls, arguments) => DateTimeNow(cls!, arguments, utc: false)
+        );
+        type.Attributes["utcnow"] = ClassMethod(
+            "datetime",
+            "utcnow",
+            (cls, arguments) => DateTimeNow(cls!, arguments, utc: true)
+        );
+        type.Attributes["today"] = ClassMethod(
+            "datetime",
+            "today",
+            (cls, arguments) => DateTimeNow(cls!, arguments, utc: false)
+        );
+        type.Attributes["fromtimestamp"] = ClassMethod(
+            "datetime",
+            "fromtimestamp",
+            (cls, arguments) => DateTimeFromTimestamp(cls!, arguments, utc: false)
+        );
+        type.Attributes["utcfromtimestamp"] = ClassMethod(
+            "datetime",
+            "utcfromtimestamp",
+            (cls, arguments) => DateTimeFromTimestamp(cls!, arguments, utc: true)
+        );
+        type.Attributes["fromordinal"] = ClassMethod(
+            "datetime",
+            "fromordinal",
+            (cls, arguments) => DateTimeFromOrdinal(cls!, arguments)
+        );
+        type.Attributes["fromisoformat"] = ClassMethod(
+            "datetime",
+            "fromisoformat",
+            (cls, arguments) => DateTimeFromIsoFormat(cls!, arguments)
+        );
+        type.Attributes["fromisocalendar"] = ClassMethod(
+            "datetime",
+            "fromisocalendar",
+            (cls, arguments) => DateTimeFromIsoCalendar(cls!, arguments)
+        );
+        type.Attributes["strptime"] = ClassMethod(
+            "datetime",
+            "strptime",
+            (cls, arguments) => DateTimeStrptime(cls!, arguments)
+        );
+        type.Attributes["combine"] = ClassMethod(
+            "datetime",
+            "combine",
+            (cls, arguments) => DateTimeCombine(cls!, arguments)
+        );
+        type.Attributes["date"] = Method(
+            "datetime",
+            "date",
+            (self, arguments) =>
+            {
+                RequireBare("datetime", "date", arguments);
+                var stamp = StampOf(self!, "datetime");
+                return new PythonManagedObjectValue(
+                    DateType,
+                    new Stamp(stamp.Year, stamp.Month, stamp.Day, 0, 0, 0, 0, null, 0)
+                );
+            }
+        );
+        type.Attributes["time"] = Method(
+            "datetime",
+            "time",
+            (self, arguments) =>
+            {
+                RequireBare("datetime", "time", arguments);
+                return new PythonManagedObjectValue(
+                    TimeType,
+                    ClockOf(StampOf(self!, "datetime"), tzinfo: null)
+                );
+            }
+        );
+        type.Attributes["timetz"] = Method(
+            "datetime",
+            "timetz",
+            (self, arguments) =>
+            {
+                RequireBare("datetime", "timetz", arguments);
+                var stamp = StampOf(self!, "datetime");
+                return new PythonManagedObjectValue(TimeType, ClockOf(stamp, stamp.Tzinfo));
+            }
+        );
+        type.Attributes["utctimetuple"] = Method(
+            "datetime",
+            "utctimetuple",
+            (self, arguments) =>
+            {
+                RequireBare("datetime", "utctimetuple", arguments);
+                var stamp = StampOf(self!, "datetime");
+                var asUtc = stamp.Tzinfo is null
+                    ? stamp
+                    : MoveClock(
+                        stamp with
+                        {
+                            Tzinfo = null,
+                        },
+                        -OffsetSeconds(CallTzInfo(stamp.Tzinfo, "utcoffset", stamp, self!))
+                    );
+                return BrokenTimeOf(asUtc, isDst: 0).ToValue();
+            }
+        );
+        type.Attributes["timestamp"] = Method(
+            "datetime",
+            "timestamp",
+            (self, arguments) =>
+            {
+                RequireBare("datetime", "timestamp", arguments);
+                return new PythonFloatingPointValue(TimestampOf(self!, StampOf(self!, "datetime")));
+            }
+        );
+        type.Attributes["astimezone"] = Method(
+            "datetime",
+            "astimezone",
+            (self, arguments) => Astimezone(self!, arguments)
+        );
+        type.Attributes["utcoffset"] = DateTimeZoneMethod("utcoffset");
+        type.Attributes["dst"] = DateTimeZoneMethod("dst");
+        type.Attributes["tzname"] = DateTimeZoneMethod("tzname");
+        type.Attributes["isoformat"] = Method(
+            "datetime",
+            "isoformat",
+            (self, arguments) => DateTimeIsoformat(self!, arguments)
+        );
+        type.Attributes["replace"] = Method(
+            "datetime",
+            "replace",
+            (self, arguments) => ReplaceDateTime(self!, arguments, [], []),
+            (self, _, names, values) => ReplaceDateTime(self!, [], names, values)
+        );
+        type.Attributes["__repr__"] = Method(
+            "datetime",
+            "__repr__",
+            (self, _) => new PythonTextValue(RepresentDateTime(self!, StampOf(self!, "datetime")))
+        );
+        type.Attributes["__str__"] = Method(
+            "datetime",
+            "__str__",
+            (self, _) =>
+            {
+                var stamp = StampOf(self!, "datetime");
+                return new PythonTextValue(
+                    IsoDate(stamp)
+                        + " "
+                        + IsoTime(stamp, "auto")
+                        + DateTimeOffsetSuffix(self!, stamp)
+                );
+            }
+        );
+        type.Attributes["__format__"] = Method(
+            "datetime",
+            "__format__",
+            (self, arguments) => FormatDateTime(self!, arguments)
+        );
+        type.Attributes["__hash__"] = Method(
+            "datetime",
+            "__hash__",
+            (self, _) =>
+            {
+                var stamp = StampOf(self!, "datetime");
+                return PythonWholeNumberValue.Create(
+                    stamp.OrdinalOf() * MicrosecondsPerDay + stamp.Clock
+                );
+            }
+        );
+        type.Attributes["__add__"] = Method(
+            "datetime",
+            "__add__",
+            (self, arguments) => AddToDateTime(self!, arguments, subtract: false)
+        );
+        type.Attributes["__radd__"] = type.Attributes["__add__"];
+        type.Attributes["__sub__"] = Method(
+            "datetime",
+            "__sub__",
+            (self, arguments) => SubtractFromDateTime(self!, arguments)
+        );
+        AddDateTimeComparisons(type);
+        return type;
+    }
+
+    private static PythonManagedObjectValue DateTimeValue(Stamp stamp) => new(DateTimeType, stamp);
+
+    private static Stamp ClockOf(Stamp stamp, PythonValue? tzinfo) =>
+        new(1, 1, 1, stamp.Hour, stamp.Minute, stamp.Second, stamp.Microsecond, tzinfo, stamp.Fold);
+
+    private static PythonValue[] BindDateTimeConstructor(
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    ) =>
+        [
+            .. BindArguments(
+                    DateTimeConstructorParameters,
+                    0,
+                    1,
+                    DateTimeConstructorDefaults,
+                    WithoutClass(positional),
+                    names,
+                    values
+                )
+                .Select(
+                    (slot, index) =>
+                        slot ?? DateTimeConstructorDefaults[index] ?? PythonNoneValue.Instance
+                ),
+        ];
+
+    private static PythonManagedObjectValue NewDateTime(IReadOnlyList<PythonValue> callArguments)
+    {
+        var arguments = WithoutClass(callArguments);
+        if (arguments.Length > DateTimeConstructorParameters.Length)
+        {
+            throw TypeFault(
+                $"function takes at most {DateTimeConstructorParameters.Length} arguments "
+                    + $"({arguments.Length} given)"
+            );
+        }
+
+        if (arguments.Length < 3)
+        {
+            throw TypeFault(
+                $"function missing required argument "
+                    + $"'{DateTimeConstructorParameters[arguments.Length]}' "
+                    + $"(pos {arguments.Length + 1})"
+            );
+        }
+        var year = RequireLong(arguments[0], default);
+        var month = RequireLong(arguments[1], default);
+        var day = RequireLong(arguments[2], default);
+        ValidateDate(year, month, day);
+        var hour = arguments.Length > 3 ? RequireLong(arguments[3], default) : 0;
+        var minute = arguments.Length > 4 ? RequireLong(arguments[4], default) : 0;
+        var second = arguments.Length > 5 ? RequireLong(arguments[5], default) : 0;
+        var microsecond = arguments.Length > 6 ? RequireLong(arguments[6], default) : 0;
+        var tzinfo = arguments.Length > 7 ? RequireTzInfo(arguments[7], default) : null;
+        var fold = arguments.Length > 8 ? RequireLong(arguments[8], default) : 0;
+        ValidateTime(hour, minute, second, microsecond, fold);
+        return Instantiate(
+            ClassOf(arguments),
+            DateTimeType,
+            new Stamp(year, month, day, hour, minute, second, microsecond, tzinfo, (int)fold)
+        );
+    }
+
+    private static PythonProtocolFunctionValue DateTimeZoneMethod(string name) =>
+        Method(
+            "datetime",
+            name,
+            (self, arguments) =>
+            {
+                RequireBare("datetime", name, arguments);
+                var stamp = StampOf(self!, "datetime");
+                return stamp.Tzinfo is null
+                    ? PythonNoneValue.Instance
+                    : CallTzInfo(stamp.Tzinfo, name, stamp, self!);
+            }
+        );
+
+    private static string DateTimeOffsetSuffix(PythonValue self, Stamp stamp) =>
+        stamp.Tzinfo is null
+            ? string.Empty
+            : IsoOffset(CallTzInfo(stamp.Tzinfo, "utcoffset", stamp, self));
+
+    private static PythonManagedObjectValue DateTimeNow(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments,
+        bool utc
+    )
+    {
+        if (arguments.Count > 1)
+        {
+            throw TypeFault($"now() takes at most 1 argument ({arguments.Count} given)");
+        }
+        if (utc)
+        {
+            return Instantiate(cls, DateTimeType, StampOfClock(DateTime.UtcNow, tzinfo: null));
+        }
+        if (arguments.Count == 0 || arguments[0] is PythonNoneValue)
+        {
+            return Instantiate(cls, DateTimeType, StampOfClock(DateTime.Now, tzinfo: null));
+        }
+        var tzinfo = RequireTzInfo(arguments[0], default)!;
+        return AttachAndConvert(cls, StampOfClock(DateTime.UtcNow, tzinfo: null), tzinfo);
+    }
+
+    private static Stamp StampOfClock(DateTime clock, PythonValue? tzinfo) =>
+        new(
+            clock.Year,
+            clock.Month,
+            clock.Day,
+            clock.Hour,
+            clock.Minute,
+            clock.Second,
+            (int)(clock.Ticks % TimeSpan.TicksPerSecond) / 10,
+            tzinfo,
+            0
+        );
+
+    /// <summary>The instant the stamp names, in the zone the call asked for.</summary>
+    private static PythonManagedObjectValue AttachAndConvert(
+        PythonValue? cls,
+        Stamp instant,
+        PythonValue tzinfo
+    )
+    {
+        var aware = instant with { Tzinfo = tzinfo, Fold = 0 };
+        return new PythonManagedObjectValue(
+            cls as PythonManagedTypeValue ?? DateTimeType,
+            FromUtcThrough(tzinfo, aware)
+        );
+    }
+
+    /// <summary>`tzinfo.fromutc(dt)`, answering the fields it produced.</summary>
+    private static Stamp FromUtcThrough(PythonValue tzinfo, Stamp aware)
+    {
+        if (
+            ManagedObjectProtocols.TryGetSpecialMethod(tzinfo, "fromutc", out var method)
+            && UserObjectProtocols.Dispatcher is { } dispatcher
+        )
+        {
+            var result = dispatcher.Invoke(
+                method,
+                [new PythonManagedObjectValue(DateTimeType, aware)],
+                default
+            );
+            return StampOf(result, "datetime") with { Tzinfo = tzinfo };
+        }
+        var offset = OffsetSeconds(
+            CallTzInfo(
+                tzinfo,
+                "utcoffset",
+                aware,
+                new PythonManagedObjectValue(DateTimeType, aware)
+            )
+        );
+        return MoveClock(aware, offset) with { Tzinfo = tzinfo, Fold = 0 };
+    }
+
+    /// <summary>The stamp moved by a number of seconds, keeping its zone.</summary>
+    private static Stamp MoveClock(Stamp stamp, long seconds)
+    {
+        try
+        {
+            return StampOfClock(Chrono(stamp).AddSeconds(seconds), stamp.Tzinfo);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw OverflowFault("date value out of range");
+        }
+    }
+
+    private static DateTime Chrono(Stamp stamp) =>
+        new DateTime(
+            (int)stamp.Year,
+            (int)stamp.Month,
+            (int)stamp.Day,
+            (int)stamp.Hour,
+            (int)stamp.Minute,
+            (int)stamp.Second
+        ).AddTicks(stamp.Microsecond * 10);
+
+    private static PythonManagedObjectValue DateTimeFromTimestamp(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments,
+        bool utc
+    )
+    {
+        if (arguments.Count is < 1 or > 2)
+        {
+            throw TypeFault("fromtimestamp() takes at most 2 arguments");
+        }
+        var micros = ToUnixMicroseconds(arguments[0]);
+        if (utc)
+        {
+            var clock = StampOfUnix(micros);
+            return Instantiate(cls, DateTimeType, clock);
+        }
+        if (arguments.Count == 1 || arguments[1] is PythonNoneValue)
+        {
+            var local = LocalFromUnixMicroseconds(micros);
+            return Instantiate(cls, DateTimeType, StampOfClock(local, tzinfo: null));
+        }
+        var zone = RequireTzInfo(arguments[1], default)!;
+        return AttachAndConvert(cls, StampOfUnix(micros), zone);
+    }
+
+    /// <summary>One instant as the UTC fields a `fromtimestamp(ts, tz)` converts from.</summary>
+    private static Stamp StampOfUnix(long micros)
+    {
+        var seconds = FloorDiv(micros, MicrosecondsPerSecond);
+        var remainder = micros - seconds * MicrosecondsPerSecond;
+        var clock = DateTimeOffset
+            .FromUnixTimeSeconds(seconds)
+            .UtcDateTime.AddTicks(remainder * 10);
+        return StampOfClock(clock, tzinfo: null);
+    }
+
+    private static PythonManagedObjectValue DateTimeFromOrdinal(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            throw TypeFault("fromordinal() takes exactly one argument");
+        }
+        var ordinal = RequireLong(arguments[0], default);
+        if (ordinal < 1)
+        {
+            throw ValueFault("ordinal must be >= 1");
+        }
+        if (ordinal > Ordinal(MaxYear, 12, 31))
+        {
+            throw ValueFault("year must be in 1..9999, not 10000");
+        }
+        var date = FromOrdinal(ordinal);
+        return Instantiate(
+            cls,
+            DateTimeType,
+            new Stamp(date.Year, date.Month, date.Day, 0, 0, 0, 0, null, 0)
+        );
+    }
+
+    private static PythonManagedObjectValue DateTimeFromIsoFormat(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var text = RequireTextArgument(arguments, "fromisoformat");
+        var separator = text.IndexOfAny(['T', 't', ' ']);
+        var dateText = separator >= 0 ? text[..separator] : text;
+        var timeText = separator >= 0 ? text[(separator + 1)..] : string.Empty;
+        var (year, month, day) = ParseIsoDate(dateText);
+        long hour = 0,
+            minute = 0,
+            second = 0,
+            microsecond = 0;
+        PythonValue? tzinfo = null;
+        if (timeText.Length > 0)
+        {
+            (hour, minute, second, microsecond, tzinfo) = ParseIsoTime(timeText);
+        }
+        return Instantiate(
+            cls,
+            DateTimeType,
+            new Stamp(year, month, day, hour, minute, second, microsecond, tzinfo, 0)
+        );
+    }
+
+    private static PythonManagedObjectValue DateTimeFromIsoCalendar(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var date = DateFromIsoCalendar(cls, arguments);
+        var stamp = StampOf(date, "date");
+        return Instantiate(
+            cls,
+            DateTimeType,
+            new Stamp(stamp.Year, stamp.Month, stamp.Day, 0, 0, 0, 0, null, 0)
+        );
+    }
+
+    private static PythonManagedObjectValue DateTimeStrptime(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count != 2)
+        {
+            throw TypeFault("strptime() takes exactly 2 arguments");
+        }
+        if (arguments[0] is not PythonTextValue text || arguments[1] is not PythonTextValue format)
+        {
+            throw TypeFault("strptime() argument 1 must be str");
+        }
+        var parsed = PythonTimeModule.Parse(text.Value, format.Value, default);
+        ValidateDate(parsed.Year, parsed.Month, parsed.Day);
+        ValidateTime(parsed.Hour, parsed.Minute, parsed.Second, 0, 0);
+        return Instantiate(
+            cls,
+            DateTimeType,
+            new Stamp(
+                parsed.Year,
+                parsed.Month,
+                parsed.Day,
+                parsed.Hour,
+                parsed.Minute,
+                parsed.Second,
+                0,
+                null,
+                0
+            )
+        );
+    }
+
+    private static PythonManagedObjectValue DateTimeCombine(
+        PythonValue cls,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count is < 2 or > 3)
+        {
+            throw TypeFault("combine() takes 2 or 3 arguments");
+        }
+        if (
+            arguments[0] is not PythonManagedObjectValue { Payload: Stamp date }
+            || !IsPlainDate(arguments[0])
+        )
+        {
+            throw TypeFault(
+                "combine() argument 1 must be datetime.date, not "
+                    + ManagedObjectProtocols.GetTypeName(arguments[0])
+            );
+        }
+        if (
+            arguments[1] is not PythonManagedObjectValue { Payload: Stamp clock }
+            || !IsTime(arguments[1])
+        )
+        {
+            throw TypeFault(
+                "combine() argument 2 must be datetime.time, not "
+                    + ManagedObjectProtocols.GetTypeName(arguments[1])
+            );
+        }
+        var tzinfo = clock.Tzinfo;
+        if (arguments.Count == 3)
+        {
+            tzinfo = RequireTzInfo(arguments[2], default);
+        }
+        return Instantiate(
+            cls,
+            DateTimeType,
+            new Stamp(
+                date.Year,
+                date.Month,
+                date.Day,
+                clock.Hour,
+                clock.Minute,
+                clock.Second,
+                clock.Microsecond,
+                tzinfo,
+                clock.Fold
+            )
+        );
+    }
+
+    private static bool IsTime(PythonValue value) =>
+        value is PythonManagedObjectValue { Type: { } type }
+        && type.Mro.Any(entry => ReferenceEquals(entry, TimeType));
+
+    private static PythonTextValue DateTimeIsoformat(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var separator = 'T';
+        var timespec = "auto";
+        if (arguments.Count > 2)
+        {
+            throw TypeFault($"isoformat() takes at most 2 arguments ({arguments.Count} given)");
+        }
+        if (arguments.Count >= 1)
+        {
+            if (arguments[0] is not PythonTextValue sep)
+            {
+                throw TypeFault(
+                    "isoformat() argument must be str, not "
+                        + ManagedObjectProtocols.GetTypeName(arguments[0])
+                );
+            }
+            if (sep.Value.Length != 1)
+            {
+                throw TypeFault(
+                    "isoformat() argument 1 must be a unicode character, not a string of "
+                        + $"length {sep.Value.Length}"
+                );
+            }
+            separator = sep.Value[0];
+        }
+        if (arguments.Count == 2)
+        {
+            timespec = TimespecArgument("isoformat", [arguments[1]]);
+        }
+        var stamp = StampOf(self, "datetime");
+        return new PythonTextValue(
+            IsoDate(stamp)
+                + separator
+                + IsoTime(stamp, timespec)
+                + DateTimeOffsetSuffix(self, stamp)
+        );
+    }
+
+    private static PythonTextValue FormatDateTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        var spec = arguments.Count == 1 && arguments[0] is PythonTextValue text ? text.Value : null;
+        if (spec is null)
+        {
+            throw TypeFault(
+                "__format__() argument 1 must be str, not "
+                    + (
+                        arguments.Count != 1 ? "nothing"
+                        : arguments[0] is PythonNoneValue ? "None"
+                        : ManagedObjectProtocols.GetTypeName(arguments[0])
+                    )
+            );
+        }
+        var stamp = StampOf(self, "datetime");
+        return new PythonTextValue(
+            spec.Length == 0
+                ? IsoDate(stamp) + " " + IsoTime(stamp, "auto") + DateTimeOffsetSuffix(self, stamp)
+                : FormatStamp(stamp, spec)
+        );
+    }
+
+    private static string RepresentDateTime(PythonValue self, Stamp stamp)
+    {
+        var name =
+            self is PythonManagedObjectValue { Type: { } type }
+            && !ReferenceEquals(type, DateTimeType)
+                ? type.Name
+                : "datetime.datetime";
+        var parts = new List<string>
+        {
+            stamp.Year.ToString(CultureInfo.InvariantCulture),
+            stamp.Month.ToString(CultureInfo.InvariantCulture),
+            stamp.Day.ToString(CultureInfo.InvariantCulture),
+            stamp.Hour.ToString(CultureInfo.InvariantCulture),
+            stamp.Minute.ToString(CultureInfo.InvariantCulture),
+        };
+        if (stamp.Second != 0 || stamp.Microsecond != 0)
+        {
+            parts.Add(stamp.Second.ToString(CultureInfo.InvariantCulture));
+        }
+        if (stamp.Microsecond != 0)
+        {
+            parts.Add(stamp.Microsecond.ToString(CultureInfo.InvariantCulture));
+        }
+        var text = $"{name}({string.Join(", ", parts)}";
+        // CPython writes `fold` before `tzinfo` for a datetime, and after it for a time.
+        if (stamp.Fold != 0)
+        {
+            text += $", fold={stamp.Fold}";
+        }
+        if (stamp.Tzinfo is { } tzinfo)
+        {
+            text += $", tzinfo={tzinfo.ToRepresentationString()}";
+        }
+        return text + ")";
+    }
+
+    private static PythonManagedObjectValue ReplaceDateTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values
+    )
+    {
+        var stamp = StampOf(self, "datetime");
+        var fields = ReplaceBind(positional, names, values, DateTimeConstructorParameters);
+        var year = fields[0] is null ? stamp.Year : RequireLong(fields[0]!, default);
+        var month = fields[1] is null ? stamp.Month : RequireLong(fields[1]!, default);
+        var day = fields[2] is null ? stamp.Day : RequireLong(fields[2]!, default);
+        var hour = fields[3] is null ? stamp.Hour : RequireLong(fields[3]!, default);
+        var minute = fields[4] is null ? stamp.Minute : RequireLong(fields[4]!, default);
+        var second = fields[5] is null ? stamp.Second : RequireLong(fields[5]!, default);
+        var microsecond = fields[6] is null ? stamp.Microsecond : RequireLong(fields[6]!, default);
+        var tzinfo = fields[7] is null ? stamp.Tzinfo : RequireTzInfo(fields[7]!, default);
+        var fold = fields[8] is null ? stamp.Fold : (int)RequireLong(fields[8]!, default);
+        ValidateDate(year, month, day);
+        ValidateTime(hour, minute, second, microsecond, fold);
+        return new PythonManagedObjectValue(
+            self is PythonManagedObjectValue { Type: { } type } ? type : DateTimeType,
+            new Stamp(year, month, day, hour, minute, second, microsecond, tzinfo, fold)
+        );
+    }
+
+    /// <summary>`datetime ± timedelta`: the whole span, with the zone kept and fold reset.</summary>
+    private static PythonValue AddToDateTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments,
+        bool subtract
+    )
+    {
+        if (
+            arguments.Count != 1
+            || arguments[0] is not PythonManagedObjectValue { Payload: Delta delta }
+        )
+        {
+            return PythonNotImplementedValue.Instance;
+        }
+        var stamp = StampOf(self, "datetime");
+        return new PythonManagedObjectValue(
+            self is PythonManagedObjectValue { Type: { } type } ? type : DateTimeType,
+            Add(stamp, delta, subtract ? -1 : 1) with
+            {
+                Fold = 0,
+            }
+        );
+    }
+
+    private static Stamp Add(Stamp stamp, Delta delta, int sign)
+    {
+        var total = sign * delta.Total;
+        if (total > long.MaxValue / 10 || total < long.MinValue / 10)
+        {
+            throw OverflowFault("date value out of range");
+        }
+        try
+        {
+            return StampOfClock(Chrono(stamp).AddTicks((long)total * 10), stamp.Tzinfo);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw OverflowFault("date value out of range");
+        }
+    }
+
+    private static PythonValue SubtractFromDateTime(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count != 1)
+        {
+            return PythonNotImplementedValue.Instance;
+        }
+        if (arguments[0] is PythonManagedObjectValue { Payload: Delta })
+        {
+            return AddToDateTime(self, arguments, subtract: true);
+        }
+        if (
+            arguments[0] is PythonManagedObjectValue { Payload: Stamp other }
+            && IsDateTime(arguments[0])
+        )
+        {
+            var own = StampOf(self!, "datetime");
+            if (own.IsAware != other.IsAware)
+            {
+                throw TypeFault("can't subtract offset-naive and offset-aware datetimes");
+            }
+            var left = SignedMicroseconds(own);
+            var right = SignedMicroseconds(other);
+            return DeltaValue(Decoded(left - right));
+        }
+        return PythonNotImplementedValue.Instance;
+    }
+
+    private static System.Numerics.BigInteger SignedMicroseconds(Stamp stamp)
+    {
+        var total =
+            (System.Numerics.BigInteger)stamp.OrdinalOf() * MicrosecondsPerDay + stamp.Clock;
+        if (stamp.Tzinfo is { } tzinfo)
+        {
+            total -=
+                OffsetSeconds(CallTzInfo(tzinfo, "utcoffset", stamp, StampValueOf(stamp)))
+                * MicrosecondsPerSecond;
+        }
+        return total;
+    }
+
+    private static PythonManagedObjectValue StampValueOf(Stamp stamp) => new(DateTimeType, stamp);
+
+    private static bool IsDateTime(PythonValue value) =>
+        value is PythonManagedObjectValue { Type: { } type }
+        && type.Mro.Any(entry => ReferenceEquals(entry, DateTimeType));
+
+    private static void AddDateTimeComparisons(PythonManagedTypeValue type)
+    {
+        type.Attributes["__eq__"] = DateTimeComparison("__eq__", order => order == 0, true);
+        type.Attributes["__ne__"] = DateTimeComparison("__ne__", order => order != 0, true);
+        type.Attributes["__lt__"] = DateTimeComparison("__lt__", order => order < 0, false);
+        type.Attributes["__le__"] = DateTimeComparison("__le__", order => order <= 0, false);
+        type.Attributes["__gt__"] = DateTimeComparison("__gt__", order => order > 0, false);
+        type.Attributes["__ge__"] = DateTimeComparison("__ge__", order => order >= 0, false);
+    }
+
+    /// <summary>
+    /// Datetimes compare by the instant they name; a naive and an aware one are never
+    /// equal and never ordered, and equality ignores `fold`.
+    /// </summary>
+    private static PythonProtocolFunctionValue DateTimeComparison(
+        string name,
+        Func<int, bool> decide,
+        bool equality
+    ) =>
+        Method(
+            "datetime",
+            name,
+            (self, arguments) =>
+            {
+                if (
+                    arguments.Count != 1
+                    || arguments[0] is not PythonManagedObjectValue { Payload: Stamp other }
+                    || !IsDateTime(arguments[0])
+                )
+                {
+                    return PythonNotImplementedValue.Instance;
+                }
+                var own = StampOf(self!, "datetime");
+                if (own.IsAware != other.IsAware)
+                {
+                    if (equality)
+                    {
+                        return PythonTruthValue.FromBoolean(name == "__ne__");
+                    }
+                    throw TypeFault("can't compare offset-naive and offset-aware datetimes");
+                }
+                var order = SignedMicroseconds(own).CompareTo(SignedMicroseconds(other));
+                return PythonTruthValue.FromBoolean(decide(order));
+            }
+        );
+
+    private static double TimestampOf(PythonValue self, Stamp stamp)
+    {
+        var sinceEpoch =
+            (stamp.OrdinalOf() - Ordinal(1970, 1, 1)) * MicrosecondsPerDay + stamp.Clock;
+        var seconds = (double)sinceEpoch / MicrosecondsPerSecond;
+        var offset = stamp.Tzinfo is { } tzinfo
+            ? OffsetSeconds(CallTzInfo(tzinfo, "utcoffset", stamp, self))
+            : (long)TimeZoneInfo.Local.GetUtcOffset(Chrono(stamp)).TotalSeconds;
+        return seconds - offset;
+    }
+
+    private static PythonManagedObjectValue Astimezone(
+        PythonValue self,
+        IReadOnlyList<PythonValue> arguments
+    )
+    {
+        if (arguments.Count > 1)
+        {
+            throw TypeFault($"astimezone() takes at most 1 argument ({arguments.Count} given)");
+        }
+        var stamp = StampOf(self, "datetime");
+        PythonValue target;
+        if (arguments.Count == 0 || arguments[0] is PythonNoneValue)
+        {
+            target = LocalFixedZone(stamp);
+        }
+        else
+        {
+            target = RequireTzInfo(arguments[0], default)!;
+        }
+        // A naive value is taken as local time, which is the zone it converts from.
+        var aware = stamp.Tzinfo is null ? stamp with { Tzinfo = LocalFixedZone(stamp) } : stamp;
+        var instant = UtcOf(aware);
+        return new PythonManagedObjectValue(
+            self is PythonManagedObjectValue { Type: { } type } ? type : DateTimeType,
+            FromUtcThrough(target, instant with { Tzinfo = target })
+        );
+    }
+
+    /// <summary>One aware value as the same instant in UTC fields.</summary>
+    private static Stamp UtcOf(Stamp aware)
+    {
+        var offset = OffsetSeconds(
+            CallTzInfo(aware.Tzinfo!, "utcoffset", aware, StampValueOf(aware))
+        );
+        return MoveClock(aware with { Tzinfo = null }, -offset);
+    }
+
+    /// <summary>The host's zone at one instant, as a fixed offset carrying its name.</summary>
+    private static PythonManagedObjectValue LocalFixedZone(Stamp stamp)
+    {
+        var local = Chrono(stamp);
+        var offset = (long)TimeZoneInfo.Local.GetUtcOffset(local).TotalSeconds;
+        return new PythonManagedObjectValue(TimezoneType, new FixedZone(offset, null));
     }
 }

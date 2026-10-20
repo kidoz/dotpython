@@ -5,14 +5,16 @@ namespace DotPython.DifferentialTests;
 public sealed class DateTimeModuleCompatibilityTests
 {
     /// <summary>
-    /// `timedelta` and `date` over the calendar engine the `time` module carries: the
-    /// normalized fields and their string forms, the arithmetic and comparison rules,
-    /// ordinal and ISO calendar conversions, `strftime`/`strptime` through the shared
-    /// engine, `fromisoformat`'s date and week forms, and CPython's own refusal wording
-    /// for every constructor and field error.
+    /// The `datetime` module over the calendar engine the `time` module carries:
+    /// `timedelta` and `date`, `time`, `datetime`, the `tzinfo` protocol and the
+    /// fixed-offset `timezone`. The cases cover CPython's normalized fields and string
+    /// forms, arithmetic and comparison rules, the ordinal and ISO calendars,
+    /// `strftime`/`strptime`, every accepted `fromisoformat` form, `timestamp` and
+    /// `astimezone` over the host's zone, and CPython's own refusal wording for every
+    /// constructor and field error.
     /// </summary>
     [Fact]
-    public Task TimedeltaAndDateMatchCpython() =>
+    public Task TheDateTimeModuleMatchesCpython() =>
         CompatibilityOracle.AssertMatchesAsync(
             """"
             from datetime import date, timedelta, MINYEAR, MAXYEAR
@@ -81,6 +83,51 @@ public sealed class DateTimeModuleCompatibilityTests
             report("replace-bad", lambda: date(2026, 1, 1).replace(month=13))
             report("replace-unknown", lambda: date(2026, 1, 1).replace(hour=1))
             report("format-none", lambda: date(2026, 1, 1).__format__(None))
+            from datetime import date, time, datetime, timedelta, timezone, tzinfo
+            def report(label, thunk):
+                try:
+                    print(label, repr(thunk()))
+                except Exception as error:
+                    print(label, type(error).__name__, error)
+            print("iso-time", time(13, 45).isoformat(), time(13, 45, 6).isoformat(), time(13, 45, 6, 789).isoformat(), time(1).isoformat('hours'), time(1, 2, 3, 400000).isoformat('milliseconds'))
+            print("iso-dt", datetime(2026, 10, 12, 1, 2, 3, 4, timezone.utc).isoformat(), datetime(2026, 10, 12, 1, 2, 3, 4).isoformat(' '), datetime(2026, 10, 12).isoformat('X', 'minutes'))
+            print("iso-ts", time(1, 2, 3, 4).isoformat('microseconds'), datetime(2026, 10, 12, 1, 2, 3, 4, timezone(timedelta(hours=-5, minutes=-30))).isoformat())
+            report("iso-bad-ts", lambda: time(1).isoformat('days'))
+            report("iso-bad-sep", lambda: datetime(2026, 1, 1).isoformat('XY'))
+            report("iso-arity", lambda: time(1).isoformat('auto', 'x'))
+            print("time-fromiso", time.fromisoformat('13:45'), time.fromisoformat('13:45:06.000789+05:30'), time.fromisoformat('T13:45'), time.fromisoformat('1345'), time.fromisoformat('13:45:06Z'), time.fromisoformat('13:45-05:00'))
+            print("dt-fromiso", datetime.fromisoformat('2026-10-12'), datetime.fromisoformat('2026-10-12T13:45'), datetime.fromisoformat('20261012T134506'), datetime.fromisoformat('2026-10-12 13:45:06.000789+05:30'), datetime.fromisoformat('2026-10-12T13:45:06Z'))
+            report("dt-fromiso-bad", lambda: datetime.fromisoformat('2026-10-12T25:00'))
+            report("dt-fromiso-bad2", lambda: datetime.fromisoformat('hello'))
+            print("combine", datetime.combine(date(2026, 10, 12), time(1, 2, 3)), datetime.combine(date(2026, 10, 12), time(1, 2, 3, tzinfo=timezone.utc)), datetime.combine(date(2026, 10, 12), time(1), timezone.utc))
+            report("combine-bad", lambda: datetime.combine(5, time(1)))
+            report("combine-bad2", lambda: datetime.combine(date(2026, 1, 1), 5))
+            print("replace", time(1, 2, 3).replace(minute=5), time(1, 2, 3).replace(4, 5, 6), time(1, tzinfo=timezone.utc).replace(tzinfo=None), datetime(2026, 10, 12, 1, 2, 3).replace(2020, 2, 3, 4, 5, 6, 7), datetime(2026, 10, 12, 1).replace(hour=2, fold=1))
+            report("time-replace-bad", lambda: time(1).replace(hour=24))
+            print("time-cmp", time(1, 2) < time(1, 3), time(1, 2) == time(1, 2), time(1, 2) != time(1, 2), time(1, 2) <= time(1, 2), time(1) < time(2) < time(3))
+            print("time-arith", hasattr(time(1), '__add__'), time(1).min, time(1).max, time(1).resolution)
+            print("dt-arith", datetime(2026, 10, 12, 1, 2, 3, 4) + timedelta(microseconds=1), datetime(2026, 10, 12, 1) - timedelta(days=1, microseconds=1), datetime(2026, 10, 12, 1, 2, 3, tzinfo=timezone.utc) - timedelta(hours=1))
+            print("dt-sub", datetime(2026, 10, 12, 2) - datetime(2026, 10, 12, 1), datetime(2026, 10, 12, 2, tzinfo=timezone(timedelta(hours=1))) - datetime(2026, 10, 12, 1, tzinfo=timezone.utc))
+            print("dt-attrs", datetime(2026, 10, 12, 13, 45, 6, 789, timezone.utc, fold=1).hour, datetime(2026, 10, 12, fold=1).fold, datetime(2026, 10, 12).year, datetime(2026, 10, 12, tzinfo=timezone.utc).utcoffset())
+            print("dt-misc", datetime(2026, 10, 12, 13, 45).date(), datetime(2026, 10, 12, 13, 45, 6, 7).time(), datetime(2026, 10, 12, 13, 45, tzinfo=timezone.utc).timetz(), datetime(2026, 10, 12, 13, 45, 6, 7).ctime())
+            print("dt-tt", datetime(2026, 10, 12, 13, 45, 6, tzinfo=timezone.utc).utctimetuple(), datetime(2026, 10, 12, 13, 45).timetuple())
+            print("dt-strftime", datetime(2026, 10, 12, 13, 45, 6, tzinfo=timezone(timedelta(hours=2))).strftime('%Y-%m-%d %H:%M:%S %Z %z %j %U %W %c'))
+            print("dt-strptime", datetime.strptime('2026-10-12 13:45:06', '%Y-%m-%d %H:%M:%S'), time.strptime('13:45:06', '%H:%M:%S'))
+            print("dt-format", format(datetime(2026, 10, 12, 1, 2, 3), '%d/%m/%Y %H:%M'), format(datetime(2026, 10, 12, 1, 2, 3), ''))
+            print("dt-bounds", repr(datetime.min), repr(datetime.max), repr(datetime.resolution), repr(time.min), repr(time.max), repr(time.resolution))
+            print("tz", timezone.utc.utcoffset(None), timezone.utc.dst(None), timezone.utc.tzname(None), repr(timezone.utc), str(timezone(timedelta(hours=2))), timezone(timedelta(hours=2)).tzname(None))
+            tz2 = timezone(timedelta(hours=2))
+            print("tz-fromutc", tz2.fromutc(datetime(2026, 10, 12, 1, tzinfo=tz2)))
+            print("tz-bounds", repr(timezone.min), repr(timezone.max))
+            print("cls", issubclass(datetime, date), isinstance(datetime(2026,1,1), date), issubclass(timezone, tzinfo), isinstance(timezone.utc, tzinfo))
+            print("dt-compare-date", datetime(2026,1,1) == date(2026,1,1), date(2026,1,1) == datetime(2026,1,1))
+            print("dt-hash", hash(datetime(2026, 10, 12, 1)) == hash(datetime(2026, 10, 12, 1)), hash(time(1, 2)) == hash(time(1, 2)))
+            print("dt-ts", datetime(1970, 1, 1, tzinfo=timezone.utc).timestamp(), datetime(1970, 1, 1).timestamp())
+            print("dt-astz", datetime(1970, 1, 1, tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1))))
+            print("dt-utcnow-ts", round(datetime(1970, 1, 1, tzinfo=timezone.utc).timestamp()))
+            print("dt-repr-sub", repr(datetime(2026, 10, 12, 1, 2, 3, 4, timezone.utc, fold=1)))
+
+            print("cmp2", time(1, tzinfo=timezone.utc) == time(1, tzinfo=timezone(timedelta(hours=1))), time(1, tzinfo=timezone.utc) < time(1, tzinfo=timezone(timedelta(hours=1))))
             """"
         );
 }
