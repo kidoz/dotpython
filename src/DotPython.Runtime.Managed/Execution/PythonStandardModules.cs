@@ -1439,6 +1439,8 @@ internal static class PythonStandardModules
 
     /// <summary>The value format, whose annotations evaluate to objects.</summary>
     private const int AnnotationValueFormat = 1;
+    private const int AnnotationForwardRefFormat = 3;
+    private const int AnnotationStringFormat = 4;
 
     /// <summary>The internal-only format that evaluates against fabricated globals.</summary>
     private const int AnnotationFakeGlobalsFormat = 2;
@@ -1460,6 +1462,7 @@ internal static class PythonStandardModules
         formatType.Attributes["STRING"] = PythonWholeNumberValue.Create(4);
         globals.SetValue("Format", formatType);
 
+        globals.SetValue("ForwardRef", ForwardRefType);
         globals.SetValue(
             "get_annotations",
             new PythonBuiltinFunctionValue("get_annotations", GetAnnotations).WithSignature(
@@ -1521,15 +1524,29 @@ internal static class PythonStandardModules
                 "ValueError"
             );
         }
+        if (
+            format != AnnotationValueFormat
+            && arguments.Count > 3
+            && ManagedObjectProtocols.IsTrue(arguments[3])
+        )
+        {
+            throw new PythonRuntimeException(
+                "DPY4038",
+                "eval_str=True is only supported with format=Format.VALUE",
+                span,
+                "ValueError"
+            );
+        }
 
         if (format != AnnotationValueFormat)
         {
             return ResolveAnnotate(target) is { } annotate
-                ? InvokeAnnotate(annotate, format, span)
+                ? InvokeAnnotateWithFallback(annotate, format, span)
                 : new PythonDictionaryValue([]);
         }
 
-        return target switch
+        var evalStr = arguments.Count > 3 && ManagedObjectProtocols.IsTrue(arguments[3]);
+        var annotations = target switch
         {
             PythonFunctionValue function => ManagedObjectProtocols.CopyAnnotations(
                 function,
@@ -1553,6 +1570,64 @@ internal static class PythonStandardModules
                 "TypeError"
             ),
         };
+        return evalStr ? EvaluateStringAnnotations(annotations, target, span) : annotations;
+    }
+
+    /// <summary>`eval_str=True`: every string value is replaced by `eval` in the object's
+    /// globals, the way CPython's library un-stringizes them.</summary>
+    private static PythonDictionaryValue EvaluateStringAnnotations(
+        PythonDictionaryValue annotations,
+        PythonValue target,
+        TextSpan span
+    )
+    {
+        var globals = target switch
+        {
+            PythonFunctionValue function => (PythonValue?)function.Globals.Dictionary,
+            PythonModuleValue module => module.Globals.Dictionary,
+            PythonManagedTypeValue type
+                when type.Attributes.TryGetValue("__module__", out var moduleName)
+                    && moduleName is PythonTextValue module => ModuleGlobals(module.Value, span),
+            _ => null,
+        };
+        if (globals is null)
+        {
+            return annotations;
+        }
+        var evaluate = ManagedObjectProtocols.GetAttribute(
+            UserObjectProtocols.Dispatcher!.ImportModule("builtins", string.Empty, span),
+            "eval",
+            span
+        );
+        foreach (var item in annotations.Items.ToList())
+        {
+            if (item.Value is PythonTextValue text)
+            {
+                ManagedObjectProtocols.SetDictionaryItem(
+                    annotations,
+                    item.Key,
+                    UserObjectProtocols.Dispatcher.Invoke(evaluate, [text, globals], span),
+                    span
+                );
+            }
+        }
+        return annotations;
+    }
+
+    private static PythonValue? ModuleGlobals(string name, TextSpan span)
+    {
+        try
+        {
+            return ManagedObjectProtocols.GetAttribute(
+                UserObjectProtocols.Dispatcher!.ImportModule(name, string.Empty, span),
+                "__dict__",
+                span
+            );
+        }
+        catch (PythonRaisedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>`call_annotate_function(annotate, format, owner=None)`.</summary>
@@ -1572,7 +1647,202 @@ internal static class PythonStandardModules
             );
         }
 
-        return InvokeAnnotate(arguments[0], format, span);
+        return InvokeAnnotateWithFallback(arguments[0], format, span);
+    }
+
+    /// <summary>
+    /// A compiled annotate body answers the value format only. CPython's library falls
+    /// back to `annotations_to_string` for STRING and to the value mapping for
+    /// FORWARDREF when the body raises NotImplementedError; the runtime does the same.
+    /// A forward reference that the value body cannot evaluate still raises NameError,
+    /// where CPython's re-execution trick would build a ForwardRef.
+    /// </summary>
+    private static PythonValue InvokeAnnotateWithFallback(
+        PythonValue annotate,
+        int format,
+        TextSpan span
+    )
+    {
+        try
+        {
+            return InvokeAnnotate(annotate, format, span);
+        }
+        catch (PythonRaisedException error) when (error.Value.TypeName == "NotImplementedError")
+        {
+            if (format == AnnotationStringFormat)
+            {
+                var value = InvokeAnnotate(annotate, AnnotationValueFormat, span);
+                return value is PythonDictionaryValue dictionary
+                    ? AnnotationsToString([dictionary], span)
+                    : new PythonDictionaryValue([]);
+            }
+            if (format == AnnotationForwardRefFormat)
+            {
+                return InvokeAnnotate(annotate, AnnotationValueFormat, span);
+            }
+            throw;
+        }
+    }
+
+    private sealed record ForwardRefState(string Argument);
+
+    private static readonly PythonManagedTypeValue ForwardRefType = CreateForwardRefType();
+
+    /// <summary>
+    /// `annotationlib.ForwardRef`: a string annotation that has not been resolved. It
+    /// compares and hashes by its argument, prints as `ForwardRef('X')`, and `evaluate`
+    /// runs the argument through the runtime's own `eval` with the mappings given.
+    /// </summary>
+    private static PythonManagedTypeValue CreateForwardRefType()
+    {
+        var type = new PythonManagedTypeValue(
+            "ForwardRef",
+            construct: arguments =>
+            {
+                if (arguments.Count == 0)
+                {
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4038",
+                        "ForwardRef.__init__() missing 1 required positional argument: 'arg'",
+                        default,
+                        "TypeError"
+                    );
+                }
+                if (arguments[0] is not PythonTextValue argument)
+                {
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4038",
+                        "Forward reference must be a string -- got "
+                            + arguments[0].ToRepresentationString(),
+                        default,
+                        "TypeError"
+                    );
+                }
+                return new PythonManagedObjectValue(
+                    ForwardRefType,
+                    new ForwardRefState(argument.Value)
+                );
+            }
+        )
+        {
+            Module = "annotationlib",
+        };
+        type.Attributes["__module__"] = new PythonTextValue("annotationlib");
+        type.Attributes["__qualname__"] = new PythonTextValue("ForwardRef");
+        type.Attributes["__repr__"] = PythonUserTypes.Method(
+            "ForwardRef",
+            "__repr__",
+            (self, _) => new PythonTextValue($"ForwardRef('{ForwardRefOf(self!).Argument}')")
+        );
+        type.Attributes["__eq__"] = PythonUserTypes.Method(
+            "ForwardRef",
+            "__eq__",
+            (self, arguments) =>
+                arguments.Count == 1
+                && arguments[0] is PythonManagedObjectValue { Payload: ForwardRefState other }
+                && ForwardRefOf(self!).Argument == other.Argument
+                    ? PythonTruthValue.True
+                    : PythonTruthValue.False
+        );
+        type.Attributes["__hash__"] = PythonUserTypes.Method(
+            "ForwardRef",
+            "__hash__",
+            (self, _) =>
+                PythonWholeNumberValue.Create(
+                    StringComparer.Ordinal.GetHashCode(ForwardRefOf(self!).Argument)
+                )
+        );
+        type.Attributes["__forward_arg__"] = new PythonPropertyValue(
+            new PythonProtocolFunctionValue(
+                "__forward_arg__",
+                (_, arguments) => new PythonTextValue(ForwardRefOf(arguments[0]).Argument)
+            ),
+            new PythonProtocolFunctionValue(
+                "__forward_arg__",
+                (_, _) =>
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4038",
+                        "readonly attribute",
+                        default,
+                        "AttributeError"
+                    )
+            ),
+            null
+        );
+        type.Attributes["evaluate"] = PythonUserTypes.Method(
+            "ForwardRef",
+            "evaluate",
+            (self, arguments) => ForwardRefEvaluate(self!, arguments, [], [], default),
+            (self, positional, names, values) =>
+                ForwardRefEvaluate(self!, positional, names, values, default)
+        );
+        return type;
+    }
+
+    private static ForwardRefState ForwardRefOf(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: ForwardRefState state }
+            ? state
+            : throw new PythonRuntimeException(
+                "DPY4038",
+                "the value is not a ForwardRef",
+                default,
+                "TypeError"
+            );
+
+    private static PythonValue ForwardRefEvaluate(
+        PythonValue? self,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        if (positional.Count != 0)
+        {
+            throw ManagedObjectProtocols.Fault(
+                "DPY4038",
+                "ForwardRef.evaluate() takes 1 positional argument but "
+                    + $"{positional.Count + 1} were given",
+                span,
+                "TypeError"
+            );
+        }
+        PythonValue? globals = null;
+        PythonValue? locals = null;
+        for (var index = 0; index < names.Count; index++)
+        {
+            switch (names[index])
+            {
+                case "globals":
+                    globals = values[index];
+                    break;
+                case "locals":
+                    locals = values[index];
+                    break;
+                case "type_params":
+                    break;
+                default:
+                    throw ManagedObjectProtocols.Fault(
+                        "DPY4038",
+                        $"ForwardRef.evaluate() got an unexpected keyword argument '{names[index]}'",
+                        span,
+                        "TypeError"
+                    );
+            }
+        }
+        var argument = new PythonTextValue(ForwardRefOf(self!).Argument);
+        var evaluate = ManagedObjectProtocols.GetAttribute(
+            UserObjectProtocols.Dispatcher!.ImportModule("builtins", string.Empty, span),
+            "eval",
+            span
+        );
+        var callArguments = new List<PythonValue> { argument };
+        if (globals is not null and not PythonNoneValue)
+        {
+            callArguments.Add(globals);
+            callArguments.Add(locals ?? globals);
+        }
+        return UserObjectProtocols.Dispatcher.Invoke(evaluate, [.. callArguments], span);
     }
 
     /// <summary>`annotations_to_string(annotations)`: each value rendered for display.</summary>

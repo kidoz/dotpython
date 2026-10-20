@@ -79,28 +79,28 @@ public sealed class AnnotationLibExecutionTests
     }
 
     [Fact]
-    public void TheForwardRefAndStringFormatsAreAnExplicitGap()
+    public void TheForwardRefAndStringFormatsAreComputed()
     {
-        // CPython implements these two on top of the annotate function, in Python.
-        // Here the call reaches the compiled body, which rejects them the same way
-        // CPython's own compiled bodies do.
+        // Compiled bodies answer the value format only; the library falls back to the
+        // value mapping for FORWARDREF and stringifies it for STRING.
         var output = Run(
             """
             import annotationlib
 
-            def f(x: int):
+            def f(x: int) -> str:
                 pass
-            for format in (annotationlib.Format.FORWARDREF, annotationlib.Format.STRING):
-                try:
-                    annotationlib.get_annotations(f, format=format)
-                    print('computed')
-                except NotImplementedError:
-                    print(format, 'NotImplementedError')
+            print(annotationlib.get_annotations(f, format=annotationlib.Format.FORWARDREF))
+            print(annotationlib.get_annotations(f, format=annotationlib.Format.STRING))
             """
         );
 
         Assert.Equal(
-            string.Join(Environment.NewLine, "3 NotImplementedError", "4 NotImplementedError", ""),
+            string.Join(
+                Environment.NewLine,
+                "{'x': <class 'int'>, 'return': <class 'str'>}",
+                "{'x': 'int', 'return': 'str'}",
+                ""
+            ),
             output
         );
     }
@@ -191,6 +191,112 @@ public sealed class AnnotationLibExecutionTests
                 "ValueError <class '__main__.C'>.__annotations__ is neither a dict nor None",
                 "ValueError <class '__main__.C'>.__annotations__ is neither a dict nor None",
                 "False {}",
+                ""
+            ),
+            output
+        );
+    }
+
+    /// <summary>
+    /// `annotationlib.get_annotations`/`call_annotate_function` with the FORWARDREF and
+    /// STRING formats, `eval_str`, and the `ForwardRef` class - the compiled bodies only
+    /// answer VALUE, so the runtime takes CPython's own fallback path.
+    /// </summary>
+    [Fact]
+    public void TheAnnotationFormatsMatchPython()
+    {
+        var output = Run(
+            """"
+            import annotationlib as al, typing
+            def show(l, f):
+                try: print(l, "ok", repr(f()))
+                except Exception as e: print(l, type(e).__name__, e)
+            def f(x: int, y: "Und", z: list[int]) -> str: pass
+            for fmt in (1, 2, 3, 4):
+                show("ann-%d" % fmt, lambda fmt=fmt: f.__annotate__(fmt))
+                show("get-%d" % fmt, lambda fmt=fmt: al.get_annotations(f, format=fmt))
+            class C:
+                a: int
+                b: "Und"
+            show("class-str", lambda: al.get_annotations(C, format=al.Format.STRING))
+            show("class-fwd", lambda: al.get_annotations(C, format=al.Format.FORWARDREF))
+            def g(x: int): pass
+            show("call-3", lambda: al.call_annotate_function(g.__annotate__, al.Format.FORWARDREF))
+            show("call-4", lambda: al.call_annotate_function(g.__annotate__, al.Format.STRING))
+            show("eval-str-4", lambda: al.get_annotations(f, format=al.Format.STRING, eval_str=True))
+            def k(x: "int") -> "str": pass
+            show("eval-str-1", lambda: al.get_annotations(k, format=al.Format.VALUE, eval_str=True))
+            fr = al.ForwardRef("X.Y")
+            print("fr", repr(fr), fr.__forward_arg__, fr == al.ForwardRef("X.Y"), fr == al.ForwardRef("Z"))
+            show("fr-int", lambda: al.ForwardRef(5))
+            show("fr-missing", lambda: al.ForwardRef())
+            show("fr-eval-g", lambda: al.ForwardRef("X").evaluate(globals={"X": int}))
+            show("fr-eval-bad", lambda: al.ForwardRef("X.Y").evaluate(globals={"X": typing}))
+            show("fr-eval-pos", lambda: al.ForwardRef("X").evaluate({}))
+            show("annstr", lambda: al.annotations_to_string({"x": int, "y": list[int], "z": "Und", "w": 3, "u": None}))
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "ann-1 ok {'x': <class 'int'>, 'y': 'Und', 'z': list[int], 'return': <class 'str'>}",
+                "get-1 ok {'x': <class 'int'>, 'y': 'Und', 'z': list[int], 'return': <class 'str'>}",
+                "ann-2 ok {'x': <class 'int'>, 'y': 'Und', 'z': list[int], 'return': <class 'str'>}",
+                "get-2 ValueError The VALUE_WITH_FAKE_GLOBALS format is for internal use only",
+                "ann-3 NotImplementedError ",
+                "get-3 ok {'x': <class 'int'>, 'y': 'Und', 'z': list[int], 'return': <class 'str'>}",
+                "ann-4 NotImplementedError ",
+                "get-4 ok {'x': 'int', 'y': 'Und', 'z': 'list[int]', 'return': 'str'}",
+                "class-str ok {'a': 'int', 'b': 'Und'}",
+                "class-fwd ok {'a': <class 'int'>, 'b': 'Und'}",
+                "call-3 ok {'x': <class 'int'>}",
+                "call-4 ok {'x': 'int'}",
+                "eval-str-4 ValueError eval_str=True is only supported with format=Format.VALUE",
+                "eval-str-1 ok {'x': <class 'int'>, 'return': <class 'str'>}",
+                "fr ForwardRef('X.Y') X.Y True False",
+                "fr-int TypeError Forward reference must be a string -- got 5",
+                "fr-missing TypeError ForwardRef.__init__() missing 1 required positional argument: 'arg'",
+                "fr-eval-g ok <class 'int'>",
+                "fr-eval-bad AttributeError module 'typing' has no attribute 'Y'",
+                "fr-eval-pos TypeError ForwardRef.evaluate() takes 1 positional argument but 2 were given",
+                "annstr ok {'x': 'int', 'y': 'list[int]', 'z': 'Und', 'w': '3', 'u': 'None'}",
+                ""
+            ),
+            output
+        );
+    }
+
+    /// <summary>
+    /// The recorded gap: an annotation the value body cannot evaluate still raises
+    /// NameError, where CPython's re-execution trick builds a ForwardRef or a source
+    /// string; the runtime's eval also words NameError its own way.
+    /// </summary>
+    [Fact]
+    public void TheRuntimePinsItsAnnotationFormatGaps()
+    {
+        var output = Run(
+            """"
+            import annotationlib as al
+            def show(l, f):
+                try: print(l, "ok", repr(f()))
+                except Exception as e: print(l, type(e).__name__, e)
+            def f(x: "Und"): pass
+            show("eval-str-undefined", lambda: al.get_annotations(f, format=al.Format.VALUE, eval_str=True))
+            def h(x: Undefined): pass
+            show("fwd-undefined", lambda: al.get_annotations(h, format=al.Format.FORWARDREF))
+            show("str-undefined", lambda: al.get_annotations(h, format=al.Format.STRING))
+            show("fr-eval-none", lambda: al.ForwardRef("X").evaluate())
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "eval-str-undefined NameError Name 'Und' is not defined.",
+                "fwd-undefined NameError Name 'Undefined' is not defined.",
+                "str-undefined NameError Name 'Undefined' is not defined.",
+                "fr-eval-none NameError Name 'X' is not defined.",
                 ""
             ),
             output
