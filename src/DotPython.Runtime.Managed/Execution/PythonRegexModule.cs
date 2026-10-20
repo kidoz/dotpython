@@ -544,32 +544,223 @@ internal static class PythonRegexModule
 
     private static PythonValue Escape(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
-        var value = arguments[0];
-        if (value is not PythonTextValue text)
-        {
-            throw Fault(
-                $"decoding to str: need a bytes-like object, {ManagedObjectProtocols.GetTypeName(value)} found",
-                span,
-                "TypeError"
-            );
-        }
         const string Special = "()[]{}?*+-|^$\\.&~# \t\n\r\v\f";
-        var output = new StringBuilder(text.Value.Length);
-        foreach (var character in text.Value)
+        switch (arguments[0])
         {
-            if (Special.Contains(character, StringComparison.Ordinal))
+            case PythonTextValue text:
             {
-                output.Append('\\');
+                var output = new StringBuilder(text.Value.Length);
+                foreach (var character in text.Value)
+                {
+                    if (Special.Contains(character, StringComparison.Ordinal))
+                    {
+                        output.Append('\\');
+                    }
+                    output.Append(character);
+                }
+                return new PythonTextValue(output.ToString());
             }
-            output.Append(character);
+            case PythonByteSequenceValue bytes:
+            {
+                var output = new List<byte>(bytes.Value.Length);
+                foreach (var value in bytes.Value)
+                {
+                    // A bytes escape only escapes the printable ASCII punctuation the
+                    // expression syntax uses; every other byte is already literal.
+                    if (value < 0x80 && Special.Contains((char)value, StringComparison.Ordinal))
+                    {
+                        output.Add((byte)'\\');
+                    }
+                    output.Add(value);
+                }
+                return new PythonByteSequenceValue([.. output]);
+            }
+            default:
+                throw Fault(
+                    $"decoding to str: need a bytes-like object, {ManagedObjectProtocols.GetTypeName(arguments[0])} found",
+                    span,
+                    "TypeError"
+                );
         }
-        return new PythonTextValue(output.ToString());
     }
 
     private static PythonValue Purge(IReadOnlyList<PythonValue> arguments, TextSpan span)
     {
         Cache.Clear();
         return PythonNoneValue.Instance;
+    }
+
+    // -----------------------------------------------------------------------------
+    // Scanner
+    // -----------------------------------------------------------------------------
+
+    private sealed class ScannerState(
+        PythonManagedObjectValue pattern,
+        string text,
+        long pos,
+        long endpos
+    )
+    {
+        internal PythonManagedObjectValue Pattern { get; } = pattern;
+        internal string Text { get; } = text;
+        internal long Position { get; set; } = pos;
+        internal long EndPos { get; } = endpos;
+        internal bool Done { get; set; }
+    }
+
+    private static readonly PythonManagedTypeValue ScannerType = CreateScannerType();
+
+    private static PythonManagedTypeValue CreateScannerType()
+    {
+        var type = new PythonManagedTypeValue("SRE_Scanner") { Module = "_sre" };
+        type.Attributes["__module__"] = new PythonTextValue("_sre");
+        type.Attributes["__qualname__"] = new PythonTextValue("SRE_Scanner");
+        type.Attributes["pattern"] = ReadOnlyMember(
+            "pattern",
+            "_sre.SRE_Scanner",
+            receiver => ScannerOf(receiver).Pattern
+        );
+        type.Attributes["match"] = Method(
+            "SRE_Scanner",
+            "match",
+            (receiver, _) => ScannerStep(ScannerOf(receiver!), search: false, default)
+        );
+        type.Attributes["search"] = Method(
+            "SRE_Scanner",
+            "search",
+            (receiver, _) => ScannerStep(ScannerOf(receiver!), search: true, default)
+        );
+        type.Attributes["__getattr__"] = Method(
+            "SRE_Scanner",
+            "__getattr__",
+            (_, arguments) =>
+                throw Fault(
+                    "'_sre.SRE_Scanner' object has no attribute '"
+                        + (
+                            arguments[0] is PythonTextValue name
+                                ? name.Value
+                                : ManagedObjectProtocols.GetTypeName(arguments[0])
+                        )
+                        + "'",
+                    default,
+                    "AttributeError"
+                )
+        );
+        return type;
+    }
+
+    private static ScannerState ScannerOf(PythonValue value) =>
+        value is PythonManagedObjectValue { Payload: ScannerState scanner }
+            ? scanner
+            : throw Fault("the value is not a scanner", default, "TypeError");
+
+    private static PythonManagedObjectValue Scanner(
+        PythonValue patternValue,
+        IReadOnlyList<PythonValue> positional,
+        IReadOnlyList<string> names,
+        IReadOnlyList<PythonValue> values,
+        TextSpan span
+    )
+    {
+        string[] parameters = ["string", "pos", "endpos"];
+        if (positional.Count > parameters.Length)
+        {
+            throw Fault(
+                $"scanner() takes at most {parameters.Length} arguments "
+                    + $"({positional.Count} given)",
+                span,
+                "TypeError"
+            );
+        }
+        var slots = new PythonValue?[parameters.Length];
+        for (var index = 0; index < positional.Count; index++)
+        {
+            slots[index] = positional[index];
+        }
+        for (var index = 0; index < names.Count; index++)
+        {
+            var slot = Array.IndexOf(parameters, names[index]);
+            if (slot < 0)
+            {
+                throw Fault(
+                    $"scanner() got an unexpected keyword argument '{names[index]}'",
+                    span,
+                    "TypeError"
+                );
+            }
+            if (slots[slot] is not null)
+            {
+                throw Fault(
+                    $"scanner() got multiple values for argument '{names[index]}'",
+                    span,
+                    "TypeError"
+                );
+            }
+            slots[slot] = values[index];
+        }
+        if (slots[0] is null)
+        {
+            throw Fault("scanner() missing required argument 'string' (pos 1)", span, "TypeError");
+        }
+        var pattern =
+            patternValue as PythonManagedObjectValue
+            ?? throw PatternDescriptor("scanner", patternValue);
+        var text = RequireText(slots[0]!, span);
+        var pos = Clamp(Index(slots[1], span), text.Length);
+        var endpos = slots[2] is null ? text.Length : Clamp(Index(slots[2], span), text.Length);
+        return new PythonManagedObjectValue(
+            ScannerType,
+            new ScannerState(pattern, text, pos, endpos)
+        );
+    }
+
+    private static PythonValue ScannerStep(ScannerState scanner, bool search, TextSpan span)
+    {
+        if (scanner.Done)
+        {
+            return PythonNoneValue.Instance;
+        }
+        var state = StateOf(scanner.Pattern);
+        var result =
+            scanner.Position > scanner.EndPos ? null
+            : search
+                ? PythonRegex.Search(
+                    state.Program,
+                    scanner.Text,
+                    (int)scanner.Position,
+                    (int)scanner.EndPos
+                )
+            : PythonRegex.Match(
+                state.Program,
+                scanner.Text,
+                (int)scanner.Position,
+                (int)scanner.EndPos
+            );
+        if (result is null)
+        {
+            scanner.Done = true;
+            return PythonNoneValue.Instance;
+        }
+        var match = new PythonManagedObjectValue(
+            MatchType,
+            new MatchState(
+                scanner.Pattern,
+                state.Program,
+                scanner.Text,
+                result,
+                scanner.Position,
+                scanner.EndPos
+            )
+        );
+        if (result.End == result.Start)
+        {
+            scanner.Done = true;
+        }
+        else
+        {
+            scanner.Position = result.End;
+        }
+        return match;
     }
 
     // -----------------------------------------------------------------------------
@@ -841,6 +1032,26 @@ internal static class PythonRegexModule
                     "TypeError"
                 )
         );
+        type.Attributes["__class_getitem__"] = new PythonProtocolFunctionValue(
+            "__class_getitem__",
+            (_, arguments) => PythonGenericAliasValue.Create(MatchType, arguments[0])
+        );
+        type.Attributes["__getattr__"] = Method(
+            "Match",
+            "__getattr__",
+            (_, arguments) =>
+                throw Fault(
+                    "'re.Match' object has no attribute '"
+                        + (
+                            arguments[0] is PythonTextValue name
+                                ? name.Value
+                                : ManagedObjectProtocols.GetTypeName(arguments[0])
+                        )
+                        + "'",
+                    default,
+                    "AttributeError"
+                )
+        );
         type.Attributes["__repr__"] = Method(
             "Match",
             "__repr__",
@@ -954,6 +1165,37 @@ internal static class PythonRegexModule
             PatternSplit,
             parameters: ["string", "maxsplit"],
             defaults: [null, Integer(0)]
+        );
+        type.Attributes["scanner"] = new PythonProtocolFunctionValue(
+            "scanner",
+            (receiver, arguments) => Scanner(receiver!, arguments, [], [], default),
+            (receiver, positional, names, values) =>
+                Scanner(receiver!, positional, names, values, default)
+        );
+        type.Attributes["__class_getitem__"] = new PythonProtocolFunctionValue(
+            "__class_getitem__",
+            (_, arguments) => PythonGenericAliasValue.Create(PatternType, arguments[0])
+        );
+        type.Attributes["__getitem__"] = Method(
+            "Pattern",
+            "__getitem__",
+            (_, _) => throw Fault("'re.Pattern' object is not subscriptable", default, "TypeError")
+        );
+        type.Attributes["__getattr__"] = Method(
+            "Pattern",
+            "__getattr__",
+            (_, arguments) =>
+                throw Fault(
+                    "'re.Pattern' object has no attribute '"
+                        + (
+                            arguments[0] is PythonTextValue name
+                                ? name.Value
+                                : ManagedObjectProtocols.GetTypeName(arguments[0])
+                        )
+                        + "'",
+                    default,
+                    "AttributeError"
+                )
         );
         type.Attributes["__repr__"] = Method(
             "Pattern",

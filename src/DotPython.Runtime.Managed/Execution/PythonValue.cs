@@ -405,7 +405,7 @@ internal sealed record PythonGenericAliasValue : PythonValue
         var name = origin switch
         {
             PythonBuiltinTypeValue builtin => builtin.Name,
-            PythonManagedTypeValue managed => managed.Name,
+            PythonManagedTypeValue managed => managed.QualifiedDisplayName,
             _ => origin.ToDisplayString(),
         };
         return arguments.Count == 0

@@ -3572,13 +3572,20 @@ internal static class ManagedObjectProtocols
                     "TypeError"
                 );
             case PythonManagedTypeValue type:
-                return PythonEnum.TryGetTypeItem(type, index, span)
-                    ?? throw Fault(
-                        "DPY4011",
-                        $"type '{type.Name}' is not subscriptable",
-                        span,
-                        "TypeError"
-                    );
+                if (PythonEnum.TryGetTypeItem(type, index, span) is { } enumItem)
+                {
+                    return enumItem;
+                }
+                if (TryGetTypeAttribute(type, "__class_getitem__", out var classGetItem))
+                {
+                    return Call(classGetItem, [index], span);
+                }
+                throw Fault(
+                    "DPY4011",
+                    $"type '{type.Name}' is not subscriptable",
+                    span,
+                    "TypeError"
+                );
             default:
                 throw Fault("DPY4011", "This value is not subscriptable.", span, "TypeError");
         }

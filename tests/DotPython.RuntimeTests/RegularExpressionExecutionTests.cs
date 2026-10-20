@@ -496,6 +496,143 @@ public sealed class RegularExpressionExecutionTests
         Assert.Equal(Lines("cached True False", "purged False a", "bound (a) True a 0 1"), output);
     }
 
+    /// <summary>
+    /// The leftovers closed here: `escape(bytes)`, the `'re.Pattern'`/`'re.Match'`
+    /// attribute wording, class-level `Pattern[...]`/`Match[...]`, and `scanner()` with
+    /// its positional and keyword arguments and stateful `match`/`search`.
+    /// </summary>
+    [Fact]
+    public void TheLeftoverHelpersMatchPython()
+    {
+        var output = Run(
+            """"
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            print("escape-bytes", re.escape(b"a.b c*[](){}"), re.escape(b"\xff\x00\x7f"))
+            print("escape-str", re.escape("a.b c*[](){}"))
+            show("pattern-attr", lambda: re.compile("a").nope)
+            show("match-attr", lambda: re.match("a","a").nope)
+            show("pattern-sub", lambda: re.compile("a")[str])
+            show("match-sub", lambda: re.match("a","a")[str])
+            show("pattern-class-sub", lambda: re.Pattern[str])
+            show("match-class-sub", lambda: re.Match[str])
+            show("pattern-class-sub-int", lambda: re.Pattern[5])
+            show("match-class-sub-int", lambda: re.Match[5])
+            print("scanner", end=" ")
+            s = re.compile("a+").scanner("aa b aaa")
+            for call in ("match", "search", "match", "search", "match", "search"):
+                show(call, lambda call=call: getattr(s, call)())
+            print("scanner-pos", end=" ")
+            s2 = re.compile("a").scanner("aaa")
+            for i in range(4):
+                show("m%d" % i, lambda: s2.match())
+            show("scanner-type", lambda: (type(s).__name__, type(s).__module__))
+            show("scanner-dir", lambda: sorted(n for n in dir(s) if not n.startswith("_")))
+            show("scanner-init", lambda: re.compile("a").scanner())
+            show("scanner-extra", lambda: type(re.compile("a").scanner("a", 0, 1)).__name__)
+            show("scanner-kw", lambda: type(re.compile("a").scanner(string="a")).__name__)
+            show("scanner-pattern", lambda: re.compile("a").scanner("a").pattern)
+            show("scanner-attr", lambda: re.compile("a").scanner("a").nope)
+            show("scanner-fail", lambda: re.compile("a").scanner("ba").match())
+            show("scanner-fail2", lambda: re.compile("a").scanner("ba").search())
+            s3 = re.compile("a").scanner("ba")
+            show("sf0", lambda: s3.match())
+            show("sf1", lambda: s3.search())
+            show("sf2", lambda: s3.search())
+            s4 = re.compile("").scanner("ab")
+            for i in range(3):
+                show("e%d" % i, lambda: s4.match())
+            s5 = re.compile("a").scanner("aaa")
+            show("pos-start", lambda: re.compile("a").scanner("aaa", 1).match())
+            show("endpos", lambda: re.compile("a").scanner("aaa", 0, 1).match())
+            show("endpos2", lambda: re.compile("a+").scanner("aaa", 0, 2).search())
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "escape-bytes b'a\\\\.b\\\\ c\\\\*\\\\[\\\\]\\\\(\\\\)\\\\{\\\\}' b'\\xff\\x00\\x7f'",
+                "escape-str a\\.b\\ c\\*\\[\\]\\(\\)\\{\\}",
+                "pattern-attr AttributeError 're.Pattern' object has no attribute 'nope'",
+                "match-attr AttributeError 're.Match' object has no attribute 'nope'",
+                "pattern-sub TypeError 're.Pattern' object is not subscriptable",
+                "match-sub IndexError no such group",
+                "pattern-class-sub ok re.Pattern[str]",
+                "match-class-sub ok re.Match[str]",
+                "pattern-class-sub-int ok re.Pattern[5]",
+                "match-class-sub-int ok re.Match[5]",
+                "scanner match ok <re.Match object; span=(0, 2), match='aa'>",
+                "search ok <re.Match object; span=(5, 8), match='aaa'>",
+                "match ok None",
+                "search ok None",
+                "match ok None",
+                "search ok None",
+                "scanner-pos m0 ok <re.Match object; span=(0, 1), match='a'>",
+                "m1 ok <re.Match object; span=(1, 2), match='a'>",
+                "m2 ok <re.Match object; span=(2, 3), match='a'>",
+                "m3 ok None",
+                "scanner-type ok ('SRE_Scanner', '_sre')",
+                "scanner-dir ok ['match', 'pattern', 'search']",
+                "scanner-init TypeError scanner() missing required argument 'string' (pos 1)",
+                "scanner-extra ok 'SRE_Scanner'",
+                "scanner-kw ok 'SRE_Scanner'",
+                "scanner-pattern ok re.compile('a')",
+                "scanner-attr AttributeError '_sre.SRE_Scanner' object has no attribute 'nope'",
+                "scanner-fail ok None",
+                "scanner-fail2 ok <re.Match object; span=(1, 2), match='a'>",
+                "sf0 ok None",
+                "sf1 ok None",
+                "sf2 ok None",
+                "e0 ok <re.Match object; span=(0, 0), match=''>",
+                "e1 ok None",
+                "e2 ok None",
+                "pos-start ok <re.Match object; span=(1, 2), match='a'>",
+                "endpos ok <re.Match object; span=(0, 1), match='a'>",
+                "endpos2 ok <re.Match object; span=(0, 2), match='aa'>",
+                ""
+            ),
+            output
+        );
+    }
+
+    /// <summary>
+    /// The recorded gaps: byte-string patterns (and therefore byte subjects and
+    /// replacements) are outside the slice, while `escape(bytes)` works.
+    /// </summary>
+    [Fact]
+    public void TheRuntimePinsItsRemainingRegularExpressionGaps()
+    {
+        var output = Run(
+            """"
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            show("bytes-pattern", lambda: re.compile(b"a"))
+            show("bytes-match", lambda: re.match(b"a", b"a"))
+            show("bytes-sub", lambda: re.sub(b"a", b"x", b"aa"))
+            show("bytes-escape", lambda: re.escape(b"a.b"))
+            show("bytes-constant", lambda: re.compile(b"a").flags if False else "skip")
+            """"
+        );
+
+        Assert.Equal(
+            string.Join(
+                Environment.NewLine,
+                "bytes-pattern TypeError first argument must be string or compiled pattern",
+                "bytes-match TypeError first argument must be string or compiled pattern",
+                "bytes-sub TypeError first argument must be string or compiled pattern",
+                "bytes-escape ok b'a\\\\.b'",
+                "bytes-constant ok 'skip'",
+                ""
+            ),
+            output
+        );
+    }
+
     private static string Run(string source)
     {
         using var output = new StringWriter();

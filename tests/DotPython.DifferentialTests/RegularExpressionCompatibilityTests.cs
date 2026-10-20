@@ -214,4 +214,53 @@ public sealed class RegularExpressionCompatibilityTests
             report("name-unterminated", lambda: re.compile(r"\N{EM DASH"))
             """
         );
+
+    [Fact]
+    public Task TheLeftoverHelpersMatchCpython() =>
+        CompatibilityOracle.AssertMatchesAsync(
+            """"
+            import re
+            def show(label, fn):
+                try: print(label, "ok", repr(fn()))
+                except Exception as e: print(label, type(e).__name__, e)
+            print("escape-bytes", re.escape(b"a.b c*[](){}"), re.escape(b"\xff\x00\x7f"))
+            print("escape-str", re.escape("a.b c*[](){}"))
+            show("pattern-attr", lambda: re.compile("a").nope)
+            show("match-attr", lambda: re.match("a","a").nope)
+            show("pattern-sub", lambda: re.compile("a")[str])
+            show("match-sub", lambda: re.match("a","a")[str])
+            show("pattern-class-sub", lambda: re.Pattern[str])
+            show("match-class-sub", lambda: re.Match[str])
+            show("pattern-class-sub-int", lambda: re.Pattern[5])
+            show("match-class-sub-int", lambda: re.Match[5])
+            print("scanner", end=" ")
+            s = re.compile("a+").scanner("aa b aaa")
+            for call in ("match", "search", "match", "search", "match", "search"):
+                show(call, lambda call=call: getattr(s, call)())
+            print("scanner-pos", end=" ")
+            s2 = re.compile("a").scanner("aaa")
+            for i in range(4):
+                show("m%d" % i, lambda: s2.match())
+            show("scanner-type", lambda: (type(s).__name__, type(s).__module__))
+            show("scanner-dir", lambda: sorted(n for n in dir(s) if not n.startswith("_")))
+            show("scanner-init", lambda: re.compile("a").scanner())
+            show("scanner-extra", lambda: type(re.compile("a").scanner("a", 0, 1)).__name__)
+            show("scanner-kw", lambda: type(re.compile("a").scanner(string="a")).__name__)
+            show("scanner-pattern", lambda: re.compile("a").scanner("a").pattern)
+            show("scanner-attr", lambda: re.compile("a").scanner("a").nope)
+            show("scanner-fail", lambda: re.compile("a").scanner("ba").match())
+            show("scanner-fail2", lambda: re.compile("a").scanner("ba").search())
+            s3 = re.compile("a").scanner("ba")
+            show("sf0", lambda: s3.match())
+            show("sf1", lambda: s3.search())
+            show("sf2", lambda: s3.search())
+            s4 = re.compile("").scanner("ab")
+            for i in range(3):
+                show("e%d" % i, lambda: s4.match())
+            s5 = re.compile("a").scanner("aaa")
+            show("pos-start", lambda: re.compile("a").scanner("aaa", 1).match())
+            show("endpos", lambda: re.compile("a").scanner("aaa", 0, 1).match())
+            show("endpos2", lambda: re.compile("a+").scanner("aaa", 0, 2).search())
+            """"
+        );
 }
