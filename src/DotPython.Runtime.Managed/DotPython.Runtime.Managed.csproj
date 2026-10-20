@@ -5,6 +5,10 @@
 
     <ItemGroup>
         <EmbeddedResource
+            Include="Unicode/UnicodeData16.bin"
+            LogicalName="DotPython.UnicodeData16"
+        />
+        <EmbeddedResource
             Include="Unicode/UnicodeNames16.bin"
             LogicalName="DotPython.UnicodeNames16"
         />

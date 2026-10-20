@@ -464,6 +464,11 @@ internal static class PythonStandardModules
             isPackage: false,
             InitializePickle
         );
+        modules["unicodedata"] = PythonModuleDefinition.Native(
+            "<dotpython unicodedata>",
+            isPackage: false,
+            PythonUnicodeDataModule.Initialize
+        );
         modules["io"] = PythonModuleDefinition.Native(
             "<dotpython io>",
             isPackage: false,
