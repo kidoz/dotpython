@@ -568,6 +568,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonStatisticsModule.Initialize
         );
+        // The calendar formatting over the datetime engine.
+        modules["calendar"] = PythonModuleDefinition.Native(
+            "<dotpython calendar>",
+            isPackage: false,
+            PythonCalendarModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>

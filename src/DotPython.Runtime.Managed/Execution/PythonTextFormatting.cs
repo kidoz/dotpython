@@ -345,15 +345,9 @@ internal static class PythonTextFormatting
             PythonFloatingPointValue floating when radix == 10 => new BigInteger(
                 Math.Truncate(floating.Value)
             ),
-            _ => throw Fault(
-                radix == 10
-                    ? $"%{conversion} format: a real number is required, not "
-                        + ManagedObjectProtocols.GetTypeName(value)
-                    : $"%{conversion} format: an integer is required, not "
-                        + ManagedObjectProtocols.GetTypeName(value),
-                span,
-                "TypeError"
-            ),
+            // The conversion accepts anything with `__index__`, which is how an
+            // `IntEnum` member formats as the integer it is.
+            _ => FormatIndexOrFault(value, conversion, radix, span),
         };
         var digits = ToRadix(BigInteger.Abs(number), radix, upper);
         if (alternate && radix == 8)
@@ -366,6 +360,32 @@ internal static class PythonTextFormatting
         }
 
         return ApplySign(digits, number.Sign < 0, showSign, spaceSign);
+    }
+
+    private static BigInteger FormatIndexOrFault(
+        PythonValue value,
+        char conversion,
+        int radix,
+        TextSpan span
+    )
+    {
+        try
+        {
+            return PythonBuiltinFunctions.RequireIndex(value, span);
+        }
+        catch (PythonRuntimeException exception)
+            when (exception.PythonExceptionTypeName == "TypeError")
+        {
+            throw Fault(
+                radix == 10
+                    ? $"%{conversion} format: a real number is required, not "
+                        + ManagedObjectProtocols.GetTypeName(value)
+                    : $"%{conversion} format: an integer is required, not "
+                        + ManagedObjectProtocols.GetTypeName(value),
+                span,
+                "TypeError"
+            );
+        }
     }
 
     internal static string FormatPercentFloating(

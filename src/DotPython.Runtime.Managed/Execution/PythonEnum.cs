@@ -2305,6 +2305,24 @@ internal static class PythonEnum
         );
     }
 
+    /// <summary>The functional API over `IntEnum`: `IntEnum(name, members, module=…)`.</summary>
+    internal static PythonManagedTypeValue CreateIntEnum(
+        string name,
+        string module,
+        PythonValue members
+    ) =>
+        CreateFunctional(
+            IntEnumClass,
+            new PythonTextValue(name),
+            members,
+            new PythonTextValue(module),
+            new PythonTextValue(name),
+            dataType: null,
+            start: null,
+            boundary: null,
+            default
+        );
+
     /// <summary>
     /// `IntFlag`'s functional API, for a native module that publishes its own flags:
     /// `re.RegexFlag` is built this way from the members the module declares.
