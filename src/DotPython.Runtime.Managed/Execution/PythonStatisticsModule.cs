@@ -364,9 +364,34 @@ internal static class PythonStatisticsModule
         NegativeInfinity,
     }
 
+    /// <summary>The numeric type the exact result converts back to.</summary>
+    private enum Kind
+    {
+        Int,
+        Float,
+        Fraction,
+    }
+
+    private static Kind KindOf(PythonValue value) =>
+        PythonFractionsModule.TryFractionParts(value, out _, out _) ? Kind.Fraction
+        : value is PythonFloatingPointValue ? Kind.Float
+        : Kind.Int;
+
+    /// <summary>`_coerce`: ints join the other type, and Fraction joins float.</summary>
+    private static Kind Coerce(Kind left, Kind right) =>
+        left == right ? left
+        : left == Kind.Int ? right
+        : right == Kind.Int ? left
+        : Kind.Float;
+
     /// <summary>`_exact_ratio`: a value's exact numerator and denominator.</summary>
-    private static (Ratio Ratio, Special Special) ExactRatio(PythonValue value) =>
-        value switch
+    private static (Ratio Ratio, Special Special) ExactRatio(PythonValue value)
+    {
+        if (PythonFractionsModule.TryFractionParts(value, out var numerator, out var denominator))
+        {
+            return (new Ratio(numerator, denominator), Special.None);
+        }
+        return value switch
         {
             PythonWholeNumberValue whole => (new Ratio(whole.Value, BigInteger.One), Special.None),
             PythonTruthValue truth => (
@@ -379,6 +404,7 @@ internal static class PythonStatisticsModule
                     + "to numerator/denominator"
             ),
         };
+    }
 
     private static (Ratio Ratio, Special Special) ExactRatio(double value)
     {
@@ -423,8 +449,13 @@ internal static class PythonStatisticsModule
         : left == right ? left
         : Special.NotANumber;
 
-    private static double ToDouble(PythonValue value, TextSpan span) =>
-        value switch
+    private static double ToDouble(PythonValue value, TextSpan span)
+    {
+        if (PythonFractionsModule.TryFractionParts(value, out var numerator, out var denominator))
+        {
+            return new Ratio(numerator, denominator).ToDouble();
+        }
+        return value switch
         {
             PythonWholeNumberValue whole => (double)whole.Value,
             PythonFloatingPointValue floating => floating.Value,
@@ -435,12 +466,18 @@ internal static class PythonStatisticsModule
                 span
             ),
         };
+    }
 
     /// <summary>`_convert`: the exact value in the type the data called for.</summary>
-    private static PythonValue Convert(Ratio value, bool anyFloat) =>
-        !anyFloat && value.IsInteger
-            ? PythonWholeNumberValue.Create(value.Numerator / value.Denominator)
-            : new PythonFloatingPointValue(value.ToDouble());
+    private static PythonValue Convert(Ratio value, Kind kind) =>
+        kind switch
+        {
+            Kind.Fraction => PythonFractionsModule.FromRatio(value.Numerator, value.Denominator),
+            Kind.Float => new PythonFloatingPointValue(value.ToDouble()),
+            _ => value.IsInteger
+                ? PythonWholeNumberValue.Create(value.Numerator / value.Denominator)
+                : new PythonFloatingPointValue(value.ToDouble()),
+        };
 
     private static PythonFloatingPointValue SpecialValue(Special special) =>
         special switch
@@ -456,7 +493,7 @@ internal static class PythonStatisticsModule
 
         internal int Count { get; private set; }
 
-        internal bool AnyFloat { get; private set; }
+        internal Kind Kind { get; private set; } = Kind.Int;
 
         internal Special SpecialValue { get; private set; }
 
@@ -470,7 +507,15 @@ internal static class PythonStatisticsModule
                 return;
             }
             Total = Total.Add(ratio);
-            AnyFloat |= value is PythonFloatingPointValue;
+            Kind = Coerce(Kind, KindOf(value));
+        }
+
+        /// <summary>Adds an already exact term of the given type.</summary>
+        internal void AddRatio(Ratio ratio, Kind kind)
+        {
+            Count++;
+            Kind = Coerce(Kind, kind);
+            Total = Total.Add(ratio);
         }
     }
 
@@ -493,7 +538,7 @@ internal static class PythonStatisticsModule
         {
             return SpecialValue(sum.SpecialValue);
         }
-        return Convert(sum.Total.Divide(new Ratio(sum.Count, BigInteger.One)), sum.AnyFloat);
+        return Convert(sum.Total.Divide(new Ratio(sum.Count, BigInteger.One)), sum.Kind);
     }
 
     private static PythonValue FMean(IReadOnlyList<PythonValue> arguments, TextSpan span)
@@ -582,65 +627,108 @@ internal static class PythonStatisticsModule
         {
             throw Error("harmonic_mean requires at least one data point", span);
         }
-        var sumOfWeights = Ratio.Zero;
-        for (var index = 0; index < count; index++)
+        if (count == 1 && !weighted)
         {
-            var weight = weighted ? ToDouble(weights[index], span) : 1.0;
-            if (weight < 0)
+            if (!IsNumeric(data[0]))
+            {
+                throw TypeFault("unsupported type", span);
+            }
+            if (IsNegative(data[0]))
             {
                 throw Error(negative, span);
             }
-            var (ratio, special) = ExactRatio(
-                weighted ? weights[index] : PythonWholeNumberValue.Create(1)
-            );
-            if (special == Special.None)
-            {
-                sumOfWeights = sumOfWeights.Add(ratio);
-            }
+            return data[0];
         }
-        var reciprocals = new List<double>();
+        var sumOfWeights = Ratio.Zero;
+        if (weighted)
+        {
+            var weightSum = new ExactSum();
+            foreach (var weight in weights)
+            {
+                RequireComparable(weight, span);
+                if (IsNegative(weight))
+                {
+                    throw Error(negative, span);
+                }
+                weightSum.Add(weight);
+            }
+            sumOfWeights = weightSum.Total;
+        }
+        else
+        {
+            sumOfWeights = new Ratio(count, BigInteger.One);
+        }
+        var terms = new ExactSum();
         for (var index = 0; index < count; index++)
         {
-            var weight = weighted ? ToDouble(weights[index], span) : 1.0;
-            var value = ToDouble(data[index], span);
-            if (value < 0)
+            var value = data[index];
+            RequireComparable(value, span);
+            if (IsNegative(value))
             {
                 throw Error(negative, span);
             }
-            if (weight == 0)
+            var weight = weighted ? weights[index] : PythonWholeNumberValue.Create(1);
+            if (IsZero(weight))
             {
-                reciprocals.Add(0.0);
+                terms.AddRatio(Ratio.Zero, Kind.Int);
                 continue;
             }
-            if (value == 0)
+            if (IsZero(value))
             {
                 return PythonWholeNumberValue.Create(0);
             }
-            reciprocals.Add(weight / value);
+            var kind = Coerce(KindOf(weight), KindOf(value));
+            if (kind == Kind.Fraction)
+            {
+                terms.AddRatio(
+                    ExactRatio(weight).Ratio.Divide(ExactRatio(value).Ratio),
+                    Kind.Fraction
+                );
+            }
+            else
+            {
+                var quotient = ToDouble(weight, span) / ToDouble(value, span);
+                terms.AddRatio(ExactRatio(quotient).Ratio, Kind.Float);
+            }
         }
-        var total = ExactSumOf(reciprocals);
-        if (total.SpecialValue != Special.None)
+        if (terms.SpecialValue != Special.None)
         {
-            return SpecialValue(total.SpecialValue);
+            return SpecialValue(terms.SpecialValue);
         }
-        if (total.Total.CompareTo(Ratio.Zero) <= 0)
+        if (terms.Total.CompareTo(Ratio.Zero) <= 0)
         {
             throw Error("Weighted sum must be positive", span);
         }
-        return Convert(
-            sumOfWeights.Divide(total.Total),
-            total.AnyFloat || weighted && weights.Any(weight => weight is PythonFloatingPointValue)
-        );
+        return Convert(sumOfWeights.Divide(terms.Total), terms.Kind);
     }
 
-    private static ExactSum ExactSumOf(IEnumerable<double> values)
+    private static bool IsNumeric(PythonValue value) =>
+        value is PythonWholeNumberValue or PythonTruthValue or PythonFloatingPointValue
+        || PythonFractionsModule.TryFractionParts(value, out _, out _);
+
+    private static void RequireComparable(PythonValue value, TextSpan span)
     {
-        var sum = new ExactSum();
-        foreach (var value in values)
+        if (!IsNumeric(value))
         {
-            sum.Add(new PythonFloatingPointValue(value));
+            throw TypeFault(
+                $"'<' not supported between instances of "
+                    + $"'{ManagedObjectProtocols.GetTypeName(value)}' and 'int'",
+                span
+            );
         }
-        return sum;
+    }
+
+    private static bool IsNegative(PythonValue value)
+    {
+        var (ratio, special) = ExactRatio(value);
+        return special == Special.NegativeInfinity
+            || (special == Special.None && ratio.Numerator.Sign < 0);
+    }
+
+    private static bool IsZero(PythonValue value)
+    {
+        var (ratio, special) = ExactRatio(value);
+        return special == Special.None && ratio.Numerator.IsZero;
     }
 
     private static PythonValue Median(IReadOnlyList<PythonValue> arguments, TextSpan span)
@@ -659,8 +747,11 @@ internal static class PythonStatisticsModule
         var sum = new ExactSum();
         sum.Add(data[middle - 1]);
         sum.Add(data[middle]);
-        return new PythonFloatingPointValue(
-            sum.Total.Divide(new Ratio(2, BigInteger.One)).ToDouble()
+        var kind = Coerce(KindOf(data[middle - 1]), KindOf(data[middle]));
+        // The middle values are divided, so integers produce a float.
+        return Convert(
+            sum.Total.Divide(new Ratio(2, BigInteger.One)),
+            kind == Kind.Fraction ? Kind.Fraction : Kind.Float
         );
     }
 
@@ -744,19 +835,44 @@ internal static class PythonStatisticsModule
     private static List<Frequency> Frequencies(List<PythonValue> data)
     {
         var order = new List<Frequency>();
-        var index = new Dictionary<PythonValue, int>();
+        var index = new Dictionary<object, int>();
         foreach (var value in data)
         {
-            if (index.TryGetValue(value, out var slot))
+            var key = FrequencyKey(value);
+            if (index.TryGetValue(key, out var slot))
             {
                 order[slot] = order[slot] with { Count = order[slot].Count + 1 };
                 continue;
             }
-            index[value] = order.Count;
+            index[key] = order.Count;
             order.Add(new Frequency(value, 1));
         }
         return order;
     }
+
+    /// <summary>
+    /// The key a `Counter` would group by: numeric values by their exact rational value,
+    /// so `1`, `1.0` and `Fraction(1, 1)` share a count, and everything else by its own
+    /// Python equality.
+    /// </summary>
+    private static object FrequencyKey(PythonValue value)
+    {
+        if (!IsNumeric(value))
+        {
+            return value;
+        }
+        var (ratio, special) = ExactRatio(value);
+        if (special != Special.None)
+        {
+            return special;
+        }
+        // Exact ratios are not reduced (a float's 1.0 is 2**52/2**52), so reduce
+        // before the value equality a Counter key uses.
+        var gcd = BigInteger.GreatestCommonDivisor(ratio.Numerator, ratio.Denominator);
+        return new RatioKey(new Ratio(ratio.Numerator / gcd, ratio.Denominator / gcd));
+    }
+
+    private readonly record struct RatioKey(Ratio Value);
 
     // -----------------------------------------------------------------------------
     // Measures of spread
@@ -774,7 +890,7 @@ internal static class PythonStatisticsModule
         bool sample
     )
     {
-        var (deviation, count, anyFloat, special) = SumOfSquares(arguments, span);
+        var (deviation, count, kind, special) = SumOfSquares(arguments, span);
         if (sample && count < 2)
         {
             throw Error("variance requires at least two data points", span);
@@ -789,12 +905,12 @@ internal static class PythonStatisticsModule
         }
         return Convert(
             deviation.Divide(new Ratio(sample ? count - 1 : count, BigInteger.One)),
-            anyFloat
+            kind
         );
     }
 
     /// <summary>`_ss`: the exact sum of squared deviations from the mean (or the given centre).</summary>
-    private static (Ratio Deviation, int Count, bool AnyFloat, Special Special) SumOfSquares(
+    private static (Ratio Deviation, int Count, Kind Kind, Special Special) SumOfSquares(
         IReadOnlyList<PythonValue> arguments,
         TextSpan span
     )
@@ -807,11 +923,12 @@ internal static class PythonStatisticsModule
             var (given, givenSpecial) = ExactRatio(centre);
             if (givenSpecial != Special.None)
             {
-                return (Ratio.Zero, data.Count, false, givenSpecial);
+                return (Ratio.Zero, data.Count, Kind.Int, givenSpecial);
             }
             var total = Ratio.Zero;
-            var anyFloat = centre is PythonFloatingPointValue;
+            var centreResultKind = Kind.Int;
             var special = Special.None;
+            var centreKind = KindOf(centre);
             foreach (var value in data)
             {
                 var (ratio, valueSpecial) = ExactRatio(value);
@@ -822,13 +939,13 @@ internal static class PythonStatisticsModule
                 }
                 var difference = ratio.Add(given.Negate());
                 total = total.Add(difference.Multiply(difference));
-                anyFloat |= value is PythonFloatingPointValue;
+                centreResultKind = Coerce(centreResultKind, Coerce(KindOf(value), centreKind));
             }
-            return (total, data.Count, anyFloat, special);
+            return (total, data.Count, centreResultKind, special);
         }
         var sum = Ratio.Zero;
         var squares = Ratio.Zero;
-        var floats = false;
+        var kind = Kind.Int;
         var found = Special.None;
         var count = 0;
         foreach (var value in data)
@@ -842,15 +959,15 @@ internal static class PythonStatisticsModule
             }
             sum = sum.Add(ratio);
             squares = squares.Add(ratio.Multiply(ratio));
-            floats |= value is PythonFloatingPointValue;
+            kind = Coerce(kind, KindOf(value));
         }
         if (count == 0)
         {
-            return (Ratio.Zero, 0, floats, Special.None);
+            return (Ratio.Zero, 0, kind, Special.None);
         }
         var n = new Ratio(count, BigInteger.One);
         var deviation = n.Multiply(squares).Add(sum.Multiply(sum).Negate()).Divide(n);
-        return (deviation, count, floats, found);
+        return (deviation, count, kind, found);
     }
 
     private static PythonValue Stdev(IReadOnlyList<PythonValue> arguments, TextSpan span) =>
@@ -905,12 +1022,15 @@ internal static class PythonStatisticsModule
         }
         var xbar = PythonFSum.Sum(x.Select(value => ToDouble(value, span))) / count;
         var ybar = PythonFSum.Sum(y.Select(value => ToDouble(value, span))) / count;
-        var products = new double[count];
+        var left = new double[count];
+        var right = new double[count];
         for (var index = 0; index < count; index++)
         {
-            products[index] = (ToDouble(x[index], span) - xbar) * (ToDouble(y[index], span) - ybar);
+            left[index] = ToDouble(x[index], span) - xbar;
+            right[index] = ToDouble(y[index], span) - ybar;
         }
-        return new PythonFloatingPointValue(PythonFSum.Sum(products) / (count - 1));
+        // `sumprod`: each product is exact before the one correctly-rounded sum.
+        return new PythonFloatingPointValue(SumProdExact([.. left], [.. right]) / (count - 1));
     }
 
     private static PythonValue Correlation(IReadOnlyList<PythonValue> arguments, TextSpan span)
@@ -1074,42 +1194,49 @@ internal static class PythonStatisticsModule
             }
             var lower = data[method == "inclusive" ? j : j - 1];
             var upper = data[method == "inclusive" ? j + 1 : j];
-            result.Add(
-                new PythonFloatingPointValue(
-                    ExactRatio(lower)
-                        .Ratio.Multiply(new Ratio(n - delta, BigInteger.One))
-                        .Add(ExactRatio(upper).Ratio.Multiply(new Ratio(delta, BigInteger.One)))
-                        .Divide(new Ratio(n, BigInteger.One))
-                        .ToDouble()
-                )
-            );
+            var interpolated = ExactRatio(lower)
+                .Ratio.Multiply(new Ratio(n - delta, BigInteger.One))
+                .Add(ExactRatio(upper).Ratio.Multiply(new Ratio(delta, BigInteger.One)))
+                .Divide(new Ratio(n, BigInteger.One));
+            var kind = Coerce(KindOf(lower), KindOf(upper));
+            result.Add(Convert(interpolated, kind == Kind.Fraction ? Kind.Fraction : Kind.Float));
         }
         return new PythonListValue(result);
     }
 
     private static List<PythonValue> SortedValues(PythonValue data, TextSpan span)
     {
-        var decorated = Values(data, span)
-            .Select((value, index) => (Value: value, Key: ToDouble(value, span), index))
-            .ToList();
+        var decorated = Values(data, span).Select((value, index) => (Value: value, index)).ToList();
         decorated.Sort(
             (left, right) =>
             {
-                var order = left.Key.CompareTo(right.Key);
+                var order = CompareValues(left.Value, right.Value, span);
                 return order != 0 ? order : left.index.CompareTo(right.index);
             }
         );
         return [.. decorated.Select(entry => entry.Value)];
     }
 
+    /// <summary>Python's numeric ordering, exact when both values are finite rationals.</summary>
+    private static int CompareValues(PythonValue left, PythonValue right, TextSpan span)
+    {
+        var (leftRatio, leftSpecial) = ExactRatio(left);
+        var (rightRatio, rightSpecial) = ExactRatio(right);
+        if (leftSpecial == Special.None && rightSpecial == Special.None)
+        {
+            return leftRatio.CompareTo(rightRatio);
+        }
+        return ToDouble(left, span).CompareTo(ToDouble(right, span));
+    }
+
     /// <summary>`_rank`: ties averaged.</summary>
     private static List<double> Rank(List<PythonValue> data, double start, TextSpan span)
     {
-        var decorated = data.Select((value, index) => (Key: ToDouble(value, span), index)).ToList();
+        var decorated = data.Select((value, index) => (Value: value, index)).ToList();
         decorated.Sort(
             (left, right) =>
             {
-                var order = left.Key.CompareTo(right.Key);
+                var order = CompareValues(left.Value, right.Value, span);
                 return order != 0 ? order : left.index.CompareTo(right.index);
             }
         );
@@ -1119,7 +1246,10 @@ internal static class PythonStatisticsModule
         while (slot < decorated.Count)
         {
             var start2 = slot;
-            while (slot + 1 < decorated.Count && decorated[slot + 1].Key == decorated[slot].Key)
+            while (
+                slot + 1 < decorated.Count
+                && CompareValues(decorated[slot + 1].Value, decorated[slot].Value, span) == 0
+            )
             {
                 slot++;
             }

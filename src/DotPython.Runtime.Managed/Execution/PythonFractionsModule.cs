@@ -501,6 +501,30 @@ internal static class PythonFractionsModule
             _ => null,
         };
 
+    /// <summary>The exact numerator and denominator of a Fraction value.</summary>
+    internal static bool TryFractionParts(
+        PythonValue value,
+        out BigInteger numerator,
+        out BigInteger denominator
+    )
+    {
+        if (value is PythonManagedObjectValue { Payload: FractionState state })
+        {
+            numerator = state.Numerator;
+            denominator = state.Denominator;
+            return true;
+        }
+        numerator = BigInteger.Zero;
+        denominator = BigInteger.One;
+        return false;
+    }
+
+    /// <summary>The base `Fraction` for an exact ratio, normalized as the constructor does.</summary>
+    internal static PythonManagedObjectValue FromRatio(
+        BigInteger numerator,
+        BigInteger denominator
+    ) => Normalized(numerator, denominator);
+
     private static PythonManagedObjectValue Create(
         PythonValue cls,
         BigInteger numerator,
