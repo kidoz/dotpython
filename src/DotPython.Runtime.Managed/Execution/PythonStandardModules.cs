@@ -806,6 +806,12 @@ internal static class PythonStandardModules
             isPackage: false,
             PythonTracebackModule.Initialize
         );
+        // A single-threaded run-to-completion loop over the runtime's coroutines.
+        modules["asyncio"] = PythonModuleDefinition.Native(
+            "<dotpython asyncio>",
+            isPackage: false,
+            PythonAsyncioModule.Initialize
+        );
     }
 
     /// <summary>`sys.exit` and the `exit`/`quit` conveniences: raise SystemExit.</summary>
